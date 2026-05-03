@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/snap/bin/flutter devices *)",
+      "Bash(/snap/bin/flutter analyze *)",
+      "Bash(nargo --version)",
+      "Bash(bb --version)",
+      "Bash(noir --version)",
+      "Bash(curl -L https://raw.githubusercontent.com/noir-lang/noirup/main/install)",
+      "Bash(bash)",
+      "Bash(export PATH=\"$HOME/.nargo/bin:$PATH\")",
+      "Bash(noirup)",
+      "Bash(curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/refs/heads/master/barretenberg/cpp/installation/install)",
+      "Bash(curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/refs/heads/master/barretenberg/bbup/install)",
+      "Bash(curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/master/barretenberg/bbup/install)",
+      "Bash(export PATH=\"$HOME/.bb:$PATH\")",
+      "Bash(bbup)",
+      "Bash(export PATH=\"$HOME/.nargo/bin:$HOME/.bb:$PATH\")",
+      "Bash(mkdir -p /home/soren/zk_rune_duel)",
+      "Read(//home/soren/**)",
+      "Bash(nargo new *)",
+      "Bash(nargo test *)",
+      "Bash(nargo check *)",
+      "Bash(nargo --help)",
+      "Bash(bb verify *)",
+      "Bash(cat)",
+      "Bash(time nargo *)",
+      "Bash(nargo compile *)",
+      "Bash(bb write_vk -b target/ca_stub.json -o target/vk)",
+      "Bash(time bb *)"
+    ]
+  }
+}
