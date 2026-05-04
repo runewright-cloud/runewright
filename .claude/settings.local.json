@@ -27,7 +27,32 @@
       "Bash(time nargo *)",
       "Bash(nargo compile *)",
       "Bash(bb write_vk -b target/ca_stub.json -o target/vk)",
-      "Bash(time bb *)"
+      "Bash(time bb *)",
+      "Bash(python3 scripts/gen_grid.py)",
+      "Bash(sed -n '231,245p' /home/soren/zk_rune_duel/circuits/ca_natural/src/main.nr)",
+      "Bash(sed -n '309,321p' /home/soren/zk_rune_duel/circuits/ca_natural/src/main.nr)",
+      "Bash(sed -n '225,230p' /home/soren/zk_rune_duel/circuits/ca_natural/src/main.nr)",
+      "Bash(sed -n '323,329p' /home/soren/zk_rune_duel/circuits/ca_natural/src/main.nr)",
+      "Bash(bb gates *)",
+      "Bash(bb --help)",
+      "Bash(/home/soren/.bb/bb --help)",
+      "Bash(/home/soren/.bb/bb gates *)",
+      "Bash(/home/soren/.bb/bb prove *)",
+      "Bash(/home/soren/.bb/bb verify *)",
+      "Bash(/home/soren/.bb/bb write_vk --help)",
+      "Bash(python3 -c ' *)",
+      "Bash(nargo execute *)",
+      "Bash(chmod +x /home/soren/zk_rune_duel/scripts/bench_phase1.sh)",
+      "Bash(bash -n /home/soren/zk_rune_duel/scripts/bench_phase1.sh)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(d['functions'][0]['circuit_size']\\)\")",
+      "Bash(/home/soren/.bb/bb write_vk -b target/ca_lookup.json -o target/vk)",
+      "Bash(/usr/bin/time -v /home/soren/.bb/bb prove -b target/ca_lookup.json -w target/ca_lookup.gz -k target/vk/vk -o target/proof)",
+      "Bash(echo \"Exit: $?\")",
+      "Read(//tmp/**)",
+      "Bash(bash scripts/bench_phase1.sh)",
+      "Bash(awk '{print $1, $2, $3, $4, $11}')",
+      "Bash(awk '{print $2, $3, $4, $11}')",
+      "Bash(awk '{print $2, $3\"% cpu\", $4\"% mem\", substr\\($0, index\\($0,$11\\)\\)}')"
     ]
   }
 }
