@@ -1,13 +1,10 @@
 import 'package:test/test.dart';
+import 'package:rune_duel/engine/ca_rules.dart';
 import 'package:rune_duel/engine/element.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/engine/stepper.dart';
 
 void main() {
-  // No directional bias — keeps most tests simple.
-  const noDirection = <Element, int>{};
-
-  // Build a grid with specific cells already set.
   HexGrid makeGrid(Map<HexCoord, Element> setup) {
     final grid = HexGrid(4);
     for (final e in setup.entries) {
@@ -16,148 +13,138 @@ void main() {
     return grid;
   }
 
-  // ── Empty cell rules ────────────────────────────────────────────────────────
+  // ── Dead cell rules ─────────────────────────────────────────────────────────
 
-  group('empty cell', () {
-    test('stays empty with only 1 fire neighbor', () {
-      final grid = makeGrid({
-        HexCoord(1, 0): Element.fire,
-      });
-      final result = CAStep.step(grid, noDirection);
-      expect(result.state(HexCoord(0, 0)), Element.empty);
+  group('dead cell', () {
+    test('stays dead with 0 alive neighbors', () {
+      final grid = makeGrid({});
+      final result = CAStep.step(grid, CARules.neutral);
+      expect(result.state(HexCoord(0, 0)), Element.dead);
     });
 
-    test('becomes fire when surrounded by 3 fire neighbors', () {
-      final grid = makeGrid({
-        HexCoord(1,  0): Element.fire,
-        HexCoord(1, -1): Element.fire,
-        HexCoord(0, -1): Element.fire,
-      });
-      final result = CAStep.step(grid, noDirection);
-      expect(result.state(HexCoord(0, 0)), Element.fire);
+    test('stays dead with 1 alive neighbor', () {
+      final grid = makeGrid({HexCoord(1, 0): Element.alive});
+      final result = CAStep.step(grid, CARules.neutral);
+      expect(result.state(HexCoord(0, 0)), Element.dead);
     });
 
-    test('becomes fireWater when fire and water each contribute 3 neighbors', () {
-      // 3 fire neighbors on one side, 3 water on the other.
-      // Both are independently eligible → the cell becomes their hybrid.
+    test('becomes alive with exactly 2 alive neighbors', () {
       final grid = makeGrid({
-        HexCoord( 1,  0): Element.fire,
-        HexCoord( 1, -1): Element.fire,
-        HexCoord( 0, -1): Element.fire,
-        HexCoord(-1,  0): Element.water,
-        HexCoord(-1,  1): Element.water,
-        HexCoord( 0,  1): Element.water,
+        HexCoord(1,  0): Element.alive,
+        HexCoord(1, -1): Element.alive,
       });
-      final result = CAStep.step(grid, noDirection);
-      expect(result.state(HexCoord(0, 0)), Element.fireWater);
+      final result = CAStep.step(grid, CARules.neutral);
+      expect(result.state(HexCoord(0, 0)), Element.alive);
     });
 
-    test('becomes chaos when 3 pure elements are each eligible', () {
-      // 3 fireWater neighbors → fire score 3, water score 3 (each eligible).
-      // 3 earth neighbors → earth score 3 (eligible).
-      // 3 eligible elements → can't resolve to a single hybrid → chaos.
+    test('stays dead with 3 alive neighbors', () {
       final grid = makeGrid({
-        HexCoord( 1,  0): Element.fireWater,
-        HexCoord( 1, -1): Element.fireWater,
-        HexCoord( 0, -1): Element.fireWater,
-        HexCoord(-1,  0): Element.earth,
-        HexCoord(-1,  1): Element.earth,
-        HexCoord( 0,  1): Element.earth,
+        HexCoord(1,  0): Element.alive,
+        HexCoord(1, -1): Element.alive,
+        HexCoord(0, -1): Element.alive,
       });
-      final result = CAStep.step(grid, noDirection);
-      expect(result.state(HexCoord(0, 0)), Element.chaos);
+      final result = CAStep.step(grid, CARules.neutral);
+      expect(result.state(HexCoord(0, 0)), Element.dead);
     });
 
-    test('becomes voidEl when 3 pure elements each saturate at count 4', () {
-      // 2 fireWater + 2 fireEarth + 2 waterEarth:
-      //   fire   = 2+2   = 4
-      //   water  = 2+2   = 4
-      //   earth  = 2+2   = 4
-      // Three elements at count >= 4 simultaneously → void, even on an empty cell.
+    test('stays dead with 4 alive neighbors', () {
       final grid = makeGrid({
-        HexCoord( 1,  0): Element.fireWater,
-        HexCoord( 1, -1): Element.fireWater,
-        HexCoord( 0, -1): Element.fireEarth,
-        HexCoord(-1,  0): Element.fireEarth,
-        HexCoord(-1,  1): Element.waterEarth,
-        HexCoord( 0,  1): Element.waterEarth,
+        HexCoord( 1,  0): Element.alive,
+        HexCoord( 1, -1): Element.alive,
+        HexCoord( 0, -1): Element.alive,
+        HexCoord(-1,  0): Element.alive,
       });
-      final result = CAStep.step(grid, noDirection);
-      expect(result.state(HexCoord(0, 0)), Element.voidEl);
+      final result = CAStep.step(grid, CARules.neutral);
+      expect(result.state(HexCoord(0, 0)), Element.dead);
     });
   });
 
-  // ── Active cell — pure element ───────────────────────────────────────────────
+  // ── Alive cell rules ────────────────────────────────────────────────────────
 
-  group('active cell — pure element', () {
-    test('fire survives with 3 same-type neighbors', () {
-      final grid = makeGrid({
-        HexCoord(0,  0): Element.fire,
-        HexCoord(1,  0): Element.fire,
-        HexCoord(1, -1): Element.fire,
-        HexCoord(0, -1): Element.fire,
-      });
-      final result = CAStep.step(grid, noDirection);
-      expect(result.state(HexCoord(0, 0)), Element.fire);
+  group('alive cell', () {
+    test('dies with 0 alive neighbors (isolation)', () {
+      final grid = makeGrid({HexCoord(0, 0): Element.alive});
+      final result = CAStep.step(grid, CARules.neutral);
+      expect(result.state(HexCoord(0, 0)), Element.dead);
     });
 
-    test('fire dies with 4 same-type neighbors (overpopulation)', () {
+    test('dies with 1 alive neighbor (isolation)', () {
       final grid = makeGrid({
-        HexCoord( 0,  0): Element.fire,
-        HexCoord( 1,  0): Element.fire,
-        HexCoord( 1, -1): Element.fire,
-        HexCoord( 0, -1): Element.fire,
-        HexCoord(-1,  0): Element.fire,
+        HexCoord(0, 0): Element.alive,
+        HexCoord(1, 0): Element.alive,
       });
-      final result = CAStep.step(grid, noDirection);
-      expect(result.state(HexCoord(0, 0)), Element.empty);
+      final result = CAStep.step(grid, CARules.neutral);
+      expect(result.state(HexCoord(0, 0)), Element.dead);
+    });
+
+    test('survives with exactly 2 alive neighbors', () {
+      final grid = makeGrid({
+        HexCoord(0,  0): Element.alive,
+        HexCoord(1,  0): Element.alive,
+        HexCoord(1, -1): Element.alive,
+      });
+      final result = CAStep.step(grid, CARules.neutral);
+      expect(result.state(HexCoord(0, 0)), Element.alive);
+    });
+
+    test('dies with 3 alive neighbors (overpopulation)', () {
+      final grid = makeGrid({
+        HexCoord(0,  0): Element.alive,
+        HexCoord(1,  0): Element.alive,
+        HexCoord(1, -1): Element.alive,
+        HexCoord(0, -1): Element.alive,
+      });
+      final result = CAStep.step(grid, CARules.neutral);
+      expect(result.state(HexCoord(0, 0)), Element.dead);
+    });
+
+    test('dies with 4 alive neighbors (overpopulation)', () {
+      final grid = makeGrid({
+        HexCoord( 0,  0): Element.alive,
+        HexCoord( 1,  0): Element.alive,
+        HexCoord( 1, -1): Element.alive,
+        HexCoord( 0, -1): Element.alive,
+        HexCoord(-1,  0): Element.alive,
+      });
+      final result = CAStep.step(grid, CARules.neutral);
+      expect(result.state(HexCoord(0, 0)), Element.dead);
     });
   });
 
-  // ── Void — overrides active cells too ───────────────────────────────────────
+  // ── Border rule ──────────────────────────────────────────────────────────────
 
-  group('void — state-independent', () {
-    test('active fire cell becomes voidEl under triple saturation', () {
-      // Same neighbour setup as the empty-cell void test, but the centre is fire.
-      // Void overrides active cell resolution.
+  group('border cells', () {
+    test('active border cell always dies', () {
+      // Coord (4, 0) is on the border of a radius-4 grid.
+      // Give it 2 alive neighbors so it would survive under normal rules.
       final grid = makeGrid({
-        HexCoord( 0,  0): Element.fire,
-        HexCoord( 1,  0): Element.fireWater,
-        HexCoord( 1, -1): Element.fireWater,
-        HexCoord( 0, -1): Element.fireEarth,
-        HexCoord(-1,  0): Element.fireEarth,
-        HexCoord(-1,  1): Element.waterEarth,
-        HexCoord( 0,  1): Element.waterEarth,
+        HexCoord(4,  0): Element.alive,
+        HexCoord(3,  0): Element.alive,
+        HexCoord(3,  1): Element.alive, // only 2 neighbors exist on border
       });
-      final result = CAStep.step(grid, noDirection);
-      expect(result.state(HexCoord(0, 0)), Element.voidEl);
+      final result = CAStep.step(grid, CARules.neutral);
+      expect(result.state(HexCoord(4, 0)), Element.dead);
+    });
+
+    test('dead border cell stays dead even with 2 alive neighbors', () {
+      final grid = makeGrid({
+        HexCoord(3,  0): Element.alive,
+        HexCoord(3,  1): Element.alive,
+      });
+      final result = CAStep.step(grid, CARules.neutral);
+      expect(result.state(HexCoord(4, 0)), Element.dead);
     });
   });
 
-  // ── Active cell — hybrid ─────────────────────────────────────────────────────
+  // ── Step count ───────────────────────────────────────────────────────────────
 
-  group('active cell — hybrid', () {
-    test('fireWater survives when neither component reaches 4', () {
-      final grid = makeGrid({
-        HexCoord(0,  0): Element.fireWater,
-        HexCoord(1,  0): Element.fire,
-        HexCoord(1, -1): Element.fire,   // fire count = 2, safe
-        HexCoord(0, -1): Element.water,  // water count = 1, safe
-      });
-      final result = CAStep.step(grid, noDirection);
-      expect(result.state(HexCoord(0, 0)), Element.fireWater);
-    });
-
-    test('fireWater dies when fire component reaches 4', () {
-      final grid = makeGrid({
-        HexCoord( 0,  0): Element.fireWater,
-        HexCoord( 1,  0): Element.fire,
-        HexCoord( 1, -1): Element.fire,
-        HexCoord( 0, -1): Element.fire,
-        HexCoord(-1,  0): Element.fire,  // fire count = 4 → collapse
-      });
-      final result = CAStep.step(grid, noDirection);
-      expect(result.state(HexCoord(0, 0)), Element.empty);
+  group('step count', () {
+    test('increments each step', () {
+      final grid = HexGrid(4);
+      final r1 = CAStep.step(grid, CARules.neutral);
+      final r2 = CAStep.step(r1, CARules.neutral);
+      expect(r1.stepCount, 1);
+      expect(r2.stepCount, 2);
     });
   });
 }

@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart' hide Element;
+import 'engine/border_zone.dart';
+import 'engine/ca_rules.dart';
 import 'engine/element.dart';
+import 'engine/formula.dart';
 import 'engine/hex_grid.dart';
 import 'engine/stepper.dart';
+import 'ui/formula_bar.dart';
 import 'ui/hex_grid_painter.dart';
-import 'ui/element_visuals.dart';
 import 'ui/menu_screen.dart';
 
 void main() => runApp(const RuneDuelApp());
@@ -18,11 +21,11 @@ class RuneDuelApp extends StatelessWidget {
     return MaterialApp(
       title: 'Rune Duel',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF12121E),
-        colorScheme: const ColorScheme.dark(
-          primary: Color(0xFF8855CC),
-          surface: Color(0xFF12121E),
+      theme: ThemeData.light().copyWith(
+        scaffoldBackgroundColor: const Color(0xFFF5F0E8),
+        colorScheme: const ColorScheme.light(
+          primary: Color(0xFF2C1810),
+          surface: Color(0xFFF5F0E8),
         ),
       ),
       home: const MenuScreen(),
@@ -38,52 +41,92 @@ class GameScreen extends StatefulWidget {
 }
 
 class _GameScreenState extends State<GameScreen> {
-  static const _innerRadius = 5;
-  static const _radius = 9; // inner + 3-cell buffer zone + 1-cell clipped ring
+  static const _innerRadius = 8;
+  static const _radius = 12; // inscribable 0-8, buffer 9-11, border 12
 
   HexGrid _grid = HexGrid(_radius);
-  Element _selectedElement = Element.fire;
+  CARules _rules = CARules.neutral;
   final _paintKey = GlobalKey();
   bool _running = false;
   Timer? _timer;
-  HexGrid? _previewSaved;
   HexGrid? _initialGrid;
-
-  // Preferred growth directions in flat-top axial coords.
-  // Clockwise from top: 0=top, 1=top-right, 2=bottom-right, 3=bottom, 4=bottom-left, 5=top-left.
-  static const Map<Element, int> _directions = {
-    Element.fire:  5, // top-left
-    Element.air:   1, // top-right
-    Element.water: 2, // bottom-right
-    Element.earth: 4, // bottom-left
-  };
+  final _formulaTracker = FormulaTracker();
 
   double _hexSize(Size available) {
-    // Flat-top grid bounding box:
-    //   width  = hexSize * (3 * radius + 2)
-    //   height = hexSize * sqrt(3) * (2 * radius + 1)
     const padding = 16.0;
     final byWidth = (available.width - padding) / (3 * _radius + 2);
     final byHeight = (available.height - padding) / (sqrt(3) * (2 * _radius + 1));
-    return min(byWidth, byHeight).clamp(12.0, 40.0);
+    return min(byWidth, byHeight).clamp(6.0, 40.0);
   }
 
   static bool _isOuter(HexCoord coord) =>
-      [coord.q.abs(), coord.r.abs(), (coord.q + coord.r).abs()].reduce(max) > _innerRadius;
+      [coord.q.abs(), coord.r.abs(), (coord.q + coord.r).abs()].reduce(max) >
+      _innerRadius;
+
+  static const _zoneRules = {
+    BorderZone.fire:  CARules.fire,
+    BorderZone.air:   CARules.wind,
+    BorderZone.water: CARules.water,
+    BorderZone.earth: CARules.earth,
+  };
+
+  // Resolves the next active rule given the current rule and updated grid:
+  //   - all counts zero  → neutral
+  //   - one clear leader → that zone's rule
+  //   - tied             → keep current
+  static CARules _nextRules(CARules current, HexGrid grid) {
+    final a = grid.zoneActivations;
+    if (a.isEmpty || a.values.every((v) => v == 0)) return CARules.neutral;
+    final maxCount = a.values.reduce(max);
+    final leaders = a.entries.where((e) => e.value == maxCount).toList();
+    if (leaders.length != 1) return current;
+    return _zoneRules[leaders.first.key] ?? current;
+  }
+
+  // Returns the zone that has strictly more activations than all others combined,
+  // or null if no such zone exists.
+  static BorderZone? _supremeDominantZone(Map<BorderZone, int> activations) {
+    if (activations.isEmpty) return null;
+    final total = activations.values.fold(0, (a, b) => a + b);
+    for (final entry in activations.entries) {
+      if (entry.value * 2 > total) return entry.key;
+    }
+    return null;
+  }
+
+  // Returns the zone whose rules are currently active, or null for neutral.
+  static BorderZone? _activeZone(CARules rules) {
+    for (final entry in _zoneRules.entries) {
+      if (entry.value.name == rules.name) return entry.key;
+    }
+    return null;
+  }
+
+  // Reduces the active zone's activation count by the current step count.
+  static void _decayActiveZone(HexGrid grid, CARules rules) {
+    final zone = _activeZone(rules);
+    if (zone == null) return;
+    final count = grid.zoneActivations[zone] ?? 0;
+    grid.zoneActivations[zone] = max(0, count - grid.stepCount ~/ 2);
+  }
 
   void _onTap(TapUpDetails details) {
     final box = _paintKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null) return;
     final size = box.size;
-    final painter = HexGridPainter(grid: _grid, hexSize: _hexSize(size), innerRadius: _innerRadius);
-    final coord = painter.pixelToHex(details.localPosition, size);
+    final painter = HexGridPainter(
+      grid: _grid,
+      hexSize: _hexSize(size),
+      innerRadius: _innerRadius,
+    );
+    final coord = painter.pixelToHex(details.localPosition, size); // activeZone not needed for hit-testing
     if (coord == null) return;
     if (_isOuter(coord)) return;
     if (_grid.stepCount != 0) return;
     setState(() {
-      _grid.cells[coord] = _grid.cells[coord] == Element.empty
-          ? _selectedElement
-          : Element.empty;
+      _grid.cells[coord] = _grid.cells[coord] == Element.dead
+          ? Element.alive
+          : Element.dead;
     });
   }
 
@@ -94,21 +137,20 @@ class _GameScreenState extends State<GameScreen> {
     return true;
   }
 
-  void _togglePreview() {
-    if (_previewSaved == null) {
-      final saved = _grid;
-      _initialGrid ??= _grid.copy();
-      final next = CAStep.step(_grid, _directions);
-      setState(() {
-        _previewSaved = saved;
-        _grid = next;
-      });
-    } else {
-      setState(() {
-        _grid = _previewSaved!;
-        _previewSaved = null;
-      });
-    }
+  void _stepOnce() {
+    _initialGrid ??= _grid.copy();
+    final next = CAStep.step(_grid, _rules);
+    _decayActiveZone(next, _rules);
+    final newRules = _nextRules(_rules, next);
+    final supremeZone = _supremeDominantZone(next.zoneActivations);
+    setState(() {
+      _grid = next;
+      _rules = newRules;
+      _formulaTracker.step(
+        FormulaTracker.zoneFor(newRules),
+        supremeDominant: supremeZone != null,
+      );
+    });
   }
 
   void _toggleRun() {
@@ -119,13 +161,23 @@ class _GameScreenState extends State<GameScreen> {
       _initialGrid ??= _grid.copy();
       setState(() => _running = true);
       _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-        final next = CAStep.step(_grid, _directions);
+        final next = CAStep.step(_grid, _rules);
+        _decayActiveZone(next, _rules);
         if (_gridsEqual(_grid, next)) {
           _timer?.cancel();
           setState(() => _running = false);
           return;
         }
-        setState(() => _grid = next);
+        final newRules = _nextRules(_rules, next);
+        final supremeZone = _supremeDominantZone(next.zoneActivations);
+        setState(() {
+          _grid = next;
+          _rules = newRules;
+          _formulaTracker.step(
+            FormulaTracker.zoneFor(newRules),
+            supremeDominant: supremeZone != null,
+          );
+        });
       });
     }
   }
@@ -136,7 +188,7 @@ class _GameScreenState extends State<GameScreen> {
     setState(() {
       _grid = _initialGrid!.copy();
       _running = false;
-      _previewSaved = null;
+      _formulaTracker.reset();
     });
   }
 
@@ -144,9 +196,10 @@ class _GameScreenState extends State<GameScreen> {
     _timer?.cancel();
     setState(() {
       _grid = HexGrid(_radius);
+      _rules = CARules.neutral;
       _running = false;
-      _previewSaved = null;
       _initialGrid = null;
+      _formulaTracker.reset();
     });
   }
 
@@ -156,12 +209,24 @@ class _GameScreenState extends State<GameScreen> {
     super.dispose();
   }
 
+  int get _manaCost {
+    final base = _initialGrid != null
+        ? _initialGrid!.cells.values.where((e) => e == Element.alive).length
+        : _grid.cells.values.where((e) => e == Element.alive).length;
+    return (base * pow(1.25, _grid.stepCount)).round();
+  }
+
   @override
   Widget build(BuildContext context) {
+    final supremeZone = _supremeDominantZone(_grid.zoneActivations);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Rune Duel'),
-        backgroundColor: const Color(0xFF1A0A2E),
+        title: const Text(
+          'Rune Duel',
+          style: TextStyle(color: Color(0xFFF5F0E8), letterSpacing: 3),
+        ),
+        backgroundColor: const Color(0xFF2C1810),
+        iconTheme: const IconThemeData(color: Color(0xFFF5F0E8)),
         actions: [
           IconButton(
             icon: const Icon(Icons.undo),
@@ -178,44 +243,51 @@ class _GameScreenState extends State<GameScreen> {
       body: Column(
         children: [
           Expanded(
-            child: Row(
-              children: [
-                Expanded(
-                  child: GestureDetector(
-                    onTapUp: _onTap,
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        final size = Size(constraints.maxWidth, constraints.maxHeight);
-                        return CustomPaint(
-                          key: _paintKey,
-                          painter: HexGridPainter(
-                            grid: _grid,
-                            hexSize: _hexSize(size),
-                            innerRadius: _innerRadius,
-                          ),
-                          child: const SizedBox.expand(),
-                        );
-                      },
+            child: GestureDetector(
+              onTapUp: _onTap,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final size = Size(constraints.maxWidth, constraints.maxHeight);
+                  return CustomPaint(
+                    key: _paintKey,
+                    painter: HexGridPainter(
+                      grid: _grid,
+                      hexSize: _hexSize(size),
+                      innerRadius: _innerRadius,
+                      activeZone: _activeZone(_rules),
                     ),
-                  ),
-                ),
-                Column(
-                  children: [
-                    const _ColorKey(),
-                    _BorderTally(grid: _grid),
-                  ],
-                ),
-              ],
+                    child: const SizedBox.expand(),
+                  );
+                },
+              ),
             ),
           ),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 400),
+            transitionBuilder: (child, animation) => SizeTransition(
+              sizeFactor: animation,
+              child: FadeTransition(opacity: animation, child: child),
+            ),
+            child: supremeZone != null
+                ? _SupremeDominanceBanner(key: ValueKey(supremeZone), zone: supremeZone)
+                : const SizedBox.shrink(key: ValueKey<BorderZone?>(null)),
+          ),
+          _ZoneCounters(activations: _grid.zoneActivations),
+          FormulaBar(
+            formulas: _formulaTracker.formulas,
+            residuals: _formulaTracker.residuals,
+            pendingZone: _formulaTracker.pendingZone,
+          ),
+          _RuleBar(
+            selected: _rules,
+            onSelect: (r) => setState(() => _rules = r),
+          ),
           _BottomBar(
-            selected: _selectedElement,
-            onSelect: (e) => setState(() => _selectedElement = e),
             running: _running,
             onToggleRun: _toggleRun,
-            previewActive: _previewSaved != null,
-            onTogglePreview: _togglePreview,
+            onStepOnce: _stepOnce,
             stepCount: _grid.stepCount,
+            manaCost: _manaCost,
           ),
         ],
       ),
@@ -224,77 +296,67 @@ class _GameScreenState extends State<GameScreen> {
 }
 
 class _BottomBar extends StatelessWidget {
-  final Element selected;
-  final ValueChanged<Element> onSelect;
   final bool running;
   final VoidCallback onToggleRun;
-  final bool previewActive;
-  final VoidCallback onTogglePreview;
+  final VoidCallback onStepOnce;
   final int stepCount;
+  final int manaCost;
 
   const _BottomBar({
-    required this.selected,
-    required this.onSelect,
     required this.running,
     required this.onToggleRun,
-    required this.previewActive,
-    required this.onTogglePreview,
+    required this.onStepOnce,
     required this.stepCount,
+    required this.manaCost,
   });
 
   @override
   Widget build(BuildContext context) {
-    const inscribable = [
-      Element.fire,
-      Element.water,
-      Element.earth,
-      Element.air,
-      Element.fireWater,
-      Element.fireEarth,
-      Element.fireAir,
-      Element.waterEarth,
-      Element.waterAir,
-      Element.earthAir,
-    ];
     return Container(
-      color: const Color(0xFF1A0A2E),
+      color: const Color(0xFF2C1810),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       child: Row(
         children: [
-          ...inscribable.map(
-            (e) => Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: _ElementButton(
-                element: e,
-                selected: e == selected,
-                onTap: () => onSelect(e),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Step $stepCount',
+                style: const TextStyle(
+                  color: Color(0xFFB8A898),
+                  fontSize: 13,
+                  letterSpacing: 1,
+                ),
               ),
-            ),
+              Text(
+                'Mana Cost: $manaCost',
+                style: const TextStyle(
+                  color: Color(0xFF9BBFD4),
+                  fontSize: 13,
+                  letterSpacing: 1,
+                ),
+              ),
+            ],
           ),
           const Spacer(),
-          Text(
-            'Step $stepCount',
-            style: const TextStyle(color: Colors.white54, fontSize: 13),
-          ),
-          const SizedBox(width: 16),
           ElevatedButton.icon(
-            onPressed: running ? null : onTogglePreview,
-            icon: Icon(previewActive ? Icons.undo : Icons.skip_next),
-            label: Text(previewActive ? 'Revert' : 'Preview'),
+            onPressed: running ? null : onStepOnce,
+            icon: const Icon(Icons.navigate_next),
+            label: const Text('Step'),
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF336688),
-              foregroundColor: Colors.white,
+              backgroundColor: const Color(0xFF5A3828),
+              foregroundColor: const Color(0xFFF5F0E8),
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
             ),
           ),
           const SizedBox(width: 8),
           ElevatedButton.icon(
-            onPressed: previewActive ? null : onToggleRun,
+            onPressed: onToggleRun,
             icon: Icon(running ? Icons.pause : Icons.play_arrow),
             label: Text(running ? 'Pause' : 'Run'),
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF8855CC),
-              foregroundColor: Colors.white,
+              backgroundColor: const Color(0xFF8B4513),
+              foregroundColor: const Color(0xFFF5F0E8),
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
             ),
           ),
@@ -304,172 +366,177 @@ class _BottomBar extends StatelessWidget {
   }
 }
 
-class _ColorKey extends StatelessWidget {
-  const _ColorKey();
+class _RuleBar extends StatelessWidget {
+  final CARules selected;
+  final ValueChanged<CARules> onSelect;
 
-  static const _entries = [
-    Element.fire,
-    Element.water,
-    Element.earth,
-    Element.air,
-    Element.fireWater,
-    Element.fireEarth,
-    Element.fireAir,
-    Element.waterEarth,
-    Element.waterAir,
-    Element.earthAir,
-    Element.chaos,
-    Element.voidEl,
-    Element.empty,
+  static const _presets = [CARules.neutral, CARules.fire, CARules.earth, CARules.water, CARules.wind];
+
+  const _RuleBar({required this.selected, required this.onSelect});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: const Color(0xFF1E0E08),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: Row(
+        children: _presets.map((r) {
+          final active = r.name == selected.name;
+          return Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: TextButton(
+              onPressed: active ? null : () => onSelect(r),
+              style: TextButton.styleFrom(
+                foregroundColor: active
+                    ? const Color(0xFFF5F0E8)
+                    : const Color(0xFF9A9488),
+                backgroundColor: active
+                    ? const Color(0xFF5A3828)
+                    : Colors.transparent,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(4),
+                  side: BorderSide(
+                    color: active
+                        ? const Color(0xFF5A3828)
+                        : const Color(0xFF4A3020),
+                  ),
+                ),
+              ),
+              child: Text(r.name, style: const TextStyle(fontSize: 12)),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+}
+
+class _ZoneCounters extends StatelessWidget {
+  final Map<BorderZone, int> activations;
+
+  const _ZoneCounters({required this.activations});
+
+  static const _zones = [
+    (BorderZone.fire,  'Fire',  Color(0xFFCC3311)),
+    (BorderZone.air,   'Air',   Color(0xFF6699BB)),
+    (BorderZone.water, 'Water', Color(0xFF2255AA)),
+    (BorderZone.earth, 'Earth', Color(0xFF7A5C28)),
   ];
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: 120,
-      color: const Color(0xFF1A0A2E),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: _entries.map((e) => Padding(
-          padding: const EdgeInsets.symmetric(vertical: 3),
-          child: Row(
+      color: const Color(0xFF1E0E08),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: _zones.map((entry) {
+          final (zone, label, color) = entry;
+          final count = activations[zone] ?? 0;
+          return Row(
             children: [
-              Container(
-                width: 14,
-                height: 14,
-                decoration: BoxDecoration(
-                  color: e.color,
-                  border: Border.all(color: Colors.black38, width: 1),
-                ),
-              ),
+              Container(width: 10, height: 10, color: color),
               const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  e.displayName,
-                  style: const TextStyle(
-                    color: Colors.white70,
-                    fontSize: 10,
-                  ),
-                  overflow: TextOverflow.ellipsis,
+              Text(
+                '$label: $count',
+                style: const TextStyle(
+                  color: Color(0xFFB8A898),
+                  fontSize: 12,
                 ),
               ),
             ],
-          ),
-        )).toList(),
+          );
+        }).toList(),
       ),
     );
   }
 }
 
-class _BorderTally extends StatelessWidget {
-  final HexGrid grid;
-
-  const _BorderTally({required this.grid});
-
-  static const _tracked = [
-    Element.fire,
-    Element.water,
-    Element.earth,
-    Element.air,
-    Element.chaos,
-    Element.voidEl,
-  ];
+class _SupremeDominanceBanner extends StatefulWidget {
+  final BorderZone zone;
+  const _SupremeDominanceBanner({super.key, required this.zone});
 
   @override
-  Widget build(BuildContext context) {
-    final totals = <Element, int>{};
-    for (final bucket in grid.borderTriggers.values) {
-      for (final entry in bucket.entries) {
-        totals[entry.key] = (totals[entry.key] ?? 0) + entry.value;
-      }
-    }
-
-    return Container(
-      width: 120,
-      color: const Color(0xFF1A0A2E),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Border Triggers',
-            style: TextStyle(color: Colors.white38, fontSize: 9, letterSpacing: 1),
-          ),
-          const SizedBox(height: 6),
-          ..._tracked.map((e) => Padding(
-            padding: const EdgeInsets.symmetric(vertical: 3),
-            child: Row(
-              children: [
-                Container(
-                  width: 14,
-                  height: 14,
-                  decoration: BoxDecoration(
-                    color: e.color,
-                    border: Border.all(color: Colors.black38, width: 1),
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    e.displayName,
-                    style: const TextStyle(color: Colors.white70, fontSize: 10),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                Text(
-                  '${totals[e] ?? 0}',
-                  style: const TextStyle(color: Colors.white54, fontSize: 10),
-                ),
-              ],
-            ),
-          )),
-        ],
-      ),
-    );
-  }
+  State<_SupremeDominanceBanner> createState() => _SupremeDominanceBannerState();
 }
 
-class _ElementButton extends StatelessWidget {
-  final Element element;
-  final bool selected;
-  final VoidCallback onTap;
+class _SupremeDominanceBannerState extends State<_SupremeDominanceBanner>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  late Animation<double> _pulse;
 
-  const _ElementButton({
-    required this.element,
-    required this.selected,
-    required this.onTap,
-  });
+  static const _colors = {
+    BorderZone.fire:  Color(0xFFCC3311),
+    BorderZone.air:   Color(0xFF6699BB),
+    BorderZone.water: Color(0xFF2255AA),
+    BorderZone.earth: Color(0xFF7A5C28),
+  };
+
+  static const _names = {
+    BorderZone.fire:  'FIRE',
+    BorderZone.air:   'AIR',
+    BorderZone.water: 'WATER',
+    BorderZone.earth: 'EARTH',
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat(reverse: true);
+    _pulse = CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 120),
-        width: 54,
-        height: 54,
-        decoration: BoxDecoration(
-          color: element.color,
-          border: Border.all(
-            color: selected ? Colors.white : Colors.white24,
-            width: selected ? 2.5 : 1.0,
-          ),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Center(
-          child: Text(
-            element.displayName,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 10,
-              fontWeight: FontWeight.bold,
+    final color = _colors[widget.zone]!;
+    final name = _names[widget.zone]!;
+    return AnimatedBuilder(
+      animation: _pulse,
+      builder: (context, _) {
+        final t = _pulse.value;
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.07 + 0.13 * t),
+            border: Border.symmetric(
+              horizontal: BorderSide(
+                color: color.withValues(alpha: 0.35 + 0.65 * t),
+                width: 1,
+              ),
             ),
-            textAlign: TextAlign.center,
+            boxShadow: [
+              BoxShadow(
+                color: color.withValues(alpha: 0.45 * t),
+                blurRadius: 14,
+                spreadRadius: 0,
+              ),
+            ],
           ),
-        ),
-      ),
+          child: Center(
+            child: Text(
+              '★  $name · SUPREME DOMINANCE  ★',
+              style: TextStyle(
+                color: Color.lerp(color, const Color(0xFFF5F0E8), 0.35 * t),
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 2.5,
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }

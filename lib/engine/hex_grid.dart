@@ -1,4 +1,5 @@
 import 'dart:math';
+import 'border_zone.dart';
 import 'element.dart';
 
 // Axial coordinates — standard for hex grids.
@@ -21,38 +22,35 @@ class HexCoord {
 }
 
 // The grid — a flat dictionary of coord -> state.
-// Sparse representation: only valid coords are stored (all initialised to empty).
+// Sparse representation: only valid coords are stored (all initialised to dead).
 class HexGrid {
   final int radius;
   final Map<HexCoord, Element> cells;
-  final Map<HexCoord, Map<Element, int>> borderTriggers;
+  final Map<BorderZone, int> zoneActivations;
   int stepCount;
 
-  HexGrid(this.radius) : cells = {}, borderTriggers = {}, stepCount = 0 {
+  HexGrid(this.radius) : cells = {}, zoneActivations = {}, stepCount = 0 {
     for (int q = -radius; q <= radius; q++) {
       final r1 = max(-radius, -q - radius);
       final r2 = min(radius, -q + radius);
       for (int r = r1; r <= r2; r++) {
-        cells[HexCoord(q, r)] = Element.empty;
+        cells[HexCoord(q, r)] = Element.dead;
       }
     }
   }
 
-  // Private constructor used by [copy].
-  HexGrid._copy(this.radius, Map<HexCoord, Element> source, this.stepCount,
-      Map<HexCoord, Map<Element, int>> sourceTriggers)
-      : cells = Map.of(source),
-        borderTriggers = {
-          for (final e in sourceTriggers.entries) e.key: Map.of(e.value)
-        };
+  HexGrid._copy(
+    this.radius,
+    Map<HexCoord, Element> source,
+    this.stepCount,
+    Map<BorderZone, int> sourceActivations,
+  )   : cells = Map.of(source),
+        zoneActivations = Map.of(sourceActivations);
 
-  // Returns a shallow copy — cells map is duplicated so mutations don't alias.
-  HexGrid copy() => HexGrid._copy(radius, cells, stepCount, borderTriggers);
+  HexGrid copy() => HexGrid._copy(radius, cells, stepCount, zoneActivations);
 
-  // Returns null if coord is outside the grid.
   Element? state(HexCoord coord) => cells[coord];
 
-  // Silently ignores coords outside the grid.
   void setState(Element element, HexCoord coord) {
     if (cells.containsKey(coord)) {
       cells[coord] = element;
@@ -65,7 +63,6 @@ class HexGrid {
         radius;
   }
 
-  // Neighbour offsets — order is arbitrary, used only for iteration.
   static const List<HexCoord> directions = [
     HexCoord( 1,  0),
     HexCoord( 1, -1),
@@ -75,7 +72,6 @@ class HexGrid {
     HexCoord( 0,  1),
   ];
 
-  // Clockwise from top (flat-top layout): index 0 = top, 1 = top-right, …, 5 = top-left.
   static const List<HexCoord> clockwiseDirections = [
     HexCoord( 0, -1), // 0 top
     HexCoord( 1, -1), // 1 top-right
@@ -85,7 +81,6 @@ class HexGrid {
     HexCoord(-1,  0), // 5 top-left
   ];
 
-  // Returns all (coord, state) pairs for valid neighbours of [coord].
   List<(HexCoord, Element)> neighbors(HexCoord coord) {
     final result = <(HexCoord, Element)>[];
     for (final dir in directions) {

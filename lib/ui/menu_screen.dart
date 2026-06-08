@@ -7,7 +7,7 @@ class MenuScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF12121E),
+      backgroundColor: const Color(0xFFF5F0E8),
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -15,7 +15,7 @@ class MenuScreen extends StatelessWidget {
             const Text(
               'RUNE DUEL',
               style: TextStyle(
-                color: Color(0xFF8855CC),
+                color: Color(0xFF2C1810),
                 fontSize: 48,
                 fontWeight: FontWeight.bold,
                 letterSpacing: 8,
@@ -68,12 +68,16 @@ class _MenuButton extends StatelessWidget {
         child: TextButton(
           onPressed: onTap,
           style: TextButton.styleFrom(
-            foregroundColor: enabled ? Colors.white : Colors.white24,
+            foregroundColor: enabled
+                ? const Color(0xFF2C1810)
+                : const Color(0xFF9A9488),
             padding: const EdgeInsets.symmetric(vertical: 16),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(4),
               side: BorderSide(
-                color: enabled ? const Color(0xFF8855CC) : Colors.white12,
+                color: enabled
+                    ? const Color(0xFF2C1810)
+                    : const Color(0xFF9A9488),
                 width: 1,
               ),
             ),
@@ -84,7 +88,9 @@ class _MenuButton extends StatelessWidget {
               fontSize: 18,
               letterSpacing: 3,
               fontWeight: FontWeight.w300,
-              color: enabled ? Colors.white : Colors.white24,
+              color: enabled
+                  ? const Color(0xFF2C1810)
+                  : const Color(0xFF9A9488),
             ),
           ),
         ),
