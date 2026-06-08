@@ -198,7 +198,7 @@ The 16 base effect types, mapped to second-third element combinations (with firs
 | Water-Water | Mana Stone Manipulation | Destroy Mana Stone | Pertified Petros, all mana stones but core disabled one turn | Summon Mana Stone | Supercharged, all stones effects doubled next turn.|
 | Air-Air | Speed Manipulation | Blazing fast (May move a number of additional tiles at cost of (n(n+1))/2) health)  | Reduces target move speed by 1 for 2 turns. | High Liquidity (May move a number of additional tiles at cost of (n(n+1))/2)*100 mana) | Increases target move speed by 1 for 2 turns | 
 | Fire-Earth |Sprite Summoning | High damage sprite | High HP sprite | Splash Damage Sprite| Knockback sprite |
-| Fire-Water | Chain Interaction | | | | |
+| Fire-Water | Chain Interaction |Blazing Chains (Chain bonuses accumulate twice as fast next two turns) |Lead Chains (Chain bonuses grow at half speed for the next 3 turns)|Chain Reflection (You gain all chain status of effected targets will overright existing chains you have| Unchained (All Chain Bonuses Removed)|
 | Fire-Air | Spell Interaction |Burning Spell (mana cost paid a second time, if not enough mana debt translates as 1% damage to health|Sluggish Spells (Always resolve last unless other spells are sluggish) 3 Turn|Copy Spell | Quick Spells (always resolve first unless other spells are quick 2 turns.|
 | Earth-Fire | Hound Summoning | | | | |
 | Earth-Water |  Tile Modification (4 hp each, opposing element does double damage) | Floor is Lava (hurts to pass through) | Impassible terrain that also blocks spells from moving through it | costs 2 movement to step into and drains mana when stepped into | Conveyor tiles that force move player or sprite that moves on them. Direction of movement is opposite closest to opposite direction of hex from caster when cast |
@@ -206,8 +206,8 @@ The 16 base effect types, mapped to second-third element combinations (with firs
 | Water-Fire | TBD | | | | |
 | Water-Earth | TBD | | | | |
 | Water-Air | Illusions |Deal one damage to attacker if targeted | Last twice as long | Mirror Player movement (opposite directions| |
-| Air-Fire | TBD | | | | |
-| Air-Earth | TBD | | | | |
+| Air-Fire | Dispels | | | | |
+| Air-Earth | Haymaker Interaction | | | | |
 | Air-Water | Bookmark Interaction | Burn a bookmark | Bookmark Petrification (cannot use bookmarks next turn) | Summon Bookmark | Flutter Pages (All Current Spell pages lost and equal number of new ones found|
 
 
