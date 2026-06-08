@@ -200,13 +200,13 @@ The 16 base effect types, mapped to second-third element combinations (with firs
 | Fire-Earth |Sprite Summoning | High damage sprite | High HP sprite | Splash Damage Sprite| Knockback sprite |
 | Fire-Water | Chain Interaction |Blazing Chains (Chain bonuses accumulate twice as fast next two turns) |Lead Chains (Chain bonuses grow at half speed for the next 3 turns)|Chain Reflection (You gain all chain status of effected targets will overright existing chains you have| Unchained (All Chain Bonuses Removed)|
 | Fire-Air | Spell Interaction |Burning Spell (mana cost paid a second time, if not enough mana debt translates as 1% damage to health|Sluggish Spells (Always resolve last unless other spells are sluggish) 3 Turn|Copy Spell | Quick Spells (always resolve first unless other spells are quick 2 turns.|
-| Earth-Fire | Hound Summoning | | | | |
+| Earth-Fire | Hound Summoning |Exra Damage Hound|Extra Health|Splash Damage hound|Extra Fast Hound |
 | Earth-Water |  Tile Modification (4 hp each, opposing element does double damage) | Floor is Lava (hurts to pass through) | Impassible terrain that also blocks spells from moving through it | costs 2 movement to step into and drains mana when stepped into | Conveyor tiles that force move player or sprite that moves on them. Direction of movement is opposite closest to opposite direction of hex from caster when cast |
-| Earth-Air | TBD | | | | |
-| Water-Fire | TBD | | | | |
+| Earth-Air | Range Modification |Pentrating Range, Spells Cannot Be Blocked by walls, and 1 damage done to anything in Hexs in route to the spells intended target|Reduce Spell Range by 1 for 3 turns |Turbulent Range, next spell cast goes off in intended direction but randomizes the range between 1 and maximum| Increase Spell Range by 1 for 2 turns|
+| Water-Fire | Summon Clouds 3 turns|Toxic Smoke (1 damage a turn)|Dust cloud Blind 1 turn even after leaving cloud|Refreshing Cloud +10% mana regen in cloud|Mobile Cloud (Caster may choose new center of cloud at start of turn|
 | Water-Earth | TBD | | | | |
 | Water-Air | Illusions |Deal one damage to attacker if targeted | Last twice as long | Mirror Player movement (opposite directions| |
-| Air-Fire | Dispels | | | | |
+| Air-Fire | Dispels |Minions (sprites and hounds radius 2|Illusions radius 3|Terrain Radius 2|Clouds Radius 3|
 | Air-Earth | Haymaker Interaction | | | | |
 | Air-Water | Bookmark Interaction | Burn a bookmark | Bookmark Petrification (cannot use bookmarks next turn) | Summon Bookmark | Flutter Pages (All Current Spell pages lost and equal number of new ones found|
 
