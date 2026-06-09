@@ -194,7 +194,7 @@ The 16 base effect types, mapped to second-third element combinations (with firs
 | Second-Third | Base Effect | Fire Flavor | Earth Flavor | Water Flavor | Air Flavor |
 |---|---|---|---|---|---|
 | Fire-Fire | Damage | Extra Damage | also damages walls or sprites it intersects on way to target | Splash Damage (AoE radius 2) | Damage and 1 self movement |
-| Earth-Earth | Barriers
+| Earth-Earth | Barriers 2 Turns | 
 | Water-Water | Mana Stone Manipulation | Destroy Mana Stone | Pertified Petros, all mana stones but core disabled one turn | Summon Mana Stone | Supercharged, all stones effects doubled next turn.|
 | Air-Air | Speed Manipulation | Blazing fast (May move a number of additional tiles at cost of (n(n+1))/2) health)  | Reduces target move speed by 1 for 2 turns. | High Liquidity (May move a number of additional tiles at cost of (n(n+1))/2)*100 mana) | Increases target move speed by 1 for 2 turns | 
 | Fire-Earth |Sprite Summoning | High damage sprite | High HP sprite | Splash Damage Sprite| Knockback sprite |
