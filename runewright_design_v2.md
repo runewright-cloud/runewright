@@ -194,10 +194,10 @@ Potency Effects in brackets
 |---|---|---|---|---|---|
 | Fire-Fire | Damage [Increases damage by 50%] |4 Damage| 2 damage also damages walls or sprites it intersects on way to target | 2 Splash Damage (AoE radius 2) | 2 Damage and 1 self movement |
 | Earth-Earth | Barriers 2[3] Turns| 2 HP adjacent tiles take one fire damage at end of turn | 4 HP | 2 HP + 10% manage regen while active | 2 HP free move when collapses
-| Water-Water | Mana Gem Manipulation | Destroy 2[3] Mana Gem| Pertified Stones, all mana gems but core disabled 2[3] turn| Summon Mana gem [2] | Supercharged, all gems effects doubled [tripled] next turn.|
+| Water-Water | Mana Gem Manipulation | Destroy 2[3] Mana Gem| All mana gems regeneration but core disabled 2[3] turn| Summon Mana gem [2] | Supercharged, all gems effects doubled [tripled] next turn.|
 | Air-Air | Speed Manipulation | May move a number of additional tiles at cost of (n(n+1))/2) health [1 free tile]| Reduces target move speed by 1 for [4] turns. | High Liquidity (May move a number of additional tiles at cost of (n(n+1))/2)*100 mana) [1 tile for free]| Increases target move speed by 1 for 2[3] turns | 
 | Fire-Earth |Sprite Summoning[Sprites may take immediate turn]| High damage sprite | High HP sprite | Splash Damage Sprite| Knockback sprite |
-| Fire-Water | Chain Interaction |Chain bonuses accumulate twice as fast next 2[3] turns |Chain bonuses grow at half speed for the next 3[4] turns|You gain all chain status of effected targets will overright existing chains you have [+1 turn to them| All Chain Bonuses Removed [All chains set to -1 (mana cost increased instead of decreased by normal chain bonuses]|
+| Fire-Water | Chain Interaction |Chain bonuses accumulate twice as fast next 2[3] turns |Chain bonuses grow at half speed for the next 3[4] turns|You gain all chain status of effected target will overright any existing chains you have [+1 turn to them| All Chain Bonuses Removed [All chains set to -1 (mana cost increased instead of decreased by normal chain bonuses]|
 | Fire-Air | Spell Interaction |Next spell cast has cost paid a second time, if not enough mana debt translates as 1[2]% damage to health|Always resolve last unless other spells are sluggish 3[4] Turns|Copy Spell [May copy twice, but will require paying spells mana cost for second copy]|Always resolve first unless other spells are quick 2[3] turns|
 | Earth-Fire | Hound Summoning [Hounds May take immediat turn] |Exra Damage Hound|Extra Health|Splash Damage hound|Extra Fast Hound |
 | Earth-Water |  Tile Modification [May place second effect in adjacent tile] | Floor is Lava (hurts to pass through) | Impassible terrain that also blocks spells from moving through it | costs 2 movement to step into and drains mana when stepped into | Conveyor tiles that force move player or summons that moves on them. Direction of movement is opposite closest to opposite direction of hex from caster when cast |
@@ -298,7 +298,7 @@ Bookmarks - Each magical bookmark identifies a spell and tracks it within the sp
 Absorption Rod - If a spell would interact with an accoutrement, the absorption rod neutralizes the effect instead (creating new accoutrements is not the same as interacting with existing ones) each rod has 2 charges of absorption before being rendered useless.
 
 ### Spell Mana Cost
-mana_cost = (active_cells * 2) + (unique_elements * 10) + (generations^1.3)
+mana_cost = Starting Active Cells * 1.25^number of steps
 
 The softer exponent (1.15 vs 1.3) provides headroom for longer simulations as a premium experience. Total activations naturally scales with both grid complexity and simulation length.
 
@@ -320,14 +320,15 @@ Determined by the spell's overall dominant element (cumulative across all formul
 
 The spell hash hex string is scanned for two pattern types per element:
 
-- **Repeating numerals** (e.g., 11, 222, AAAA): assigned per element with no overlap
+- **Repeating numerals** (e.g., 111, 222, AAAA): assigned per element with no overlap
 - **Ascending runs** (e.g., 3456, F012, BCDE): F wraps to 0; first numeral must be element's designated trigger
 
-**TODO: assign exact trigger numerals per element (need to be updated from original design doc to reflect simplified 4-element schema — Chaos and Void are no longer cell states but may still exist as spell effect categories).**
-
+If a spell is inscribed with no formulas, and thus no elemental affinity, are eligible for powerful void effects 
 ### Wild Magic Effects
+The sequence continuing past the minimum 3 causes effects to scale as listed in brackets
+|Triggering Sequence | Void Effect | Fire Flavor | Earth Flavor | Water Flavor | Air Flavor | Chaos Flavor| 
+|000||All adjacent non player cell effects instantly vanish [+1 radius]|All spell effects of all spells next turn also deal 1 additional fire damage [+1 damage for each effect]|All adjacent cells become earth walls for 2 turns [+1 turn]|All Mana Bars Immediately Fill| All players and minions teleported to random locations|
 
-**TODO: design the wild magic effect table.** Each element has its own set of wild magic effects, triggered by its assigned patterns appearing in the hash. These effects:
 - Operate independently from recipe effects (both can fire from the same spell)
 - Scale with the length/intensity of the triggering pattern
 - Are influenced by the community seed word, producing different effects in different communities
@@ -341,9 +342,6 @@ The wild magic specialist build (perfectly balanced elements, maximum trigger el
 
 Each pure element tracks an independent chain counter. Casting sequential spells of the same affinity accumulates a mana discount.
 
-### Single Chain Active
-
-Only one chain may be active at a time. Players choose which element to specialize in, and that's the chain that builds.
 
 ### Chain Advancement
 
@@ -374,7 +372,8 @@ This rewards specialization while still allowing hybrid mages to benefit partial
 | 5 | 41% | 20% |
 | 10 | 65% | 33% |
 
-
+### Chain Diminishment
+Elemental Chain bonus count diminishes by 2 for any turn in which associated element not cast.
 ---
 
 
@@ -413,13 +412,17 @@ Optional feature may eventually be added to allow maps with tile modifing terrai
 ---
 
 ##Turn Order
-1.Summons turn: summons will automatically (or in a few cases manually) move, then attack the closest enemy target.  These effects resolve in the order in which the summons were created.
-2. PLayers  
-Players target a hex tile with a spell.
-3. 
+1. Summons turn: summons will automatically (or in a few cases manually) move, then attack the closest enemy target.  These effects resolve in the order in which the summons were created.
+2. PLayers chose their movement path
+3. Players target a hex tile with a spell.
+4. Movement resolves
+5. Spells resolve effects.  Wild magic first, then the spell effects in the order the CA created the formulas.  If multiple objects would be summoned to the same tile (e.g. two hounds) one will be moved to a random adjacent tile.
+6. Status effects tick down.
+   
 ## Battle Modes
 
-### Wizard Mode
+There will be a variety of effects
+### Wizard Mode Options
 
 - Turn-based
 - Deliberate, strategic
