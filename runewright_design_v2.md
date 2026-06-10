@@ -13,7 +13,7 @@ A mobile game simulating the experience of being a D&D-style wizard in real life
 - **No central authority** — fully peer-to-peer, zero ongoing server overhead for the developer
 - **Cryptographic integrity** — cheating on spell output is mathematically hard, not just socially discouraged
 - **Mystique as a structural feature** — the decentralized design creates speculation, rumor, and community lore organically
-- **Face-to-face experience** — duels happen in person between two phones via local wireless; the design is optimized for in-person play including shoulder-surfing as a real meta-game element
+- **Face-to-face experience** — duels happen in person between two phones via local wireless; the design is optimized for in-person play, including psycholgical games and misdirection in combat and out of combat a level of tradecraftesque tactics like including shoulder-surfing and deceitful trade bargins like "Diplomacy" as a real meta-game element for discovering magical secrets.  But an ethos respecting peoples personal privacy and comfort levels.
 - **Free, ad-free, no microtransactions** — donation-only model, no data harvesting
 - **Word-of-mouth distribution** — designed to feel like a discovery shared between people with similar taste
 
@@ -194,7 +194,7 @@ Potency Effects in brackets
 |---|---|---|---|---|---|
 | Fire-Fire | Damage [Increases damage by 50%] |4 Damage| 2 damage also damages walls or sprites it intersects on way to target | 2 Splash Damage (AoE radius 2) | 2 Damage and 1 self movement |
 | Earth-Earth | Barriers 2[3] Turns| 2 HP adjacent tiles take one fire damage at end of turn | 4 HP | 2 HP + 10% manage regen while active | 2 HP free move when collapses
-| Water-Water | Mana Stone Manipulation | Destroy 2[3] Mana Stones| Pertified Stones, all mana stones but core disabled 2[3] turn| Summon Mana Stone [2] | Supercharged, all stones effects doubled [tripled] next turn.|
+| Water-Water | Mana Gem Manipulation | Destroy 2[3] Mana Gem| Pertified Stones, all mana gems but core disabled 2[3] turn| Summon Mana gem [2] | Supercharged, all gems effects doubled [tripled] next turn.|
 | Air-Air | Speed Manipulation | May move a number of additional tiles at cost of (n(n+1))/2) health [1 free tile]| Reduces target move speed by 1 for [4] turns. | High Liquidity (May move a number of additional tiles at cost of (n(n+1))/2)*100 mana) [1 tile for free]| Increases target move speed by 1 for 2[3] turns | 
 | Fire-Earth |Sprite Summoning[Sprites may take immediate turn]| High damage sprite | High HP sprite | Splash Damage Sprite| Knockback sprite |
 | Fire-Water | Chain Interaction |Chain bonuses accumulate twice as fast next 2[3] turns |Chain bonuses grow at half speed for the next 3[4] turns|You gain all chain status of effected targets will overright existing chains you have [+1 turn to them| All Chain Bonuses Removed [All chains set to -1 (mana cost increased instead of decreased by normal chain bonuses]|
@@ -374,9 +374,6 @@ This rewards specialization while still allowing hybrid mages to benefit partial
 | 5 | 41% | 20% |
 | 10 | 65% | 33% |
 
-### Sorcerer Mode Modification
-
-Chain decay at 2x rate instead of hard reset. **TODO: specify exact decay mechanics for sorcerer mode.**
 
 ---
 
@@ -386,7 +383,7 @@ Chain decay at 2x rate instead of hard reset. **TODO: specify exact decay mechan
 ### Grid
 
 - Hexagonal battlefield grid, vertex-down orientation
-- Default radius: 4 (37 tiles) — adjustable by player preference
+- Default radius: 4 (61 tiles) — adjustable by player preference
 - Consistent visual language with the rune grid
 
 ### Movement
@@ -404,9 +401,7 @@ Chain decay at 2x rate instead of hard reset. **TODO: specify exact decay mechan
 
 ### Terrain
 
-- **Earth walls:** Impassable tiles, created by Earth-affinity spells, removed by Water Erosion effects
-- **Fog:** Obscures player location within AoE, created by Air-affinity spells
-- **Flooded tiles (proposed):** Water difficult terrain — costs 2 movement to traverse
+Optional feature may eventually be added to allow maps with tile modifing terrain appearing from the beginning.
 
 ### Targeting
 
@@ -417,6 +412,11 @@ Chain decay at 2x rate instead of hard reset. **TODO: specify exact decay mechan
 
 ---
 
+##Turn Order
+1.Summons turn: summons will automatically (or in a few cases manually) move, then attack the closest enemy target.  These effects resolve in the order in which the summons were created.
+2. PLayers  
+Players target a hex tile with a spell.
+3. 
 ## Battle Modes
 
 ### Wizard Mode
