@@ -188,28 +188,26 @@ A spell with formulas fire-X-X and water-X-X has fire-water hybrid affinity. A s
 ## Effect Table (Needs Playtesting)
 
 The 16 base effect types, mapped to second-third element combinations (with first element as affinity providing flavor):
-
-**TODO: this table needs to be designed in full. The structure is 16 effects × 4 affinity flavors = 64 distinct results. Below is a placeholder framework showing the structure; the actual effect content is open for design.**
+Potency Effects in brackets
 
 | Second-Third | Base Effect | Fire Flavor | Earth Flavor | Water Flavor | Air Flavor |
 |---|---|---|---|---|---|
-| Fire-Fire | Damage |4 Damage| 2 damage also damages walls or sprites it intersects on way to target | 2 Splash Damage (AoE radius 2) | 2 Damage and 1 self movement |
-| Earth-Earth | Barriers 2 Turns | 2 HP adjacent tiles take one fire damage at end of turn | 4 HP | 2 HP + 10% manage regen while active | 2 HP free move when collapses
-| Water-Water | Mana Stone Manipulation | Destroy Mana Stone | Pertified Petros, all mana stones but core disabled one turn | Summon Mana Stone | Supercharged, all stones effects doubled next turn.|
-| Air-Air | Speed Manipulation | Blazing fast (May move a number of additional tiles at cost of (n(n+1))/2) health)  | Reduces target move speed by 1 for 2 turns. | High Liquidity (May move a number of additional tiles at cost of (n(n+1))/2)*100 mana) | Increases target move speed by 1 for 2 turns | 
-| Fire-Earth |Sprite Summoning | High damage sprite | High HP sprite | Splash Damage Sprite| Knockback sprite |
-| Fire-Water | Chain Interaction |Blazing Chains (Chain bonuses accumulate twice as fast next two turns) |Lead Chains (Chain bonuses grow at half speed for the next 3 turns)|Chain Reflection (You gain all chain status of effected targets will overright existing chains you have| Unchained (All Chain Bonuses Removed)|
-| Fire-Air | Spell Interaction |Burning Spell (mana cost paid a second time, if not enough mana debt translates as 1% damage to health|Sluggish Spells (Always resolve last unless other spells are sluggish) 3 Turn|Copy Spell | Quick Spells (always resolve first unless other spells are quick 2 turns.|
-| Earth-Fire | Hound Summoning |Exra Damage Hound|Extra Health|Splash Damage hound|Extra Fast Hound |
-| Earth-Water |  Tile Modification (4 hp each, opposing element does double damage) | Floor is Lava (hurts to pass through) | Impassible terrain that also blocks spells from moving through it | costs 2 movement to step into and drains mana when stepped into | Conveyor tiles that force move player or sprite that moves on them. Direction of movement is opposite closest to opposite direction of hex from caster when cast |
-| Earth-Air | Range Modification |Pentrating Range, Spells Cannot Be Blocked by walls, and 1 damage done to anything in Hexs in route to the spells intended target|Reduce Spell Range by 1 for 3 turns |Turbulent Range, next spell cast goes off in intended direction but randomizes the range between 1 and maximum| Increase Spell Range by 1 for 2 turns|
-| Water-Fire | Summon Clouds 3 turns|Toxic Smoke (1 damage a turn)|Dust cloud Blind 1 turn even after leaving cloud|Refreshing Cloud +10% mana regen in cloud|Mobile Cloud (Caster may choose new center of cloud at start of turn|
-| Water-Earth | TBD | | | | |
-| Water-Air | Illusions |Deal one damage to attacker if targeted | Last twice as long | Mirror Player movement (opposite directions| |
-| Air-Fire | Dispels |Minions (sprites and hounds radius 2|Illusions radius 3|Terrain Radius 2|Clouds Radius 3|
-| Air-Earth | Haymaker Interaction |Creates Stacking Fire Dot|Target Move Speed Reduced by 1| Target Status Effects Lose a Turn| Bonus Damage Equal to spaces moved towards Target|
-| Air-Water | Bookmark Interaction | Burn a bookmark | Bookmark Petrification (cannot use bookmarks next turn) | Summon Bookmark | Flutter Pages (All Current Spell pages lost and equal number of new ones found|
-
+| Fire-Fire | Damage [Increases damage by 50%] |4 Damage| 2 damage also damages walls or sprites it intersects on way to target | 2 Splash Damage (AoE radius 2) | 2 Damage and 1 self movement |
+| Earth-Earth | Barriers 2[3] Turns| 2 HP adjacent tiles take one fire damage at end of turn | 4 HP | 2 HP + 10% manage regen while active | 2 HP free move when collapses
+| Water-Water | Mana Stone Manipulation | Destroy 2[3] Mana Stones| Pertified Stones, all mana stones but core disabled 2[3] turn| Summon Mana Stone [2] | Supercharged, all stones effects doubled [tripled] next turn.|
+| Air-Air | Speed Manipulation | May move a number of additional tiles at cost of (n(n+1))/2) health [1 free tile]| Reduces target move speed by 1 for [4] turns. | High Liquidity (May move a number of additional tiles at cost of (n(n+1))/2)*100 mana) [1 tile for free]| Increases target move speed by 1 for 2[3] turns | 
+| Fire-Earth |Sprite Summoning[Sprites may take immediate turn]| High damage sprite | High HP sprite | Splash Damage Sprite| Knockback sprite |
+| Fire-Water | Chain Interaction |Chain bonuses accumulate twice as fast next 2[3] turns |Chain bonuses grow at half speed for the next 3[4] turns|You gain all chain status of effected targets will overright existing chains you have [+1 turn to them| All Chain Bonuses Removed [All chains set to -1 (mana cost increased instead of decreased by normal chain bonuses]|
+| Fire-Air | Spell Interaction |Next spell cast has cost paid a second time, if not enough mana debt translates as 1[2]% damage to health|Always resolve last unless other spells are sluggish 3[4] Turns|Copy Spell [May copy twice, but will require paying spells mana cost for second copy]|Always resolve first unless other spells are quick 2[3] turns|
+| Earth-Fire | Hound Summoning [Hounds May take immediat turn] |Exra Damage Hound|Extra Health|Splash Damage hound|Extra Fast Hound |
+| Earth-Water |  Tile Modification [May place second effect in adjacent tile] | Floor is Lava (hurts to pass through) | Impassible terrain that also blocks spells from moving through it | costs 2 movement to step into and drains mana when stepped into | Conveyor tiles that force move player or summons that moves on them. Direction of movement is opposite closest to opposite direction of hex from caster when cast |
+| Earth-Air | Range Modification |Pentrating Range, Spells Cannot Be Blocked by walls, and 1 damage done to anything in Hexs in route to the spells intended target 2[3] turns|Reduce Spell Range by 1 for 3[4] turns |Turbulent Range, next spell cast goes off in intended direction but randomizes the range between 1 and maximum 3[4] turns| Increase Spell Range by 1 for 2[3] turns|
+| Water-Fire | Summon Clouds 3[4] turns|Toxic Smoke (1 damage a turn)|Dust cloud Blind 1 turn even after leaving cloud|Refreshing Cloud +10% mana regen in cloud|Mobile Cloud (Caster may choose new center of cloud at start of turn|
+| Water-Earth | Status Effect Interaction |1[2] damage for each active status effect|All Status effects dormant for 2[3]turn|Status Effects Lose 1[2] Turn|All Status Effects Gain 1[2] Turn|
+| Water-Air | Illusions 3[4] turns|Deal 1 damage to attacker if targeted | Last twice as long | Mirror Player movement (opposite directions| |
+| Air-Fire | Dispels |Minions (sprites and hounds radius 2[3]|Illusions radius 3[4]|Terrain Radius 2[3]|Clouds Radius 3[4]|
+| Air-Earth | Haymaker Interaction 2[3] turns|Creates Stacking Fire Dot does damage equal to turns remaining 2 turns at a time|Target Move Speed Reduced by 1| Target Status Effects Lose a Turn| Bonus Damage Equal to spaces moved towards Target|
+| Air-Water | Bookmark Interaction | Burn 1 [2] bookmark |Cannot use bookmarks 1[2] turns | Summon [2] Bookmarks | All Current Spell pages lost and equal number of new ones found [caster may choose to flutter second time]|
 
 **Design guidance for filling this out:**
 - Effects should be thematically consistent with their elemental composition
@@ -235,12 +233,12 @@ The proof is stored in the spellbook alongside the spell.
 ### Commitment Scheme
 
 ```
-commitment = Poseidon2(grid_state || T)
+commitment = Poseidon2(grid_state)
 ```
 
-No salt. The grid pattern itself is the source of variance. Same grid + same T = same commitment = same spell. Different grid OR different T = different commitment = different spell.
+The grid pattern itself is the source of variance. Same grid = same spell root, though running for additional time may add numerous more effects and change mana cost. Different grid = different commitment = different spell.
 
-This means re-inscribing the same rune produces the same commitment (so counter-spells continue to apply). Players who want a different commitment must genuinely change the grid pattern, which has real mana cost.
+This means re-inscribing the same rune produces the same commitment (so counter-spells continue to apply). Players who want a different commitment must genuinely change the grid pattern, which has real mana cost as well as altering wild magic properties.
 
 ### Public Inputs (Circuit Outputs)
 
@@ -262,7 +260,7 @@ After proof verification, both players compute deterministically:
 seed = SHA256(commitment || border_activations || trajectory || community_seed)
 ```
 
-This hash is parsed for wild magic patterns (see Wild Magic below). The spell's commitment serves as its unique cryptographic identity for the counter-spell system and bestiary.
+This hash is parsed for wild magic patterns (see Wild Magic below).
 
 ### Community Seed Word
 
@@ -279,45 +277,33 @@ An optional word factored into the wild magic hash, creating local magical tradi
 
 ---
 
-## Mana System
+## Loadout System
 
-### Mana Pool
+### Spellbook
+Players may put any number of spells they've successfully inscribed into a spellbook to be used for a battle. All spells must have a unique initial grid state. Spellbooks are flavored as chaotic semi-sapient objects.  Any spell not currently opened and under the wizard's watchful gaze will often migrate and hide between other pages.
 
-- 1000 point pool (placeholder, subject to playtesting)
-- Base regeneration: 100 per turn
-- Water-affinity spells can increase regeneration rate
+Each chosen spell may then be enhanced in one of four ways:
+Efficency - Mana cost of spell reduced by a third.
+Potency - Spell effect switch use their bracketed effects in the table.
+Velocity - Spell range increased by 2
+Mystery - Spell may be precommitted to go off on a chosen tile with a delay between one and three turns. The spell, the location, and the delay are all secret until the spell resolves.
+
+### Accoutrements
+
+Players will be able to select 12 accoutrements of 4 types.
+
+Mana Gems - The first one of these selected is considered the core gem and is indestructible. Each gem provides 10 mana per turn and increases maximum mana pool by 100.
+Counter Charms - A known spell from the library (identified by its poseidon hash representing it's initial grid state) if that spell is cast during the battle it fizzles, the action is wasted but the mana is returned.  The spells charms countered is not publically revealed till they activate.
+Bookmarks - Each magical bookmark identifies a spell and tracks it within the spellbook no matter how it tries to hide. Once used it will automatically find a new random spell to track in the spellbook. Players may toggle between any book marked spell for casting.  Effectively works as increasing hand size in a card game.
+Absorption Rod - If a spell would interact with an accoutrement, the absorption rod neutralizes the effect instead (creating new accoutrements is not the same as interacting with existing ones) each rod has 2 charges of absorption before being rendered useless.
 
 ### Spell Mana Cost
-
-**TODO: finalize the mana cost formula. Current candidates from design discussion:**
-
-**Option A (original, exponential):**
-```
 mana_cost = (active_cells * 2) + (unique_elements * 10) + (generations^1.3)
-```
-
-**Option B (activation-based, simple):**
-```
-mana_cost = total_activations_across_simulation
-```
-
-**Option C (hybrid, recommended):**
-```
-mana_cost = total_activations + (generations^1.15)
-```
 
 The softer exponent (1.15 vs 1.3) provides headroom for longer simulations as a premium experience. Total activations naturally scales with both grid complexity and simulation length.
 
 The mana cost curve has been deliberately calibrated to allow long simulations as expensive options for skilled players, supporting the game's intended long-tail community engagement.
 
-### Predictability
-
-**TODO: design the UX for mana cost preview.** Since the cost depends on activation counts that aren't known until simulation runs, players need either:
-- A test-run feature showing predicted cost before commitment
-- A confidence interval based on partial simulation
-- A heuristic estimator displayed during inscription
-
----
 
 ## Wild Magic System
 
@@ -394,25 +380,13 @@ Chain decay at 2x rate instead of hard reset. **TODO: specify exact decay mechan
 
 ---
 
-## Hand Mechanic
-
-Similar to Magic: The Gathering — players only choose from a subset of their spellbook each turn.
-
-- Players have a "hand" of spells drawn from their spellbook
-- Flavored as having one section of their spellbook open
-- Limits decision time per turn
-- Creates design space for hand interaction spells (draw, discard, burn, scramble)
-
-**TODO: specify hand size and refresh rules. Starting point suggestion: hand size 5, refresh 1 per turn.**
-
----
 
 ## Battlefield
 
 ### Grid
 
 - Hexagonal battlefield grid, vertex-down orientation
-- Default radius: 3 (37 tiles) — adjustable by player preference
+- Default radius: 4 (37 tiles) — adjustable by player preference
 - Consistent visual language with the rune grid
 
 ### Movement
