@@ -13,7 +13,7 @@ A mobile game simulating the experience of being a D&D-style wizard in real life
 - **No central authority** — fully peer-to-peer, zero ongoing server overhead for the developer
 - **Cryptographic integrity** — cheating on spell output is mathematically hard, not just socially discouraged
 - **Mystique as a structural feature** — the decentralized design creates speculation, rumor, and community lore organically
-- **Face-to-face experience** — duels happen in person between two phones via local wireless; the design is optimized for in-person play, including psycholgical games and misdirection in combat and out of combat a level of tradecraftesque tactics like including shoulder-surfing and deceitful trade bargins like "Diplomacy" as a real meta-game element for discovering magical secrets.  But an ethos respecting peoples personal privacy and comfort levels.
+- **Face-to-face experience** — duels happen in person between two or more phones via local wireless; the design is optimized for in-person play, including psycholgical games and misdirection in combat and out of combat a level of tradecraftesque tactics including shoulder-surfing and deceitful trade bargins like the game "Diplomacy" as a real meta-game element for discovering magical secrets.  But also an ethos for respecting peoples personal privacy and comfort levels.
 - **Free, ad-free, no microtransactions** — donation-only model, no data harvesting
 - **Word-of-mouth distribution** — designed to feel like a discovery shared between people with similar taste
 
@@ -168,7 +168,7 @@ A spell can contain multiple formulas, each contributing its own effect to the s
 
 Trajectory entries that don't complete a formula become residuals. Residuals provide minor stat buffs that both stack accumulate on a log 3 growth scale (effects added to pool on 1, 3, 9, ...:
 
-- **Fire residuals:** 1 bonus damage on next damage spell
+- **Fire residuals:** 1 damage on next damage spell
 - **Water residuals:** 2 times mana regeneration for a turn
 - **Earth residuals:** 1 armor (temporary hp)
 - **Air residuals:** +1 range and movement speed for a turn
@@ -211,6 +211,7 @@ Potency Effects in brackets
 
 **Design guidance for filling this out:**
 - Effects should be thematically consistent with their elemental composition
+- Fire tends towards dealing damage and increasing power, earth towards protection and slowing, water towards efficency and reflection, air towards speed and flexibility
 - Power level should scale with formula achievability (repetitive formulas more powerful than mixed)
 - Flavor variations should feel meaningfully different across the four affinities while remaining the "same effect type"
 - Some effects should be defensive/utility, some offensive, some manipulative (of opponent's spellbook, mana, etc.)
@@ -280,30 +281,27 @@ An optional word factored into the wild magic hash, creating local magical tradi
 ## Loadout System
 
 ### Spellbook
-Players may put any number of spells they've successfully inscribed into a spellbook to be used for a battle. All spells must have a unique initial grid state. Spellbooks are flavored as chaotic semi-sapient objects.  Any spell not currently opened and under the wizard's watchful gaze will often migrate and hide between other pages.
+Players may put any number of spells they've successfully inscribed into a spellbook to be used for a battle. All spells must have a unique initial grid state. Spellbooks are flavored as morphic chaotic semi-sapient objects. Spells cannot be stored on every page as their magical energies interfere with each other, so bages with glyphs for buffering are needed.  As a result any spell not currently opened and under the wizard's watchful gaze will often migrate and hide between the buffer pages.
 
-Each chosen spell may then be enhanced in one of four ways:
-Efficency - Mana cost of spell reduced by a third.
-Potency - Spell effect switch use their bracketed effects in the table.
-Velocity - Spell range increased by 2
-Mystery - Spell may be precommitted to go off on a chosen tile with a delay between one and three turns. The spell, the location, and the delay are all secret until the spell resolves.
+Each chosen spell may then be enhanced in one of four ways each associated with an element:
+Water- Efficency - Mana cost of spell reduced by a third.
+Fire- Potency - Spell effect switch use their bracketed effects in the table.
+Air - Velocity - Spell range increased by 2
+Earth - Mystery - Spell may be precommitted to go off on a chosen tile with a delay between one and three turns. The spell, the location, and the delay are all secret until the spell resolves.
 
 ### Accoutrements
 
-Players will be able to select 12 accoutrements of 4 types.
+Players will be able to select 12 accoutrements of 4 types, each associated with an element.
 
-Mana Gems - The first one of these selected is considered the core gem and is indestructible. Each gem provides 10 mana per turn and increases maximum mana pool by 100.
-Counter Charms - A known spell from the library (identified by its poseidon hash representing it's initial grid state) if that spell is cast during the battle it fizzles, the action is wasted but the mana is returned.  The spells charms countered is not publically revealed till they activate.
-Bookmarks - Each magical bookmark identifies a spell and tracks it within the spellbook no matter how it tries to hide. Once used it will automatically find a new random spell to track in the spellbook. Players may toggle between any book marked spell for casting.  Effectively works as increasing hand size in a card game.
-Absorption Rod - If a spell would interact with an accoutrement, the absorption rod neutralizes the effect instead (creating new accoutrements is not the same as interacting with existing ones) each rod has 2 charges of absorption before being rendered useless.
+Water - Mana Gems - The first one of these selected is considered the core gem and is indestructible. Each gem provides 10 mana per turn and increases maximum mana pool by 100.
+Fire - Counter Charms - A known spell from the library (identified by its poseidon hash representing it's initial grid state) if that spell is cast during the battle it fizzles, the action is wasted but the mana is returned.  The spells charms countered is not publically revealed till they activate.
+Air - Bookmarks - Each magical bookmark identifies a spell and tracks it within the spellbook no matter how it tries to hide. Once used it will automatically find a new random spell to track in the spellbook. Players may toggle between any book marked spell for casting.  Effectively works as increasing hand size in a card game.
+Earth - Absorption Rod - If a spell would interact with an accoutrement, the absorption rod neutralizes the effect instead (creating new accoutrements is not the same as interacting with existing ones) each rod has 2 charges of absorption before being rendered useless.
 
 ### Spell Mana Cost
 mana_cost = Starting Active Cells * 1.25^number of steps
 
-The softer exponent (1.15 vs 1.3) provides headroom for longer simulations as a premium experience. Total activations naturally scales with both grid complexity and simulation length.
-
-The mana cost curve has been deliberately calibrated to allow long simulations as expensive options for skilled players, supporting the game's intended long-tail community engagement.
-
+Cost requires playtesting to determine balance between viability of cheap efficient spells, big multi-effect spells, and to reward clever CA engineering long simulations.
 
 ## Wild Magic System
 
@@ -313,7 +311,6 @@ A parallel-to-recipes effect system based on hash pattern scanning.
 
 Determined by the spell's overall dominant element (cumulative across all formulas):
 - Single-affinity spells: scan hash for patterns matching that element
-- Hybrid-affinity spells: scan for patterns matching any of the spell's component affinities
 - Perfectly balanced spells (multiple elements equally dominant): eligible for all balanced elements' patterns simultaneously — this is the "wild magic specialist" archetype
 
 ### Trigger Patterns
@@ -325,8 +322,10 @@ The spell hash hex string is scanned for two pattern types per element:
 
 If a spell is inscribed with no formulas, and thus no elemental affinity, are eligible for powerful void effects 
 ### Wild Magic Effects
+This list is intentionally short while playtesting core spell effects.
 The sequence continuing past the minimum 3 causes effects to scale as listed in brackets
 |Triggering Sequence | Void Effect | Fire Flavor | Earth Flavor | Water Flavor | Air Flavor | Chaos Flavor| 
+|---|---|---|---|---|---|---|
 |000||All adjacent non player cell effects instantly vanish [+1 radius]|All spell effects of all spells next turn also deal 1 additional fire damage [+1 damage for each effect]|All adjacent cells become earth walls for 2 turns [+1 turn]|All Mana Bars Immediately Fill| All players and minions teleported to random locations|
 
 - Operate independently from recipe effects (both can fire from the same spell)
@@ -334,7 +333,7 @@ The sequence continuing past the minimum 3 causes effects to scale as listed in 
 - Are influenced by the community seed word, producing different effects in different communities
 - Should feel emergent and surprising rather than carefully designed
 
-The wild magic specialist build (perfectly balanced elements, maximum trigger eligibility) requires high CA mastery and offers a third archetype alongside recipe-optimizers and CA-engineers.
+The wild magic specialist build (perfectly balanced elements, maximum trigger eligibility) requires high CA mastery and offers a alternate archetype alongside elemental specialists and multielement versatility spectrum.
 
 ---
 
@@ -347,8 +346,9 @@ Each pure element tracks an independent chain counter. Casting sequential spells
 
 - **Pure-affinity spell aligned with active chain:** chain advances by 1, discount applies fully
 - **Hybrid-affinity spell partially aligned:** chain advances by alignment percentage (fractional credits accumulate toward next integer advancement)
-- **Pure-affinity spell of different element:** in wizard mode, hard reset; in sorcerer mode, decay
-- **Hybrid spell with zero alignment to active chain:** wizard mode hard reset; sorcerer mode partial decay
+- **Pure-affinity spell of different element:** Resets Chain
+- **Hybrid spell with zero alignment to active chain:** Resets Chain
+- **No spell, or no alignment spell cast ** Chain regresses by 2
 
 ### Discount Formula
 
@@ -372,10 +372,11 @@ This rewards specialization while still allowing hybrid mages to benefit partial
 | 5 | 41% | 20% |
 | 10 | 65% | 33% |
 
-### Chain Diminishment
-Elemental Chain bonus count diminishes by 2 for any turn in which associated element not cast.
----
 
+---
+## Haymakers
+
+-Players may perform an awkward and inefficient punch targeting an adjacent hex for 1 damage at a cost of no mana. A series of spell effects can empower a haymaker with bonuses.
 
 ## Battlefield
 
@@ -421,24 +422,12 @@ Optional feature may eventually be added to allow maps with tile modifing terrai
    
 ## Battle Modes
 
-There will be a variety of effects
-### Wizard Mode Options
+There will be a four togglable effects to make casting more or less like traditional fantasy spell casting.  Chosing these options will make the battle more about speed and acuity and than strategic thinking, but can be toggled invidividually for a customizable experience
 
-- Turn-based
-- Deliberate, strategic
-- Hard chain reset on off-element casting
-- Players move and cast once per turn
-
-### Sorcerer Mode
-
-- Real-time
-- Frantic spell queuing under time pressure
-- Chain decay at 2x rate instead of hard reset
-- Physical engagement (gestures, vocalizations) encouraged but not required
-- Same underlying spell and battlefield mechanics
-
-*Wizard mode is being designed first; sorcerer mode adapts from it.*
-
+| Option | Wizard | Sorceror|
+|---|---|---|
+| Game Speed | Turn based | Spells and movement can be performed freely, status effects, minions, and mana regeneration will activate/tick down every 15 seconds (needs playtesting)|
+|Verbal Components|Waived, spells automatically cast|Latin names of all elements in spell must be said aloud and picked up by phone microphone, a mana cost discount / penalty will be awarded depending on accuracy.
 ---
 
 ## ELO & Match Records
