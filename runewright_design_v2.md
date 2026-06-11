@@ -289,6 +289,7 @@ Fire- Potency - Spell effect switch use their bracketed effects in the table.
 Air - Velocity - Spell range increased by 2
 Earth - Mystery - Spell may be precommitted to go off on a chosen tile with a delay between one and three turns. The spell, the location, and the delay are all secret until the spell resolves.
 
+Players may choose to add a spell name and image associated with a spell that will appear when used in battle.
 ### Accoutrements
 
 Players will be able to select 12 accoutrements of 4 types, each associated with an element.
@@ -427,7 +428,9 @@ There will be a four togglable effects to make casting more or less like traditi
 | Option | Wizard | Sorceror|
 |---|---|---|
 | Game Speed | Turn based | Spells and movement can be performed freely, status effects, minions, and mana regeneration will activate/tick down every 15 seconds (needs playtesting)|
-|Verbal Components|Waived, spells automatically cast|Latin names of all elements in spell must be said aloud and picked up by phone microphone, a mana cost discount / penalty will be awarded depending on accuracy.
+|Verbal Components|Waived, spells automatically cast|Latin names of all elements in spell must be said aloud and picked up by phone microphone, a mana cost discount / penalty will be awarded depending on accuracy.|
+|Somatic Components|Waived, spells targeted by choosing a Hex|Two Gestures measured using phone's accelerometer, one to determine spell distance, one to determine spell direction. Possible use of haptic feedback to ease player experience|
+|Movement| Movement done by selecting tiles on battle grid to move into | Movement tracked via movement in location services. Will likely require battle to occur in large field.|
 ---
 
 ## ELO & Match Records
@@ -449,47 +452,33 @@ Trusted community members can run lightweight nodes recording signed match outco
 Standard ELO modified to account for spell novelty:
 
 ```
-novelty_stack = Σ e^(triggered_digits / mana_cost) for each novel spell encountered this match
+novelty_stack = Σ e^(activated_elements / mana_cost) for each novel spell encountered this match
 K = base_K × (floor_bonus + novelty_stack)
 rating_change = K × (actual_score - expected_score)
 ```
 
 Key definitions:
-- **triggered_digits:** hex characters in spell_string participating in triggering patterns (novel spells only)
+- **activated_elements:** number of elements activated by CA, i.e. components used for spell formulas or residuals (novel spells only)
 - **novel spell:** commitment hash not previously in this player's bestiary
 - **novelty_stack:** accumulates additively per novel spell
 - **floor_bonus:** small constant ensuring zero-novelty matches still contribute
 
-Wizard and Sorcerer ratings tracked separately (different skills).
-
+Ratings tracked differently in all 16 different version of wizard sorceror toggles
 ---
 
 ## Spellbook Bestiary
 
 After every duel, opponent's spells used against you are added to your spellbook bestiary:
 
-- Spell commitment hash (unique fingerprint)
-- Effects triggered
-- Harmonic/wild magic count
+- Spell initial grid hash (unique fingerprint)
+- Sub versions of the spell encountered with different numbers of steps
+- Effects triggered for spell at each encountered step count
+- Wild magic effects
+- Name and image associated with spell when first encountered (able to be overwritten)
 - Opponent identity (or "Unknown Wizard")
-- **Not included:** rune pattern, grid state, replication instructions
+- **Not included:** any information about grid state or replication instructions
 
 Bestiary entries become "white whales" — spells you know exist and can counter, but cannot recreate without independent research.
-
----
-
-## Counter Spell System
-
-Before each duel, players load counter spell slots from their bestiary.
-
-- Counter spells target specific commitment hashes
-- Counter slots persist across duels (not consumable)
-- Number of counter slots: **TODO: specify, subject to playtesting**
-- Counter effect: **TODO: specify (hard fizzle, mana tax, harmonic reduction, or reflection)**
-- When a counter activates, it is revealed to both players
-- Revelation leaks intelligence: opponent knows you've faced that spell before
-
-The system creates a "widely-known spells become widely-countered" dynamic that naturally rebalances community metas.
 
 ---
 
@@ -518,8 +507,7 @@ The system creates a "widely-known spells become widely-countered" dynamic that 
 - Battlefield system
 - Spellbook UI
 - Networking (local play)
-- Effect table (recipes and wild magic)
-- Counter spell mechanics
+- Verbal / Somatic measurement systems
 - Match record signing
 
 ---
@@ -532,21 +520,7 @@ Compiled from the design pivots; items need resolution before or during Phase 2:
 - Supreme dominance flag emission from circuit
 - Border zone corner cell assignment (symmetric across rotations)
 
-**Needs design completion:**
-- Full 64-entry effect table (16 effect types × 4 elemental flavors)
-- Wild magic effect table per element
-- Wild magic trigger numerals per element (updated for 4-element schema)
-- Mana cost formula final choice and tuning
-- Mana cost preview UX
-- Hand size and refresh mechanics
-- Counter spell effect type and slot count
-- Sorcerer mode chain decay mechanics
-- Residual diminishing returns curve specifics
-- Flooded tiles terrain proposal: keep or discard
-
 **Needs implementation verification:**
-- Cell count: design says 463, implementation has 469 — reconcile
-- Element-specific CA rules: verify exact specifications match design intent
 - Trajectory output format: confirm circuit emits what external code expects
 
 **Needs playtesting:**
@@ -554,11 +528,11 @@ Compiled from the design pivots; items need resolution before or during Phase 2:
 - Whether supreme dominance threshold (strictly more than sum of others) is right
 - Whether 18 cells per border zone is the right count for balanced play
 - Whether T=20 is the right "typical" simulation length
-- Whether the effect table power levels are balanced across formula tiers
+- Whether the effect table power levels are balanced across formula tiers, but there is flavor and popular tradition for seemingly minor effects being used in creative and useful ways in source material.
 
 **Future considerations (post-Phase 2):**
 - Onboarding flow for solo players (AI opponent? tutorial?)
-- Documentation/wiki structure
+- Documentation/wiki structure (Potentially discouraged, perhaps player apprentice / mentor flag system?)
 - Community discovery mechanisms (find-players-nearby?)
 - Tournament format documentation
 - Spectator mode for in-person events
@@ -575,6 +549,6 @@ These don't belong in mechanical specifications but inform downstream decisions:
 
 **Difficulty matches intuition where possible.** Triple-element formulas (fire-fire-fire) should feel achievable in proportion to how achievable they sound. Supreme dominance was added specifically to align mechanic difficulty with player expectations.
 
-**Circuit budget as design lever.** Phase 1.5 revealed substantial circuit headroom. This headroom is being reserved for longer simulations rather than additional mechanics, supporting the long-tail community vision where mastery deepens over years.
+**Circuit budget as design lever.** Phase 1.5 revealed substantial circuit headroom. This headroom is being reserved for longer simulations or potentially larger spell grid, rather than additional mechanics, supporting the long-tail community vision where mastery deepens over years.
 
 **In-person play as first-class concern.** Shoulder-surfing, physical gesture, vocalization, and venue play are not afterthoughts. The cryptographic design supports them; the UX should reinforce them.
