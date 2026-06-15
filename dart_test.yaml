@@ -1,0 +1,3 @@
+tags:
+  phase15_divergence:
+    description: "Known Phase 1.5 circuit mismatches vs ca_rules.dart; resolved in M3 circuit rewrite"
