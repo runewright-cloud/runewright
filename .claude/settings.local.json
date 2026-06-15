@@ -87,7 +87,13 @@
       "Read(//snap/**)",
       "Bash(cat /snap/bin/flutter 2>&1 | head -5; file /snap/bin/flutter)",
       "Read(//usr/bin/**)",
-      "Bash(/snap/bin/dart analyze *)"
+      "Bash(/snap/bin/dart analyze *)",
+      "Bash(mkdir -p /home/soren/runewright/test_vectors /home/soren/runewright/ffi /home/soren/runewright/.github/workflows)",
+      "Bash(touch /home/soren/runewright/test_vectors/.gitkeep /home/soren/runewright/ffi/.gitkeep)",
+      "Bash(chmod +x /home/soren/runewright/bootstrap.sh)",
+      "Bash(chmod +x /home/soren/runewright/scripts/run_vectors.sh)",
+      "Bash(git stash *)",
+      "Bash(python3 /home/soren/runewright/scripts/gen_grid_constants.py)"
     ],
     "additionalDirectories": [
       "/tmp"

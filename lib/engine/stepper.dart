@@ -17,12 +17,14 @@ class CAStep {
           // Alive border cells always die the following step.
           next.cells[coord] = Element.dead;
         } else {
-          // Dead border cells can be born via normal rules; if born, count it.
+          // Dead border cells: count the activation but stay dead.
+          // They must never become alive so they don't sit occupied across
+          // a step or count as neighbours for ring-11 cells — either effect
+          // would suppress future activations on the same border cell.
           final aliveNeighbors = grid.neighbors(coord)
               .where((p) => p.$2 == Element.alive)
               .length;
           if (rules.bornOn.contains(aliveNeighbors)) {
-            next.cells[coord] = Element.alive;
             final zone = BorderZones.forRadius(grid.radius)[coord];
             if (zone != null) {
               next.zoneActivations[zone] =

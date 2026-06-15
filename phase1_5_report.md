@@ -64,9 +64,14 @@ are used for all measurements. Proof generated with Barretenberg UltraHonk (defa
 4. Pressure reset on neutral: brief said pressures zero out; Dart does not reset. Circuit
    carries pressures, they drain naturally via decay.
 
-**Poseidon2 note:** The commitment uses the BN254 Poseidon2 permutation (state size 4) from
-the Noir stdlib, implemented as a duplex sponge with rate 3 and capacity 1. The Dart side will
-need to implement the same sponge sequence to verify commitments (see GRID_ORDERING_v2.md).
+**Poseidon2 note (Phase 1.5 — SUPERSEDED):** The Phase 1.5 circuit used a duplex sponge
+over all 469 cells plus T. This approach has been superseded by the v2.4 design: the commitment
+is `Poseidon2(packed[0], packed[1])` over a 2-field packed grid (see CIRCUIT_IO.md §3–4).
+**The Dart side must NOT implement Poseidon2.** Commitments are opaque public-input values
+read from the prover's output — Dart compares commitment bytes but never recomputes them.
+Reimplementing Poseidon2 in Dart would violate CLAUDE.md hard invariant #1 and #2.
+The "Dart side will need to implement the same sponge sequence" note below (§6) is similarly
+superseded; disregard both.
 
 ---
 
@@ -190,3 +195,5 @@ Concretely:
 - **Phase 2 entry point:** Dart FFI to the lookup circuit with the canonical grid ordering
   documented in `circuits/GRID_ORDERING_v2.md`. The Poseidon2 sponge construction must be
   matched exactly on the Dart side for commitment verification.
+  **[SUPERSEDED — see CLAUDE.md §Hard invariants #1/#2 and CIRCUIT_IO.md §4: the Dart side
+  never implements Poseidon2. Commitments are opaque public inputs from the prover.]**

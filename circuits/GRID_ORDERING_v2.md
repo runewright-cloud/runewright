@@ -36,24 +36,25 @@ Last cell: `(q=12, r=0)` at index 468.
 
 ## Border zone assignment
 
-The 72 border cells are partitioned into elemental zones by enumerating ring-12 cells clockwise
-starting from `(0, -12)`, rotating one cell clockwise (i.e. starting from the second cell in
-clockwise order), then assigning zones in the following segments:
+The 72 border cells are partitioned by enumerating ring-12 cells **counter-clockwise** starting
+from `(0, 12)` (the bottom vertex, index 36 in the clockwise ring), assigning four uniform
+18-cell segments:
 
-| Segment | Zone | Cells |
-|---|---|---|
-| 1 | Fire | 9 |
-| 2 | Air | 9 |
-| 3 | Water | 9 |
-| 4 | Earth | 18 |
-| 5 | Water | 9 |
-| 6 | Air | 9 |
-| 7 | Fire | 9 |
+| Segment | Zone | Cells | First cell | Last cell |
+|---|---|---|---|---|
+| 1 | Water | 18 | (0, 12) | (12, -5) |
+| 2 | Air | 18 | (12, -6) | (1, -12) |
+| 3 | Fire | 18 | (0, -12) | (-12, 5) |
+| 4 | Earth | 18 | (-12, 6) | (-1, 12) |
 
-Total: 72 cells.  Fire = 18, Air = 18, Water = 18, Earth = 18.
+Algorithm: `ring[(3*RADIUS - i + n) % n]` for i = 0..71, grouped into the four 18-cell segments.
+This matches `BorderZones._compute` in `lib/engine/border_zones.dart`.
 
-The starting corner is the cell at `(1, -12)` (one step clockwise from the topmost cell `(0, -12)`),
-and proceeds clockwise around the ring. This matches `BorderZones._compute` in the Dart source.
+Spatial interpretation: Water = right side and lower-right; Air = upper-right and top edge;
+Fire = top vertex, left side; Earth = lower-left and bottom edge.
+
+Note: an earlier draft used 7 segments of 9-9-9-18-9-9-9 clockwise from ring[1].
+That was a pre-playtest design; the 4×18 CCW layout is the ratified design (confirmed 2026-06-14).
 
 ## Rule indices
 

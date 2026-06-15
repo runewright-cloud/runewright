@@ -43,3 +43,12 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Noir circuit build artifacts — keep VK + ACIR bytecode, ignore bulk proving artifacts
+circuits/*/target/proof/
+circuits/*/target/*.gz
+# Keep: circuits/*/target/*.json  (ACIR bytecode)
+# Keep: circuits/*/target/vk/     (verification key — M2 FFI links against it)
+
+# Rust FFI bridge build output
+/ffi/target/
