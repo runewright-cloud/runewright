@@ -1,0 +1,143 @@
+{
+  "_format": "Runewright seed file — read by scripts/gen_vectors.dart to produce corpus.json. All cell indices are in canonical q×r flat order (see docs/GRID_ORDERING_v2.md). active_cells values must be inscribable (hex distance ≤ 8 from center, i.e. max(|q|,|r|,|q+r|) ≤ 8); valid indices range from 62 to 406 but are NOT contiguous. Center (0,0) = index 234. Element indices: 0=neutral, 1=fire, 2=air, 3=water, 4=earth. border_activations order: [fire=0, air=1, water=2, earth=3].",
+
+  "vectors": [
+
+    {
+      "id": "anchor_empty",
+      "kind": "positive",
+      "description": "all-zero grid: stays empty forever, no outputs (smoke test for stepper wiring)",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [],
+        "T": 6,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "expected": {
+        "commitment": "IMPL",
+        "border_activations": [0, 0, 0, 0],
+        "dominance_trajectory":    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "supreme_dominance_flags": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "verifies": true
+      }
+    },
+
+    {
+      "id": "anchor_single_center",
+      "kind": "positive",
+      "description": "lone center cell at index 234 (q=0,r=0) dies gen 1 (0 alive neighbours under neutral rule); no further activity",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [234],
+        "T": 6,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "expected": {
+        "commitment": "IMPL",
+        "border_activations": [0, 0, 0, 0],
+        "dominance_trajectory":    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "supreme_dominance_flags": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "verifies": true
+      }
+    },
+
+    {
+      "id": "early_activation_top",
+      "kind": "positive",
+      "description": "6-cell cluster in rings 6–8 near the top border; exercises border activation and the first decay steps within T=8. Cells: (0,-8)=226, (0,-7)=227, (0,-6)=228, (-1,-7)=202, (-1,-6)=203, (1,-8)=251. Outputs filled by stepper. This is M1 gate item 4.",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [226, 227, 228, 202, 203, 251],
+        "T": 8,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "expected": { "commitment": "IMPL", "fill_from_stepper": true, "verifies": true }
+    },
+
+    {
+      "id": "neg_nonboolean_cell",
+      "kind": "negative",
+      "description": "cell (0,-6)=228 forced to 2; must be rejected by §10.1 (cells constrained to {0,1})",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [],
+        "T": 6,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "raw_overrides": { "228": 2 },
+      "violates_constraint": "§10.1 cells in {0,1}",
+      "expected": { "verifies": false }
+    },
+
+    {
+      "id": "neg_seeded_buffer",
+      "kind": "negative",
+      "description": "buffer cell (0,9)=243 (ring 9, distance 9) forced active at T=0; must be rejected by §10.2",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [],
+        "T": 6,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "raw_overrides": { "243": 1 },
+      "violates_constraint": "§10.2 buffer/border cells must be 0 at T=0",
+      "expected": { "verifies": false }
+    },
+
+    {
+      "id": "neg_forged_trajectory",
+      "kind": "negative",
+      "description": "valid grid, declared dominance_trajectory all-fire (all 1s) does not match true neutral evolution; must be rejected by §10.5",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [226, 227, 228, 202, 203, 251],
+        "T": 8,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "declared_override": {
+        "dominance_trajectory": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+      },
+      "violates_constraint": "§10.5 trajectory equals true evolution",
+      "expected": { "verifies": false }
+    },
+
+    {
+      "id": "neg_out_of_range_T_zero",
+      "kind": "negative",
+      "description": "T=0 is out of range [1, tier_max]; must be rejected by §10.7",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [234],
+        "T": 0,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "violates_constraint": "§10.7 / §11.7 range 1..tier_max",
+      "expected": { "verifies": false }
+    },
+
+    {
+      "id": "neg_mask_abuse",
+      "kind": "negative",
+      "description": "PRIORITY: grid with border activations only after T; declared border_activations includes post-T activity. Tests §10.6 masking. Cells and T TBD — need a stepper run to find a quiet-before-T/active-after-T pattern.",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [],
+        "T": 3,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1,
+        "_todo": "replace active_cells with a pattern that is quiet during gen 0..2 but activates border zone at gen 3+; use T=3 so the activation is masked."
+      },
+      "declared_override": { "border_activations": [1, 0, 0, 0] },
+      "violates_constraint": "§10.6 activations masked to generations < T",
+      "expected": { "verifies": false }
+    }
+
+  ]
+}

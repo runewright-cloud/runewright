@@ -1,0 +1,161 @@
+{
+  "_comment": "Hand-authored SEED form. The generator (scripts/gen_vectors.dart) turns this into the frozen test_vectors/corpus.json: it fills commitment via the Noir side, and fills CA outputs from stepper.dart for entries marked fill_from_stepper. Anchors carry hand-derived CA outputs so they are checked even before generation. owner_pubkey_hex below is a fixed throwaway TEST key, not a real identity. Arrays are length tier_max (12 here). IMPORTANT: active_cells values must be in the INSCRIBABLE region (hex distance ≤ 8 from center, i.e. max(|q|,|r|,|q+r|) ≤ 8). With q×r flat ordering, valid inscribable indices range from 62 to 406 but are NOT contiguous — do NOT use the old 'index ≤ 216' heuristic (that was wrong, based on ring-major ordering). Center (0,0) = index 234. Element order: 0=neutral,1=fire,2=air,3=water,4=earth. border_activations: [fire=0, air=1, water=2, earth=3].",
+
+  "vectors": [
+    {
+      "id": "anchor_empty",
+      "kind": "positive",
+      "description": "empty grid stays empty forever; no births possible",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [],
+        "T": 6,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "expected": {
+        "commitment": "IMPL",
+        "border_activations": [0, 0, 0, 0],
+        "dominance_trajectory": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "supreme_dominance_flags": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "verifies": true
+      }
+    },
+    {
+      "id": "anchor_single_center",
+      "kind": "positive",
+      "description": "lone center cell dies gen 1 (0 active neighbours); nothing born; empty thereafter",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [234],
+        "T": 6,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "expected": {
+        "commitment": "IMPL",
+        "border_activations": [0, 0, 0, 0],
+        "dominance_trajectory": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "supreme_dominance_flags": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "verifies": true
+      }
+    },
+    {
+      "id": "early_activation_top",
+      "kind": "positive",
+      "description": "M1 gate item 4: 6-cell cluster in rings 6–8 near the top border; exercises border activation and first decay steps within T=8. Cells: (0,-8)=226, (0,-7)=227, (0,-6)=228, (-1,-7)=202, (-1,-6)=203, (1,-8)=251.",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [226, 227, 228, 202, 203, 251],
+        "T": 8,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "expected": { "commitment": "IMPL", "fill_from_stepper": true, "verifies": true }
+    },
+    {
+      "id": "bulk_fire_dominant",
+      "kind": "positive",
+      "description": "curated: a pattern near the top-left that drives FIRE zone activation. Cells in rings 7–8 near left border (fire zone in Dart's BorderZones). Inputs hand-picked, outputs generated. NOTE: update cell selection after border zone algorithm discrepancy is resolved (see CIRCUIT_IO.md §13 blocker).",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [179, 202, 203, 227, 228],
+        "T": 12,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "expected": { "commitment": "IMPL", "fill_from_stepper": true, "verifies": true }
+    },
+    {
+      "id": "bulk_low_seed_bloomer",
+      "kind": "positive",
+      "description": "curated: tiny 3-cell center-adjacent seed that blooms; tier-gated/low-mana archetype. Cells: (0,-1)=233, (0,0)=234, (1,-1)=258.",
+      "tier_max": 24,
+      "input": {
+        "active_cells": [233, 234, 258],
+        "T": 24,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "expected": { "commitment": "IMPL", "fill_from_stepper": true, "verifies": true }
+    },
+
+    {
+      "id": "neg_nonboolean_cell",
+      "kind": "negative",
+      "description": "a cell set to 2 must be rejected (boolean constraint on all 469 cells)",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [],
+        "T": 6,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "raw_overrides": { "228": 2 },
+      "violates_constraint": "§10.1 cells in {0,1}",
+      "expected": { "verifies": false }
+    },
+    {
+      "id": "neg_seeded_buffer",
+      "kind": "negative",
+      "description": "buffer cell (0,9)=243 (ring 9) forced active at T=0; must be rejected by §10.2. Note: the old 'index >= 217' comment was based on the wrong ring-major ordering — buffer cells are NOT at indices 217+; use hex distance instead.",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [],
+        "T": 6,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "raw_overrides": { "243": 1 },
+      "violates_constraint": "§10.2 buffer/border cells must be 0 at T=0",
+      "expected": { "verifies": false }
+    },
+    {
+      "id": "neg_forged_trajectory",
+      "kind": "negative",
+      "description": "valid grid, but declared trajectory is a lie that does not match true evolution",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [179, 202, 203, 227, 228],
+        "T": 12,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "declared_override": {
+        "dominance_trajectory": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+      },
+      "violates_constraint": "§10.5 trajectory equals true evolution",
+      "expected": { "verifies": false }
+    },
+    {
+      "id": "neg_out_of_range_T_zero",
+      "kind": "negative",
+      "description": "T = 0 is out of range",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [234],
+        "T": 0,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "violates_constraint": "§10.7 / §11.7 range 1..tier_max",
+      "expected": { "verifies": false }
+    },
+    {
+      "id": "neg_mask_abuse",
+      "kind": "negative",
+      "description": "PRIORITY: grid quiet before T but active after; declared border_activations wrongly includes post-T activity. Generate with stepper help to find the quiet-then-active grid; this is the spell-leak shape.",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [],
+        "T": 6,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1,
+        "_todo": "replace active_cells with a stepper-found quiet-before-6 / active-after-6 pattern"
+      },
+      "declared_override": { "border_activations": [3, 0, 0, 0] },
+      "violates_constraint": "§10.6 activations masked to generations < T",
+      "expected": { "verifies": false }
+    }
+  ]
+}

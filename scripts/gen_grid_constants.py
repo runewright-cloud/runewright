@@ -59,18 +59,21 @@ def ring_clockwise(r):
 
 def border_zones():
     ring = ring_clockwise(RADIUS)
-    # Rotate 1 cell clockwise (matching BorderZones._compute)
-    coords = ring[1:] + [ring[0]]
-    # Segments: fire=9, air=9, water=9, earth=18, water=9, air=9, fire=9
+    n = len(ring)
+    # Match BorderZones._compute in Dart:
+    #   start at ring[3*RADIUS] = (0, RADIUS) (bottom vertex)
+    #   traverse counter-clockwise (decrement ring index, wrap)
+    #   segments: water(18) | air(18) | fire(18) | earth(18)
     # Zone indices: 0=none, 1=fire, 2=air, 3=water, 4=earth
-    segs = [(1, 9), (2, 9), (3, 9), (4, 18), (3, 9), (2, 9), (1, 9)]
+    start = 3 * RADIUS
+    segs = [(3, 18), (2, 18), (1, 18), (4, 18)]  # water, air, fire, earth
     zm = {}
-    idx = 0
+    i = 0
     for zone, cnt in segs:
         for _ in range(cnt):
-            zm[coords[idx]] = zone
-            idx += 1
-    assert idx == 6 * RADIUS, f"Expected {6*RADIUS} border cells, assigned {idx}"
+            zm[ring[(start - i + n) % n]] = zone
+            i += 1
+    assert i == 6 * RADIUS, f"Expected {6*RADIUS} border cells, assigned {i}"
     return zm
 
 BZ = border_zones()
