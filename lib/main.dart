@@ -9,9 +9,17 @@ import 'engine/hex_grid.dart';
 import 'engine/stepper.dart';
 import 'ui/formula_bar.dart';
 import 'ui/hex_grid_painter.dart';
-import 'ui/menu_screen.dart';
+// M2 spike — restore `import 'ui/menu_screen.dart'` and remove below when done
+import 'ui/spike_screen.dart';
+import 'src/rust/frb_generated.dart';
 
-void main() => runApp(const RuneDuelApp());
+// M2 spike: async main to init the Rust FFI bridge.
+// Revert to: void main() => runApp(const RuneDuelApp());
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await RustLib.init();
+  runApp(const RuneDuelApp());
+}
 
 class RuneDuelApp extends StatelessWidget {
   const RuneDuelApp({super.key});
@@ -28,7 +36,8 @@ class RuneDuelApp extends StatelessWidget {
           surface: Color(0xFFF5F0E8),
         ),
       ),
-      home: const MenuScreen(),
+      // M2 spike: restore to `home: const MenuScreen()` when done
+      home: const SpikeScreen(),
     );
   }
 }

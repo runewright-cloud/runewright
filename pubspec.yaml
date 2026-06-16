@@ -31,9 +31,11 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
+
+  # M2 FFI spike: flutter_rust_bridge bindings + SRS path helper
+  flutter_rust_bridge: ^2.0.0
+  path_provider: ^2.1.0
 
 dev_dependencies:
   flutter_test:
@@ -62,7 +64,13 @@ flutter:
   # assets:
   #   - images/a_dot_burr.jpeg
   #   - images/a_dot_ham.jpeg
-
+  assets:
+    - assets/circuits/ca_spike_t12.json
+    - assets/circuits/ca_spike_t24.json
+    - assets/circuits/ca_spike_t48.json
+    - assets/circuits/ca_spike_t12.vk
+    - assets/circuits/ca_spike_t24.vk
+    - assets/circuits/ca_spike_t48.vk
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
 
