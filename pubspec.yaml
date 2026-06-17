@@ -71,6 +71,12 @@ flutter:
     - assets/circuits/ca_spike_t12.vk
     - assets/circuits/ca_spike_t24.vk
     - assets/circuits/ca_spike_t48.vk
+    - assets/circuits/ca_v2_4_tier12.json
+    - assets/circuits/ca_v2_4_tier24.json
+    - assets/circuits/ca_v2_4_tier48.json
+    - assets/circuits/ca_v2_4_tier12.vk
+    - assets/circuits/ca_v2_4_tier24.vk
+    - assets/circuits/ca_v2_4_tier48.vk
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
 

@@ -44,17 +44,43 @@
     },
 
     {
-      "id": "early_activation_top",
+      "id": "first_border_activation",
       "kind": "positive",
-      "description": "6-cell cluster in rings 6–8 near the top border; exercises border activation and the first decay steps within T=8. Cells: (0,-8)=226, (0,-7)=227, (0,-6)=228, (-1,-7)=202, (-1,-6)=203, (1,-8)=251. Outputs filled by stepper. This is M1 gate item 4.",
+      "description": "CORRECTED 2026-06-16: the original 6-cell early_activation_top stub never actually reached the border (stepper-verified all-zero through T=12 - that description was a guess, not stepper output; replaced per GOLDEN_VECTORS.md's 'stepper-generated, not hand-derived' discipline). Full ring-8 (the maximal inscribable ring, 48 cells; same active_cells as neg_mask_abuse) is quiet through generation 2 and fires border activations at generation 3; activity does not recur through T=8. Exercises border activation and the decay path. Stepper-verified via scripts/find_mask_vector.dart.",
       "tier_max": 12,
       "input": {
-        "active_cells": [226, 227, 228, 202, 203, 251],
+        "active_cells": [62, 63, 64, 65, 66, 67, 68, 69, 70, 79, 88, 97, 107, 116, 127, 136, 148, 157, 170, 179, 193, 202, 217, 226, 242, 251, 266, 275, 289, 298, 311, 320, 332, 341, 352, 361, 371, 380, 389, 398, 399, 400, 401, 402, 403, 404, 405, 406],
         "T": 8,
         "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
         "ruleset_version": 1
       },
-      "expected": { "commitment": "IMPL", "fill_from_stepper": true, "verifies": true }
+      "expected": {
+        "commitment": "IMPL",
+        "border_activations": [7, 8, 7, 8],
+        "dominance_trajectory":    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "supreme_dominance_flags": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "verifies": true
+      }
+    },
+
+    {
+      "id": "mask_boundary_zero",
+      "kind": "positive",
+      "description": "Circuit-side discharge of the masking property behind neg_mask_abuse: same active_cells as first_border_activation/neg_mask_abuse (full ring-8), but T=3 instead of T=8/T=4. The stepper confirms generation 3 is where activity actually starts (see neg_mask_abuse), so this proves the circuit's own masked output is genuinely [0,0,0,0] at T=3 - not just that an attacker's declared non-zero value gets rejected (that half is a SNARK public-input-binding property, deferred to the M3.4 end-to-end tamper smoke test), but that the circuit computes the correctly-masked zero in the first place.",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [62, 63, 64, 65, 66, 67, 68, 69, 70, 79, 88, 97, 107, 116, 127, 136, 148, 157, 170, 179, 193, 202, 217, 226, 242, 251, 266, 275, 289, 298, 311, 320, 332, 341, 352, 361, 371, 380, 389, 398, 399, 400, 401, 402, 403, 404, 405, 406],
+        "T": 3,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "expected": {
+        "commitment": "IMPL",
+        "border_activations": [0, 0, 0, 0],
+        "dominance_trajectory":    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "supreme_dominance_flags": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "verifies": true
+      }
     },
 
     {
@@ -90,9 +116,59 @@
     },
 
     {
+      "id": "neg_seeded_border",
+      "kind": "negative",
+      "description": "border cell index 0, coord (q=-12,r=0), hex distance 12 (verified border per CIRCUIT_IO.md §2 region rule), forced active at T=0; must be rejected by §10.2",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [],
+        "T": 6,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "raw_overrides": { "0": 1 },
+      "violates_constraint": "§10.2 buffer/border cells must be 0 at T=0",
+      "expected": { "verifies": false }
+    },
+
+    {
+      "id": "neg_commitment_mismatch",
+      "kind": "negative",
+      "description": "RECLASSIFIED 2026-06-16: this is a SNARK public-input-binding check, not a Runewright circuit-constraint vector - commitment is a return value, not an input, so nargo execute structurally cannot accept a 'declared' value that disagrees with what the circuit computes (§10.4 is enforced by construction: there is no path to a different value). The circuit-relevant half (commitment is always the real Poseidon2(packed_grid), never something else) is discharged by every positive vector's frozen, Noir-sourced commitment (anchor_empty, anchor_single_center, first_border_activation, mask_boundary_zero). The remaining half - that bb verify rejects a proof whose public-input bytes were tampered with post-hoc - is a property of UltraHonk's public-input encoding, not of this circuit; deferred to a single end-to-end tamper smoke test in M3.4 (prove, flip one byte of the commitment in the public inputs, confirm bb verify rejects). Valid grid (lone center cell) kept here as the input fixture for that future smoke test.",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [234],
+        "T": 6,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "declared_override": {
+        "commitment": "0x00000000000000000000000000000000000000000000000000000000000bad"
+      },
+      "violates_constraint": "§10.4 commitment binds grid",
+      "expected": { "verifies": false }
+    },
+
+    {
+      "id": "neg_forged_activations",
+      "kind": "negative",
+      "description": "RECLASSIFIED 2026-06-16: SNARK public-input-binding check, not a circuit-constraint vector - border_activations is a return value, so the circuit cannot independently declare [9,9,9,9] when its witness computes [7,8,7,8]; §10.6 is enforced by construction. Discharged by first_border_activation (T=8, circuit-computed [7,8,7,8] matches the stepper exactly - proves there is only one value the circuit can produce). The 'tampered proof gets rejected' half deferred to the M3.4 end-to-end tamper smoke test. Fixture kept (full ring-8, T=8, true=[7,8,7,8], would-be forgery [9,9,9,9]) for that future test.",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [62, 63, 64, 65, 66, 67, 68, 69, 70, 79, 88, 97, 107, 116, 127, 136, 148, 157, 170, 179, 193, 202, 217, 226, 242, 251, 266, 275, 289, 298, 311, 320, 332, 341, 352, 361, 371, 380, 389, 398, 399, 400, 401, 402, 403, 404, 405, 406],
+        "T": 8,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "declared_override": { "border_activations": [9, 9, 9, 9] },
+      "violates_constraint": "§10.6 activations = true masked sum",
+      "expected": { "verifies": false }
+    },
+
+    {
       "id": "neg_forged_trajectory",
       "kind": "negative",
-      "description": "valid grid, declared dominance_trajectory all-fire (all 1s) does not match true neutral evolution; must be rejected by §10.5",
+      "description": "RECLASSIFIED 2026-06-16: SNARK public-input-binding check, not a circuit-constraint vector - dominance_trajectory is a return value, so §10.5 (trajectory equals true evolution) is enforced by construction; there is no way for the circuit to output a declared lie. Discharged by every positive vector's circuit-vs-stepper exact match. The 'tampered proof gets rejected' half deferred to the M3.4 end-to-end tamper smoke test. Fixture kept (6-cell cluster, T=8, true trajectory all-neutral since this pattern never reaches the border within T=12 - see first_border_activation's correction note - would-be forgery all-fire) for that future test.",
       "tier_max": 12,
       "input": {
         "active_cells": [226, 227, 228, 202, 203, 251],
@@ -123,18 +199,32 @@
     },
 
     {
-      "id": "neg_mask_abuse",
+      "id": "neg_out_of_range_T_too_large",
       "kind": "negative",
-      "description": "PRIORITY: grid with border activations only after T; declared border_activations includes post-T activity. Tests §10.6 masking. Cells and T TBD — need a stepper run to find a quiet-before-T/active-after-T pattern.",
+      "description": "T=13 exceeds tier_max=12; must be rejected by §10.7 (sibling of neg_out_of_range_T_zero)",
       "tier_max": 12,
       "input": {
-        "active_cells": [],
+        "active_cells": [234],
+        "T": 13,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 1
+      },
+      "violates_constraint": "§10.7 / §11.7 range 1..tier_max",
+      "expected": { "verifies": false }
+    },
+
+    {
+      "id": "neg_mask_abuse",
+      "kind": "negative",
+      "description": "RECLASSIFIED 2026-06-16: SNARK public-input-binding check, not a circuit-constraint vector - border_activations is a return value, so §10.6 masking is enforced by construction (the circuit cannot output [7,8,7,8] when T=3 forces it to compute [0,0,0,0]). The circuit-relevant property - that the masked output at T=3 is genuinely [0,0,0,0], not just 'unconsumed' - is discharged by the mask_boundary_zero positive vector (same active_cells, T=3, circuit-confirmed [0,0,0,0] via nargo execute). This vector's fixture (full ring-8, quiet through gen 2, fires at gen 3 - T=4 reveals [7,8,7,8], stepper-verified via scripts/find_mask_vector.dart per GOLDEN_VECTORS.md §3 discipline) is kept as the 'tampered proof' input for the M3.4 end-to-end tamper smoke test, which is the only remaining piece (bb verify rejecting a post-hoc-tampered public input) and doubles as resolving §7's [CONFIRM: noir CLI] question. Originally flagged PRIORITY in GOLDEN_VECTORS.md §3 as the most important negative; that priority is now satisfied by mask_boundary_zero for the circuit-constraint half.",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [62, 63, 64, 65, 66, 67, 68, 69, 70, 79, 88, 97, 107, 116, 127, 136, 148, 157, 170, 179, 193, 202, 217, 226, 242, 251, 266, 275, 289, 298, 311, 320, 332, 341, 352, 361, 371, 380, 389, 398, 399, 400, 401, 402, 403, 404, 405, 406],
         "T": 3,
         "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-        "ruleset_version": 1,
-        "_todo": "replace active_cells with a pattern that is quiet during gen 0..2 but activates border zone at gen 3+; use T=3 so the activation is masked."
+        "ruleset_version": 1
       },
-      "declared_override": { "border_activations": [1, 0, 0, 0] },
+      "declared_override": { "border_activations": [7, 8, 7, 8] },
       "violates_constraint": "§10.6 activations masked to generations < T",
       "expected": { "verifies": false }
     }

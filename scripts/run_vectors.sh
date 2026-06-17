@@ -1,21 +1,38 @@
 #!/usr/bin/env bash
-# run_vectors.sh — CI gate for the golden + negative vector corpus.
+# run_vectors.sh — single-command iteration loop for the golden + negative
+# vector corpus (M3.1: recompile circuit -> run golden vectors).
 #
 # Step 1: Dart stepper-regression runner (flutter test).
 #         Catches stepper regressions; does not touch the circuit.
-# Step 2: Noir circuit runner (nargo / bb).
-#         Currently STUBBED — wired once M3 produces the v2.4 circuit.
+# Step 2: Recompile the tier-12 v2.4 circuit (nargo compile).
+# Step 3: scripts/gen_vectors.dart — for every seed in test_vectors/seeds.json,
+#         runs nargo execute against the freshly compiled circuit and:
+#           - positive vectors: cross-checks circuit CA outputs against the
+#             Dart stepper oracle, and freezes the circuit-computed commitment.
+#           - negative vectors with raw_overrides (malformed witness): asserts
+#             nargo execute fails (the in-circuit constraint rejects it).
+#           - negative vectors with declared_override (forged public output):
+#             these test SNARK public-input binding (does bb verify reject a
+#             tampered proof?), not a circuit constraint — border_activations/
+#             trajectory/commitment are return values, so nargo execute
+#             structurally cannot accept a declared lie. Each is discharged by
+#             a named positive vector instead (see seeds.json); skipped here
+#             and recorded as such in corpus.json, not silently passed.
+#
+# DEFERRED TO M3.4: a single end-to-end bb prove + public-input-byte-tamper +
+# bb verify smoke test (one test, not four) resolves GOLDEN_VECTORS.md §7's
+# [CONFIRM: noir CLI] question and is the only remaining piece of the four
+# declared_override vectors' security property.
 #
 # Exit codes:
-#   0  — all checks passed (or corpus empty and no Noir runner yet)
-#   1  — stepper regression, or corpus present with Noir runner stubbed (see below)
-#   2  — corpus present but Noir runner still stubbed (configuration error)
+#   0 — stepper tests, circuit compile, and all witness-checkable vectors passed
+#   1 — a stepper regression, compile failure, or vector mismatch/regression
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CORPUS="${REPO_ROOT}/test_vectors/corpus.json"
-NOIR_RUNNER_READY=false  # flip to true in M3 when the circuit + runner exist
+TIER12_DIR="${REPO_ROOT}/circuits/ca_v2_4_tier12"
+NARGO_BIN="${NARGO_BIN:-/tmp/nargo}"
 
 # ── Step 1: Dart stepper regression ─────────────────────────────────────────
 
@@ -24,40 +41,18 @@ cd "${REPO_ROOT}"
 flutter test test/engine/ --reporter=expanded
 echo "  Stepper tests passed."
 
-# ── Step 2: Noir circuit runner ──────────────────────────────────────────────
+# ── Step 2: Recompile the tier-12 circuit ───────────────────────────────────
 
 echo ""
-echo "=== Step 2: Noir circuit runner ==="
+echo "=== Step 2: Recompile circuits/ca_v2_4_tier12 ==="
+(cd "${TIER12_DIR}" && "${NARGO_BIN}" compile --silence-warnings)
+echo "  Compile succeeded."
 
-if [[ ! -f "${CORPUS}" ]]; then
-  echo "  corpus.json not present — skipping Noir runner (empty corpus)."
-  echo "  (Run scripts/gen_vectors.dart to generate the corpus from seeds.json.)"
-  exit 0
-fi
+# ── Step 3: Golden + negative vector corpus ─────────────────────────────────
 
-if ! $NOIR_RUNNER_READY; then
-  echo "  ERROR: corpus.json exists but the Noir runner is not yet wired."
-  echo "  Vectors are accumulating that nothing checks. This is a CI configuration"
-  echo "  error. Either:"
-  echo "    1. Remove corpus.json until M3 wires the circuit runner, or"
-  echo "    2. Set NOIR_RUNNER_READY=true in this script and implement the runner."
-  exit 2
-fi
+echo ""
+echo "=== Step 3: Golden vector corpus (scripts/gen_vectors.dart) ==="
+NARGO_BIN="${NARGO_BIN}" dart run scripts/gen_vectors.dart
 
-# ── Noir runner (fill in at M3) ───────────────────────────────────────────────
-#
-# For each tier in 12 24 48; do
-#   for each vector in corpus.json:
-#     build witness from input (applying raw_overrides and declared_overrides)
-#     if kind == "positive":
-#       nargo execute + bb prove + bb verify must SUCCEED
-#       circuit-computed commitment must equal corpus expected.commitment
-#     if kind == "negative":
-#       prove/verify must FAIL (any failure counts)
-#       a negative that verifies is a release-blocking bug — exit 1
-# done
-#
-# [CONFIRM: nargo/bb CLI flags for UltraHonk at M3]
-
-echo "Noir runner: all vectors passed."
-exit 0
+echo ""
+echo "All witness-checkable vectors passed. See DEFERRED TO M3.4 above for what this does not cover."

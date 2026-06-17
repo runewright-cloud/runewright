@@ -158,6 +158,28 @@ are noted as needing care.
   single most important negative vector. It needs the stepper to *find* a grid with the
   quiet-then-active profile, so generate it rather than hand-authoring it.
 
+  **[RESOLVED M3.1, 2026-06-16]** Found via `scripts/find_mask_vector.dart`: full ring-8
+  (48 cells) is quiet through generation 2 and fires at generation 3. But `declared_override`
+  vectors of this shape (here and the other three below) turned out to test **SNARK
+  public-input binding**, not a Runewright circuit constraint — `border_activations`,
+  `dominance_trajectory`, and `commitment` are all circuit *return values*, so `nargo execute`
+  structurally cannot accept a declared value that disagrees with what the witness computes;
+  §10.4/§10.5/§10.6 are enforced by construction, not by an explicit assert that could be
+  dropped. The circuit-relevant half of each is discharged by a positive vector instead (see
+  `test_vectors/seeds.json`: `mask_boundary_zero` for `neg_mask_abuse`, `first_border_activation`
+  for `neg_forged_activations`, every positive vector's frozen commitment for
+  `neg_commitment_mismatch`). The only piece these four still owe is whether `bb verify` rejects
+  a proof whose public-input *bytes* were tampered with post-hoc — a property of UltraHonk's
+  encoding, not of this circuit — deferred to **one** end-to-end tamper smoke test in M3.4
+  (prove, flip a byte, confirm `bb verify` rejects), which also resolves the `[CONFIRM: noir]`
+  CLI question in §7 below.
+
+  **[RESOLVED M3.4]** `ffi/src/bin/tamper_test.rs`: proved a real tier-12 proof, flipped one
+  byte of the commitment (public-input index 3, byte offset 100 — see §7), and confirmed
+  `verify_ultra_honk` returns `Ok(false)`. All four `declared_override` vectors are now fully
+  discharged — the circuit-relevant half by the positive vectors (as above), the SNARK-binding
+  half by this one test.
+
 > Discipline: when CC implements each §10 constraint, it pairs the constraint with the
 > negative vector that fails if the constraint is dropped, and confirms the vector
 > actually fails *before* the constraint is added (red), then passes after (green). That
@@ -231,11 +253,32 @@ Runs per tier (12/24/48) against that tier's circuit.
 
 ## 7. Integration checklist (what CC fills in)
 
-- [ ] Confirm the `Stepper.run` API and output shape; wire §4 + §5.1.
-- [ ] Confirm how to get a commitment from the Noir side (`bb`/`nargo`) for §4; never Dart.
-- [ ] Confirm the `nargo`/`bb` execute/prove/verify CLI for §5.2.
-- [ ] Author `seeds.json`: the 2 anchors, the curated bulk inputs (§2.2), all negatives (§3).
-- [ ] Generate `corpus.json`; eyeball the two anchors (must be all-zero CA outputs).
-- [ ] Build `neg_mask_abuse` with stepper help (§3) — the priority negative.
-- [ ] Wire `run_vectors.sh` into CI; make a dropped constraint demonstrably turn a negative
-      vector red.
+- [x] Confirm the `Stepper.run` API and output shape; wire §4 + §5.1. → `runStepper` in
+      `lib/engine/ca_run.dart`; wired into `scripts/gen_vectors.dart`.
+- [x] Confirm how to get a commitment from the Noir side (`bb`/`nargo`) for §4; never Dart.
+      → `nargo execute` against `circuits/ca_v2_4_tier12`, parsed from its `Circuit output:`
+      line. `bb prove`/`verify` (full proof, not just witness) still open — see M3.4 below.
+- [x] Confirm the `nargo`/`bb` execute/prove/verify CLI for §5.2. → `nargo execute` confirmed
+      and wired (`scripts/gen_vectors.dart`); `bb prove`/`verify` deferred to M3.4 (only needed
+      for the four `declared_override` vectors' SNARK-binding half, see §3 resolution above).
+- [x] Author `seeds.json`: the 2 anchors, the curated bulk inputs (§2.2), all negatives (§3).
+- [x] Generate `corpus.json`; eyeball the two anchors (must be all-zero CA outputs). → confirmed
+      all-zero; `first_border_activation`/`mask_boundary_zero`/`neg_mask_abuse` (real, ring-8
+      based) replaced an earlier hand-picked 6-cell stub that never actually reached the border.
+- [x] Build `neg_mask_abuse` with stepper help (§3) — the priority negative. → done via
+      `scripts/find_mask_vector.dart`; its circuit-relevant half is now also covered by the
+      `mask_boundary_zero` positive vector (see §3 resolution above).
+- [x] Wire `run_vectors.sh` into CI; make a dropped constraint demonstrably turn a negative
+      vector red. → `scripts/run_vectors.sh` runs stepper tests → recompile → `gen_vectors.dart`
+      in one command; exit 0 confirmed on the current tier-12 circuit.
+- [x] **M3.4 follow-up:** one end-to-end `prove_ultra_honk` + public-input-byte-tamper +
+      `verify_ultra_honk` smoke test (`ffi/src/bin/tamper_test.rs`), resolving the
+      SNARK-binding half of the four `declared_override` vectors. **Encoding confirmed
+      empirically** (not assumed): `[4 bytes BE num_public_inputs][public inputs, 32B
+      each][proof, 32B fields]`. Public inputs are ABI-declaration order — `pub`
+      *parameters* first (`T`, `owner_pubkey`, `ruleset_version` — indices 0-2), then the
+      `pub` return tuple (`commitment` at index 3, `border_activations[4]` at 4-7,
+      `dominance_trajectory[12]` at 8-19, `supreme_flags[12]` at 20-31). Confirmed by
+      printing all 32 fields of a real tier-12 proof and matching each to its known
+      plaintext value. Flipping one byte of the commitment (byte offset 100) makes
+      `verify_ultra_honk` return `Ok(false)` — tampering correctly rejected.

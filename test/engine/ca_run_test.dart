@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:test/test.dart';
 import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/engine/border_zones.dart';
@@ -127,60 +129,70 @@ void main() {
 
   // ── 3. SINGLE-GENERATION DART ↔ NOIR RULE DIFF ─────────────────────────────
   //
-  // !! BLOCKER FOR M1 GATE ITEMS 3 AND 4 !!
+  // Checks the live circuit's FLAT_TRANSITION table (parsed directly out of
+  // circuits/ca_v2_4_tier12/src/main.nr — never a hand-copied duplicate, so
+  // this can't silently drift from what actually compiles) against the
+  // CARules definitions in ca_rules.dart for every (rule, cell_state,
+  // neighbor_count) combination. Pure logic comparison, no nargo run needed.
   //
-  // Checks whether the Dart CARules definitions match the Noir circuit's
-  // FLAT_TRANSITION table for every (rule_index, cell_state, neighbor_count)
-  // combination. This is a pure logic comparison — no nargo run required.
-  //
-  // EXPECTED RESULT: tests for fire, water, and earth will FAIL.
-  // Neutral and air (wind) agree between Dart and circuit.
-  //
-  // Known discrepancies:
-  //
-  //   FIRE (index 1):
-  //     Dead cell, nb=2..6:  Dart→dead, Circuit→alive
-  //     (Dart bornOn={1};  Circuit bornOn={1..6})
-  //
-  //   WATER (index 3):
-  //     Dead cell, nb=1:     Dart→alive, Circuit→dead
-  //     Dead cell, nb=3..6:  Dart→dead,  Circuit→alive
-  //     (Dart bornOn={1,2}; Circuit bornOn={2..6})
-  //
-  //   EARTH (index 4):
-  //     Alive cell, nb=1:    Dart→alive, Circuit→dead
-  //     Dead cell, nb=3..6:  Dart→dead,  Circuit→alive
-  //     (Dart survive={1..6},bornOn={2}; Circuit survive={2..6},bornOn={2..6})
-  //
-  // ACTION REQUIRED (Soren):
-  //   Per CLAUDE.md, stepper.dart is canonical → Dart rules win unless you
-  //   explicitly re-ratify the circuit's version. Decide which is correct for
-  //   v2.4 and update the other to match before proceeding to M3.
+  // History: the original ca_lookup_v2 proxy circuit had broader birth
+  // conditions than Dart for fire/water/earth (M1 finding). The v2.4 circuit
+  // (circuits/ca_v2_4_tier12) fixed all three to match ca_rules.dart exactly;
+  // this test is the regression guard against that fix drifting back open.
 
   group('dart vs circuit rule diff', () {
-    test('neutral rule (0): Dart == circuit FLAT_TRANSITION', () {
-      _expectRuleMatch(CARules.neutral, 0);
+    final flatTransition = _parseFlatTransitionFromMainNr();
+
+    test('parsed table has the expected length (5 rules * 2 states * 7 counts)', () {
+      expect(flatTransition.length, equals(70));
     });
 
-    test('fire rule (1): Dart == circuit FLAT_TRANSITION  [EXPECTED TO FAIL]', () {
-      _expectRuleMatch(CARules.fire, 1);
+    test('neutral rule (0): Dart == circuit FLAT_TRANSITION', () {
+      _expectRuleMatch(CARules.neutral, 0, flatTransition);
+    });
+
+    test('fire rule (1): Dart == circuit FLAT_TRANSITION', () {
+      _expectRuleMatch(CARules.fire, 1, flatTransition);
     });
 
     test('air/wind rule (2): Dart == circuit FLAT_TRANSITION', () {
-      _expectRuleMatch(CARules.wind, 2);
+      _expectRuleMatch(CARules.wind, 2, flatTransition);
     });
 
-    test('water rule (3): Dart == circuit FLAT_TRANSITION  [EXPECTED TO FAIL]', () {
-      _expectRuleMatch(CARules.water, 3);
+    test('water rule (3): Dart == circuit FLAT_TRANSITION', () {
+      _expectRuleMatch(CARules.water, 3, flatTransition);
     });
 
-    test('earth rule (4): Dart == circuit FLAT_TRANSITION  [EXPECTED TO FAIL]', () {
-      _expectRuleMatch(CARules.earth, 4);
+    test('earth rule (4): Dart == circuit FLAT_TRANSITION', () {
+      _expectRuleMatch(CARules.earth, 4, flatTransition);
     });
   });
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// Parses the FLAT_TRANSITION literal out of the live main.nr source rather
+// than hand-copying it into this test — a hardcoded duplicate is exactly the
+// kind of thing that silently drifts from what's actually deployed.
+List<int> _parseFlatTransitionFromMainNr() {
+  final path =
+      'circuits/ca_v2_4_tier12/src/main.nr';
+  final src = File(path).readAsStringSync();
+  final declStart = src.indexOf('global FLAT_TRANSITION');
+  if (declStart == -1) {
+    fail('Could not find "global FLAT_TRANSITION" in $path');
+  }
+  final bodyStart = src.indexOf('[', src.indexOf('=', declStart));
+  final bodyEnd = src.indexOf(']', bodyStart);
+  final body = src.substring(bodyStart + 1, bodyEnd);
+  final withoutComments = body.replaceAll(RegExp(r'//[^\n]*'), '');
+  return withoutComments
+      .split(',')
+      .map((s) => s.trim())
+      .where((s) => s.isNotEmpty)
+      .map(int.parse)
+      .toList();
+}
 
 // Replicate gen_grid_constants.py border_zones() — must match BorderZones._compute.
 // Algorithm: start at ring[3*r] (bottom vertex), go counter-clockwise,
@@ -220,27 +232,7 @@ List<HexCoord> _ringClockwisePy(int r) {
   return coords;
 }
 
-// Circuit FLAT_TRANSITION[rule * 14 + stateBit * 7 + nb].
-// stateBit: 0=dead, 1=alive. nb: 0..6.
-const _flatTransition = [
-  // rule 0 - neutral
-  0, 0, 1, 0, 0, 0, 0,  // dead
-  0, 0, 1, 0, 0, 0, 0,  // alive
-  // rule 1 - fire
-  0, 1, 1, 1, 1, 1, 1,  // dead
-  0, 1, 0, 0, 0, 0, 0,  // alive
-  // rule 2 - air (wind)
-  0, 0, 1, 0, 0, 0, 0,  // dead
-  1, 1, 1, 0, 0, 0, 0,  // alive
-  // rule 3 - water
-  0, 0, 1, 1, 1, 1, 1,  // dead
-  0, 0, 0, 1, 1, 1, 1,  // alive
-  // rule 4 - earth
-  0, 0, 1, 1, 1, 1, 1,  // dead
-  0, 0, 1, 1, 1, 1, 1,  // alive
-];
-
-void _expectRuleMatch(CARules dartRule, int circuitIdx) {
+void _expectRuleMatch(CARules dartRule, int circuitIdx, List<int> flatTransition) {
   final mismatches = <String>[];
   for (int state = 0; state <= 1; state++) {
     for (int nb = 0; nb <= 6; nb++) {
@@ -248,7 +240,7 @@ void _expectRuleMatch(CARules dartRule, int circuitIdx) {
       final dartOut  = alive
           ? (dartRule.surviveOn.contains(nb) ? 1 : 0)
           : (dartRule.bornOn.contains(nb)    ? 1 : 0);
-      final circOut  = _flatTransition[circuitIdx * 14 + state * 7 + nb];
+      final circOut  = flatTransition[circuitIdx * 14 + state * 7 + nb];
       if (dartOut != circOut) {
         final stateStr = alive ? 'alive' : 'dead ';
         mismatches.add('  $stateStr nb=$nb: Dart→$dartOut, Circuit→$circOut');
@@ -257,7 +249,7 @@ void _expectRuleMatch(CARules dartRule, int circuitIdx) {
   }
   if (mismatches.isNotEmpty) {
     fail('${dartRule.name} (index $circuitIdx) has ${mismatches.length} '
-         'mismatches.\nSee test file for ACTION REQUIRED.\n'
+         'mismatches against the live main.nr FLAT_TRANSITION table.\n'
          '${mismatches.join('\n')}');
   }
 }

@@ -87,10 +87,12 @@ should the circuit constraint work begin. **Do not invent these encodings — re
 
 - **Flutter / Dart** — primary client. Ubuntu Linux + VS Code dev environment.
 - **Noir** (`nargo`) + **Barretenberg** (`bb`, UltraHonk). Versions validated in
-  Phase 0/1 were `nargo 1.0.0-beta.20` and `bb 5.0.0-nightly.20260324`. **Version pinning
-  matters:** the circuit's `nargo`/`bb` versions must match what the proving bridge expects
-  (e.g. `zkpassport/noir_rs` is tagged to `v1.0.0-beta.19-1`; beta-channel skew breaks).
-  Pin the whole toolchain together; record the actual versions in use here once confirmed.
+  Phase 0/1 were `nargo 1.0.0-beta.20` and `bb 5.0.0-nightly.20260324`. **Confirmed in use
+  on the Linux dev machine as of M3.2:** `nargo` (beta.20, binary at `/tmp/nargo`, not on
+  `$PATH`) and `bb 5.0.0-nightly.20260324` (installed via the official `bbup` installer to
+  `~/.bb`, added to `$PATH`). **Version pinning matters:** the circuit's `nargo`/`bb`
+  versions must match what the proving bridge expects (e.g. `zkpassport/noir_rs` is tagged
+  to `v1.0.0-beta.19-1`; beta-channel skew breaks). Pin the whole toolchain together.
 - **Mobile proving is a supported path, not an open question.** `zkpassport/noir_rs` (Rust
   crate, UltraHonk via barretenberg-rs) generates/verifies Noir proofs on-device, with
   maintained mobile wrappers — **Swoir** (iOS) and **noir_android** (Android) — and
@@ -166,3 +168,8 @@ persistence. Build order is in the build plan; the security-reviewable milestone
 
 If a task seems to require one of these, it's a sign to stop and confirm scope, not to
 expand it.
+
+---
+## Bug Avoidance Reminders
+1. Thread-pool sizing requires HARDWARE_CONCURRENCY env set at ctor time — see M3_findings
+2. bundled-VK path must not oversize SRS — see M3_findings

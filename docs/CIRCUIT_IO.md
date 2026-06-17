@@ -123,7 +123,7 @@ This is nearly free in-circuit (two weighted sums over values already constraine
 
 ---
 
-## 4. Commitment scheme `[FIXED]`
+## 4. Commitment scheme `[FIXED, construction pinned 2026-06-16]`
 
 ```
 commitment = Poseidon2(packed[0], packed[1])
@@ -131,6 +131,24 @@ commitment = Poseidon2(packed[0], packed[1])
 
 - Poseidon2 over BN254, state size 4, rate 3, capacity 1 (matches Noir stdlib). Two
   inputs fit in one permutation.
+- **Exact in-circuit construction (beta.20):** the stdlib's `Poseidon2::hash` is
+  `pub(crate)` — not callable from a user circuit. The only public primitive is
+  `std::hash::poseidon2_permutation`. Both this commitment and the §5 owner-binding hash
+  must replicate the fixed-length-2 sponge by hand, exactly as `Poseidon2::hash([a, b],
+  2)` does internally:
+  ```
+  let iv: Field = 2 * 18446744073709551616;       // 2 * 2^64, message_size=2 encoded in IV
+  let mut state: [Field; 4] = [a, b, 0, iv];
+  state = std::hash::poseidon2_permutation(state, 4);
+  result = state[0];
+  ```
+  This is bit-for-bit identical to `Poseidon2::hash([a,b], 2)` (traced from
+  `noir_stdlib/src/hash/poseidon2.nr`: `new(iv)` seeds `state[3]=iv`; absorbing two inputs
+  with `cache_size < RATE` just buffers them into `cache[0..2]`; the fixed-length path
+  skips the variable-length `absorb(1)`; `squeeze()`'s `perform_duplex` adds `cache[0..2]`
+  into `state[0..2]` and permutes). Implement this as one shared helper
+  (`fn poseidon2_hash2(a: Field, b: Field) -> Field`) and use it for both §4 and §5 so
+  there is exactly one place this construction lives.
 - **Grid-only.** `T`, `owner_pubkey`, and `ruleset_version` are **NOT** in the
   commitment — they are separate public inputs.
 - **No salt.** Same grid → same commitment, by design, so counter charms target a
@@ -141,7 +159,26 @@ commitment = Poseidon2(packed[0], packed[1])
 
 ---
 
-## 5. `owner_pubkey` representation `[FIXED structurally, CONFIRM byte order]`
+## 5. `owner_pubkey` representation `[LOCKED in-circuit form 2026-06-16, CONFIRM byte order]`
+
+**Canonical in-circuit binding, locked as of M3.1 — do not change:**
+
+```
+owner_pubkey == poseidon2_hash2(key_hi, key_lo)     // §4's fixed-length-2 construction
+```
+
+Fixed hash construction (the §4 `poseidon2_hash2` helper, equivalent to
+`Poseidon2::hash([key_hi, key_lo], 2)` but expressed via the public
+`poseidon2_permutation` primitive since the stdlib struct isn't externally callable),
+fixed arity 2, fixed `[key_hi, key_lo]` ordering, **binds the pubkey halves only — nothing
+else.** This constraint (with
+`key_hi`/`key_lo` as private witness inputs, §9) is committed to the verification key
+from the first v2.4 circuit onward specifically so the VK never has to change when the
+identity module ships (see M3 Amendment 1 — VK stability is about gate shape, not public
+input presence). **If a future identity design wants to bind a domain separator, a
+nonce, or anything beyond the two pubkey halves, or wants a different arity/hash/order,
+that is a new public input and a VK-breaking change — it must NOT be folded into this
+hash.** Treat this binding as closed.
 
 The inscriber's identity key is **Ed25519** (32-byte public key). A 256-bit key does
 not fit in one BN254 field, so the circuit binds a **hash** of it:
@@ -166,12 +203,22 @@ owner_pubkey = Poseidon2( key_hi, key_lo )
 
 ---
 
-## 6. `ruleset_version` `[FIXED]`
+## 6. `ruleset_version` `[FIXED, locked 2026-06-16]`
 
-A small integer public input (an "arcana edition"). Starts at `1`. The match handshake
-negotiates it; clients carry verifiers for the last N versions. Binding it as a public
-input means a proof is only valid against the circuit version it was generated for —
-so a future balance patch doesn't silently validate old proofs against new rules.
+A small integer public input (an "arcana edition") — the rule-set **epoch**. Pinned to
+`global RULESET_VERSION: Field = 1` and asserted in-circuit (`assert(ruleset_version ==
+RULESET_VERSION)`) from the first v2.4 circuit onward, for the same VK-stability reason
+as §5. The match handshake negotiates it; clients carry verifiers for the last N
+versions. Binding it as a public input means a proof is only valid against the circuit
+version it was generated for — so a future balance patch doesn't silently validate old
+proofs against new rules.
+
+**Distinction from the §5 lock:** bumping `RULESET_VERSION` on a future consensus-visible
+CA rule change is an *intentional* VK change — it deliberately makes incompatible
+rule-sets non-interoperable and prevents replaying old proofs against new rules. That is
+different from the §5 owner-binding lock, whose entire purpose is to make the *identity*
+layer's eventual arrival **not** churn the VK. Don't mistake a deliberate version-bump
+VK change for a regression of the §5 guarantee.
 
 ---
 
@@ -186,14 +233,21 @@ so a future balance patch doesn't silently validate old proofs against new rules
   T=30 spell uses the 48-tier.)
 - `T` (active generation count) is a **public input**, constrained `1 ≤ T ≤ tier_max`
   for whichever tier circuit is used.
-- **Masking model:** within its tier, the circuit always simulates `tier_max`
-  generations and emits all `tier_max` trajectory/flag entries. `T` is the **cutoff the
-  external parser uses**: formula parsing and `border_activations` consider only
-  generations `0 .. T−1`.
+- **Masking model `[CORRECTED 2026-06-16 — see M3.0 review]`:** within its tier, the
+  circuit always simulates `tier_max` generations internally (a fixed-size circuit loop
+  can't stop early — cell states keep evolving past `T`), but **every public output is
+  masked by `gen < T`, not just `border_activations`.** This matches the canonical Dart
+  oracle, `ca_run.dart:runStepper`, which stops accumulating at `T` and leaves the rest
+  of `dominanceTrajectory` / `supremeFlags` at their zero-filled default. The earlier
+  text in this section ("trajectory/flags past T are real but unconsumed") described a
+  design that was never implemented Dart-side; per CLAUDE.md, Dart is canonical, so the
+  circuit is corrected to match `ca_run.dart`, not the reverse.
   - `border_activations` = activation counts summed over generations `0 .. T−1`
     (per-generation accumulation **masked by `gen < T`**). ← security-sensitive; see §11.
-  - `trajectory[g]` / `supreme_flags[g]` for `g ≥ T` are still real CA outputs but are
-    not consumed; because `T` is public and bound, this hides nothing.
+  - `dominance_trajectory[g]` and `supreme_dominance_flags[g]` are **forced to 0** for
+    `g ≥ T` (masked, matching `ca_run.dart`'s zero-fill — not real CA output). `T` is
+    public and bound either way, so masking hides no information; it simply matches what
+    the Dart oracle actually does, which is what the two-oracle harness compares against.
 - **Three VKs per ruleset version**, not one and not a zoo. Gate counts (≈19,650/gen):
   12-tier ≈ 236k (deep green), 24-tier ≈ 472k (top of green), 48-tier ≈ 943k (yellow,
   1–3 min inscription — the opt-in spectacle tier). Proving is inscription-time, never
@@ -220,11 +274,18 @@ in Dart):
 | `dominance_trajectory` | `[Field; tier_max]` | dominant element index per generation (0 = neutral); sized to the tier (12/24/48) |
 | `supreme_dominance_flags` | `[Field; tier_max]` | 0/1 per generation; sized to the tier; packable to a bitmask later |
 
-## 9. Private witness (hidden) `[FIXED]`
+## 9. Private witness (hidden) `[FIXED, extended 2026-06-16 — see §5/Amendment 1]`
 
 | Name | Type | Meaning |
 |---|---|---|
-| `grid_state` | `[Field; 469]` | initial grid; only inscribable region (indices 0–216) may be active |
+| `grid_state` | `[Field; 469]` | initial grid; only the inscribable region (`d ≤ 8`, 217 cells) may be active |
+| `key_hi` | `Field` | high 16 bytes of the inscriber's Ed25519 pubkey, under the §5 byte order |
+| `key_lo` | `Field` | low 16 bytes of the inscriber's Ed25519 pubkey, under the §5 byte order |
+
+`key_hi`/`key_lo` are committed to the VK from M3.1 onward (locked binding, see §5) so
+that wiring up the real identity module later does not change the verification key.
+Until the identity module exists, witnesses use `key_hi = key_lo = 0` and set the public
+`owner_pubkey = poseidon2_hash2(0, 0)`.
 
 The witness is the **only secret**. The central privacy property Fable should probe:
 nothing in the public inputs may leak `grid_state` beyond what the commitment and
@@ -245,10 +306,20 @@ declared outputs already imply.
    (Confirmed by stepper: `CAStep.step` increments `stepCount` before returning, so
    at generation `gen` the returned grid has `stepCount = gen+1` and decay = `stepCount
    ~/ 2`. Sequence gen 0..6: **0, 1, 1, 2, 2, 3, 3**. NOT `floor(gen/2)`.)
+   **Border-cell evolution `[CORRECTED 2026-06-16]`:** per `stepper.dart:15-35`, every
+   border cell — alive or dead — transitions to **dead** next generation unconditionally.
+   A dead border cell satisfying `bornOn` still counts as an activation toward
+   `border_activations`, but never itself becomes alive (it must not occupy the cell or
+   count toward a ring-11 neighbor's count, or it would suppress future activations on
+   that same cell). The Phase 1.5 proxy circuit (`ca_lookup_v2`) got this wrong — it set
+   the border cell's next state to the born value instead of forcing 0. v2.4 forces
+   `next_grid[i] = 0` for every `IS_BORDER[i]`, independent of the activation check.
 6. `border_activations` equals the per-element activation totals summed over
    generations `0 .. T−1` (masked by `gen < T`).
-7. `1 ≤ T ≤ tier_max` (for the tier circuit in use).
-8. `owner_pubkey` and `ruleset_version` are bound (referenced so they're in the VK).
+7. `dominance_trajectory[g] == 0` and `supreme_dominance_flags[g] == 0` for every
+   `g ≥ T` (masked by `gen < T` — same backstop as #6; see §11 `neg_mask_abuse`).
+8. `1 ≤ T ≤ tier_max` (for the tier circuit in use).
+9. `owner_pubkey` and `ruleset_version` are bound (referenced so they're in the VK).
 
 ---
 
@@ -266,8 +337,9 @@ Every item below must have a **negative golden vector** that the circuit *reject
    that don't match the true CA evolution of the witness grid.
 5. **Forged activations:** declared `border_activations` not equal to the true masked
    sum over `0..T−1`.
-6. **Mask abuse:** activations from generations `g ≥ T` leaking into `border_activations`
-   (tests constraint §10.6 — the masking is the subtle one).
+6. **Mask abuse:** activations from generations `g ≥ T` leaking into `border_activations`,
+   OR a non-zero `dominance_trajectory[g]` / `supreme_dominance_flags[g]` declared for
+   `g ≥ T` (tests constraints §10.6/§10.7 — the masking is the subtle one).
 7. **Out-of-range `T`:** `T = 0` or `T > tier_max` (T must fit the tier circuit proving it).
 
 > When CC implements §10, each constraint should be paired with the negative vector
