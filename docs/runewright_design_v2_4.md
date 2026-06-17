@@ -251,22 +251,22 @@ A spell with formulas fire-X-X and water-X-X has fire-water hybrid affinity. A s
 
 | Second-Third Combo | Base Effect (mechanical) | In-World Name *(fill in)* |
 |---|---|---|
-| Fire-Fire | Damage | |
-| Earth-Earth | Barriers | |
-| Water-Water | Illusions | |
-| Air-Air | Speed Manipulation | |
-| Fire-Earth | Sprite Summoning | |
-| Fire-Water | Chain Interaction | *e.g. "Tidal Rhythm" — water=flow, fire=momentum* |
-| Fire-Air | Spell Interaction | |
-| Earth-Fire | Hound Summoning | |
-| Earth-Water | Tile Modification | |
-| Earth-Air | Range Modification | |
-| Water-Fire | Cloud Summoning | |
-| Water-Earth | Accoutrements Interaction | |
-| Water-Air | Status Effect Interaction | |
-| Air-Fire | Dispels | |
-| Air-Earth | Haymaker Interaction | |
-| Air-Water | Divination | *e.g. "Scrying Pool" — air as whispers, water as the reflective surface* |
+| Fire-Fire | Damage |Blast|
+| Earth-Earth | Barriers |Barrier|
+| Water-Water | Illusions |Reflections|
+| Air-Air | Speed Manipulation |Boost|
+| Fire-Earth | Sprite Summoning |Spirit Solidified|
+| Fire-Water | Chain Interaction | Blazing Flow |
+| Fire-Air | Spell Interaction |Energy flows|
+| Earth-Fire | Hound Summoning |Form Animated|
+| Earth-Water | Tile Modification |Terrain Sculpting|
+| Earth-Air | Range Modification |Gravity Modified|
+| Water-Fire | Cloud Summoning |Essence Vaporization|
+| Water-Earth | Accoutrements Interaction |Shape Artifact|
+| Water-Air | Status Effect Interaction |Flows of Time|
+| Air-Fire | Dispels |Flowing Disintergration|
+| Air-Earth | Haymaker Interaction |Aura of Force|
+| Air-Water | Divination |Scrying Pool|
 
 > **Mirror-pair note (review §7).** The ordered-pair structure is a real systemic asset worth keeping conversant when naming: Fire-Earth **sprites** / Earth-Fire **hounds** (which element *leads* picks the creature); Water-Fire **clouds** / Fire-Water **chains** (steam → momentum). When you name and when you fill gaps, keep mirror pairs thematically in dialogue with each other.
 
