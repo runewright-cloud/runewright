@@ -1,0 +1,594 @@
+[
+  {
+    "id": "anchor_empty",
+    "kind": "positive",
+    "tier_max": 12,
+    "input": {
+      "active_cells": [],
+      "T": 6,
+      "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ruleset_version": 1
+    },
+    "expected": {
+      "commitment": "0x0b63a53787021a4a962a452c2921b3663aff1ffd8d5510540f8e659e782956f1",
+      "border_activations": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "dominance_trajectory": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "supreme_dominance_flags": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "verifies": true
+    }
+  },
+  {
+    "id": "anchor_single_center",
+    "kind": "positive",
+    "tier_max": 12,
+    "input": {
+      "active_cells": [
+        234
+      ],
+      "T": 6,
+      "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ruleset_version": 1
+    },
+    "expected": {
+      "commitment": "0x09edfacf22c7e1205de8ece4c70009f88ad405c4fac4fb85aa41c0d233649553",
+      "border_activations": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "dominance_trajectory": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "supreme_dominance_flags": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "verifies": true
+    }
+  },
+  {
+    "id": "first_border_activation",
+    "kind": "positive",
+    "tier_max": 12,
+    "input": {
+      "active_cells": [
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        79,
+        88,
+        97,
+        107,
+        116,
+        127,
+        136,
+        148,
+        157,
+        170,
+        179,
+        193,
+        202,
+        217,
+        226,
+        242,
+        251,
+        266,
+        275,
+        289,
+        298,
+        311,
+        320,
+        332,
+        341,
+        352,
+        361,
+        371,
+        380,
+        389,
+        398,
+        399,
+        400,
+        401,
+        402,
+        403,
+        404,
+        405,
+        406
+      ],
+      "T": 8,
+      "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ruleset_version": 1
+    },
+    "expected": {
+      "commitment": "0x0c1a1bcbcd6e3afb9f712f9009d10f07acf206d952f6c1bc03e16ec365ea4d0d",
+      "border_activations": [
+        7,
+        8,
+        7,
+        8
+      ],
+      "dominance_trajectory": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "supreme_dominance_flags": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "verifies": true
+    }
+  },
+  {
+    "id": "mask_boundary_zero",
+    "kind": "positive",
+    "tier_max": 12,
+    "input": {
+      "active_cells": [
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        79,
+        88,
+        97,
+        107,
+        116,
+        127,
+        136,
+        148,
+        157,
+        170,
+        179,
+        193,
+        202,
+        217,
+        226,
+        242,
+        251,
+        266,
+        275,
+        289,
+        298,
+        311,
+        320,
+        332,
+        341,
+        352,
+        361,
+        371,
+        380,
+        389,
+        398,
+        399,
+        400,
+        401,
+        402,
+        403,
+        404,
+        405,
+        406
+      ],
+      "T": 3,
+      "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ruleset_version": 1
+    },
+    "expected": {
+      "commitment": "0x0c1a1bcbcd6e3afb9f712f9009d10f07acf206d952f6c1bc03e16ec365ea4d0d",
+      "border_activations": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "dominance_trajectory": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "supreme_dominance_flags": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "verifies": true
+    }
+  },
+  {
+    "id": "neg_nonboolean_cell",
+    "kind": "negative",
+    "tier_max": 12,
+    "input": {
+      "active_cells": [],
+      "T": 6,
+      "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ruleset_version": 1
+    },
+    "raw_overrides": {
+      "228": 2
+    },
+    "violates_constraint": "§10.1 cells in {0,1}",
+    "expected": {
+      "verifies": false
+    }
+  },
+  {
+    "id": "neg_seeded_buffer",
+    "kind": "negative",
+    "tier_max": 12,
+    "input": {
+      "active_cells": [],
+      "T": 6,
+      "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ruleset_version": 1
+    },
+    "raw_overrides": {
+      "243": 1
+    },
+    "violates_constraint": "§10.2 buffer/border cells must be 0 at T=0",
+    "expected": {
+      "verifies": false
+    }
+  },
+  {
+    "id": "neg_seeded_border",
+    "kind": "negative",
+    "tier_max": 12,
+    "input": {
+      "active_cells": [],
+      "T": 6,
+      "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ruleset_version": 1
+    },
+    "raw_overrides": {
+      "0": 1
+    },
+    "violates_constraint": "§10.2 buffer/border cells must be 0 at T=0",
+    "expected": {
+      "verifies": false
+    }
+  },
+  {
+    "id": "neg_commitment_mismatch",
+    "kind": "negative",
+    "tier_max": 12,
+    "input": {
+      "active_cells": [
+        234
+      ],
+      "T": 6,
+      "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ruleset_version": 1
+    },
+    "declared_override": {
+      "commitment": "0x00000000000000000000000000000000000000000000000000000000000bad"
+    },
+    "violates_constraint": "§10.4 commitment binds grid",
+    "expected": {
+      "verifies": false
+    },
+    "status": "SNARK_BINDING_CHECK_DEFERRED_TO_M3.4_TAMPER_SMOKE_TEST"
+  },
+  {
+    "id": "neg_forged_activations",
+    "kind": "negative",
+    "tier_max": 12,
+    "input": {
+      "active_cells": [
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        79,
+        88,
+        97,
+        107,
+        116,
+        127,
+        136,
+        148,
+        157,
+        170,
+        179,
+        193,
+        202,
+        217,
+        226,
+        242,
+        251,
+        266,
+        275,
+        289,
+        298,
+        311,
+        320,
+        332,
+        341,
+        352,
+        361,
+        371,
+        380,
+        389,
+        398,
+        399,
+        400,
+        401,
+        402,
+        403,
+        404,
+        405,
+        406
+      ],
+      "T": 8,
+      "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ruleset_version": 1
+    },
+    "declared_override": {
+      "border_activations": [
+        9,
+        9,
+        9,
+        9
+      ]
+    },
+    "violates_constraint": "§10.6 activations = true masked sum",
+    "expected": {
+      "verifies": false
+    },
+    "status": "SNARK_BINDING_CHECK_DEFERRED_TO_M3.4_TAMPER_SMOKE_TEST"
+  },
+  {
+    "id": "neg_forged_trajectory",
+    "kind": "negative",
+    "tier_max": 12,
+    "input": {
+      "active_cells": [
+        226,
+        227,
+        228,
+        202,
+        203,
+        251
+      ],
+      "T": 8,
+      "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ruleset_version": 1
+    },
+    "declared_override": {
+      "dominance_trajectory": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    "violates_constraint": "§10.5 trajectory equals true evolution",
+    "expected": {
+      "verifies": false
+    },
+    "status": "SNARK_BINDING_CHECK_DEFERRED_TO_M3.4_TAMPER_SMOKE_TEST"
+  },
+  {
+    "id": "neg_out_of_range_T_zero",
+    "kind": "negative",
+    "tier_max": 12,
+    "input": {
+      "active_cells": [
+        234
+      ],
+      "T": 0,
+      "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ruleset_version": 1
+    },
+    "raw_overrides": null,
+    "violates_constraint": "§10.7 / §11.7 range 1..tier_max",
+    "expected": {
+      "verifies": false
+    }
+  },
+  {
+    "id": "neg_out_of_range_T_too_large",
+    "kind": "negative",
+    "tier_max": 12,
+    "input": {
+      "active_cells": [
+        234
+      ],
+      "T": 13,
+      "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ruleset_version": 1
+    },
+    "raw_overrides": null,
+    "violates_constraint": "§10.7 / §11.7 range 1..tier_max",
+    "expected": {
+      "verifies": false
+    }
+  },
+  {
+    "id": "neg_mask_abuse",
+    "kind": "negative",
+    "tier_max": 12,
+    "input": {
+      "active_cells": [
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        79,
+        88,
+        97,
+        107,
+        116,
+        127,
+        136,
+        148,
+        157,
+        170,
+        179,
+        193,
+        202,
+        217,
+        226,
+        242,
+        251,
+        266,
+        275,
+        289,
+        298,
+        311,
+        320,
+        332,
+        341,
+        352,
+        361,
+        371,
+        380,
+        389,
+        398,
+        399,
+        400,
+        401,
+        402,
+        403,
+        404,
+        405,
+        406
+      ],
+      "T": 3,
+      "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ruleset_version": 1
+    },
+    "declared_override": {
+      "border_activations": [
+        7,
+        8,
+        7,
+        8
+      ]
+    },
+    "violates_constraint": "§10.6 activations masked to generations < T",
+    "expected": {
+      "verifies": false
+    },
+    "status": "SNARK_BINDING_CHECK_DEFERRED_TO_M3.4_TAMPER_SMOKE_TEST"
+  }
+]
