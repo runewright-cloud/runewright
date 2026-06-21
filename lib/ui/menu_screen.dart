@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart' hide Element;
 import '../main.dart';
+import 'ink_sandbox_screen.dart';
+import 'onboarding/onboarding_landing_screen.dart';
 
 class MenuScreen extends StatelessWidget {
   const MenuScreen({super.key});
@@ -8,44 +10,64 @@ class MenuScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF5F0E8),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Text(
-              'RUNE DUEL',
-              style: TextStyle(
-                color: Color(0xFF2C1810),
-                fontSize: 48,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 8,
-              ),
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Text(
+                  'RUNE WRIGHT',
+                  style: TextStyle(
+                    color: Color(0xFF2C1810),
+                    fontSize: 48,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 8,
+                  ),
+                ),
+                const SizedBox(height: 64),
+                _MenuButton(
+                  label: 'Battle',
+                  onTap: null,
+                ),
+                _MenuButton(
+                  label: 'Rune Craft',
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const GameScreen()),
+                  ),
+                ),
+                _MenuButton(
+                  label: 'Library',
+                  onTap: null,
+                ),
+                _MenuButton(
+                  label: 'About',
+                  onTap: null,
+                ),
+                _MenuButton(
+                  label: 'Settings',
+                  onTap: null,
+                ),
+                const SizedBox(height: 24),
+                // TEMPORARY -- remove once onboarding is reachable some other way.
+                _MenuButton(
+                  label: 'DEBUG: View Onboarding',
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const OnboardingLandingScreen()),
+                  ),
+                ),
+                _MenuButton(
+                  label: 'DEBUG: Ink Sandbox',
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const InkSandboxScreen()),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 64),
-            _MenuButton(
-              label: 'Battle',
-              onTap: null,
-            ),
-            _MenuButton(
-              label: 'Inscribe',
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const GameScreen()),
-              ),
-            ),
-            _MenuButton(
-              label: 'Library',
-              onTap: null,
-            ),
-            _MenuButton(
-              label: 'About',
-              onTap: null,
-            ),
-            _MenuButton(
-              label: 'Settings',
-              onTap: null,
-            ),
-          ],
+          ),
         ),
       ),
     );

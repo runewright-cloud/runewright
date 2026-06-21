@@ -2853,6 +2853,8 @@ dependencies = [
 name = "runewright_ffi"
 version = "0.1.0"
 dependencies = [
+ "acir",
+ "bn254_blackbox_solver",
  "ctor",
  "flutter_rust_bridge",
  "noir_rs",

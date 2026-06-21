@@ -1,16 +1,20 @@
 import 'dart:async';
 import 'dart:math';
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart' hide Element;
+import 'package:flutter/services.dart' show rootBundle;
 import 'engine/border_zone.dart';
 import 'engine/ca_rules.dart';
 import 'engine/element.dart';
 import 'engine/formula.dart';
 import 'engine/hex_grid.dart';
 import 'engine/stepper.dart';
+import 'identity/identity.dart';
+import 'spells/inscribe.dart';
 import 'ui/formula_bar.dart';
 import 'ui/hex_grid_painter.dart';
-// M2 spike — restore `import 'ui/menu_screen.dart'` and remove below when done
-import 'ui/spike_screen.dart';
+import 'ui/app_root.dart';
+import 'ui/manuscript_theme.dart' show kIlluminationGold;
 import 'src/rust/frb_generated.dart';
 
 // M2 spike: async main to init the Rust FFI bridge.
@@ -27,7 +31,7 @@ class RuneDuelApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Rune Duel',
+      title: 'Rune Wright',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.light().copyWith(
         scaffoldBackgroundColor: const Color(0xFFF5F0E8),
@@ -36,8 +40,14 @@ class RuneDuelApp extends StatelessWidget {
           surface: Color(0xFFF5F0E8),
         ),
       ),
-      // M2 spike: restore to `home: const MenuScreen()` when done
-      home: const SpikeScreen(),
+      // Step 1: first-boot identity bootstrap. AppRoot checks for an
+      // existing Runekey and routes to MenuScreen or onboarding
+      // (docs/step1_identity_onboarding_brief.md). The M2/M3/M4 diagnostic
+      // screens (SpikeScreen, GateScreen) are still in ui/ if needed for
+      // debugging -- the M4 two-device gate harness passed ACCEPTED on
+      // real hardware on both sides (docs/M4_findings.md M4.6); swap this
+      // back temporarily if it needs re-running.
+      home: const AppRoot(),
     );
   }
 }
@@ -57,6 +67,7 @@ class _GameScreenState extends State<GameScreen> {
   CARules _rules = CARules.neutral;
   final _paintKey = GlobalKey();
   bool _running = false;
+  bool _inscribing = false;
   Timer? _timer;
   HexGrid? _initialGrid;
   final _formulaTracker = FormulaTracker();
@@ -225,13 +236,84 @@ class _GameScreenState extends State<GameScreen> {
     return (base * pow(1.25, _grid.stepCount)).round();
   }
 
+  bool get _canInscribe =>
+      !_running &&
+      !_inscribing &&
+      _initialGrid != null &&
+      _grid.stepCount >= 1 &&
+      _grid.stepCount <= kMaxInscribableSteps;
+
+  Future<void> _inscribe() async {
+    if (!_canInscribe) return;
+    final initialGrid = _initialGrid!;
+    final steps = _grid.stepCount;
+    final manaCost = _manaCost;
+
+    final status = ValueNotifier<String>('Preparing the loom…');
+    setState(() => _inscribing = true);
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => _InscribingDialog(status: status),
+    );
+
+    try {
+      final identity = await Identity.loadOrCreate();
+      final asset = await inscribeSpell(
+        initialGrid: initialGrid,
+        steps: steps,
+        identity: identity,
+        manaCost: manaCost,
+        loadCircuitJson: rootBundle.loadString,
+        loadVkBytes: (path) async => (await rootBundle.load(path)).buffer.asUint8List(),
+        onProgress: (message) => status.value = message,
+      );
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      await showDialog<void>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Spell Inscribed'),
+          content: Text(
+            'Tier ${asset.tier} · T=${asset.t} · Mana ${asset.manaCost}\n\n'
+            'Bound to your Runekey and saved (${asset.proofBytes.length} bytes). '
+            'It will appear in your library once that\'s built.',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK')),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      Navigator.of(context, rootNavigator: true).pop();
+      await showDialog<void>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Inscription Failed'),
+          content: Text('$e'),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK')),
+          ],
+        ),
+      );
+    } finally {
+      // Not disposing `status`: it's a local, transient ValueNotifier (no
+      // native resources) that the dialog's ValueListenableBuilder has
+      // already stopped listening to by the time we get here (the pop()
+      // above removed it) -- avoids racing that listener's own teardown
+      // during the route's exit animation.
+      if (mounted) setState(() => _inscribing = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final supremeZone = _supremeDominantZone(_grid.zoneActivations);
     return Scaffold(
       appBar: AppBar(
         title: const Text(
-          'Rune Duel',
+          'Rune Wright',
           style: TextStyle(color: Color(0xFFF5F0E8), letterSpacing: 3),
         ),
         backgroundColor: const Color(0xFF2C1810),
@@ -240,12 +322,12 @@ class _GameScreenState extends State<GameScreen> {
           IconButton(
             icon: const Icon(Icons.undo),
             tooltip: 'Revert',
-            onPressed: _initialGrid != null ? _revert : null,
+            onPressed: (_initialGrid != null && !_inscribing) ? _revert : null,
           ),
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'Reset',
-            onPressed: _reset,
+            onPressed: _inscribing ? null : _reset,
           ),
         ],
       ),
@@ -293,8 +375,10 @@ class _GameScreenState extends State<GameScreen> {
           ),
           _BottomBar(
             running: _running,
+            inscribing: _inscribing,
             onToggleRun: _toggleRun,
             onStepOnce: _stepOnce,
+            onInscribe: _canInscribe ? _inscribe : null,
             stepCount: _grid.stepCount,
             manaCost: _manaCost,
           ),
@@ -306,15 +390,19 @@ class _GameScreenState extends State<GameScreen> {
 
 class _BottomBar extends StatelessWidget {
   final bool running;
+  final bool inscribing;
   final VoidCallback onToggleRun;
   final VoidCallback onStepOnce;
+  final VoidCallback? onInscribe;
   final int stepCount;
   final int manaCost;
 
   const _BottomBar({
     required this.running,
+    required this.inscribing,
     required this.onToggleRun,
     required this.onStepOnce,
+    required this.onInscribe,
     required this.stepCount,
     required this.manaCost,
   });
@@ -324,10 +412,10 @@ class _BottomBar extends StatelessWidget {
     return Container(
       color: const Color(0xFF2C1810),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          Row(
             children: [
               Text(
                 'Step $stepCount',
@@ -337,6 +425,7 @@ class _BottomBar extends StatelessWidget {
                   letterSpacing: 1,
                 ),
               ),
+              const SizedBox(width: 16),
               Text(
                 'Mana Cost: $manaCost',
                 style: const TextStyle(
@@ -347,26 +436,86 @@ class _BottomBar extends StatelessWidget {
               ),
             ],
           ),
-          const Spacer(),
-          ElevatedButton.icon(
-            onPressed: running ? null : onStepOnce,
-            icon: const Icon(Icons.navigate_next),
-            label: const Text('Step'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF5A3828),
-              foregroundColor: const Color(0xFFF5F0E8),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: (running || inscribing) ? null : onStepOnce,
+                  icon: const Icon(Icons.navigate_next),
+                  label: const Text('Step'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF5A3828),
+                    foregroundColor: const Color(0xFFF5F0E8),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: inscribing ? null : onToggleRun,
+                  icon: Icon(running ? Icons.pause : Icons.play_arrow),
+                  label: Text(running ? 'Pause' : 'Run'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF8B4513),
+                    foregroundColor: const Color(0xFFF5F0E8),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: onInscribe,
+                  icon: inscribing
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF2C1810)),
+                        )
+                      : const Icon(Icons.auto_awesome),
+                  label: Text(inscribing ? 'Inscribing…' : 'Inscribe'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: kIlluminationGold,
+                    foregroundColor: const Color(0xFF2C1810),
+                    disabledBackgroundColor: const Color(0xFF6B5A3A),
+                    disabledForegroundColor: const Color(0xFFB8A898),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(width: 8),
-          ElevatedButton.icon(
-            onPressed: onToggleRun,
-            icon: Icon(running ? Icons.pause : Icons.play_arrow),
-            label: Text(running ? 'Pause' : 'Run'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF8B4513),
-              foregroundColor: const Color(0xFFF5F0E8),
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        ],
+      ),
+    );
+  }
+}
+
+/// Non-dismissible while-you-wait dialog shown during proving -- this can
+/// take anywhere from a few seconds (tier 12) to ~30s (tier 48), per the M2
+/// on-device spike measurements, plus a one-time SRS download on a fresh
+/// device. [status] is updated live via [inscribeSpell]'s `onProgress`, so
+/// the text here is accurate about which stage (and whether it needs a
+/// connection) is currently running rather than a single static message.
+class _InscribingDialog extends StatelessWidget {
+  const _InscribingDialog({required this.status});
+
+  final ValueListenable<String> status;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      content: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const CircularProgressIndicator(color: kIlluminationGold),
+          const SizedBox(width: 20),
+          Expanded(
+            child: ValueListenableBuilder<String>(
+              valueListenable: status,
+              builder: (context, message, _) => Text(message),
             ),
           ),
         ],

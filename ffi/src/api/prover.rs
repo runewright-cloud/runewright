@@ -8,7 +8,7 @@ use flutter_rust_bridge::frb;
 use noir_rs::barretenberg::{
     api::srs_init,
     prove::prove_ultra_honk,
-    srs::get_srs,
+    srs::{get_srs, localsrs::LocalSrs, netsrs::NetSrs, Srs},
     utils::{compute_subgroup_size, get_circuit_size},
     verify::{get_ultra_honk_verification_key, verify_ultra_honk},
 };
@@ -227,6 +227,144 @@ pub fn init_srs(circuit_bytecode: String, srs_path: Option<String>) -> Result<u3
     Ok(srs.num_points)
 }
 
+// ── SRS init with a persistent on-disk cache (real player-facing path) ──────
+
+/// Like `init_srs`, but with a persistent on-disk cache at `cache_path`: if
+/// a valid cache file already exists there, read it (no network -- this is
+/// what makes the second and subsequent inscription on a device work
+/// offline); otherwise download from crs.aztec.network and write the cache
+/// file for next time. `cache_path` should be a device-local, app-owned
+/// file path (Dart side: `path_provider`'s `getApplicationSupportDirectory()`
+/// joined with a fixed filename) -- not the bundled-VK asset path, and not
+/// the bare directory.
+///
+/// Network/disk failures (no connection, corrupt cache file) are reported
+/// as `Err(message)`, never as an unrecovered panic: noir_rs's
+/// `NetSrs`/`LocalSrs` call `.unwrap()` internally on the HTTP response and
+/// the file read, which would otherwise abort the whole process rather than
+/// letting the caller (and ultimately the player, via a normal error
+/// dialog) see what went wrong.
+///
+/// Uses the same unmultiplied sizing as `init_srs` (bundled-VK flow -- see
+/// that function's doc comment for why no `* 12` margin here).
+pub fn init_srs_cached(circuit_bytecode: String, cache_path: String) -> Result<u32, String> {
+    let circuit_size = get_circuit_size(&circuit_bytecode, false);
+    if circuit_size == 0 {
+        return Err("circuit_stats returned 0 gates — bytecode may be invalid".into());
+    }
+    let subgroup_size = compute_subgroup_size(circuit_size);
+    let srs = get_srs_cached(subgroup_size + 1, &cache_path)?;
+
+    {
+        let mut guard = SRS_CACHE
+            .lock()
+            .map_err(|_| "SRS cache mutex poisoned".to_string())?;
+        *guard = Some(CachedSrs {
+            g1_data: srs.g1_data.clone(),
+            g2_data: srs.g2_data.clone(),
+            num_points: srs.num_points,
+        });
+    }
+
+    srs_init(&srs.g1_data, srs.num_points, &srs.g2_data)
+        .map_err(|e| format!("srs_init: {e}"))?;
+
+    Ok(srs.num_points)
+}
+
+/// Reads `cache_path` if it exists, else downloads and writes it there for
+/// next time. Catches panics from noir_rs's local-file and network I/O
+/// (both `.unwrap()` internally) and converts them into `Result::Err` so a
+/// missing network connection on a fresh device surfaces as a normal,
+/// Dart-catchable error rather than crashing the process. Safe to do:
+/// `catch_unwind` here runs entirely before anything crosses back over the
+/// FFI boundary, and this crate has no `panic = "abort"` profile override
+/// (checked: ffi/Cargo.toml), so unwinding is actually available to catch.
+fn get_srs_cached(num_points: u32, cache_path: &str) -> Result<Srs, String> {
+    if std::path::Path::new(cache_path).exists() {
+        std::panic::catch_unwind(|| LocalSrs::new(num_points, Some(cache_path)).to_srs()).map_err(|_| {
+            format!("failed to read the cached SRS file at {cache_path} (corrupt?) — delete it and try again")
+        })
+    } else {
+        let downloaded = std::panic::catch_unwind(|| NetSrs::new(num_points).to_srs())
+            .map_err(|_| "SRS download failed — check your network connection and try again".to_string())?;
+        let to_save = Srs {
+            g1_data: downloaded.g1_data.clone(),
+            g2_data: downloaded.g2_data.clone(),
+            num_points: downloaded.num_points,
+        };
+        // Best-effort: a save failure (e.g. disk full) shouldn't fail this
+        // inscription -- the player still gets their proof this once, just
+        // without a cache for next time. Atomic (see save_srs_cache_atomic):
+        // an interrupted write (flaky in-person network, app killed
+        // mid-save) must never leave `cache_path` itself half-written --
+        // that would make every future run see a "present but corrupt"
+        // cache and need manual deletion (M4 plan, "interrupted download
+        // must self-heal"). With an atomic publish, the worst case is a
+        // missing cache (next run just re-downloads), never a poisoned one.
+        let _ = save_srs_cache_atomic(&to_save, cache_path);
+        Ok(downloaded)
+    }
+}
+
+/// Writes `srs` to `cache_path` atomically: serialize to a uniquely-named
+/// temp file in the same directory (so the final rename is on one
+/// filesystem, which POSIX guarantees is atomic), fsync the temp file's
+/// contents, then rename it into place. A crash/kill/panic at any point
+/// before the rename leaves only the never-read temp file behind --
+/// `cache_path` itself is either still absent or still holds its previous
+/// contents, never a truncated/partial write. The temp file is best-effort
+/// cleaned up on any failure path; a leftover temp file is harmless (never
+/// read by `get_srs_cached`, which only looks at `cache_path`).
+fn save_srs_cache_atomic(srs: &Srs, cache_path: &str) -> Result<(), String> {
+    let final_path = std::path::Path::new(cache_path);
+    let parent = final_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let file_name = final_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("srs.local");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let temp_path = parent.join(format!(".{file_name}.tmp-{}-{nanos}", std::process::id()));
+    let temp_path_str = temp_path
+        .to_str()
+        .ok_or_else(|| "cache_path is not valid UTF-8".to_string())?;
+
+    let to_save = Srs {
+        num_points: srs.num_points,
+        g1_data: srs.g1_data.clone(),
+        g2_data: srs.g2_data.clone(),
+    };
+    let save_result = std::panic::catch_unwind(|| LocalSrs(to_save).save(Some(temp_path_str)));
+    if save_result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(format!("failed to write SRS cache temp file at {temp_path_str}"));
+    }
+
+    // fsync the temp file's contents before the rename -- LocalSrs::save
+    // uses std::fs::write internally, which does not fsync, so without
+    // this an interrupted-at-power-loss (not just process-kill) scenario
+    // could still rename in data that never made it to disk.
+    let fsync_result = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&temp_path)
+        .and_then(|f| f.sync_all());
+    if let Err(e) = fsync_result {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(format!("failed to fsync SRS cache temp file: {e}"));
+    }
+
+    std::fs::rename(&temp_path, final_path).map_err(|e| {
+        let _ = std::fs::remove_file(&temp_path);
+        format!("failed to publish SRS cache file: {e}")
+    })
+}
+
 // ── VK computation ───────────────────────────────────────────────────────────
 
 /// Compute the UltraHonk VK (poseidon2 oracle).
@@ -364,4 +502,186 @@ fn read_peak_rss_kb() -> u64 {
         }
     }
     0
+}
+
+#[cfg(test)]
+mod srs_cache_tests {
+    use super::*;
+
+    /// A cache hit must read exactly the bytes on disk and never touch the
+    /// network. Proven deterministically (no real network involved either
+    /// way) by writing a tiny synthetic SRS to the cache path -- if
+    /// `get_srs_cached` had instead gone to `NetSrs`, the real downloaded
+    /// data would not match this fabricated `num_points`/byte content.
+    #[test]
+    fn cache_hit_reads_local_file_verbatim() {
+        let dir = std::env::temp_dir().join(format!(
+            "runewright_srs_cache_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache_path = dir.join("srs.local");
+
+        let fake = Srs {
+            num_points: 3,
+            g1_data: vec![7u8; 3 * 64],
+            g2_data: vec![9u8; 128],
+        };
+        LocalSrs(Srs {
+            num_points: fake.num_points,
+            g1_data: fake.g1_data.clone(),
+            g2_data: fake.g2_data.clone(),
+        })
+        .save(Some(cache_path.to_str().unwrap()));
+
+        let got = get_srs_cached(3, cache_path.to_str().unwrap()).expect("cache hit should succeed");
+        assert_eq!(got.num_points, fake.num_points);
+        assert_eq!(got.g1_data, fake.g1_data);
+        assert_eq!(got.g2_data, fake.g2_data);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A corrupt/unreadable cache file must surface as `Err`, never as an
+    /// unrecovered panic -- this is the same `catch_unwind` path a "file
+    /// exists but bincode-deserialize fails" real-world case would hit.
+    #[test]
+    fn corrupt_cache_file_returns_err_not_panic() {
+        let dir = std::env::temp_dir().join(format!(
+            "runewright_srs_cache_corrupt_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache_path = dir.join("srs.local");
+        std::fs::write(&cache_path, b"not a valid bincode-serialized Srs").unwrap();
+
+        let result = get_srs_cached(3, cache_path.to_str().unwrap());
+        assert!(result.is_err(), "corrupt cache file should return Err, not panic or succeed");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The happy path for the atomic writer: produces a cache file that
+    /// reads back correctly, and leaves no `.tmp-*` file behind once the
+    /// rename has published it.
+    #[test]
+    fn atomic_save_round_trips_and_leaves_no_temp_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "runewright_srs_cache_atomic_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache_path = dir.join("srs.local");
+
+        let srs = Srs {
+            num_points: 3,
+            g1_data: vec![5u8; 3 * 64],
+            g2_data: vec![6u8; 128],
+        };
+        save_srs_cache_atomic(&srs, cache_path.to_str().unwrap()).expect("atomic save should succeed");
+
+        let got = get_srs_cached(3, cache_path.to_str().unwrap()).expect("should read back the just-saved cache");
+        assert_eq!(got.num_points, srs.num_points);
+        assert_eq!(got.g1_data, srs.g1_data);
+        assert_eq!(got.g2_data, srs.g2_data);
+
+        let leftover_temp_files: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
+            .collect();
+        assert!(
+            leftover_temp_files.is_empty(),
+            "atomic save left a temp file behind: {leftover_temp_files:?}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The property the M4 plan asked for: a failed/interrupted write must
+    /// never leave a half-written file at `cache_path` itself -- the next
+    /// run must see either nothing (re-download) or the last fully-written
+    /// good state, never a "present but corrupt" file. Forced here by
+    /// pointing `cache_path` at a location whose parent directory doesn't
+    /// exist, which deterministically fails the write -- the real-world
+    /// equivalent (process killed mid-`fs::write`) isn't reliably
+    /// reproducible in a unit test, but both fail before the atomic rename
+    /// publishes anything, which is the property under test.
+    #[test]
+    fn failed_save_does_not_create_a_partial_file_at_cache_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "runewright_srs_cache_failure_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Deliberately not created -- forces the temp-file write inside
+        // save_srs_cache_atomic to fail.
+        let cache_path = dir.join("does-not-exist-subdir").join("srs.local");
+
+        let srs = Srs {
+            num_points: 3,
+            g1_data: vec![9u8; 3 * 64],
+            g2_data: vec![2u8; 128],
+        };
+        let result = save_srs_cache_atomic(&srs, cache_path.to_str().unwrap());
+
+        assert!(result.is_err(), "save into a nonexistent directory should fail, not panic");
+        assert!(
+            !cache_path.exists(),
+            "a failed save must not leave any file at cache_path, partial or otherwise"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Requires a real network-denial environment to be meaningful, so it's
+    /// `#[ignore]`d by default (a normal `cargo test` run has real network
+    /// and would just download successfully, proving nothing about the
+    /// failure path). Run it for real with:
+    ///
+    ///   unshare --user --net -- cargo test --offline missing_cache_with_no_network_returns_err_not_hang -- --ignored
+    ///
+    /// (--offline so cargo itself, which does need network for crate
+    /// resolution on a clean checkout, doesn't also fail for the wrong
+    /// reason -- run a normal `cargo build` first so everything is already
+    /// fetched/compiled.) Confirms the player-facing contract: a fresh
+    /// device with no connection gets a clear error, not a hang or crash.
+    #[test]
+    #[ignore]
+    fn missing_cache_with_no_network_returns_err_not_hang() {
+        let dir = std::env::temp_dir().join(format!(
+            "runewright_srs_cache_offline_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache_path = dir.join("srs.local"); // deliberately does not exist
+
+        let result = get_srs_cached(3, cache_path.to_str().unwrap());
+        assert!(
+            result.is_err(),
+            "expected a graceful Err with no network and no cache, got Ok -- is this actually running offline?"
+        );
+        let message = result.unwrap_err();
+        assert!(
+            message.contains("network"),
+            "error message should clearly point at the network, got: {message}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

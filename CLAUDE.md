@@ -173,3 +173,12 @@ expand it.
 ## Bug Avoidance Reminders
 1. Thread-pool sizing requires HARDWARE_CONCURRENCY env set at ctor time — see M3_findings
 2. bundled-VK path must not oversize SRS — see M3_findings
+3. After touching anything under `ffi/src/`, run `bash scripts/check_ffi_fresh.sh`
+   before `flutter run`/`flutter build apk` on Android. A stale jniLibs `.so` installs
+   fine and crashes on launch with a cryptic "Content hash on Dart side is different
+   from Rust side" error instead of failing the build — see M4_findings M4.6. The fix
+   (`bash scripts/build_android_ffi.sh`) is one command; the check just remembers it
+   needs to run.
+4. A real verifier must call `initSrsCached` (or otherwise init the SRS/CRS) before its
+   first `verify_ultra_honk`, even if it never proves in that session — the global CRS
+   isn't initialized by anything else on a pure-verify path. See M4_findings M4.6.

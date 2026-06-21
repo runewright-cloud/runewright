@@ -90,4 +90,14 @@ class HexGrid {
     }
     return result;
   }
+
+  /// Flattens this grid into the canonical packed `grid_state` witness
+  /// array the circuit expects: one 0/1 per cell, in q-major/r-minor order
+  /// (index 0 = (-radius, 0)) -- see circuits/GRID_ORDERING_v2.md. This is
+  /// exactly the constructor's insertion order, and every mutation in this
+  /// codebase (CAStep.step, copy(), setState) only ever updates values at
+  /// existing keys, never the key set -- so a grid's Map iteration order is
+  /// fixed for its whole lifetime and always matches the canonical order.
+  List<int> packGridState() =>
+      cells.values.map((e) => e == Element.alive ? 1 : 0).toList(growable: false);
 }

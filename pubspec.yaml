@@ -36,6 +36,14 @@ dependencies:
   # M2 FFI spike: flutter_rust_bridge bindings + SRS path helper
   flutter_rust_bridge: ^2.0.0
   path_provider: ^2.1.0
+  cryptography: ^2.9.0
+  flutter_secure_storage: ^10.3.1
+
+  # M4: identity backup export/import file picking
+  file_picker: ^11.0.2
+
+  # M4: mDNS/NSD peer discovery for the LAN transport adapter
+  nsd: ^5.0.1
 
 dev_dependencies:
   flutter_test:
@@ -48,6 +56,10 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
   test: ^1.30.0
+
+  # Spell-asset persistence tests: fakes path_provider's platform interface
+  # (no native documents directory under headless `flutter test`).
+  path_provider_platform_interface: ^2.1.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
