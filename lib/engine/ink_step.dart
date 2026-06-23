@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ink_step.dart — neutral "magic ink" CA step for the playtest sandbox
-// (docs/ink_sandbox brief). Throwaway feel-test code: no ZK circuit, no
-// dominance/border-sink semantics, no relation to CAStep/CARules (those are
-// neighbor-COUNT rulesets; ink is antipodal-AXIS based, which count rules
-// can't express). Operates on a sparse `Set<HexCoord>` of active cells
-// rather than `HexGrid`/`Element`, since ink has no notion of element state,
-// border zones, or dead/alive-with-meaning beyond "drawn or not."
+// ink_step.dart — neutral "magic ink" CA step. The canonical, single
+// implementation of the ink ruleset, shared by two callers: the playtest
+// sandbox (lib/ui/ink_sandbox_screen.dart), and the main engine's neutral
+// substrate (stepper.dart's CAStep.step, dispatched via CARules.isNeutral).
+// Operates on a sparse `Set<HexCoord>` of active cells rather than
+// `HexGrid`/`Element`/border-zone/dominance state -- those are stepper.dart's
+// concern (it owns the border-override and zoneActivations bookkeeping
+// around calls to InkStep.step); this file only knows "active or not."
+// Distinct from CARules (those are neighbor-COUNT rulesets; ink is
+// antipodal-AXIS based, which count rules can't express).
 //
 // Reuses HexCoord and the same axial neighbor-direction convention as
 // hex_grid.dart (HexGrid.directions): directions[i] and directions[(i+3)%6]
@@ -26,12 +29,15 @@ class InkRules {
   /// neighbor activates that neighbor's antipode, growing the line straight.
   final bool ruleB;
 
-  /// Rule C — collision burst: any cell (active or not) with >=2 complete
-  /// axes activates itself and all in-grid neighbors.
-  final bool ruleC;
-
-  /// Rule E — periodic tip-bloom: when `generation % cadence == 0`, an
-  /// active cell with exactly one active neighbor activates ALL neighbors.
+  /// Rule E — periodic serif flare: on a pulse generation
+  /// (`generation % cadence == 0`), an INACTIVE cell with exactly one
+  /// active neighbor becomes active. Every empty cell touching a stroke
+  /// tip at degree 1 qualifies -- the straight continuation Rule B already
+  /// covers, plus the two forward diagonals -- giving tips a periodic
+  /// forward "serif" flare on the beat. A cell touching two or more active
+  /// cells (flanking a stroke's body, or sitting in a bend) has
+  /// activeNeighborCount != 1 and never fires, so the serif appears only
+  /// at tips, never along a line's side.
   final bool ruleE;
 
   /// Cadence N for rule E. Only meaningful when [ruleE] is true.
@@ -40,22 +46,19 @@ class InkRules {
   const InkRules({
     this.ruleA = true,
     this.ruleB = true,
-    this.ruleC = true,
-    this.ruleE = false,
+    this.ruleE = true,
     this.cadence = 4,
   });
 
   InkRules copyWith({
     bool? ruleA,
     bool? ruleB,
-    bool? ruleC,
     bool? ruleE,
     int? cadence,
   }) {
     return InkRules(
       ruleA: ruleA ?? this.ruleA,
       ruleB: ruleB ?? this.ruleB,
-      ruleC: ruleC ?? this.ruleC,
       ruleE: ruleE ?? this.ruleE,
       cadence: cadence ?? this.cadence,
     );
@@ -75,7 +78,12 @@ class InkStep {
     HexCoord(0, 1),
   ];
 
-  /// The 3 antipodal axes, as index pairs into [directions].
+  /// The 3 antipodal axes, as index pairs into [directions]. Still needed
+  /// by Rule A (gap-fill) even though Rule C (collision burst) -- the only
+  /// other former consumer of "is this axis complete" -- has been removed:
+  /// the burst scattered activation onto neighbors, the expensive
+  /// distance-2 shape in-circuit, and has been replaced by Rule E's
+  /// distance-1 serif pulse below.
   static const List<(int, int)> axisPairs = [(0, 3), (1, 4), (2, 5)];
 
   /// All valid coords for a hex grid of the given [radius] — same
@@ -141,22 +149,15 @@ class InkStep {
         if (allCellSet.contains(antipode)) next.add(antipode);
       }
 
-      // Rule C — collision burst (any cell, active or not).
-      if (rules.ruleC && completeAxes >= 2) {
-        next.add(coord);
-        for (final nc in neighborCoords) {
-          if (allCellSet.contains(nc)) next.add(nc);
-        }
-      }
-
-      // Rule E — periodic tip-bloom.
-      if (isActive &&
+      // Rule E — periodic serif flare: on a pulse generation, an inactive
+      // cell with exactly one active neighbor becomes active. `coord` is
+      // already a valid grid cell (we're iterating allCells), so unlike
+      // the old burst there's no separate in-grid check needed here.
+      if (!isActive &&
           rules.ruleE &&
           activeNeighborCount == 1 &&
           generation % rules.cadence == 0) {
-        for (final nc in neighborCoords) {
-          if (allCellSet.contains(nc)) next.add(nc);
-        }
+        next.add(coord);
       }
     }
 

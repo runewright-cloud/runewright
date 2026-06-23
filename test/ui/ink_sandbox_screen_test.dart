@@ -92,12 +92,12 @@ void main() {
 
     expect(find.text('A: Gap-fill'), findsOneWidget);
     expect(find.text('B: Tip ext.'), findsOneWidget);
-    expect(find.text('C: Burst'), findsOneWidget);
-    expect(find.text('E: Bloom'), findsOneWidget);
-    expect(find.text('N=4'), findsNothing); // E off by default, cadence hidden
+    expect(find.text('C: Burst'), findsNothing); // Rule C removed
+    expect(find.text('E: Serif'), findsOneWidget);
+    expect(find.text('N=4'), findsOneWidget); // E is on by default now, cadence visible
 
-    await tester.tap(find.text('E: Bloom'));
+    await tester.tap(find.text('E: Serif'));
     await tester.pumpAndSettle();
-    expect(find.text('N=4'), findsOneWidget);
+    expect(find.text('N=4'), findsNothing); // toggled off, cadence stepper hidden
   });
 }

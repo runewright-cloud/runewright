@@ -255,8 +255,7 @@ class _RuleToggles extends StatelessWidget {
       children: [
         _RuleChip(label: 'A: Gap-fill', value: rules.ruleA, onChanged: (v) => onChanged(rules.copyWith(ruleA: v))),
         _RuleChip(label: 'B: Tip ext.', value: rules.ruleB, onChanged: (v) => onChanged(rules.copyWith(ruleB: v))),
-        _RuleChip(label: 'C: Burst', value: rules.ruleC, onChanged: (v) => onChanged(rules.copyWith(ruleC: v))),
-        _RuleChip(label: 'E: Bloom', value: rules.ruleE, onChanged: (v) => onChanged(rules.copyWith(ruleE: v))),
+        _RuleChip(label: 'E: Serif', value: rules.ruleE, onChanged: (v) => onChanged(rules.copyWith(ruleE: v))),
         if (rules.ruleE)
           Row(
             mainAxisSize: MainAxisSize.min,

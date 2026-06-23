@@ -79,10 +79,18 @@ int zoneIndex(BorderZone zone) {
   }
 }
 
-// ── Dominance helpers (mirror of main.dart private statics) ──────────────────
+// ── Dominance helpers ──────────────────────────────────────────────────────
+//
+// Single source for the dominance/decay/supreme system: both runStepper
+// (below) and main.dart's GameScreen (the live per-step Rune Craft display)
+// call into activeZoneFor/isSupreme/advanceDominance. Previously GameScreen
+// carried its own independent copy of this logic -- two oracles is exactly
+// the failure mode this codebase's "Dart is canonical" discipline exists to
+// prevent, so it was consolidated here. _nextRule and _decayAtMaxPressure
+// stay private; they're only ever called through advanceDominance.
 
 // Zone whose CARules are currently active; null for neutral.
-BorderZone? _activeZone(CARules rules) {
+BorderZone? activeZoneFor(CARules rules) {
   if (rules == CARules.fire)  return BorderZone.fire;
   if (rules == CARules.wind)  return BorderZone.air;
   if (rules == CARules.water) return BorderZone.water;
@@ -90,28 +98,47 @@ BorderZone? _activeZone(CARules rules) {
   return null;
 }
 
-// Apply floor((stepCount)/2) decay to the active zone's cumulative pressure.
-// Must be called with the RETURNED grid (after stepCount has been incremented
-// by CAStep.step), so stepCount = gen + 1 and decay = (gen+1)~/2.
+// Decay every zone currently at the max net pressure, splitting D evenly
+// (by ceiling) across however many zones are tied for the lead. Replaces
+// the old "only the dispatched zone decays" rule, which conflated decay
+// with dispatch for no principled reason. A unique leader (k=1) decays by
+// the full D -- behavior-identical to the old single-zone decay in the
+// no-tie case.
+//
+// D = floor((stepCount)/2). Must be called with the RETURNED grid (after
+// stepCount has been incremented by CAStep.step), so stepCount = gen + 1
+// and D = (gen+1)~/2.
 //
 // Decay sequence for gen 0..6: 0, 1, 1, 2, 2, 3, 3  (= floor((gen+1)/2))
-// This matches main.dart's _decayActiveZone and the Noir circuit's (t+1)/2.
-void _decayActiveZone(HexGrid grid, CARules currentRule) {
-  final zone = _activeZone(currentRule);
-  if (zone == null) return;
-  final count = grid.zoneActivations[zone] ?? 0;
-  grid.zoneActivations[zone] = max(0, count - grid.stepCount ~/ 2);
+// This matches the Noir circuit's (t+1)/2.
+//
+// Pure function of the pressure table now -- independent of which rule is
+// or was dispatched, unlike the old per-rule decay.
+void _decayAtMaxPressure(HexGrid grid) {
+  final a = grid.zoneActivations;
+  if (a.isEmpty) return;
+  final maxP = a.values.reduce(max);
+  if (maxP == 0) return;
+  final leaders = a.entries.where((e) => e.value == maxP).map((e) => e.key).toList();
+  final k = leaders.length;
+  final d = grid.stepCount ~/ 2;
+  final dec = (d + k - 1) ~/ k; // ceil(d / k)
+  for (final zone in leaders) {
+    a[zone] = max(0, maxP - dec);
+  }
 }
 
 // Select the dominant rule from decayed zone pressures (= grid.zoneActivations).
-// Sticky on ties: multiple zones tied → keep current rule.
+// A tie at the top pressure reports no dominant (CARules.neutral) -- ties
+// are unreportable as "the" dominant element, and (see isSupreme) can
+// never be supreme anyway, so dispatch is unaffected by this choice.
 // All zero → neutral.
-CARules _nextRule(CARules current, HexGrid grid) {
+CARules _nextRule(HexGrid grid) {
   final a = grid.zoneActivations;
   if (a.isEmpty || a.values.every((v) => v == 0)) return CARules.neutral;
   final maxCount = a.values.reduce(max);
   final leaders = a.entries.where((e) => e.value == maxCount).toList();
-  if (leaders.length != 1) return current;
+  if (leaders.length != 1) return CARules.neutral;
   final zone = leaders.first.key;
   switch (zone) {
     case BorderZone.fire:  return CARules.fire;
@@ -121,18 +148,56 @@ CARules _nextRule(CARules current, HexGrid grid) {
   }
 }
 
-// Returns true when the dominant zone's decayed pressure strictly exceeds
-// the sum of all other zones' pressures, AND the rule is non-neutral.
+// Returns true when [rule]'s zone has decayed pressure strictly exceeding
+// the sum of all other zones' pressures (and [rule] is non-neutral).
 // Matches circuit: (rule != 0) && (p_dom > total_p - p_dom)
-bool _isSupreme(CARules dominantRule, HexGrid grid) {
-  if (dominantRule == CARules.neutral) return false;
+//
+// A pure query over already-committed state -- no "current rule" input,
+// unlike _nextRule -- which is what lets GameScreen.build() re-derive
+// supreme status on every rebuild without re-running a step transition.
+bool isSupreme(CARules rule, HexGrid grid) {
+  if (rule == CARules.neutral) return false;
   final a = grid.zoneActivations;
   if (a.isEmpty) return false;
   final total = a.values.fold(0, (s, v) => s + v);
   if (total == 0) return false;
-  final zone = _activeZone(dominantRule)!;
+  final zone = activeZoneFor(rule)!;
   final pDom = a[zone] ?? 0;
   return pDom * 2 > total;
+}
+
+// Advances the dominance system by one generation: decays zones at max
+// pressure, selects the dominant element from the updated pressures, and
+// determines whether that dominant is supreme -- bundled into one call so
+// a caller can't accidentally pair a freshly-selected rule with a stale or
+// independently-recomputed supreme value. [grid] must already be the
+// post-CAStep.step grid (stepCount incremented).
+//
+// [dominant] is the SELECTED leader (CARules.neutral on a tie or no
+// pressure) -- this is what dominance_trajectory must record: the spell's
+// elemental signature, reported regardless of dispatch.
+//
+// [rule] is the GATED rule that actually evolves the grid next step:
+// neutral unless [dominant] is supreme. [isSupreme] is computed once, on
+// [dominant], and is the exact value used both for the gate and for
+// supremeFlags -- never recomputed separately for either use.
+//
+// [currentRule] is accepted for call-site stability with existing callers
+// but is no longer read: decay is now a pure function of the pressure
+// table, and a tie resolves to neutral rather than sticking to the
+// previous rule, so nothing here depends on history anymore.
+({CARules rule, CARules dominant, bool isSupreme}) advanceDominance(
+  CARules currentRule,
+  HexGrid grid,
+) {
+  _decayAtMaxPressure(grid);
+  final dominant = _nextRule(grid);
+  final supreme = isSupreme(dominant, grid);
+  return (
+    rule: supreme ? dominant : CARules.neutral,
+    dominant: dominant,
+    isSupreme: supreme,
+  );
 }
 
 // ── Flat grid ↔ HexGrid conversion ───────────────────────────────────────────
@@ -200,19 +265,21 @@ StepperResult runStepper(List<int> gridState, int T, int tierMax) {
       if (delta > 0) borderActivations[zoneIndex(zone)] += delta;
     }
 
-    // Step 3: decay active zone's cumulative pressure.
-    // next.stepCount == gen + 1 at this point; decay = (gen+1)~/2.
-    _decayActiveZone(next, currentRule);
+    // Step 3: decay + select the new dominant rule + supreme check, all in
+    // one call so trajectory and the flag can never see inconsistent values
+    // (next.stepCount == gen + 1 at this point; decay = (gen+1)~/2).
+    final dominance = advanceDominance(currentRule, next);
 
-    // Step 4: select new dominant rule from updated (decayed) pressures.
-    final newRule = _nextRule(currentRule, next);
-
-    // Step 5: record outputs for this generation.
-    dominanceTrajectory[gen] = ruleIndex(newRule);
-    supremeFlags[gen]        = _isSupreme(newRule, next) ? 1 : 0;
+    // Step 4: record outputs for this generation. Trajectory records the
+    // DOMINANT element (the spell's elemental signature) even on
+    // non-supreme generations; dispatch (currentRule, below) uses the
+    // gated dominance.rule, which differs from dominant whenever the
+    // dominant isn't supreme -- that decoupling is intentional (A1).
+    dominanceTrajectory[gen] = ruleIndex(dominance.dominant);
+    supremeFlags[gen]        = dominance.isSupreme ? 1 : 0;
 
     grid = next;
-    currentRule = newRule;
+    currentRule = dominance.rule;
   }
   // Entries for gen >= T remain 0 (neutral, no flags) — matches circuit masking.
 

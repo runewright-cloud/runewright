@@ -1,5 +1,10 @@
 // M3.4 on-device gate + measurement harness for the real v2.4 circuit.
 // Supersedes the M2 proxy-circuit spike (ca_spike_t*) that used to live here.
+// Also the harness for the ink-substrate tier-12 cold/warm proving-time
+// measurement (RULESET_VERSION 2): tap "Prove Tier 12" once on a fresh
+// install for cold (SRS cache miss, network download), then 3-5 more times
+// for warm (cache hit) -- read srs_ms/wall_ms off each RUNEWRIGHT_PROVE
+// logcat line, see below.
 //
 // Calls:  lib/ffi/prover.dart → noir_rs barretenberg FFI
 // Assets: assets/circuits/ca_v2_4_tier{12,24,48}.json + matching .vk
@@ -10,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
 import '../ffi/prover.dart';
+import '../ffi/srs_cache.dart';
 
 // poseidon2_hash2(0, 0) — the interim dummy owner_pubkey used throughout
 // test_vectors/seeds.json and scripts/gen_vectors.dart until the identity
@@ -57,13 +63,23 @@ class _SpikeScreenState extends State<SpikeScreen> {
       _append('Extracting bytecode…');
       final bytecode = await extractBytecode(circuitJson);
 
-      // 3. Init SRS only (downloads CRS bytes, caches for prove step).
+      // 3. Init SRS via the PERSISTENT on-disk cache (lib/ffi/srs_cache.dart),
+      //    not the network-only `initSrs` this screen used through M3.4 --
+      //    that always re-downloaded over the network on every tap, which
+      //    can't distinguish a cold (cache miss, network fetch) run from a
+      //    warm (cache hit, disk read only) one. Timed separately from the
+      //    prove call below so SRS-load cost and proving cost are visible
+      //    as distinct numbers, not folded together.
       //    We skip circuit_compute_vk because it crashes on AArch64 Android with
       //    "Backend error: vector" (std::out_of_range in barretenberg-rs 4.2.0 arm64,
       //    a real but separate AArch64 bug from the hardware_concurrency one below).
       //    VKs were pre-computed on x86-64 and bundled as assets instead.
-      _append('Initialising SRS… (may download ${_srsHint(tier)} on first run)');
-      await initSrs(bytecode);
+      _append('Initialising SRS… (may download ${_srsHint(tier)} on first run, cached after)');
+      final srsStopwatch = Stopwatch()..start();
+      final cachePath = await srsCachePath();
+      await initSrsCached(bytecode, cachePath: cachePath);
+      srsStopwatch.stop();
+      _append('SRS ready in ${srsStopwatch.elapsedMilliseconds} ms (cache: $cachePath)');
 
       // 4. Load pre-computed VK from bundled asset (bypasses broken circuit_compute_vk).
       _append('Loading bundled VK…');
@@ -72,7 +88,8 @@ class _SpikeScreenState extends State<SpikeScreen> {
       _append('VK: ${vk.length} bytes (pre-computed, bundled)');
 
       // 5. Prove with the known-good witness: all-zero grid, T=1, the pinned
-      //    owner_pubkey, zero key halves, ruleset_version=1. This is the
+      //    owner_pubkey, zero key halves, ruleset_version=2 (RULESET_VERSION
+      //    bumped for the ink substrate -- CIRCUIT_IO.md CIRCUIT_IO 6). This is the
       //    M3.4 step-6 gate: the first real exercise of public-input
       //    (T/owner_pubkey/ruleset_version) marshalling across FRB, and of
       //    the hardware_concurrency fix (ffi/src/api/prover.rs's #[ctor])
@@ -87,7 +104,7 @@ class _SpikeScreenState extends State<SpikeScreen> {
         keyLoHex: '0x0',
         tHex: '0x1',
         ownerPubkeyHex: _ownerPubkeyHex,
-        rulesetVersionHex: '0x1',
+        rulesetVersionHex: '0x2',
         vkBytes: vk,
       );
 
@@ -97,12 +114,14 @@ class _SpikeScreenState extends State<SpikeScreen> {
 
       // 7. Emit the acceptance-gate log line (grep for this in adb logcat)
       final logLine = 'RUNEWRIGHT_PROVE tier=$tier '
+          'srs_ms=${srsStopwatch.elapsedMilliseconds} '
           'wall_ms=${result.wallMs} '
           'peak_rss_kb=${result.peakRssKb} '
           'verified=$verified';
       developer.log(logLine, name: 'runewright.spike', level: 800);
 
-      _append('Done ✓  wall=${result.wallMs} ms  '
+      _append('Done ✓  srs=${srsStopwatch.elapsedMilliseconds} ms  '
+          'prove=${result.wallMs} ms  '
           'rss=${result.peakRssKb} kB  '
           'verified=$verified');
       _append('→ See logcat:  adb logcat -s flutter | grep RUNEWRIGHT_PROVE');

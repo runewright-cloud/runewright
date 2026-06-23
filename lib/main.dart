@@ -5,6 +5,7 @@ import 'package:flutter/material.dart' hide Element;
 import 'package:flutter/services.dart' show rootBundle;
 import 'engine/border_zone.dart';
 import 'engine/ca_rules.dart';
+import 'engine/ca_run.dart' show activeZoneFor, advanceDominance, isSupreme;
 import 'engine/element.dart';
 import 'engine/formula.dart';
 import 'engine/hex_grid.dart';
@@ -83,53 +84,6 @@ class _GameScreenState extends State<GameScreen> {
       [coord.q.abs(), coord.r.abs(), (coord.q + coord.r).abs()].reduce(max) >
       _innerRadius;
 
-  static const _zoneRules = {
-    BorderZone.fire:  CARules.fire,
-    BorderZone.air:   CARules.wind,
-    BorderZone.water: CARules.water,
-    BorderZone.earth: CARules.earth,
-  };
-
-  // Resolves the next active rule given the current rule and updated grid:
-  //   - all counts zero  → neutral
-  //   - one clear leader → that zone's rule
-  //   - tied             → keep current
-  static CARules _nextRules(CARules current, HexGrid grid) {
-    final a = grid.zoneActivations;
-    if (a.isEmpty || a.values.every((v) => v == 0)) return CARules.neutral;
-    final maxCount = a.values.reduce(max);
-    final leaders = a.entries.where((e) => e.value == maxCount).toList();
-    if (leaders.length != 1) return current;
-    return _zoneRules[leaders.first.key] ?? current;
-  }
-
-  // Returns the zone that has strictly more activations than all others combined,
-  // or null if no such zone exists.
-  static BorderZone? _supremeDominantZone(Map<BorderZone, int> activations) {
-    if (activations.isEmpty) return null;
-    final total = activations.values.fold(0, (a, b) => a + b);
-    for (final entry in activations.entries) {
-      if (entry.value * 2 > total) return entry.key;
-    }
-    return null;
-  }
-
-  // Returns the zone whose rules are currently active, or null for neutral.
-  static BorderZone? _activeZone(CARules rules) {
-    for (final entry in _zoneRules.entries) {
-      if (entry.value.name == rules.name) return entry.key;
-    }
-    return null;
-  }
-
-  // Reduces the active zone's activation count by the current step count.
-  static void _decayActiveZone(HexGrid grid, CARules rules) {
-    final zone = _activeZone(rules);
-    if (zone == null) return;
-    final count = grid.zoneActivations[zone] ?? 0;
-    grid.zoneActivations[zone] = max(0, count - grid.stepCount ~/ 2);
-  }
-
   void _onTap(TapUpDetails details) {
     final box = _paintKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null) return;
@@ -160,15 +114,13 @@ class _GameScreenState extends State<GameScreen> {
   void _stepOnce() {
     _initialGrid ??= _grid.copy();
     final next = CAStep.step(_grid, _rules);
-    _decayActiveZone(next, _rules);
-    final newRules = _nextRules(_rules, next);
-    final supremeZone = _supremeDominantZone(next.zoneActivations);
+    final dominance = advanceDominance(_rules, next);
     setState(() {
       _grid = next;
-      _rules = newRules;
+      _rules = dominance.rule;
       _formulaTracker.step(
-        FormulaTracker.zoneFor(newRules),
-        supremeDominant: supremeZone != null,
+        FormulaTracker.zoneFor(dominance.dominant),
+        supremeDominant: dominance.isSupreme,
       );
     });
   }
@@ -182,20 +134,18 @@ class _GameScreenState extends State<GameScreen> {
       setState(() => _running = true);
       _timer = Timer.periodic(const Duration(seconds: 1), (_) {
         final next = CAStep.step(_grid, _rules);
-        _decayActiveZone(next, _rules);
         if (_gridsEqual(_grid, next)) {
           _timer?.cancel();
           setState(() => _running = false);
           return;
         }
-        final newRules = _nextRules(_rules, next);
-        final supremeZone = _supremeDominantZone(next.zoneActivations);
+        final dominance = advanceDominance(_rules, next);
         setState(() {
           _grid = next;
-          _rules = newRules;
+          _rules = dominance.rule;
           _formulaTracker.step(
-            FormulaTracker.zoneFor(newRules),
-            supremeDominant: supremeZone != null,
+            FormulaTracker.zoneFor(dominance.dominant),
+            supremeDominant: dominance.isSupreme,
           );
         });
       });
@@ -309,7 +259,7 @@ class _GameScreenState extends State<GameScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final supremeZone = _supremeDominantZone(_grid.zoneActivations);
+    final supremeZone = isSupreme(_rules, _grid) ? activeZoneFor(_rules) : null;
     return Scaffold(
       appBar: AppBar(
         title: const Text(
@@ -345,7 +295,7 @@ class _GameScreenState extends State<GameScreen> {
                       grid: _grid,
                       hexSize: _hexSize(size),
                       innerRadius: _innerRadius,
-                      activeZone: _activeZone(_rules),
+                      activeZone: activeZoneFor(_rules),
                     ),
                     child: const SizedBox.expand(),
                   );

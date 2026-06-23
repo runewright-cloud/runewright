@@ -84,6 +84,26 @@
     },
 
     {
+      "id": "neutral_monotonicity_chain",
+      "kind": "positive",
+      "description": "RULESET_VERSION 2 (ink). Closes the CIRCUIT_IO.md §11.8 seam (forged death / monotonicity): a 2-cell tip at (7,0)/(8,0) -- flat indices 388/406, the latter being the documented max inscribable index -- grows via Rule B exactly one cell per generation toward the border at (12,0): (9,0) born gen1, (10,0) gen2, (11,0) gen3, border touch at gen4. Each step's birth condition (Rule B requires the tip to have EXACTLY ONE active neighbor) is causally dependent on the immediately-preceding tip cell still being active (Rule D / no-deaths) -- if a monotonicity bug let any intermediate tip die, the chain stops growing right there and the border touch never happens (or happens at the wrong generation), changing border_activations, dominance_trajectory, AND supreme_dominance_flags all at once. This is the property the abstract §11.8 vector (a witness can't express a forged death at all -- next_grid is derived, not witnessed, see CIRCUIT_IO.md §10.5/§10.10) is actually subsumed BY: this seed is the concrete positive vector that makes that subsumption real rather than asserted. Stepper-verified directly (scripts/gen_vectors.dart not yet run against this seed): border_activations/dominance_trajectory/supreme_dominance_flags are all-zero through T=1..3 and only become non-zero at T=4 -- confirming the touch is genuinely contingent on three full generations of unbroken persistence, not an artifact of the seed's shape. Gen4 also happens to be a pulse generation (cadence=4): the serif-flare condition on (12,0) shares the exact same upstream dependency on (11,0) staying alive, so the coincidence reinforces this vector's coverage rather than confounding it -- two ink rules, one shared dependency, either of which a monotonicity bug would equally break.",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [388, 406],
+        "T": 6,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 2
+      },
+      "expected": {
+        "commitment": "IMPL",
+        "border_activations": [0, 0, 10, 0],
+        "dominance_trajectory":    [0, 0, 0, 3, 3, 3, 0, 0, 0, 0, 0, 0],
+        "supreme_dominance_flags": [0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+        "verifies": true
+      }
+    },
+
+    {
       "id": "neg_nonboolean_cell",
       "kind": "negative",
       "description": "cell (0,-6)=228 forced to 2; must be rejected by §10.1 (cells constrained to {0,1})",
