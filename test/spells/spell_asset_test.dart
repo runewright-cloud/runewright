@@ -29,6 +29,9 @@ void main() {
         manaCost: 42,
         initialGrid: List<int>.filled(469, 0)..[234] = 1,
         proofBytes: Uint8List.fromList([1, 2, 3, 4, 5]),
+        name: 'Ember Wake',
+        commitmentHex: '0xaabbcc',
+        spellHashHex: '0xddeeff',
       );
 
   test('toJson/fromJson round-trips exactly', () {
@@ -43,6 +46,9 @@ void main() {
     expect(restored.manaCost, equals(original.manaCost));
     expect(restored.initialGrid, equals(original.initialGrid));
     expect(restored.proofBytes, equals(original.proofBytes));
+    expect(restored.name, equals(original.name));
+    expect(restored.commitmentHex, equals(original.commitmentHex));
+    expect(restored.spellHashHex, equals(original.spellHashHex));
   });
 
   test('save() writes a JSON file under <docs>/spells/<id>.json', () async {
@@ -63,6 +69,9 @@ void main() {
       manaCost: 1,
       initialGrid: List.filled(469, 0),
       proofBytes: Uint8List.fromList([9]),
+      name: 'Older Spell',
+      commitmentHex: '0x11',
+      spellHashHex: '0x22',
     );
     final newerAsset = SpellAsset(
       id: 'newer',
@@ -73,6 +82,9 @@ void main() {
       manaCost: 2,
       initialGrid: List.filled(469, 0),
       proofBytes: Uint8List.fromList([8]),
+      name: 'Newer Spell',
+      commitmentHex: '0x33',
+      spellHashHex: '0x44',
     );
     await olderAsset.save();
     await newerAsset.save();

@@ -23,7 +23,7 @@ global CADENCE: u32 = 4;
 // Rules match lib/engine/ca_rules.dart exactly (Dart is canonical, CLAUDE.md):
 //   1 fire:    survive {1},          born {1}
 //   2 air:     survive {0,1,2},      born {2}
-//   3 water:   survive {3,4,5,6},    born {1,2}
+//   3 water:   survive {2,3},          born {1}
 //   4 earth:   survive {1,2,3,4,5,6}, born {2}
 global FLAT_TRANSITION: [Field; 56] = [
     // rule 1 - fire
@@ -33,8 +33,8 @@ global FLAT_TRANSITION: [Field; 56] = [
     0, 0, 1, 0, 0, 0, 0,   // dead
     1, 1, 1, 0, 0, 0, 0,   // alive
     // rule 3 - water
-    0, 1, 1, 0, 0, 0, 0,   // dead
-    0, 0, 0, 1, 1, 1, 1,   // alive
+    0, 1, 0, 0, 0, 0, 0,   // dead
+    0, 0, 1, 1, 0, 0, 0,   // alive
     // rule 4 - earth
     0, 0, 1, 0, 0, 0, 0,   // dead
     0, 1, 1, 1, 1, 1, 1,   // alive

@@ -36,8 +36,8 @@ class CARules {
 
   static const water = CARules(
     name: 'Water',
-    surviveOn: {3, 4, 5, 6},
-    bornOn: {1, 2},
+    surviveOn: {2, 3},
+    bornOn: {1},
   );
 
   static const wind = CARules(name: 'Wind', surviveOn: {0, 1, 2}, bornOn: {2});

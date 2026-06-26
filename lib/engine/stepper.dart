@@ -34,6 +34,7 @@ class CAStep {
             if (zone != null) {
               next.zoneActivations[zone] =
                   (next.zoneActivations[zone] ?? 0) + 1;
+              next.lastActivatedBorderCells.add(coord);
             }
           }
         }
@@ -90,6 +91,7 @@ class CAStep {
           if (zone != null) {
             next.zoneActivations[zone] =
                 (next.zoneActivations[zone] ?? 0) + 1;
+            next.lastActivatedBorderCells.add(coord);
           }
         }
         next.cells[coord] = Element.dead;

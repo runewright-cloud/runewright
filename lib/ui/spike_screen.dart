@@ -76,7 +76,10 @@ class _SpikeScreenState extends State<SpikeScreen> {
       //    VKs were pre-computed on x86-64 and bundled as assets instead.
       _append('Initialising SRS… (may download ${_srsHint(tier)} on first run, cached after)');
       final srsStopwatch = Stopwatch()..start();
-      final cachePath = await srsCachePath();
+      // Each tier needs a different SRS size (t12≈128MB, t24≈256MB, t48≈512MB).
+      // Use per-tier cache files so a t24 warm-up can't pollute the t48 run.
+      final baseCache = await srsCachePath();
+      final cachePath = baseCache.replaceFirst(kSrsCacheFileName, 'runewright_srs_t$tier.local');
       await initSrsCached(bytecode, cachePath: cachePath);
       srsStopwatch.stop();
       _append('SRS ready in ${srsStopwatch.elapsedMilliseconds} ms (cache: $cachePath)');

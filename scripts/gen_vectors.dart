@@ -6,7 +6,12 @@
 //     supreme_dominance_flags) come from the Dart stepper (runStepper).
 //   - commitment comes from the Noir circuit (nargo execute), never Dart.
 //
-// Run with: dart run scripts/gen_vectors.dart [--tier12-dir=circuits/ca_v2_4_tier12]
+// Run with: dart run scripts/gen_vectors.dart [--tier=12|24|48]
+//           --tier=12 (default) writes test_vectors/corpus.json
+//           --tier=24            writes test_vectors/corpus_tier24.json
+//           --tier=48            writes test_vectors/corpus_tier48.json
+//
+// For backward compat, --tier12-dir=<path> still overrides the tier-12 circuit path.
 //
 // owner_pubkey / key_hi / key_lo: no identity module exists yet (CLAUDE.md
 // scope fence). Every vector's witness uses the interim zero keys; the
@@ -123,10 +128,19 @@ NargoResult _runNargoExecute(String circuitDir, String proverToml) {
 }
 
 void main(List<String> args) {
-  var tierDir = 'circuits/ca_v2_4_tier12';
+  var selectedTier = 12;
+  var tier12DirOverride = '';
   for (final a in args) {
-    if (a.startsWith('--tier12-dir=')) tierDir = a.substring('--tier12-dir='.length);
+    if (a.startsWith('--tier=')) selectedTier = int.parse(a.substring('--tier='.length));
+    if (a.startsWith('--tier12-dir=')) tier12DirOverride = a.substring('--tier12-dir='.length);
   }
+
+  final tierDir = tier12DirOverride.isNotEmpty
+      ? tier12DirOverride
+      : 'circuits/ca_v2_4_tier$selectedTier';
+  final corpusPath = selectedTier == 12
+      ? 'test_vectors/corpus.json'
+      : 'test_vectors/corpus_tier$selectedTier.json';
 
   final seedsJson = jsonDecode(File('test_vectors/seeds.json').readAsStringSync())
       as Map<String, dynamic>;
@@ -140,17 +154,27 @@ void main(List<String> args) {
     final id = v['id'] as String;
     final kind = v['kind'] as String;
     final input = v['input'] as Map<String, dynamic>;
-    final tierMax = v['tier_max'] as int;
     final activeCells = input['active_cells'] as List<dynamic>;
     final t = input['T'] as int;
     final rulesetVersion = input['ruleset_version'] as int;
     final rawOverrides = v['raw_overrides'] as Map<String, dynamic>?;
     final declaredOverride = v['declared_override'] as Map<String, dynamic>?;
 
-    if (tierMax != 12) {
-      stdout.writeln('SKIP $id: tier_max=$tierMax (only tier12 circuit is wired)');
+    // Seeds declare tier_max=12 (the minimum tier they're meaningful for).
+    // For higher tiers, all these seeds are valid since T <= 12 <= selectedTier.
+    // Negative T-range vectors are tier-specific: neg_out_of_range_T_too_large
+    // uses T=13 which is only invalid at tier-12; skip it for higher tiers.
+    if (id == 'neg_out_of_range_T_too_large' && selectedTier > 12) {
+      stdout.writeln('SKIP $id: T=$t is in-range for tier-$selectedTier (tier-specific negative)');
       continue;
     }
+    // For any seed with T > selectedTier (shouldn't happen with current seeds), skip.
+    if (t > selectedTier && kind == 'positive') {
+      stdout.writeln('SKIP $id: T=$t exceeds tier_max=$selectedTier');
+      continue;
+    }
+    // Use selectedTier as the effective tierMax for stepper and corpus output.
+    final tierMax = selectedTier;
 
     final grid = _expandGrid(activeCells, rawOverrides);
 
@@ -253,10 +277,10 @@ void main(List<String> args) {
     }
   }
 
-  File('test_vectors/corpus.json')
+  File(corpusPath)
       .writeAsStringSync(const JsonEncoder.withIndent('  ').convert(out));
 
-  stdout.writeln('\n${out.length} vectors written to test_vectors/corpus.json, $failures failure(s).');
+  stdout.writeln('\n${out.length} vectors written to $corpusPath, $failures failure(s).');
   if (failures > 0) exit(1);
 }
 

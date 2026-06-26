@@ -24,6 +24,11 @@ class SpellAsset {
     required this.manaCost,
     required this.initialGrid,
     required this.proofBytes,
+    required this.name,
+    required this.commitmentHex,
+    required this.spellHashHex,
+    this.formula = const [],
+    this.supremeTags = const [],
   });
 
   /// Unique within a device install -- a microsecond timestamp is more than
@@ -56,6 +61,30 @@ class SpellAsset {
   /// (CLAUDE.md hard invariant 1: never reimplement the circuit's crypto).
   final Uint8List proofBytes;
 
+  /// Player-assigned name for this spell.
+  final String name;
+
+  /// `Poseidon2(packed_grid)` — the in-circuit grid commitment, extracted
+  /// from the proof's public inputs (field index 3, CIRCUIT_IO.md CIRCUIT_IO 4).
+  /// Spells with the same commitmentHex are "Kin" (same grid, possibly
+  /// different T).
+  final String commitmentHex;
+
+  /// `Poseidon2(commitment, T)` — computed off-circuit via FFI
+  /// (lib/ffi/identity.dart). Unique per (grid, T) pair; used as the
+  /// duplicate-detection key when saving a new inscription.
+  final String spellHashHex;
+
+  /// Elemental activations committed to the formula bar during this spell's
+  /// simulation, stored as BorderZone enum names ('fire', 'air', 'water',
+  /// 'earth'). Empty for spells inscribed before this field was added.
+  final List<String> formula;
+
+  /// BorderZone enum names for elements that achieved supreme dominance at
+  /// least once during this spell's simulation. Determines which embellishment
+  /// options are available when adding to a chapter. Empty for older spells.
+  final List<String> supremeTags;
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'createdAt': createdAt.toIso8601String(),
@@ -65,6 +94,11 @@ class SpellAsset {
         'manaCost': manaCost,
         'initialGrid': initialGrid,
         'proofBytesBase64': base64Encode(proofBytes),
+        'name': name,
+        'commitmentHex': commitmentHex,
+        'spellHashHex': spellHashHex,
+        'formula': formula,
+        'supremeTags': supremeTags,
       };
 
   static SpellAsset fromJson(Map<String, dynamic> json) => SpellAsset(
@@ -76,6 +110,11 @@ class SpellAsset {
         manaCost: json['manaCost'] as int,
         initialGrid: (json['initialGrid'] as List).cast<int>(),
         proofBytes: base64Decode(json['proofBytesBase64'] as String),
+        name: (json['name'] as String?) ?? '',
+        commitmentHex: (json['commitmentHex'] as String?) ?? '',
+        spellHashHex: (json['spellHashHex'] as String?) ?? '',
+        formula: (json['formula'] as List<dynamic>? ?? []).cast<String>(),
+        supremeTags: (json['supremeTags'] as List<dynamic>? ?? []).cast<String>(),
       );
 
   static Future<Directory> _spellsDir() async {
@@ -85,6 +124,32 @@ class SpellAsset {
       await dir.create(recursive: true);
     }
     return dir;
+  }
+
+  /// Returns a copy with [tags] substituted for [supremeTags]; all other
+  /// fields are unchanged. Used to migrate legacy spells (inscribed before the
+  /// supremeTags field was added) without re-inscription.
+  SpellAsset withSupremeTags(List<String> tags) => SpellAsset(
+        id: id,
+        createdAt: createdAt,
+        tier: tier,
+        t: t,
+        ownerPubkeyHex: ownerPubkeyHex,
+        manaCost: manaCost,
+        initialGrid: initialGrid,
+        proofBytes: proofBytes,
+        name: name,
+        commitmentHex: commitmentHex,
+        spellHashHex: spellHashHex,
+        formula: formula,
+        supremeTags: tags,
+      );
+
+  /// Deletes this spell's persisted JSON file. Silently no-ops if already gone.
+  Future<void> delete() async {
+    final dir = await _spellsDir();
+    final file = File('${dir.path}/$id.json');
+    if (await file.exists()) await file.delete();
   }
 
   /// Persists this spell as `<app documents>/spells/<id>.json`. Returns the

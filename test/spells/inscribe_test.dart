@@ -68,6 +68,7 @@ void main() {
         steps: 0,
         identity: identity,
         manaCost: 0,
+        name: 'Irrelevant',
         loadCircuitJson: (_) async => throw StateError('should not load a circuit for an invalid step count'),
         loadVkBytes: (_) async => throw StateError('should not load a VK for an invalid step count'),
       ),
@@ -86,6 +87,7 @@ void main() {
       steps: 1,
       identity: identity,
       manaCost: 7,
+      name: 'Ember Wake',
       loadCircuitJson: rootBundle.loadString,
       loadVkBytes: (path) async => (await rootBundle.load(path)).buffer.asUint8List(),
       onProgress: progress.add,
@@ -94,6 +96,9 @@ void main() {
     expect(asset.tier, equals(12));
     expect(asset.t, equals(1));
     expect(asset.manaCost, equals(7));
+    expect(asset.name, equals('Ember Wake'));
+    expect(asset.commitmentHex, isNotEmpty);
+    expect(asset.spellHashHex, isNotEmpty);
     expect(asset.ownerPubkeyHex, equals(await identity.ownerPubkeyHex()));
     expect(asset.initialGrid.length, equals(469));
     expect(asset.initialGrid[234], equals(1)); // center cell, per GRID_ORDERING_v2.md
@@ -121,6 +126,7 @@ void main() {
       steps: 1,
       identity: identity,
       manaCost: 1,
+      name: 'First Spell',
       loadCircuitJson: rootBundle.loadString,
       loadVkBytes: (path) async => (await rootBundle.load(path)).buffer.asUint8List(),
     );
@@ -131,12 +137,14 @@ void main() {
     // Second call: cache file already exists, so this must read it instead
     // of downloading again, and the progress message must not carry the
     // "needs a connection" warning this time.
+    // Uses steps: 2 (different T → different spellHashHex → not a duplicate).
     final secondProgress = <String>[];
     final secondAsset = await inscribeSpell(
       initialGrid: grid,
-      steps: 1,
+      steps: 2,
       identity: identity,
       manaCost: 2,
+      name: 'Second Spell',
       loadCircuitJson: rootBundle.loadString,
       loadVkBytes: (path) async => (await rootBundle.load(path)).buffer.asUint8List(),
       onProgress: secondProgress.add,

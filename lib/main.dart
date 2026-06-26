@@ -12,6 +12,7 @@ import 'engine/hex_grid.dart';
 import 'engine/stepper.dart';
 import 'identity/identity.dart';
 import 'spells/inscribe.dart';
+import 'spells/spell_asset.dart';
 import 'ui/formula_bar.dart';
 import 'ui/hex_grid_painter.dart';
 import 'ui/app_root.dart';
@@ -54,24 +55,71 @@ class RuneDuelApp extends StatelessWidget {
 }
 
 class GameScreen extends StatefulWidget {
-  const GameScreen({super.key});
+  const GameScreen({super.key, this.loadedSpell});
+
+  /// When non-null, the screen opens with this spell's simulation replayed to
+  /// its inscription state (T steps from the initial grid). Revert returns to
+  /// the initial grid so the player can modify and re-inscribe.
+  final SpellAsset? loadedSpell;
 
   @override
   State<GameScreen> createState() => _GameScreenState();
 }
 
-class _GameScreenState extends State<GameScreen> {
+class _GameScreenState extends State<GameScreen>
+    with SingleTickerProviderStateMixin {
   static const _innerRadius = 8;
   static const _radius = 12; // inscribable 0-8, buffer 9-11, border 12
 
-  HexGrid _grid = HexGrid(_radius);
-  CARules _rules = CARules.neutral;
+  late HexGrid _grid;
+  late CARules _rules;
   final _paintKey = GlobalKey();
   bool _running = false;
   bool _inscribing = false;
   Timer? _timer;
   HexGrid? _initialGrid;
   final _formulaTracker = FormulaTracker();
+  final _supremeElements = <String>{};
+
+  late AnimationController _flickerCtrl;
+  Set<HexCoord> _activatedCells = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _flickerCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 750),
+    );
+    _flickerCtrl.addStatusListener((status) {
+      if (status == AnimationStatus.completed) {
+        setState(() => _activatedCells = {});
+      }
+    });
+    final spell = widget.loadedSpell;
+    if (spell != null) {
+      _initialGrid = HexGrid.fromPackedState(spell.initialGrid, _radius);
+      _grid = _initialGrid!.copy();
+      _rules = CARules.neutral;
+      for (int gen = 0; gen < spell.t; gen++) {
+        final next = CAStep.step(_grid, _rules);
+        final dom = advanceDominance(_rules, next);
+        if (dom.isSupreme) {
+          final zone = FormulaTracker.zoneFor(dom.dominant);
+          if (zone != null) _supremeElements.add(zone.name);
+        }
+        _formulaTracker.step(
+          FormulaTracker.zoneFor(dom.dominant),
+          supremeDominant: dom.isSupreme,
+        );
+        _grid = next;
+        _rules = dom.rule;
+      }
+    } else {
+      _grid = HexGrid(_radius);
+      _rules = CARules.neutral;
+    }
+  }
 
   double _hexSize(Size available) {
     const padding = 16.0;
@@ -118,11 +166,19 @@ class _GameScreenState extends State<GameScreen> {
     setState(() {
       _grid = next;
       _rules = dominance.rule;
+      if (dominance.isSupreme) {
+        final zone = FormulaTracker.zoneFor(dominance.dominant);
+        if (zone != null) _supremeElements.add(zone.name);
+      }
       _formulaTracker.step(
         FormulaTracker.zoneFor(dominance.dominant),
         supremeDominant: dominance.isSupreme,
       );
+      if (next.lastActivatedBorderCells.isNotEmpty) {
+        _activatedCells = next.lastActivatedBorderCells;
+      }
     });
+    _triggerFlicker(next);
   }
 
   void _toggleRun() {
@@ -143,11 +199,19 @@ class _GameScreenState extends State<GameScreen> {
         setState(() {
           _grid = next;
           _rules = dominance.rule;
+          if (dominance.isSupreme) {
+            final zone = FormulaTracker.zoneFor(dominance.dominant);
+            if (zone != null) _supremeElements.add(zone.name);
+          }
           _formulaTracker.step(
             FormulaTracker.zoneFor(dominance.dominant),
             supremeDominant: dominance.isSupreme,
           );
+          if (next.lastActivatedBorderCells.isNotEmpty) {
+            _activatedCells = next.lastActivatedBorderCells;
+          }
         });
+        _triggerFlicker(next);
       });
     }
   }
@@ -155,26 +219,40 @@ class _GameScreenState extends State<GameScreen> {
   void _revert() {
     if (_initialGrid == null) return;
     _timer?.cancel();
+    _flickerCtrl.stop();
     setState(() {
       _grid = _initialGrid!.copy();
+      _rules = CARules.neutral;
       _running = false;
+      _activatedCells = {};
       _formulaTracker.reset();
+      _supremeElements.clear();
     });
   }
 
   void _reset() {
     _timer?.cancel();
+    _flickerCtrl.stop();
     setState(() {
       _grid = HexGrid(_radius);
       _rules = CARules.neutral;
       _running = false;
       _initialGrid = null;
+      _activatedCells = {};
       _formulaTracker.reset();
+      _supremeElements.clear();
     });
+  }
+
+  void _triggerFlicker(HexGrid next) {
+    if (next.lastActivatedBorderCells.isNotEmpty) {
+      _flickerCtrl.forward(from: 0.0);
+    }
   }
 
   @override
   void dispose() {
+    _flickerCtrl.dispose();
     _timer?.cancel();
     super.dispose();
   }
@@ -183,7 +261,12 @@ class _GameScreenState extends State<GameScreen> {
     final base = _initialGrid != null
         ? _initialGrid!.cells.values.where((e) => e == Element.alive).length
         : _grid.cells.values.where((e) => e == Element.alive).length;
-    return (base * pow(1.25, _grid.stepCount)).round();
+    // Each step multiplies cost by 1.05.
+    // Each time the formula bar starts a new effect (entries 4, 7, 10, ...)
+    // multiplies cost by an additional 1.5. Number of such multipliers =
+    // max(0, (committed - 1) ~/ 3): 0 for lengths 0–3, 1 at 4–6, 2 at 7–9.
+    final effectCount = max(0, (_formulaTracker.committed.length - 1) ~/ 3);
+    return (base * pow(1.05, _grid.stepCount) * pow(1.5, effectCount)).round();
   }
 
   bool get _canInscribe =>
@@ -195,6 +278,14 @@ class _GameScreenState extends State<GameScreen> {
 
   Future<void> _inscribe() async {
     if (!_canInscribe) return;
+
+    // Prompt for the spell name before starting the non-cancellable prove.
+    final spellName = await showDialog<String>(
+      context: context,
+      builder: (_) => const _SpellNameDialog(),
+    );
+    if (spellName == null || !mounted) return;
+
     final initialGrid = _initialGrid!;
     final steps = _grid.stepCount;
     final manaCost = _manaCost;
@@ -214,6 +305,9 @@ class _GameScreenState extends State<GameScreen> {
         steps: steps,
         identity: identity,
         manaCost: manaCost,
+        name: spellName,
+        formula: _formulaTracker.committed.map((z) => z.name).toList(),
+        supremeTags: _supremeElements.toList(),
         loadCircuitJson: rootBundle.loadString,
         loadVkBytes: (path) async => (await rootBundle.load(path)).buffer.asUint8List(),
         onProgress: (message) => status.value = message,
@@ -225,9 +319,10 @@ class _GameScreenState extends State<GameScreen> {
         builder: (_) => AlertDialog(
           title: const Text('Spell Inscribed'),
           content: Text(
+            '"${asset.name}"\n\n'
             'Tier ${asset.tier} · T=${asset.t} · Mana ${asset.manaCost}\n\n'
-            'Bound to your Runekey and saved (${asset.proofBytes.length} bytes). '
-            'It will appear in your library once that\'s built.',
+            'Bound to your Runekey and saved. '
+            'It will now appear in your library.',
           ),
           actions: [
             TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK')),
@@ -296,6 +391,8 @@ class _GameScreenState extends State<GameScreen> {
                       hexSize: _hexSize(size),
                       innerRadius: _innerRadius,
                       activeZone: activeZoneFor(_rules),
+                      activatedBorderCells: _activatedCells,
+                      flicker: _flickerCtrl,
                     ),
                     child: const SizedBox.expand(),
                   );
@@ -470,6 +567,54 @@ class _InscribingDialog extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _SpellNameDialog extends StatefulWidget {
+  const _SpellNameDialog();
+
+  @override
+  State<_SpellNameDialog> createState() => _SpellNameDialogState();
+}
+
+class _SpellNameDialogState extends State<_SpellNameDialog> {
+  final _ctrl = TextEditingController();
+  bool _isEmpty = true;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final name = _ctrl.text.trim();
+    if (name.isNotEmpty) Navigator.of(context).pop(name);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Name Your Spell'),
+      content: TextField(
+        controller: _ctrl,
+        autofocus: true,
+        decoration: const InputDecoration(hintText: 'Spell name'),
+        textCapitalization: TextCapitalization.words,
+        onChanged: (v) => setState(() => _isEmpty = v.trim().isEmpty),
+        onSubmitted: (_) => _submit(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: _isEmpty ? null : _submit,
+          child: const Text('Inscribe'),
+        ),
+      ],
     );
   }
 }

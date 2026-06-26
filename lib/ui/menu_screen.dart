@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart' hide Element;
 import '../main.dart';
-import 'ink_sandbox_screen.dart';
+import 'battle_lobby_screen.dart';
+import 'library_screen.dart';
 import 'onboarding/onboarding_landing_screen.dart';
 
 class MenuScreen extends StatelessWidget {
@@ -28,7 +29,10 @@ class MenuScreen extends StatelessWidget {
                 const SizedBox(height: 64),
                 _MenuButton(
                   label: 'Battle',
-                  onTap: null,
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const BattleLobbyScreen()),
+                  ),
                 ),
                 _MenuButton(
                   label: 'Rune Craft',
@@ -39,7 +43,10 @@ class MenuScreen extends StatelessWidget {
                 ),
                 _MenuButton(
                   label: 'Library',
-                  onTap: null,
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const LibraryScreen()),
+                  ),
                 ),
                 _MenuButton(
                   label: 'About',
@@ -56,13 +63,6 @@ class MenuScreen extends StatelessWidget {
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const OnboardingLandingScreen()),
-                  ),
-                ),
-                _MenuButton(
-                  label: 'DEBUG: Ink Sandbox',
-                  onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const InkSandboxScreen()),
                   ),
                 ),
               ],

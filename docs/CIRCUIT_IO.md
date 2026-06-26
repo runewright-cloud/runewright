@@ -267,28 +267,27 @@ VK change for a regression of the §5 guarantee.
     `g ≥ T` (masked, matching `ca_run.dart`'s zero-fill — not real CA output). `T` is
     public and bound either way, so masking hides no information; it simply matches what
     the Dart oracle actually does, which is what the two-oracle harness compares against.
-- **Three VKs per ruleset version**, not one and not a zoo. Gate counts
-  (≈19,650/gen): 12-tier ≈ 236k (deep green), 24-tier ≈ 472k (top of green), 48-tier ≈
-  943k (yellow, 1–3 min inscription — the opt-in spectacle tier). Proving is
+- **Three VKs per ruleset version**, not one and not a zoo. Proving is
   inscription-time, never battle-time, so the yellow tier's weight is acceptable and
   self-selected.
-  **`[STALE — measured on the count-only circuit, pending remeasurement for
-  RULESET_VERSION 2]`:** these figures predate the ink substrate. The neutral branch now
-  costs the count machinery (serif row + elemental mux) **plus** Rule B's two-pass
-  overhead (one `[Field; N]` intermediate witness + two distance-1 passes), paid **every**
-  generation regardless of dispatch. Rule A and the serif (Rule E) are distance-1; **Rule
-  B is the sole distance-2 rule and the cost driver** for the whole neutral branch.
-  **Tier-12's 2^18 padded bucket is unverified and the margin is thin:** the count-only
-  circuit already measures ≈236k gates above, and UltraHonk pads tier-12 up to
-  `2^18 = 262,144` rows — only **~26k gates of headroom**, not a comfortable margin.
-  Rule B's two-pass overhead at even ~2k gates/gen over 12 generations sits right at that
-  edge; crossing `2^18` into `2^19` (524,288) roughly doubles tier-12 proving time and
-  memory — the tier meant to stay cheap. **Run `bb gates` early, at tier-12, on a
-  neutral-heavy multi-tip seed, before building tiers 24/48** — this is a go/no-go on the
-  rules as written, not a precaution, since the count circuit is already ~90% of the way
-  to the ceiling. If Rule B busts the bucket, the cheapest lever is dropping its
-  distance-2 requirement (collapsing toward plain B1), at the cost of directional line
-  growth — the medium's core feel, so a design retreat, not a free optimization.
+
+  **`[MEASURED 2026-06-23/24 — RULESET_VERSION 2, all tiers, Pixel 6]`:** (`bb gates`
+  on compiled `ca_v2_4_tier{N}.json`; prove times median of 3 warm runs each)
+
+  | Tier | ACIR opcodes | Padded bucket    | Headroom | Warm prove | Full inscription | Peak RSS  |
+  |------|-------------|------------------|----------|------------|------------------|-----------|
+  | 12   | 388,374     | 2^19 (524,288)   | ~136k    | ~12.7 s    | ~15.8 s          | —         |
+  | 24   | 807,831     | 2^20 (1,048,576) | ~241k    | ~24.5 s    | ~31.5 s          | ~2.1 GB   |
+  | 48   | 1,646,745   | 2^21 (2,097,152) | ~450k    | ~48.9 s    | ~62 s            | ~4.3 GB   |
+
+  "Full inscription" = warm prove + SRS disk-read (tier-24 ~7 s, tier-48 ~13 s).
+  Tier-12 RSS not captured in the M3.4 spike; estimated ~1 GB by halving tier-24.
+  Scaling is approximately linear in tier_max (388k × 2 = 776k estimate vs 808k actual
+  for tier-24; 388k × 4 = 1.55M estimate vs 1.65M actual for tier-48). Each tier fits
+  cleanly in its expected dyadic bucket with comfortable headroom. SRS memory (measured
+  from on-device cache files): tier-12 ~128 MB, tier-24 ~256 MB, tier-48 ~512 MB.
+  **Tier-48 peak RSS ~4.3 GB:** requires a ≥6 GB device (Pixel 6 / 8 GB passes;
+  4 GB devices will OOM — tier-48 is gated to high-RAM hardware at the handshake).
 - Claiming a smaller `T` yields a weaker spell **and** lower mana cost
   (`mana = ceil(cells · 1.25^max(0, T−4))`), so there's no incentive to lie about it.
   Note the two regimes: high-cell spells are mana-gated; low-seed bloomers are
@@ -502,11 +501,13 @@ evolution as their oracle, so their *vector values* are regenerated against the 
    which a live inscribable cell goes to 0 from one generation to the next. If §10.10 is
    missing, a prover can suppress births/cells to forge a cheaper-looking or different
    trajectory.
+   > **SUBSUMED (2026-06-23):** discharged by `neutral_monotonicity_chain` positive vector — a 3-gen Rule B chain whose border-contact timing is causally dependent on every tip cell persisting; any monotonicity break shifts the contact generation and the wrong tier/gen fails the vector's exact expected values.
 9. **Tampered `b_ext` `[NEW, RULESET_VERSION 2]`:** a witness supplying a `b_ext` entry
    that does not match its Pass-1 derivation (e.g. claiming a non-source cell extends, or
    a wrong direction) to manufacture an extra `bornB` activation. If §10.11 is missing,
    the two-pass intermediate is a free-form forgery vector — the most ink-specific new
    exploit surface; pair it with §10.11 explicitly.
+   > **SUBSUMED (2026-06-23):** discharged by `neutral_evolution_composite` and `pulse_boundary` positive vectors — both exercise the full b_ext derivation path (Rule A gap-fill → multi-gen Rule B tip extension → serif), so a corrupt b_ext would shift border-contact generation and mismatch the vectors' commitment and trajectory; a dedicated forge-b_ext negative vector is the remaining gap and is deferred to M4 circuit constraint work.
 
 > When CC implements §10, each constraint should be paired with the negative vector
 > that fails if the constraint is dropped. That pairing is what makes "Fable reviewed
@@ -559,12 +560,18 @@ All `[CONFIRM vs stepper]` items have been read against `stepper.dart`, `ca_rule
   `gen_grid_constants.py` updated, `circuits/*/src/constants.nr` regenerated,
   `GRID_ORDERING_v2.md` updated. `ca_run_test.dart` "border zone per-cell diff" passes.
 
-- [!] **Fire / water / earth rule mismatch** — `ca_rules.dart` is canonical `[RESOLVED direction 2026-06-14]`:
-  Soren confirmed Dart `ca_rules.dart` has the correct rules (playtesting validated them
-  post-Phase 1.5). The Phase 1.5 circuit's `FLAT_TRANSITION` is wrong and will be
-  updated in M3 when the v2.4 circuit is written from scratch.
-  `ca_run_test.dart` group "dart vs circuit rule diff" documents the 15 cell-level
-  mismatches (fire 5, water 5, earth 5) and is marked `[EXPECTED TO FAIL]` until M3.
+- [x] **Fire / water / earth rule mismatch** `[RESOLVED 2026-06-23 — M3 circuit rewrite complete]`:
+  `circuits/ca_v2_4_tier12/src/main.nr` rewrites `FLAT_TRANSITION` from 70 entries (5 rules
+  including the old Conway-2/2 neutral row) to 56 entries (4 elemental rules only, neutral
+  handled by the ink branch). Indexing formula updated to `(rule-1)*14 + state*7 + nb` where
+  rule ∈ {1=fire, 2=air, 3=water, 4=earth}. `ca_run_test.dart` "dart vs circuit rule diff"
+  group **passes green** (4/4 elemental rules, 0 mismatches); neutral sub-test dropped
+  (ink rules are not table-based). No longer `[EXPECTED TO FAIL]`.
 
-Once both blockers are resolved and a hand-verified golden vector passes `runStepper`,
-the circuit rewrite in M3 can begin against a contract that is fully confirmed.
+Both blockers resolved. The v2.4 tier-12 circuit is ratified and golden-corpus-verified.
+
+**2026-06-23 update:** tiers 24 and 48 ported from the validated tier-12 branch (TIER_MAX
+is the only diff). Both compile clean, `bb gates` confirms expected dyadic buckets (2^20
+and 2^21), and all positive + eligible negative corpus vectors pass for all three tiers.
+On-device warm-prove times for tiers 24/48 are pending (run SpikeScreen; see §7 table).
+Ed25519 byte-order `[ ]` remains open — not in scope until the identity module ships.
