@@ -39,10 +39,20 @@ class StepperResult {
   // Entries for gen >= T are 0.
   final List<int> supremeFlags;
 
+  // T=0 geometry outputs — pure functions of the initial grid_state.
+  // segmentCount: number of maximal runs of ≥2 contiguous inscribable active
+  //   cells along each of the 3 hex axes; junction cells count once per axis.
+  // dotCount: inscribable active cells with zero inscribable active neighbors.
+  // These mirror RULESET_VERSION 3 circuit outputs; see CIRCUIT_IO.md §8.
+  final int segmentCount;
+  final int dotCount;
+
   const StepperResult({
     required this.borderActivations,
     required this.dominanceTrajectory,
     required this.supremeFlags,
+    required this.segmentCount,
+    required this.dotCount,
   });
 }
 
@@ -216,6 +226,52 @@ List<HexCoord> _buildFlatIndex(int radius) {
   return coords;
 }
 
+bool _isInscribable(HexCoord c) {
+  final d = max(c.q.abs(), max(c.r.abs(), (c.q + c.r).abs()));
+  return d <= 8;
+}
+
+// T=0 geometry: segmentCount and dotCount, both pure functions of grid_state.
+// Axes: (+1,0)/(−1,0), (0,+1)/(0,−1), (−1,+1)/(+1,−1) — matches circuit's
+// NEIGHBORS axis ordering (a=0,1,2 / a+3 for backward).
+({int segmentCount, int dotCount}) gridGeometry(HexGrid grid) {
+  const axes = [
+    (1, 0, -1, 0),
+    (0, 1, 0, -1),
+    (-1, 1, 1, -1),
+  ];
+  int segmentCount = 0;
+  for (final (fdq, fdr, bdq, bdr) in axes) {
+    for (final coord in grid.cells.keys) {
+      if (!_isInscribable(coord)) continue;
+      if (grid.cells[coord] != Element.alive) continue;
+      final bwd = HexCoord(coord.q + bdq, coord.r + bdr);
+      if (_isInscribable(bwd) && grid.cells[bwd] == Element.alive) continue;
+      final fwd = HexCoord(coord.q + fdq, coord.r + fdr);
+      if (!(_isInscribable(fwd) && grid.cells[fwd] == Element.alive)) continue;
+      segmentCount++;
+    }
+  }
+
+  const dirs = [(1, 0), (-1, 0), (0, 1), (0, -1), (-1, 1), (1, -1)];
+  int dotCount = 0;
+  for (final coord in grid.cells.keys) {
+    if (!_isInscribable(coord)) continue;
+    if (grid.cells[coord] != Element.alive) continue;
+    var hasActiveInscNb = false;
+    for (final (dq, dr) in dirs) {
+      final nb = HexCoord(coord.q + dq, coord.r + dr);
+      if (_isInscribable(nb) && grid.cells[nb] == Element.alive) {
+        hasActiveInscNb = true;
+        break;
+      }
+    }
+    if (!hasActiveInscNb) dotCount++;
+  }
+
+  return (segmentCount: segmentCount, dotCount: dotCount);
+}
+
 HexGrid _gridFromFlat(List<int> flatState, int radius) {
   final coords = _buildFlatIndex(radius);
   assert(flatState.length == coords.length,
@@ -243,6 +299,7 @@ StepperResult runStepper(List<int> gridState, int T, int tierMax) {
   assert(T >= 1 && T <= tierMax, 'T=$T out of range for tierMax=$tierMax');
 
   var grid = _gridFromFlat(gridState, 12);
+  final geometry = gridGeometry(grid);
   var currentRule = CARules.neutral;
 
   final borderActivations = [0, 0, 0, 0]; // [fire, air, water, earth], raw totals
@@ -287,5 +344,7 @@ StepperResult runStepper(List<int> gridState, int T, int tierMax) {
     borderActivations: borderActivations,
     dominanceTrajectory: dominanceTrajectory,
     supremeFlags: supremeFlags,
+    segmentCount: geometry.segmentCount,
+    dotCount: geometry.dotCount,
   );
 }

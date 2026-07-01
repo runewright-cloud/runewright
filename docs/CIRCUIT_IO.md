@@ -216,21 +216,24 @@ owner_pubkey = Poseidon2( key_hi, key_lo )
 
 ---
 
-## 6. `ruleset_version` `[FIXED, locked 2026-06-16; bumped to 2 for the ink substrate]`
+## 6. `ruleset_version` `[FIXED, locked 2026-06-16; bumped to 3 for geometry outputs]`
 
 A small integer public input (an "arcana edition") — the rule-set **epoch**. Pinned to
-`global RULESET_VERSION: Field = 2` (bumped from `1`) and asserted in-circuit
+`global RULESET_VERSION: Field = 3` and asserted in-circuit
 (`assert(ruleset_version == RULESET_VERSION)`), for the same VK-stability reason as §5.
 The match handshake negotiates it; clients carry verifiers for the last N versions.
 Binding it as a public input means a proof is only valid against the circuit version it
 was generated for — so a future balance patch doesn't silently validate old proofs
 against new rules.
 
-**The bump, concretely:** the ink-substrate neutral ruleset (§10.5 — Rules A/B/E replacing
-the old count-based neutral baseline, supreme-gated dispatch, tie-aware decay) is exactly
-the "future consensus-visible CA rule change" this section anticipated — a deliberate,
-VK-breaking version bump, not a redefinition of `1` in place. Nothing has shipped under
-`RULESET_VERSION = 1`, so there are no proofs to orphan.
+**Version history:**
+- `RULESET_VERSION = 1` — original count-based neutral ruleset. Nothing shipped.
+- `RULESET_VERSION = 2` — ink-substrate neutral ruleset (§10.5 — Rules A/B/E replacing
+  the old count-based neutral baseline, supreme-gated dispatch, tie-aware decay). Nothing
+  shipped under v2.
+- `RULESET_VERSION = 3` — adds `segment_count` and `dot_count` as public outputs (§8,
+  §10.12). Pure functions of `grid_state`; no new private witness. All three tiers VK-
+  regenerated 2026-07-01.
 
 **Distinction from the §5 lock:** bumping `RULESET_VERSION` on a future consensus-visible
 CA rule change is an *intentional* VK change — it deliberately makes incompatible
@@ -274,11 +277,23 @@ VK change for a regression of the §5 guarantee.
   **`[MEASURED 2026-06-23/24 — RULESET_VERSION 2, all tiers, Pixel 6]`:** (`bb gates`
   on compiled `ca_v2_4_tier{N}.json`; prove times median of 3 warm runs each)
 
-  | Tier | ACIR opcodes | Padded bucket    | Headroom | Warm prove | Full inscription | Peak RSS  |
+  | Tier | circuit_size | Padded bucket    | Headroom | Warm prove | Full inscription | Peak RSS  |
   |------|-------------|------------------|----------|------------|------------------|-----------|
   | 12   | 388,374     | 2^19 (524,288)   | ~136k    | ~12.7 s    | ~15.8 s          | —         |
   | 24   | 807,831     | 2^20 (1,048,576) | ~241k    | ~24.5 s    | ~31.5 s          | ~2.1 GB   |
   | 48   | 1,646,745   | 2^21 (2,097,152) | ~450k    | ~48.9 s    | ~62 s            | ~4.3 GB   |
+
+  **`[UPDATED 2026-07-01 — RULESET_VERSION 3, gate counts]`:** geometry outputs add
+  +2,351 circuit rows per tier (all-static neighbor lookups, no RAM abstraction).
+  Prove times not re-measured; expect negligible change (delta is 0.6% of circuit_size).
+
+  | Tier | circuit_size (v3) | Padded bucket  | Headroom (v3) |
+  |------|-------------------|----------------|---------------|
+  | 12   | 390,725           | 2^19 (524,288) | ~133k         |
+  | 24   | 810,182           | 2^20 (1,048,576) | ~238k       |
+  | 48   | 1,649,096         | 2^21 (2,097,152) | ~448k       |
+
+  All three tiers remain in their original dyadic buckets.
 
   "Full inscription" = warm prove + SRS disk-read (tier-24 ~7 s, tier-48 ~13 s).
   Tier-12 RSS not captured in the M3.4 spike; estimated ~1 GB by halving tier-24.
@@ -315,6 +330,28 @@ in Dart):
 | `border_activations` | `[Field; 4]` | per-element totals `[fire=0, air=1, water=2, earth=3]`, summed over `0..T−1` |
 | `dominance_trajectory` | `[Field; tier_max]` | dominant element index per generation (0 = neutral); sized to the tier (12/24/48) |
 | `supreme_dominance_flags` | `[Field; tier_max]` | 0/1 per generation; sized to the tier; packable to a bitmask later |
+| `segment_count` | `Field` | T=0 geometry: count of maximal axis-aligned runs of ≥2 active inscribable cells, summed over all 3 hex axes. Junction cells on multiple axes contribute once per axis (crossings cost more strokes — do not de-duplicate). See §10.12. **ABI-permanent definition.** |
+| `dot_count` | `Field` | T=0 geometry: count of active inscribable cells with zero active inscribable neighbors at T=0. See §10.12. **ABI-permanent definition.** |
+
+**Wire positions (flat Noir ABI, 0-indexed):** public params come first (T=0, owner_pubkey=1,
+ruleset_version=2), then return fields (commitment=3, border_activations[4]=4–7):
+
+| Tier | TIER_MAX | segment_count wire | dot_count wire |
+|------|----------|--------------------|----------------|
+| 12 | 12 | 32 | 33 |
+| 24 | 24 | 56 | 57 |
+| 48 | 48 | 104 | 105 |
+
+**Segment definition (permanent ABI, RULESET_VERSION 3):**
+A SEGMENT is a **maximal run of ≥2 contiguous active inscribable cells along a single
+hex axis.** "Maximal" means the cell just beyond each end is inactive, non-inscribable,
+or off-grid. Three axes: axis 0 = slots (0,3), axis 1 = slots (1,4), axis 2 = slots (2,5).
+`segment_count` is the count of run-start cells (per-axis) summed over all 3 axes. A
+run-start on axis a is an active inscribable cell whose backward neighbor (slot a+3) is
+NOT active-inscribable and whose forward neighbor (slot a) IS active-inscribable.
+Consequence: a cell on a length-3 run counts toward 1 segment; a junction on 2 axes
+counts toward 2 segments (one per axis). A lone active inscribable cell (no active
+inscribable neighbors) is a DOT, not a segment.
 
 ## 9. Private witness (hidden) `[FIXED, extended 2026-06-16 — see §5/Amendment 1]`
 
@@ -472,6 +509,20 @@ declared outputs already imply.
     `b_ext[i]` equals the §10.5 Pass-1 function of `prev` and the neighborhood — a
     prover cannot supply an arbitrary intermediate. Constrain `b_ext[i]` against
     `prev[i]`, the neighbor bits, and the active-neighbor count.
+12. **T=0 geometry outputs are correctly derived `[NEW, RULESET_VERSION 3]`:**
+    `segment_count` and `dot_count` are pure functions of `grid_state` (no prover-supplied
+    witness). The circuit computes them via a single static pass using compile-time-
+    constant neighbor indices (loop variables `i` and `a` are Noir compile-time constants
+    in `for i in 0..N` / `for a in 0..3`; no RAM abstraction). Active-inscribable-neighbor
+    predicate at index `nb_idx`:
+    ```
+    (nb_idx < N) & !(IS_BORDER[safe_nb] | IS_BUFFER[safe_nb]) & (grid_state[safe_nb] == 1)
+    where safe_nb = if nb_idx < N { nb_idx } else { 0 }
+    ```
+    IS_INSCRIBABLE is present **literally**, not inferred from the T=0 buffer-zero
+    assertion (§10.2). A buffer cell escaping that assertion is still excluded here.
+    Negative vectors (forged segment_count, forged dot_count) are a future task; this
+    is a positive-only output at present.
 
 ---
 

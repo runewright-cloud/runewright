@@ -12,7 +12,7 @@
         "active_cells": [],
         "T": 6,
         "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-        "ruleset_version": 2
+        "ruleset_version": 3
       },
       "expected": {
         "commitment": "IMPL",
@@ -32,7 +32,7 @@
         "active_cells": [234],
         "T": 6,
         "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-        "ruleset_version": 2
+        "ruleset_version": 3
       },
       "expected": {
         "commitment": "IMPL",
@@ -52,7 +52,7 @@
         "active_cells": [62, 63, 64, 65, 66, 67, 68, 69, 70, 79, 88, 97, 107, 116, 127, 136, 148, 157, 170, 179, 193, 202, 217, 226, 242, 251, 266, 275, 289, 298, 311, 320, 332, 341, 352, 361, 371, 380, 389, 398, 399, 400, 401, 402, 403, 404, 405, 406],
         "T": 8,
         "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-        "ruleset_version": 2
+        "ruleset_version": 3
       },
       "expected": {
         "commitment": "IMPL",
@@ -72,7 +72,7 @@
         "active_cells": [62, 63, 64, 65, 66, 67, 68, 69, 70, 79, 88, 97, 107, 116, 127, 136, 148, 157, 170, 179, 193, 202, 217, 226, 242, 251, 266, 275, 289, 298, 311, 320, 332, 341, 352, 361, 371, 380, 389, 398, 399, 400, 401, 402, 403, 404, 405, 406],
         "T": 3,
         "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-        "ruleset_version": 2
+        "ruleset_version": 3
       },
       "expected": {
         "commitment": "IMPL",
@@ -92,7 +92,7 @@
         "active_cells": [388, 406],
         "T": 6,
         "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-        "ruleset_version": 2
+        "ruleset_version": 3
       },
       "expected": {
         "commitment": "IMPL",
@@ -112,7 +112,7 @@
         "active_cells": [227, 226],
         "T": 5,
         "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-        "ruleset_version": 2
+        "ruleset_version": 3
       },
       "expected": {
         "commitment": "IMPL",
@@ -132,7 +132,7 @@
         "active_cells": [228, 226],
         "T": 8,
         "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-        "ruleset_version": 2
+        "ruleset_version": 3
       },
       "expected": {
         "commitment": "IMPL",
@@ -152,7 +152,7 @@
         "active_cells": [227, 226, 158, 136, 117, 97],
         "T": 7,
         "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-        "ruleset_version": 2
+        "ruleset_version": 3
       },
       "expected": {
         "commitment": "IMPL",
@@ -172,7 +172,7 @@
         "active_cells": [227, 226, 382, 400, 241, 242],
         "T": 6,
         "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-        "ruleset_version": 2
+        "ruleset_version": 3
       },
       "expected": {
         "commitment": "IMPL",
@@ -192,7 +192,7 @@
         "active_cells": [],
         "T": 6,
         "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-        "ruleset_version": 2
+        "ruleset_version": 3
       },
       "raw_overrides": { "228": 2 },
       "violates_constraint": "§10.1 cells in {0,1}",
@@ -208,7 +208,7 @@
         "active_cells": [],
         "T": 6,
         "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-        "ruleset_version": 2
+        "ruleset_version": 3
       },
       "raw_overrides": { "243": 1 },
       "violates_constraint": "§10.2 buffer/border cells must be 0 at T=0",
@@ -224,7 +224,7 @@
         "active_cells": [],
         "T": 6,
         "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-        "ruleset_version": 2
+        "ruleset_version": 3
       },
       "raw_overrides": { "0": 1 },
       "violates_constraint": "§10.2 buffer/border cells must be 0 at T=0",
@@ -240,7 +240,7 @@
         "active_cells": [234],
         "T": 6,
         "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-        "ruleset_version": 2
+        "ruleset_version": 3
       },
       "declared_override": {
         "commitment": "0x00000000000000000000000000000000000000000000000000000000000bad"
@@ -258,7 +258,7 @@
         "active_cells": [62, 63, 64, 65, 66, 67, 68, 69, 70, 79, 88, 97, 107, 116, 127, 136, 148, 157, 170, 179, 193, 202, 217, 226, 242, 251, 266, 275, 289, 298, 311, 320, 332, 341, 352, 361, 371, 380, 389, 398, 399, 400, 401, 402, 403, 404, 405, 406],
         "T": 8,
         "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-        "ruleset_version": 2
+        "ruleset_version": 3
       },
       "declared_override": { "border_activations": [9, 9, 9, 9] },
       "violates_constraint": "§10.6 activations = true masked sum",
@@ -274,7 +274,7 @@
         "active_cells": [226, 227, 228, 202, 203, 251],
         "T": 8,
         "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-        "ruleset_version": 2
+        "ruleset_version": 3
       },
       "declared_override": {
         "dominance_trajectory": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
@@ -292,7 +292,7 @@
         "active_cells": [234],
         "T": 0,
         "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-        "ruleset_version": 2
+        "ruleset_version": 3
       },
       "violates_constraint": "§10.7 / §11.7 range 1..tier_max",
       "expected": { "verifies": false }
@@ -307,7 +307,7 @@
         "active_cells": [234],
         "T": 13,
         "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-        "ruleset_version": 2
+        "ruleset_version": 3
       },
       "violates_constraint": "§10.7 / §11.7 range 1..tier_max",
       "expected": { "verifies": false }
@@ -322,7 +322,7 @@
         "active_cells": [62, 63, 64, 65, 66, 67, 68, 69, 70, 79, 88, 97, 107, 116, 127, 136, 148, 157, 170, 179, 193, 202, 217, 226, 242, 251, 266, 275, 289, 298, 311, 320, 332, 341, 352, 361, 371, 380, 389, 398, 399, 400, 401, 402, 403, 404, 405, 406],
         "T": 3,
         "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-        "ruleset_version": 2
+        "ruleset_version": 3
       },
       "declared_override": { "border_activations": [7, 8, 7, 8] },
       "violates_constraint": "§10.6 activations masked to generations < T",

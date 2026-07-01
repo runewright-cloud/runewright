@@ -3,8 +3,11 @@
 //
 // Two-oracle discipline (GOLDEN_VECTORS.md §0.1):
 //   - CA outputs (border_activations, dominance_trajectory,
-//     supreme_dominance_flags) come from the Dart stepper (runStepper).
+//     supreme_dominance_flags, segment_count, dot_count) come from the Dart
+//     stepper (runStepper / gridGeometry), never from the circuit's own output.
 //   - commitment comes from the Noir circuit (nargo execute), never Dart.
+//   - The circuit's segment_count/dot_count outputs are cross-checked against
+//     the Dart oracle; a mismatch is a release blocker (same as CA outputs).
 //
 // Run with: dart run scripts/gen_vectors.dart [--tier=12|24|48]
 //           --tier=12 (default) writes test_vectors/corpus.json
@@ -85,10 +88,18 @@ NargoResult _runNargoExecute(String circuitDir, String proverToml) {
   }
 }
 
-// Parses nargo execute's "Circuit output: (0x.., [..], [..], [..])" line into
-// (commitment, border_activations, dominance_trajectory, supreme_flags).
-({String commitment, List<int> borderActivations, List<int> trajectory, List<int> supreme})
-    _parseCircuitOutput(String stdout) {
+// Parses nargo execute's
+// "Circuit output: (0x.., [..], [..], [..], 0x.., 0x..)" line into
+// (commitment, border_activations, dominance_trajectory, supreme_flags,
+//  segmentCount, dotCount).
+({
+  String commitment,
+  List<int> borderActivations,
+  List<int> trajectory,
+  List<int> supreme,
+  int segmentCount,
+  int dotCount,
+}) _parseCircuitOutput(String stdout) {
   final line = stdout.split('\n').firstWhere(
         (l) => l.contains('Circuit output:'),
         orElse: () => '',
@@ -112,6 +123,10 @@ NargoResult _runNargoExecute(String circuitDir, String proverToml) {
     }
   }
   parts.add(cur.toString());
+  if (parts.length != 6) {
+    throw FormatException(
+        'Expected 6-element circuit output tuple, got ${parts.length}: $parts');
+  }
 
   List<int> parseArr(String s) {
     final inner = s.trim().substring(1, s.trim().length - 1);
@@ -124,6 +139,9 @@ NargoResult _runNargoExecute(String circuitDir, String proverToml) {
     borderActivations: parseArr(parts[1]),
     trajectory: parseArr(parts[2]),
     supreme: parseArr(parts[3]),
+    // nargo outputs scalar Fields as hex (e.g. 0x04); int.parse handles 0x.
+    segmentCount: int.parse(parts[4].trim()),
+    dotCount: int.parse(parts[5].trim()),
   );
 }
 
@@ -208,13 +226,19 @@ void main(List<String> args) {
       if (!_listEq(parsed.supreme, stepperResult.supremeFlags)) {
         mismatches.add('supreme_dominance_flags: circuit=${parsed.supreme} stepper=${stepperResult.supremeFlags}');
       }
+      if (parsed.segmentCount != stepperResult.segmentCount) {
+        mismatches.add('segment_count: circuit=${parsed.segmentCount} stepper=${stepperResult.segmentCount}');
+      }
+      if (parsed.dotCount != stepperResult.dotCount) {
+        mismatches.add('dot_count: circuit=${parsed.dotCount} stepper=${stepperResult.dotCount}');
+      }
       if (mismatches.isNotEmpty) {
         stdout.writeln('FAIL $id: circuit/stepper mismatch:\n  ${mismatches.join('\n  ')}');
         failures++;
         continue;
       }
 
-      stdout.writeln('OK   $id (positive): commitment=${parsed.commitment}');
+      stdout.writeln('OK   $id (positive): commitment=${parsed.commitment} seg=${stepperResult.segmentCount} dot=${stepperResult.dotCount}');
       out.add({
         'id': id,
         'kind': kind,
@@ -225,6 +249,8 @@ void main(List<String> args) {
           'border_activations': stepperResult.borderActivations,
           'dominance_trajectory': stepperResult.dominanceTrajectory,
           'supreme_dominance_flags': stepperResult.supremeFlags,
+          'segment_count': stepperResult.segmentCount,
+          'dot_count': stepperResult.dotCount,
           'verifies': true,
         },
       });

@@ -3,7 +3,7 @@ mod constants;
 use crate::constants::{N, IS_BORDER, IS_BUFFER, NEIGHBORS, BORDER_ZONE, POW2_253, POW2_216};
 
 global TIER_MAX: u32 = 24;
-global RULESET_VERSION: Field = 2;
+global RULESET_VERSION: Field = 3;
 
 // Pulse cadence for the neutral ink ruleset's Rule E (serif flare) -- matches
 // InkRules' production default (lib/engine/ink_step.dart). pulse(g) =
@@ -122,7 +122,8 @@ fn dominant_element(pressures: [u32; 4]) -> u32 {
 //
 // Public input ABI order (Noir lists pub params, then return values):
 //   T, owner_pubkey, ruleset_version, commitment, border_activations[4],
-//   dominance_trajectory[TIER_MAX], supreme_dominance_flags[TIER_MAX]
+//   dominance_trajectory[TIER_MAX], supreme_dominance_flags[TIER_MAX],
+//   segment_count, dot_count
 // See CIRCUIT_IO.md CIRCUIT_IO 8.
 fn main(
     grid_state: [Field; N],
@@ -131,7 +132,7 @@ fn main(
     T: pub Field,
     owner_pubkey: pub Field,
     ruleset_version: pub Field,
-) -> pub (Field, [Field; 4], [Field; TIER_MAX], [Field; TIER_MAX]) {
+) -> pub (Field, [Field; 4], [Field; TIER_MAX], [Field; TIER_MAX], Field, Field) {
 
     // CIRCUIT_IO 10.9 - owner_pubkey / ruleset_version bound into the VK (locked construction,
     // see CIRCUIT_IO.md CIRCUIT_IO 5/CIRCUIT_IO 6 - never add inputs to this hash or this assertion).
@@ -169,6 +170,61 @@ fn main(
 
     // CIRCUIT_IO 4 - commitment is grid-only. Never fold T/owner_pubkey/ruleset_version in here.
     let commitment = poseidon2_hash2(packed0, packed1);
+
+    // CIRCUIT_IO 8 (appended, RULESET_VERSION 3) -- T=0 geometry: segment_count and dot_count.
+    // Both are pure functions of grid_state; no prover-supplied witness.
+    // All NEIGHBORS accesses below use compile-time indices (i and a are loop variables
+    // unrolled at compile time) -- static reads, no RAM abstraction.
+    //
+    // active_inscribable_neighbor predicate at nb_idx:
+    //   (nb_idx < N) & !(IS_BORDER[safe_nb] | IS_BUFFER[safe_nb]) & (grid_state[safe_nb] == 1)
+    //   where safe_nb = if nb_idx < N { nb_idx } else { 0 }
+    //   IS_INSCRIBABLE is present literally -- not inferred from the buffer-zero assertion above.
+    //
+    // segment_count: maximal runs of >=2 contiguous active inscribable cells, per axis, summed
+    // over 3 hex axes. Axis a: forward slot = a, backward slot = a+3. Junction cells on k axes
+    // each contribute to k runs (intended mana weighting -- do not de-duplicate crossings).
+    // Run-start condition: inscribable & active & backward NOT active-inscribable & forward IS.
+    let mut segment_count: Field = 0;
+    for a in 0..3 {
+        for i in 0..N {
+            let is_inscribable: bool = !(IS_BORDER[i] | IS_BUFFER[i]);
+            let cell_active: bool = grid_state[i] == 1;
+
+            let bwd_idx: u32 = NEIGHBORS[i][a + 3];
+            let safe_bwd: u32 = if bwd_idx < N { bwd_idx } else { 0 };
+            let bwd_active_insc: bool = (bwd_idx < N)
+                & !(IS_BORDER[safe_bwd] | IS_BUFFER[safe_bwd])
+                & (grid_state[safe_bwd] == 1);
+
+            let fwd_idx: u32 = NEIGHBORS[i][a];
+            let safe_fwd: u32 = if fwd_idx < N { fwd_idx } else { 0 };
+            let fwd_active_insc: bool = (fwd_idx < N)
+                & !(IS_BORDER[safe_fwd] | IS_BUFFER[safe_fwd])
+                & (grid_state[safe_fwd] == 1);
+
+            let is_run_start: bool = is_inscribable & cell_active & !bwd_active_insc & fwd_active_insc;
+            segment_count = segment_count + (is_run_start as Field);
+        }
+    }
+
+    // dot_count: active inscribable cells with zero active inscribable neighbors (all 6 slots).
+    let mut dot_count: Field = 0;
+    for i in 0..N {
+        let is_inscribable: bool = !(IS_BORDER[i] | IS_BUFFER[i]);
+        let cell_active: bool = grid_state[i] == 1;
+        let mut has_active_insc_nb: bool = false;
+        for s in 0..6 {
+            let nb_idx: u32 = NEIGHBORS[i][s];
+            let safe_nb: u32 = if nb_idx < N { nb_idx } else { 0 };
+            let nb_active_insc: bool = (nb_idx < N)
+                & !(IS_BORDER[safe_nb] | IS_BUFFER[safe_nb])
+                & (grid_state[safe_nb] == 1);
+            has_active_insc_nb = has_active_insc_nb | nb_active_insc;
+        }
+        let is_dot: bool = is_inscribable & cell_active & !has_active_insc_nb;
+        dot_count = dot_count + (is_dot as Field);
+    }
 
     // CIRCUIT_IO 10.5 - CA evolution. The circuit's loop bound is fixed at TIER_MAX regardless
     // of T (a circuit can't have a variable-length loop); T only masks which outputs
@@ -374,5 +430,5 @@ fn main(
         grid = next_grid;
     }
 
-    (commitment, total_border_acts, dominance_trajectory, supreme_flags)
+    (commitment, total_border_acts, dominance_trajectory, supreme_flags, segment_count, dot_count)
 }
