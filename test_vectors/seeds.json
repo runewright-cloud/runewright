@@ -327,6 +327,21 @@
       "declared_override": { "border_activations": [7, 8, 7, 8] },
       "violates_constraint": "§10.6 activations masked to generations < T",
       "expected": { "verifies": false }
+    },
+
+    {
+      "id": "neg_noncanonical_T",
+      "kind": "negative",
+      "description": "T = 4294967301 = 2^32 + 5; low 32 bits = 5 (in-range for all three tiers). Without CIRCUIT_IO 10.8a, the cast T as u32 truncates silently to 5 and the range assertions pass. With it, assert(t_u32 as Field == T) fails because 5 != 4294967301 as a Field element. Negative for all three tiers — no tier-skip needed.",
+      "tier_max": 12,
+      "input": {
+        "active_cells": [234],
+        "T": 4294967301,
+        "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+        "ruleset_version": 3
+      },
+      "raw_overrides": null,
+      "violates_constraint": "§10.8a / non-canonical T: high bits set, low limb in-range"
     }
 
   ]

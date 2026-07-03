@@ -876,5 +876,23 @@
       "verifies": false
     },
     "status": "SNARK_BINDING_CHECK_DEFERRED_TO_M3.4_TAMPER_SMOKE_TEST"
+  },
+  {
+    "id": "neg_noncanonical_T",
+    "kind": "negative",
+    "tier_max": 12,
+    "input": {
+      "active_cells": [
+        234
+      ],
+      "T": 4294967301,
+      "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ruleset_version": 3
+    },
+    "raw_overrides": null,
+    "violates_constraint": "§10.8a / non-canonical T: high bits set, low limb in-range",
+    "expected": {
+      "verifies": false
+    }
   }
 ]

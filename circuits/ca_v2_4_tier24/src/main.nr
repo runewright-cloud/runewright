@@ -143,6 +143,9 @@ fn main(
     let t_u32: u32 = T as u32;
     assert(t_u32 >= 1);
     assert(t_u32 <= TIER_MAX);
+    // CIRCUIT_IO 10.8a - T must equal its u32 low limb; prevents a non-canonical
+    // Field value (e.g. 2^32+5) from passing range checks via silent truncation.
+    assert(t_u32 as Field == T);
 
     // CIRCUIT_IO 10.1 - every cell boolean.
     for i in 0..N {
