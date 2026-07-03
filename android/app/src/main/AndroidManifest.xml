@@ -7,6 +7,11 @@
          discover work on the wire). Both are normal/install-time permissions,
          no runtime prompt. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- Sorcerer mode: vocal incantation capture via package:record.
+         Runtime permission (API 23+): prompted on first use via
+         AudioRecorder.hasPermission(). No foreground service needed for
+         per-cast burst recording (< 5 s per window). -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <application
         android:label="rune_duel"
         android:name="${applicationName}"

@@ -1,8 +1,13 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart' hide Element;
+import '../identity/identity.dart';
+import '../identity/key_packing.dart';
 import '../main.dart';
 import 'battle_lobby_screen.dart';
 import 'library_screen.dart';
 import 'onboarding/onboarding_landing_screen.dart';
+import 'sigil_painter.dart';
 
 class MenuScreen extends StatelessWidget {
   const MenuScreen({super.key});
@@ -17,6 +22,7 @@ class MenuScreen extends StatelessWidget {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
+                const SizedBox(height: 32),
                 const Text(
                   'RUNE WRIGHT',
                   style: TextStyle(
@@ -26,7 +32,42 @@ class MenuScreen extends StatelessWidget {
                     letterSpacing: 8,
                   ),
                 ),
-                const SizedBox(height: 64),
+                const SizedBox(height: 20),
+                FutureBuilder<(Uint8List?, String?)>(
+                  future: () async {
+                    try {
+                      final id = await Identity.loadOrCreate();
+                      final name = await Identity.loadWizardName();
+                      final hex = await id.ownerPubkeyHex();
+                      return (fieldHexToLeBytes(hex, 32), name);
+                    } catch (_) {
+                      return (null, null);
+                    }
+                  }(),
+                  builder: (context, snap) {
+                    final keyBytes = snap.data?.$1;
+                    final wizardName = snap.data?.$2;
+                    return Column(
+                      children: [
+                        if (keyBytes != null)
+                          SigilWidget(keyBytes: keyBytes, size: 98)
+                        else
+                          const SizedBox(width: 98, height: 98),
+                        const SizedBox(height: 10),
+                        Text(
+                          wizardName ?? '',
+                          style: const TextStyle(
+                            fontFamily: 'serif',
+                            fontSize: 16,
+                            letterSpacing: 3,
+                            color: Color(0xFF2C1810),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+                const SizedBox(height: 32),
                 _MenuButton(
                   label: 'Battle',
                   onTap: () => Navigator.push(
@@ -64,6 +105,18 @@ class MenuScreen extends StatelessWidget {
                     context,
                     MaterialPageRoute(builder: (_) => const OnboardingLandingScreen()),
                   ),
+                ),
+                _MenuButton(
+                  label: 'DEBUG: Reset Identity',
+                  onTap: () async {
+                    await Identity.deleteOnDevice();
+                    if (!context.mounted) return;
+                    Navigator.of(context).pushAndRemoveUntil(
+                      MaterialPageRoute(
+                          builder: (_) => const OnboardingLandingScreen()),
+                      (route) => false,
+                    );
+                  },
                 ),
               ],
             ),

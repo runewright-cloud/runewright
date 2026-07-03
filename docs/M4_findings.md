@@ -1,5 +1,46 @@
 # M4 — Findings Log (live, updated per milestone)
 
+## Battle protocol security audit (B-round) — pre-existing divergence findings
+
+### `nextSpellCostDouble` state-hash desync (pre-existing, fixed in B-1/B-8 pass)
+
+**Severity:** State-hash mismatch (protocol violation / match abort) whenever
+`nextSpellCostDouble` fires for a peer spell.
+
+**Root cause:** `nextSpellCostDouble` is a status effect tracked in
+`WizardAvatar.activeStatusEffects`, which is included verbatim in
+`BattleState.toCanonicalBytes()` (the end-of-turn state hash). When a peer
+casts a spell while the effect is active, the caster's client deducts the
+doubled cost and removes the effect in phase 1 via `_spellManaCost`.
+The verifier's former `_spellManaCostFromProof` never touched `activeStatusEffects`
+at all — it didn't consume `nextSpellCostDouble`, didn't apply the HP-shortfall
+conversion, and didn't remove the entry. At state-hash exchange, the caster has
+removed one status effect; the verifier still holds it. The hashes diverge
+deterministically every time the effect fires on a peer spell.
+
+**The same bug pattern applies to the sorcerer-mode `manaCostMultiplier`:** the
+caster applied the vocal-quality penalty multiplier in phase 1 via
+`CastingEnhancements.fromSorcererQuality`; the verifier's
+`_spellManaCostFromProof` did not, causing the two devices to deduct different
+mana amounts from the peer's avatar — a live ledger divergence, though not a
+state-hash divergence (mana is in the hash, but the effect list removal is the
+immediate trigger).
+
+**Fix:** `_spellManaCostFromProof` replaced by `_certifiedManaCost`
+(B-1/B-8 pass, `lib/battle/engine/turn_loop.dart`). The new function applies
+operations in the same sequence as `_spellManaCost`: certified base → chain
+discount → sorcerer multiplier → `nextSpellCostDouble` (consume + HP shortfall +
+effect removal). Both paths now produce identical mana deductions and identical
+`activeStatusEffects` mutations for the peer, so the end-of-turn state hash
+agrees.
+
+**Scope:** 2-player only. Affects any match turn where a peer casts a spell and
+`nextSpellCostDouble` is active in their status-effect list. Was silently
+unreachable in hardware testing because `nextSpellCostDouble` is not yet granted
+by any effect — first cast to grant it would have triggered the mismatch.
+
+---
+
 ## M4.7 — Loose-ends cleanup sweep (post-gate)
 
 Five items logged during the M4.6 hardware run, addressed in order of

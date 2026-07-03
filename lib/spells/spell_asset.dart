@@ -22,6 +22,8 @@ class SpellAsset {
     required this.t,
     required this.ownerPubkeyHex,
     required this.manaCost,
+    required this.segmentCount,
+    required this.dotCount,
     required this.initialGrid,
     required this.proofBytes,
     required this.name,
@@ -50,6 +52,14 @@ class SpellAsset {
   final String ownerPubkeyHex;
 
   final int manaCost;
+
+  /// Geometry of the initial grid (T=0), computed from public circuit outputs.
+  /// segmentCount: maximal runs of ≥2 contiguous inscribable active cells per axis.
+  /// dotCount: inscribable active cells with zero inscribable active neighbors.
+  /// Both are pure functions of grid_state; used to derive and verify manaCost.
+  /// Value -1 indicates a legacy spell inscribed before RULESET_VERSION 3.
+  final int segmentCount;
+  final int dotCount;
 
   /// The 469-cell packed initial grid state (see HexGrid.packGridState) --
   /// kept alongside the proof so a future library UI can render a thumbnail
@@ -92,6 +102,8 @@ class SpellAsset {
         't': t,
         'ownerPubkeyHex': ownerPubkeyHex,
         'manaCost': manaCost,
+        'segmentCount': segmentCount,
+        'dotCount': dotCount,
         'initialGrid': initialGrid,
         'proofBytesBase64': base64Encode(proofBytes),
         'name': name,
@@ -108,6 +120,10 @@ class SpellAsset {
         t: json['t'] as int,
         ownerPubkeyHex: json['ownerPubkeyHex'] as String,
         manaCost: json['manaCost'] as int,
+        // -1 sentinel: spell was inscribed before RULESET_VERSION 3 geometry
+        // outputs existed. Library will purge these on next load.
+        segmentCount: (json['segmentCount'] as int?) ?? -1,
+        dotCount: (json['dotCount'] as int?) ?? -1,
         initialGrid: (json['initialGrid'] as List).cast<int>(),
         proofBytes: base64Decode(json['proofBytesBase64'] as String),
         name: (json['name'] as String?) ?? '',
@@ -136,6 +152,8 @@ class SpellAsset {
         t: t,
         ownerPubkeyHex: ownerPubkeyHex,
         manaCost: manaCost,
+        segmentCount: segmentCount,
+        dotCount: dotCount,
         initialGrid: initialGrid,
         proofBytes: proofBytes,
         name: name,

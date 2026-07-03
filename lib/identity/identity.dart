@@ -20,6 +20,7 @@ import '../ffi/identity.dart' as ffi;
 import 'key_packing.dart';
 
 const _kSeedStorageKey = 'runewright.identity.ed25519_seed_v1';
+const _kWizardNameKey = 'runewright.identity.wizard_name_v1';
 
 /// A loaded Ed25519 identity: the keypair plus its circuit-facing encoding.
 class Identity {
@@ -36,6 +37,25 @@ class Identity {
 
   static final _algorithm = Ed25519();
   static final _storage = FlutterSecureStorage();
+
+  /// Persists the player's chosen wizard name. Not sensitive — stored
+  /// alongside the key for convenience. Empty string clears it.
+  static Future<void> saveWizardName(String name) async {
+    await _storage.write(key: _kWizardNameKey, value: name);
+  }
+
+  /// Returns the stored wizard name, or null if none has been set.
+  static Future<String?> loadWizardName() async {
+    return _storage.read(key: _kWizardNameKey);
+  }
+
+  /// Wipes the on-device identity and wizard name — debug / testing use only.
+  /// After calling this, [exists] returns false and the app will show
+  /// onboarding on next launch (or navigate there manually).
+  static Future<void> deleteOnDevice() async {
+    await _storage.delete(key: _kSeedStorageKey);
+    await _storage.delete(key: _kWizardNameKey);
+  }
 
   /// Read-only boot check: is there already a Runekey on this device? Unlike
   /// [loadOrCreate], this never generates or persists anything -- it's what

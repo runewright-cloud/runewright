@@ -46,6 +46,11 @@ dependencies:
   # M4: mDNS/NSD peer discovery for the LAN transport adapter
   nsd: ^5.0.1
 
+  # Sorcerer mode: microphone capture (PCM-16 LE mono stream at 16 kHz)
+  # Used by ReferenceMatchVocalScorer and AmbientCalibrator.
+  # SherpaVocalScorer will additionally need sherpa_onnx once validated.
+  record: ^7.1.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -24,7 +24,9 @@ import 'package:flutter/services.dart';
 
 import '../../identity/backup_io.dart';
 import '../../identity/identity.dart';
+import '../../identity/key_packing.dart';
 import '../manuscript_theme.dart';
+import '../sigil_painter.dart';
 import 'roll_entry_screen.dart' show kElementOrder, kSlotsPerElement;
 
 enum BackupPromptSource { auto, rolls }
@@ -75,6 +77,19 @@ class _BackupPromptScreenState extends State<BackupPromptScreen> {
   bool _exporting = false;
   bool _acknowledgedSkipRisk = false;
   String? _error;
+  Uint8List? _sigilBytes;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSigilBytes();
+  }
+
+  Future<void> _loadSigilBytes() async {
+    final hex = await widget.identity.ownerPubkeyHex();
+    if (!mounted) return;
+    setState(() => _sigilBytes = fieldHexToLeBytes(hex, 32));
+  }
 
   @override
   void dispose() {
@@ -159,7 +174,24 @@ class _BackupPromptScreenState extends State<BackupPromptScreen> {
           const ManuscriptBackButton(),
           const SizedBox(height: 4),
           Text('BACK UP YOUR RUNEKEY', textAlign: TextAlign.center, style: manuscriptHeaderStyle(fontSize: 22)),
-          const SizedBox(height: 16),
+          const SizedBox(height: 20),
+          if (_sigilBytes != null)
+            Center(
+              child: SigilWidget(
+                keyBytes: _sigilBytes!,
+                size: 140,
+                gridN: 7,
+                saturation: 2.0,
+              ),
+            ),
+          const SizedBox(height: 12),
+          Text(
+            'This weaving represents your runekey. It is unique — though other '
+            'wizards may have the same name, none shall ever have the exact same weaving.',
+            textAlign: TextAlign.center,
+            style: manuscriptBodyStyle(fontSize: 13, color: kInkMutedColor),
+          ),
+          const SizedBox(height: 20),
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(

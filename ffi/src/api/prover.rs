@@ -272,39 +272,84 @@ pub fn init_srs_cached(circuit_bytecode: String, cache_path: String) -> Result<u
     Ok(srs.num_points)
 }
 
-/// Reads `cache_path` if it exists, else downloads and writes it there for
-/// next time. Catches panics from noir_rs's local-file and network I/O
-/// (both `.unwrap()` internally) and converts them into `Result::Err` so a
-/// missing network connection on a fresh device surfaces as a normal,
-/// Dart-catchable error rather than crashing the process. Safe to do:
-/// `catch_unwind` here runs entirely before anything crosses back over the
-/// FFI boundary, and this crate has no `panic = "abort"` profile override
-/// (checked: ffi/Cargo.toml), so unwinding is actually available to catch.
-fn get_srs_cached(num_points: u32, cache_path: &str) -> Result<Srs, String> {
-    if std::path::Path::new(cache_path).exists() {
-        std::panic::catch_unwind(|| LocalSrs::new(num_points, Some(cache_path)).to_srs()).map_err(|_| {
-            format!("failed to read the cached SRS file at {cache_path} (corrupt?) — delete it and try again")
-        })
-    } else {
-        let downloaded = std::panic::catch_unwind(|| NetSrs::new(num_points).to_srs())
-            .map_err(|_| "SRS download failed — check your network connection and try again".to_string())?;
-        let to_save = Srs {
-            g1_data: downloaded.g1_data.clone(),
-            g2_data: downloaded.g2_data.clone(),
-            num_points: downloaded.num_points,
-        };
-        // Best-effort: a save failure (e.g. disk full) shouldn't fail this
-        // inscription -- the player still gets their proof this once, just
-        // without a cache for next time. Atomic (see save_srs_cache_atomic):
-        // an interrupted write (flaky in-person network, app killed
-        // mid-save) must never leave `cache_path` itself half-written --
-        // that would make every future run see a "present but corrupt"
-        // cache and need manual deletion (M4 plan, "interrupted download
-        // must self-heal"). With an atomic publish, the worst case is a
-        // missing cache (next run just re-downloads), never a poisoned one.
-        let _ = save_srs_cache_atomic(&to_save, cache_path);
-        Ok(downloaded)
+/// Reads `cache_path` and returns the cached SRS sliced to `num_points` if
+/// it's present, valid, and has *at least* `num_points` points cached.
+///
+/// Returns `Ok(None)` (not `Err`) when the cache should be treated as a
+/// miss: file absent, or present-and-valid but written for a smaller tier
+/// than `num_points` needs (e.g. a tier12/24 cache on disk, tier48 now
+/// requested) -- `get_srs_cached` re-downloads in that case rather than
+/// erroring, growing the cache instead of replacing it. Only a file that
+/// exists but fails to bincode-decode as an `Srs` at all is genuine
+/// corruption, reported as `Err`.
+fn read_cache_if_sufficient(num_points: u32, cache_path: &str) -> Result<Option<Srs>, String> {
+    if !std::path::Path::new(cache_path).exists() {
+        return Ok(None);
     }
+    let bytes = std::fs::read(cache_path)
+        .map_err(|e| format!("failed to read the cached SRS file at {cache_path}: {e}"))?;
+    let cached: Srs = bincode::deserialize(&bytes).map_err(|_| {
+        format!("failed to read the cached SRS file at {cache_path} (corrupt?) — delete it and try again")
+    })?;
+    if cached.num_points >= num_points {
+        Ok(Some(cached.get(num_points)))
+    } else {
+        Ok(None)
+    }
+}
+
+// Minimum number of SRS points to store in the persistent cache — sized to
+// cover the largest supported tier (tier48) so a player who inscribes any
+// tier on their first online session never needs a second download, even if
+// they later try a larger tier offline.
+//
+// Derived: running `init_srs_cached` against the real tier48 circuit
+// (circuits/ca_v2_4_tier48/target/ca_v2_4_tier48.json) returns 2,097,153
+// points (2^21 + 1, subgroup size 2^21 = 2,097,152). Update this constant
+// if tier48 is recompiled and its gate count crosses the next power-of-two
+// boundary — the new value will be whatever `init_srs_cached` returns for
+// tier48's bytecode after the rebuild.
+const TIER48_SRS_FLOOR: u32 = 2_097_153;
+
+/// Reads `cache_path` if it has enough points cached, else downloads and
+/// (re)writes it there for next time. Every download is sized to at least
+/// `TIER48_SRS_FLOOR` points regardless of which tier triggered it, so the
+/// very first online inscription (any tier) permanently populates a cache
+/// large enough for all three tiers. A cache that's valid but undersized
+/// (written before this policy, or for a smaller tier) is topped up the
+/// same way. Only a file that fails to bincode-decode as an `Srs` at all
+/// is genuine corruption, surfaced as `Err`. Catches panics from noir_rs's
+/// network I/O (`.unwrap()`s internally on the HTTP response) and converts
+/// them into `Result::Err` so a missing network connection on a fresh or
+/// undersized cache surfaces as a normal, Dart-catchable error rather than
+/// crashing the process. Safe: `catch_unwind` runs entirely before anything
+/// crosses the FFI boundary, and this crate has no `panic = "abort"`
+/// profile override (checked: ffi/Cargo.toml).
+fn get_srs_cached(num_points: u32, cache_path: &str) -> Result<Srs, String> {
+    if let Some(srs) = read_cache_if_sufficient(num_points, cache_path)? {
+        return Ok(srs);
+    }
+    let download_points = num_points.max(TIER48_SRS_FLOOR);
+    let downloaded = std::panic::catch_unwind(|| NetSrs::new(download_points).to_srs())
+        .map_err(|_| "SRS download failed — check your network connection and try again".to_string())?;
+    let to_save = Srs {
+        g1_data: downloaded.g1_data.clone(),
+        g2_data: downloaded.g2_data.clone(),
+        num_points: downloaded.num_points,
+    };
+    // Best-effort: a save failure (e.g. disk full) shouldn't fail this
+    // inscription -- the player still gets their proof this once, just
+    // without a cache for next time. Atomic (see save_srs_cache_atomic):
+    // an interrupted write (flaky in-person network, app killed
+    // mid-save) must never leave `cache_path` itself half-written --
+    // that would make every future run see a "present but corrupt"
+    // cache and need manual deletion. With an atomic publish, the worst
+    // case is a missing cache (next run just re-downloads), never a
+    // poisoned one.
+    let _ = save_srs_cache_atomic(&to_save, cache_path);
+    // Return only the slice the actual tier's srs_init needs -- the cache
+    // holds more, but barretenberg only needs points up to num_points here.
+    Ok(downloaded.get(num_points))
 }
 
 /// Writes `srs` to `cache_path` atomically: serialize to a uniquely-named
@@ -541,6 +586,49 @@ mod srs_cache_tests {
         assert_eq!(got.num_points, fake.num_points);
         assert_eq!(got.g1_data, fake.g1_data);
         assert_eq!(got.g2_data, fake.g2_data);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The bug this fix targets: a cache file that's valid but was written
+    /// for a smaller tier than the current request needs (e.g. a tier12/24
+    /// cache on disk, tier48 now being inscribed) must be treated as a miss
+    /// -- not misreported as "corrupt" the way `Srs::get`'s internal slice
+    /// would panic if handed a too-small cache directly. Tested at the
+    /// `read_cache_if_sufficient` level (no network) since `get_srs_cached`
+    /// itself would otherwise need a real download to demonstrate the
+    /// top-up actually happening.
+    #[test]
+    fn undersized_cache_is_treated_as_a_miss_not_corruption() {
+        let dir = std::env::temp_dir().join(format!(
+            "runewright_srs_cache_undersized_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cache_path = dir.join("srs.local");
+
+        LocalSrs(Srs {
+            num_points: 3,
+            g1_data: vec![7u8; 3 * 64],
+            g2_data: vec![9u8; 128],
+        })
+        .save(Some(cache_path.to_str().unwrap()));
+
+        let result = read_cache_if_sufficient(5, cache_path.to_str().unwrap())
+            .expect("a valid but undersized cache must not be reported as an error");
+        assert!(
+            result.is_none(),
+            "a cache with only 3 points cached should be a miss for a 5-point request"
+        );
+
+        // A request the cache *does* cover must still be a hit.
+        let still_a_hit = read_cache_if_sufficient(3, cache_path.to_str().unwrap())
+            .expect("read should succeed")
+            .expect("3-point cache should satisfy a 3-point request");
+        assert_eq!(still_a_hit.num_points, 3);
 
         std::fs::remove_dir_all(&dir).ok();
     }

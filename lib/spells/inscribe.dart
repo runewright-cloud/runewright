@@ -31,8 +31,8 @@ const int kMaxInscribableSteps = 48;
 
 /// `RULESET_VERSION` -- CIRCUIT_IO.md CIRCUIT_IO 6, same fixed value used
 /// throughout (gate_runner.dart's kGateRulesetVersionHex, spike_screen.dart).
-/// Bumped to 2 for the ink substrate (RULESET_VERSION 2 in main.nr).
-const String kRulesetVersionHex = '0x2';
+/// Bumped to 3 for deterministic geometry outputs (segment_count, dot_count).
+const String kRulesetVersionHex = '0x3';
 
 /// Smallest tier covering [t] generations, or null if [t] is outside the
 /// circuit's supported range (`1 <= T <= 48`).
@@ -88,6 +88,8 @@ Future<SpellAsset> inscribeSpell({
   required int steps,
   required Identity identity,
   required int manaCost,
+  required int segmentCount,
+  required int dotCount,
   required String name,
   required CircuitJsonLoader loadCircuitJson,
   required BinaryAssetLoader loadVkBytes,
@@ -167,6 +169,8 @@ Future<SpellAsset> inscribeSpell({
     t: steps,
     ownerPubkeyHex: ownerPubkeyHex,
     manaCost: manaCost,
+    segmentCount: segmentCount,
+    dotCount: dotCount,
     initialGrid: gridState,
     proofBytes: result.proofBytes,
     name: name,

@@ -39,10 +39,28 @@ class OnboardingLandingScreen extends StatefulWidget {
 
 class _OnboardingLandingScreenState extends State<OnboardingLandingScreen> {
   bool _busy = false;
+  final _nameController = TextEditingController();
+  bool _nameEntered = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController.addListener(() {
+      final entered = _nameController.text.trim().isNotEmpty;
+      if (entered != _nameEntered) setState(() => _nameEntered = entered);
+    });
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    super.dispose();
+  }
 
   Future<void> _createAuto() async {
     setState(() => _busy = true);
     try {
+      await Identity.saveWizardName(_nameController.text.trim());
       final identity = await Identity.loadOrCreate();
       if (!mounted) return;
       // push (not pushReplacement) so this landing screen stays underneath
@@ -68,6 +86,7 @@ class _OnboardingLandingScreenState extends State<OnboardingLandingScreen> {
         builder: (_) => RollEntryScreen(
           mode: RollEntryMode.create,
           onComplete: (rolls) async {
+            await Identity.saveWizardName(_nameController.text.trim());
             final seed = await deriveSeedFromRolls(rolls);
             final identity = await Identity.overwriteWithSeed(seed);
             if (!mounted) return;
@@ -116,13 +135,32 @@ class _OnboardingLandingScreenState extends State<OnboardingLandingScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final canForge = !_busy && _nameEntered;
     return ParchmentScaffold(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const SizedBox(height: 24),
           Text('FORGE YOUR RUNEKEY', textAlign: TextAlign.center, style: manuscriptHeaderStyle(fontSize: 28)),
-          const SizedBox(height: 12),
+          const SizedBox(height: 24),
+          TextField(
+            controller: _nameController,
+            textCapitalization: TextCapitalization.words,
+            style: manuscriptBodyStyle(fontSize: 16),
+            decoration: InputDecoration(
+              labelText: 'Wizard Name',
+              labelStyle: manuscriptCaptionStyle(),
+              hintText: 'Enter your wizard name',
+              hintStyle: manuscriptCaptionStyle(),
+              enabledBorder: const UnderlineInputBorder(
+                borderSide: BorderSide(color: kInkColor, width: 1),
+              ),
+              focusedBorder: const UnderlineInputBorder(
+                borderSide: BorderSide(color: kInkColor, width: 2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 24),
           Text(
             'Your Runekey is your wizard identity — generated and kept only on '
             'this device, never on a server. Choose how to forge or restore it.',
@@ -132,7 +170,7 @@ class _OnboardingLandingScreenState extends State<OnboardingLandingScreen> {
           const SizedBox(height: 32),
           IlluminatedButton(
             label: 'CREATE NEW (QUICK)',
-            onTap: _busy ? null : _createAuto,
+            onTap: canForge ? _createAuto : null,
           ),
           const SizedBox(height: 4),
           Text(
@@ -143,7 +181,7 @@ class _OnboardingLandingScreenState extends State<OnboardingLandingScreen> {
           const SizedBox(height: 16),
           IlluminatedButton(
             label: 'CREATE NEW (THE RITE OF FOUR-AND-TWENTY)',
-            onTap: _busy ? null : _createFromRolls,
+            onTap: canForge ? _createFromRolls : null,
           ),
           const SizedBox(height: 4),
           Text(

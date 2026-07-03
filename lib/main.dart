@@ -5,7 +5,7 @@ import 'package:flutter/material.dart' hide Element;
 import 'package:flutter/services.dart' show rootBundle;
 import 'engine/border_zone.dart';
 import 'engine/ca_rules.dart';
-import 'engine/ca_run.dart' show activeZoneFor, advanceDominance, isSupreme;
+import 'engine/ca_run.dart' show activeZoneFor, advanceDominance, gridGeometry, isSupreme;
 import 'engine/element.dart';
 import 'engine/formula.dart';
 import 'engine/hex_grid.dart';
@@ -258,13 +258,14 @@ class _GameScreenState extends State<GameScreen>
   }
 
   int get _manaCost {
-    final base = _initialGrid != null
-        ? _initialGrid!.cells.values.where((e) => e == Element.alive).length
-        : _grid.cells.values.where((e) => e == Element.alive).length;
-    // Each step multiplies cost by 1.05.
-    // Each time the formula bar starts a new effect (entries 4, 7, 10, ...)
-    // multiplies cost by an additional 1.5. Number of such multipliers =
-    // max(0, (committed - 1) ~/ 3): 0 for lengths 0–3, 1 at 4–6, 2 at 7–9.
+    final geo = gridGeometry(_initialGrid ?? _grid);
+    // Base cost: 5 mana per line segment, 1 mana per isolated dot.
+    // Segments are maximal runs of ≥2 contiguous inscribable active cells
+    // per axis (3 axes). Dots are inscribable active cells with no active
+    // inscribable neighbours. Both are pure functions of the T=0 grid.
+    final base = 5 * geo.segmentCount + geo.dotCount;
+    // Each step multiplies cost by 1.05 (unchanged growth rate).
+    // Each new formula effect (entries 4, 7, 10, …) multiplies cost by 1.5.
     final effectCount = max(0, (_formulaTracker.committed.length - 1) ~/ 3);
     return (base * pow(1.05, _grid.stepCount) * pow(1.5, effectCount)).round();
   }
@@ -288,7 +289,12 @@ class _GameScreenState extends State<GameScreen>
 
     final initialGrid = _initialGrid!;
     final steps = _grid.stepCount;
-    final manaCost = _manaCost;
+    final geo = gridGeometry(initialGrid);
+    final effectCount = max(0, (_formulaTracker.committed.length - 1) ~/ 3);
+    final manaCost = ((5 * geo.segmentCount + geo.dotCount) *
+            pow(1.05, steps) *
+            pow(1.5, effectCount))
+        .round();
 
     final status = ValueNotifier<String>('Preparing the loom…');
     setState(() => _inscribing = true);
@@ -305,6 +311,8 @@ class _GameScreenState extends State<GameScreen>
         steps: steps,
         identity: identity,
         manaCost: manaCost,
+        segmentCount: geo.segmentCount,
+        dotCount: geo.dotCount,
         name: spellName,
         formula: _formulaTracker.committed.map((z) => z.name).toList(),
         supremeTags: _supremeElements.toList(),
