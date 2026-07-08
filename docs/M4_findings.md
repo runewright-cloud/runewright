@@ -1,5 +1,80 @@
 # M4 — Findings Log (live, updated per milestone)
 
+## Mod-system seam orientation — deferred-feature findings (2026-07-05)
+
+Orientation pass for a possible future mod system (player-toggleable formula
+length 3/4/5, community-defined effect tables for longer patterns, an
+ordered per-player mod-precedence stack). No code was written — the feature
+stays documented-but-unbuilt, deferred until popular demand. Two findings
+below matter independent of whether it ever ships; the third corrects a
+type-level bug in the seam proposal itself before anyone builds against it.
+
+### Latent exploit: mana cost is coupled to formula count, not just activation count
+
+`_certifiedManaCost` (`lib/battle/engine/turn_loop.dart:1529`) computes
+`effectCount` from `certFormulas.length`, i.e. `1.5^(effectCount-1)` scales
+with how many complete formula-groups a trajectory produces. At the current
+fixed formula length (3) this is an inert, faithful proxy for activation
+count. It becomes a live, exploitable cost difference the moment formula
+length is player-toggleable: the same trajectory (e.g. 9 committed
+activations) would cost `1.5^2` at length 3 vs `1.5^0` at length 5 — same
+work, cosmetic toggle producing a real cost delta.
+
+**Fix, when the length toggle is built:** pin the cost divisor to a fixed
+accounting constant (`BASE_FORMULA_LENGTH = 3`), independent of the
+player's chosen display length —
+`cost = 1.5^(floor(committed.length / BASE_FORMULA_LENGTH) - 1)` always. The
+length toggle regroups the trajectory for effect lookup and display only,
+never for cost accounting. This preserves all existing tests byte-for-byte;
+do not switch to raw `committed.length` as the divisor, since that's a
+different curve shape and silently rebalances existing length-3 play.
+
+**This fix must land inside the same change as the length toggle, never as
+a follow-up** — pre-toggle it's dormant, but shipping the toggle without it
+arms a real exploit on day one.
+
+### The v1-committed signed match record does not exist yet
+
+Per `runewright_design_v3_0.md` ("Signed Match Records", `[APPLIED — ships
+in v1]`), the match-record format is supposed to reserve three fields now,
+even though Talewright itself is post-ship: **N signers** (not a hardcoded
+pair — same trap as ruleset versioning), **embedded match config** (custom
+HP, loadouts, grid size, toggle set), and an **optional stakes-hash**
+(pre-committed, both-signed statement of what the outcome means; empty for
+ordinary duels).
+
+Orientation for the mod-system pass found no such struct in the codebase.
+The only implemented Ed25519-signed struct is `SpellPermission`
+(`lib/spells/spell_permission.dart`) — a loan/permission grant with no
+config field — and `docs/BATTLE_PROTOCOL.md` §6 has only a stubbed per-turn
+state-hash signature (`// TODO(battle)`).
+
+**When this record is built** (for stakes/Talewright or any other reason),
+reserve these additional fields in its config bundle at the same time, per
+the same cheap-now/expensive-retrofit logic that motivated the original
+three: `modStackHash` (nullable, absent = no mods active), `rulesetVersion`,
+`tierMax`.
+
+**No action needed now** — do not create this struct solely to hold these
+fields. This is a note for whoever builds the v1 record next, whatever
+motivates that work.
+
+### Correction to the mod-manifest seam proposal: coverage-set element type
+
+The mod-system orientation proposal (chat-only, not yet written to any
+file) sketched `ModManifest.coverage: Map<int, Set<List<BorderZone>>>`.
+That has a latent bug worth fixing in the design, not the code — nothing is
+built yet: `Set<List<BorderZone>>` uses identity equality on a raw `List`,
+so two structurally-equal patterns would be treated as distinct set
+members, and coverage checks would silently misclassify.
+
+Whatever immutable `Pattern` wrapper (value equality + `hashCode`) gets
+introduced for the resolver's map key (the `resolvePattern` seam) must also
+be the element type in the manifest's coverage sets — one wrapper type, not
+two ad hoc solutions to the same problem. Recording this here since it's
+the only standing note on the mod-system seams; a future implementer should
+read this section before building `ModManifest` or the resolver.
+
 ## Battle protocol security audit (B-round) — pre-existing divergence findings
 
 ### `nextSpellCostDouble` state-hash desync (pre-existing, fixed in B-1/B-8 pass)

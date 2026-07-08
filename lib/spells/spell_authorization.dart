@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// spell_authorization.dart — ownership and loan-permission checks.
+//
+// Two contexts:
+//
+//   localIdentityMayUse — call this before ChapterAsset.withEntry to enforce
+//     that only owned or loaned spells enter a chapter.
+//
+//   castingPlayerMayUse — call this when an opponent declares a spellCast in
+//     battle, given the SpellPermission records they transmitted at session start.
+//     Each matching permission's signature is verified before granting access.
+//
+// TODO(battle): add a SpellPermission exchange step to BattleSession setup
+//   (new wire message or extended matchConfig payload) and pass the received
+//   list to castingPlayerMayUse. See BATTLE_PROTOCOL.md.
+
+import '../identity/identity.dart';
+import 'spell_asset.dart';
+import 'spell_permission.dart';
+
+bool _hexEq(String a, String b) {
+  BigInt parse(String s) => BigInt.parse(s.startsWith('0x') ? s.substring(2) : s, radix: 16);
+  return parse(a) == parse(b);
+}
+
+/// Returns true if [identity] may use [spell] — i.e., their Poseidon2 pubkey
+/// matches [spell.ownerPubkeyHex], or a locally stored SpellPermission covers
+/// [spell.commitmentHex] and names the identity as grantee.
+///
+/// Call this before [ChapterAsset.withEntry] to enforce the ownership gate.
+///
+/// Locally stored permissions are trusted without re-verifying the signature —
+/// they were verified when received and saved (see [SpellPermission.isSignatureValid]).
+Future<bool> localIdentityMayUse(SpellAsset spell, Identity identity) async {
+  final myPubkeyHex = await identity.ownerPubkeyHex();
+  if (_hexEq(spell.ownerPubkeyHex, myPubkeyHex)) return true;
+  final perms = await SpellPermission.loadForCommitment(spell.commitmentHex);
+  return perms.any(
+    (p) =>
+        _hexEq(p.granteePubkeyHex, myPubkeyHex) &&
+        _hexEq(p.ownerPubkeyHex, spell.ownerPubkeyHex),
+  );
+}
+
+/// Returns true if the player identified by [castingPlayerPubkeyHex] (their
+/// circuit-level Poseidon2(key_hi, key_lo), extracted from their verified spell
+/// proof) is authorized to cast a spell whose proof carries [spellOwnerPubkeyHex]
+/// and [commitmentHex].
+///
+/// [permissions] are the SpellPermission records the casting player transmitted
+/// at battle session start. Each candidate permission's Ed25519 signature is
+/// verified before authorization is granted.
+///
+/// TODO(battle): wire permission exchange into BattleSession setup and pass the
+///   received list here. Until then pass an empty list — owned spells are
+///   authorized by the first branch and loan verification is deferred.
+Future<bool> castingPlayerMayUse({
+  required String spellOwnerPubkeyHex,
+  required String commitmentHex,
+  required String castingPlayerPubkeyHex,
+  required List<SpellPermission> permissions,
+}) async {
+  if (_hexEq(spellOwnerPubkeyHex, castingPlayerPubkeyHex)) return true;
+  for (final perm in permissions) {
+    if (_hexEq(perm.commitmentHex, commitmentHex) &&
+        _hexEq(perm.granteePubkeyHex, castingPlayerPubkeyHex) &&
+        _hexEq(perm.ownerPubkeyHex, spellOwnerPubkeyHex) &&
+        await perm.isSignatureValid()) {
+      return true;
+    }
+  }
+  return false;
+}

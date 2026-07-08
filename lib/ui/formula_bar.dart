@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart' hide Element;
+import '../battle/models/effect_kind.dart' show formulaTripletKind, kAffinityLabel, kEffectKindLabel;
 import '../engine/border_zone.dart';
 
 class FormulaBar extends StatelessWidget {
@@ -52,8 +53,12 @@ class FormulaBar extends StatelessWidget {
     );
   }
 
-  // A complete triple, visually bracketed.
+  // A complete triple, visually bracketed, with the effect it produces
+  // (same "[flavor] [base effect]" naming as the library/recipe book --
+  // see kAffinityLabel/kEffectKindLabel in effect_kind.dart) named beneath.
   Widget _formulaGroup(List<BorderZone> zones) {
+    final (affinity, kind) = formulaTripletKind(zones);
+    final effectName = '${kAffinityLabel[affinity]!} ${kEffectKindLabel[kind]!}';
     return Container(
       margin: const EdgeInsets.only(right: 6),
       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
@@ -61,20 +66,34 @@ class FormulaBar extends StatelessWidget {
         border: Border.all(color: const Color(0xFF4A3020), width: 1),
         borderRadius: BorderRadius.circular(4),
       ),
-      child: Row(
+      child: Column(
         mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          for (int i = 0; i < zones.length; i++) ...[
-            if (i > 0)
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 2),
-                child: Text(
-                  '·',
-                  style: TextStyle(color: Color(0xFF6A5040), fontSize: 11),
-                ),
-              ),
-            _chip(zones[i]),
-          ],
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (int i = 0; i < zones.length; i++) ...[
+                if (i > 0)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 2),
+                    child: Text(
+                      '·',
+                      style: TextStyle(color: Color(0xFF6A5040), fontSize: 11),
+                    ),
+                  ),
+                _chip(zones[i]),
+              ],
+            ],
+          ),
+          Text(
+            effectName,
+            style: const TextStyle(
+              color: Color(0xFF9A9488),
+              fontSize: 9,
+              letterSpacing: 0.3,
+            ),
+          ),
         ],
       ),
     );

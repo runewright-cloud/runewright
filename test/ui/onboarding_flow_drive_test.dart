@@ -10,11 +10,31 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:rune_duel/src/rust/frb_generated.dart';
 import 'package:rune_duel/ui/app_root.dart';
 
 import '../identity/fake_secure_storage.dart';
 
+// Both "CREATE NEW" paths are gated on a non-empty Wizard Name (see
+// onboarding_landing_screen.dart's `canForge`) -- fill it in before tapping
+// either button, same as a real player would.
+Future<void> _enterWizardName(WidgetTester tester) async {
+  await tester.enterText(find.byType(TextField), 'Test Wizard');
+  await tester.pump();
+}
+
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  // BackupPromptScreen (reached by both create paths) now renders a sigil
+  // derived from Identity.ownerPubkeyHex, which hashes through the Rust
+  // FFI bridge (poseidon2Hash2) -- a plain in-process hash, no network or
+  // SRS involved, but the bridge still needs `RustLib.init()` once before
+  // any test in this file reaches that screen.
+  setUpAll(() async {
+    await RustLib.init();
+  });
+
   testWidgets('Rite of Four-and-Twenty: landing -> roll entry -> picker -> recorded', (tester) async {
     installFakeSecureStorage();
     await tester.pumpWidget(const MaterialApp(home: AppRoot()));
@@ -23,6 +43,7 @@ void main() {
     expect(find.text('FORGE YOUR RUNEKEY'), findsOneWidget);
     expect(find.text('CREATE NEW (THE RITE OF FOUR-AND-TWENTY)'), findsOneWidget);
 
+    await _enterWizardName(tester);
     await tester.tap(find.text('CREATE NEW (THE RITE OF FOUR-AND-TWENTY)'));
     await tester.pumpAndSettle();
 
@@ -52,6 +73,7 @@ void main() {
     await tester.pumpWidget(const MaterialApp(home: AppRoot()));
     await tester.pumpAndSettle();
 
+    await _enterWizardName(tester);
     await tester.tap(find.text('CREATE NEW (QUICK)'));
     await tester.pumpAndSettle();
 
@@ -84,6 +106,10 @@ void main() {
     await tester.pumpWidget(const MaterialApp(home: AppRoot()));
     await tester.pumpAndSettle();
     expect(find.text('FORGE YOUR RUNEKEY'), findsOneWidget);
+
+    // Entered once: the landing screen is popped back to (not rebuilt) by
+    // every '‹ Back' below, so its State -- and the entered name -- persists.
+    await _enterWizardName(tester);
 
     // Rolls entry (covers both create-rolls and restore-rolls -- same screen).
     await tester.tap(find.text('CREATE NEW (THE RITE OF FOUR-AND-TWENTY)'));

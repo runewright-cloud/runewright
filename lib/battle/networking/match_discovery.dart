@@ -1,0 +1,209 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// match_discovery.dart — MatchDiscovery seam over the existing Transport
+// and mDNS/LAN discovery stack.
+//
+// The battle layer talks only to this abstract interface; concrete adapters
+// (LanMatchDiscovery below, future BLE) live behind it. Adapter logic is
+// never duplicated into game code — transport negotiation happens here.
+//
+// RAM tier capability (§9 of BATTLE_PROTOCOL.md):
+//   DeviceCapabilities.ramTierCap advertises the max circuit tier this device
+//   can prove/verify. Detection is stubbed — returns a fixed value; the field
+//   and its plumbing are real so the lobby can later gate tier-48 access.
+//
+// See docs/BATTLE_PROTOCOL.md §9 for player/transport cap rationale.
+
+import 'dart:async';
+import 'dart:typed_data';
+
+import 'package:nsd/nsd.dart' as nsd;
+
+import '../../protocol/lan_discovery.dart';
+import '../../protocol/lan_socket_transport.dart';
+import '../../protocol/transport.dart';
+
+// ── Capability advertisement ──────────────────────────────────────────────────
+
+/// The max circuit tier (12 / 24 / 48) this device can reliably prove.
+///
+/// Tier-48 requires ≥6 GB RAM (CIRCUIT_IO.md §7); detection is stubbed —
+/// [detect] returns 24 as a safe default until real RAM probing lands.
+class DeviceCapabilities {
+  const DeviceCapabilities({required this.ramTierCap});
+
+  final int ramTierCap; // 12 | 24 | 48
+
+  // TODO(battle): probe actual device RAM; return 48 only on ≥6 GB devices.
+  static DeviceCapabilities detect() => const DeviceCapabilities(ramTierCap: 24);
+
+  Map<String, dynamic> toJson() => {'ramTierCap': ramTierCap};
+  static DeviceCapabilities fromJson(Map<String, dynamic> j) =>
+      DeviceCapabilities(ramTierCap: j['ramTierCap'] as int? ?? 24);
+}
+
+// ── Discovered peer ───────────────────────────────────────────────────────────
+
+/// A peer found during discovery, with a lazily-evaluated connection factory.
+///
+/// The battle layer never sees the underlying mDNS [Service] — it calls
+/// [connect] and gets a [Transport] back, adapter-agnostic.
+class DiscoveredPeer {
+  DiscoveredPeer({
+    required this.displayName,
+    required this.capabilities,
+    required Future<Transport> Function() connect,
+  }) : _connect = connect;
+
+  final String displayName;
+  final DeviceCapabilities capabilities;
+  final Future<Transport> Function() _connect;
+
+  Future<Transport> connect() => _connect();
+}
+
+// ── Abstract seam ─────────────────────────────────────────────────────────────
+
+abstract class MatchDiscovery {
+  /// Advertise this device as a duel host with the given [caps].
+  ///
+  /// Registers an mDNS service and binds a listening socket (LAN adapter).
+  /// Call [stopAdvertising] to clean up, or [acceptConnection] to get the
+  /// connected [Transport] once a peer dials in.
+  Future<void> startAdvertising({
+    required DeviceCapabilities caps,
+    String displayName = 'Runewright Duel',
+  });
+
+  Future<void> stopAdvertising();
+
+  /// Returns a broadcast stream emitting peers as they are discovered.
+  ///
+  /// Peers can appear, resolve, and disappear; call [stopDiscovering] when
+  /// the lobby screen closes.
+  Future<Stream<DiscoveredPeer>> startDiscovering();
+
+  Future<void> stopDiscovering();
+
+  /// Accept the first incoming connection from an advertising peer (host role).
+  Future<Transport> acceptConnection();
+}
+
+// ── LAN adapter ───────────────────────────────────────────────────────────────
+
+/// [MatchDiscovery] over LAN sockets + mDNS, using the existing
+/// [LanSocketTransport] / [LanListener] / lan_discovery.dart stack.
+///
+/// BLE is a future adapter behind the same seam (BATTLE_PROTOCOL.md §9).
+class LanMatchDiscovery implements MatchDiscovery {
+  nsd.Registration? _registration;
+  nsd.Discovery? _discovery;
+  LanListener? _listener;
+  final _peerController = StreamController<DiscoveredPeer>.broadcast();
+
+  @override
+  Future<void> startAdvertising({
+    required DeviceCapabilities caps,
+    String displayName = 'Runewright Duel',
+  }) async {
+    _listener = await LanSocketTransport.bind();
+    _registration = await advertiseDuelHost(
+      port: _listener!.port,
+      displayName: displayName,
+    );
+    // TODO(battle): encode caps into mDNS TXT records so discovering peers
+    //   can read ramTierCap without connecting; depends on nsd TXT record API.
+  }
+
+  @override
+  Future<void> stopAdvertising() async {
+    if (_registration != null) {
+      await stopAdvertisingDuelHost(_registration!);
+      _registration = null;
+    }
+    await _listener?.close();
+    _listener = null;
+  }
+
+  @override
+  Future<Stream<DiscoveredPeer>> startDiscovering() async {
+    _discovery = await discoverDuelHosts();
+    _discovery!.addServiceListener((service, status) {
+      if (status == nsd.ServiceStatus.found) {
+        // TODO(battle): parse ramTierCap from service TXT records once
+        //   startAdvertising encodes it; until then assume 24.
+        final caps = const DeviceCapabilities(ramTierCap: 24);
+        _peerController.add(DiscoveredPeer(
+          displayName: service.name ?? 'Unknown Wizard',
+          capabilities: caps,
+          connect: () => connectToDiscoveredService(service),
+        ));
+      }
+    });
+    return _peerController.stream;
+  }
+
+  @override
+  Future<void> stopDiscovering() async {
+    if (_discovery != null) {
+      await stopDiscoveringDuelHosts(_discovery!);
+      _discovery = null;
+    }
+  }
+
+  @override
+  Future<Transport> acceptConnection() async {
+    final listener = _listener;
+    if (listener == null) throw StateError('not advertising — call startAdvertising first');
+    return listener.acceptOnce();
+  }
+
+  Future<void> dispose() async {
+    await stopAdvertising();
+    await stopDiscovering();
+    await _peerController.close();
+  }
+}
+
+// ── Solo (no-network) stub ────────────────────────────────────────────────────
+
+/// [MatchDiscovery] for solo mode — bypasses networking entirely.
+///
+/// Solo mode runs the battle engine against a single local avatar with no
+/// peer Transport. [acceptConnection] and [startDiscovering] throw; callers
+/// must branch on [MatchConfig.maxPlayers] == 1 before instantiating the
+/// session (see BATTLE_PROTOCOL.md §9, solo = 1).
+class SoloMatchDiscovery implements MatchDiscovery {
+  @override
+  Future<void> startAdvertising({required DeviceCapabilities caps, String displayName = ''}) async {}
+
+  @override
+  Future<void> stopAdvertising() async {}
+
+  @override
+  Future<Stream<DiscoveredPeer>> startDiscovering() async => const Stream.empty();
+
+  @override
+  Future<void> stopDiscovering() async {}
+
+  @override
+  Future<Transport> acceptConnection() =>
+      throw UnsupportedError('solo mode has no peer transport');
+}
+
+/// A fake [Transport] that loopbacks to itself — used by solo mode to let
+/// [BattleSession] instantiate without a peer (all sends are silently dropped,
+/// receive stream never emits). A [Uint8List] type alias so imports stay tidy.
+///
+// TODO(battle): wire SoloTransport into TurnLoop's solo path so it can run
+//   the engine without a live peer on the other end.
+class SoloTransport implements Transport {
+  final _incoming = StreamController<List<int>>.broadcast();
+
+  @override Future<void> advertise() async {}
+  @override Future<void> discover() async {}
+  @override Future<void> connect(String peerId) async {}
+  @override void send(List<int> bytes) {}
+  @override Stream<List<int>> get onReceive => _incoming.stream;
+  @override Future<void> disconnect() => _incoming.close();
+}

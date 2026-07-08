@@ -58,7 +58,7 @@ class GateStep {
 /// real identity's key_hi/key_lo/owner_pubkey instead of the zero stub.
 final List<int> kGateGrid = List<int>.filled(469, 0);
 const kGateTHex = '0x1';
-const kGateRulesetVersionHex = '0x1';
+const kGateRulesetVersionHex = '0x3';
 const kGateCircuitAsset = 'assets/circuits/ca_v2_4_tier12.json';
 const kGateVkAsset = 'assets/circuits/ca_v2_4_tier12.vk';
 

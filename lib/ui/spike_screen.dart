@@ -91,8 +91,9 @@ class _SpikeScreenState extends State<SpikeScreen> {
       _append('VK: ${vk.length} bytes (pre-computed, bundled)');
 
       // 5. Prove with the known-good witness: all-zero grid, T=1, the pinned
-      //    owner_pubkey, zero key halves, ruleset_version=2 (RULESET_VERSION
-      //    bumped for the ink substrate -- CIRCUIT_IO.md CIRCUIT_IO 6). This is the
+      //    owner_pubkey, zero key halves, ruleset_version=3 (must match the
+      //    circuit's hardcoded RULESET_VERSION -- CIRCUIT_IO.md CIRCUIT_IO 6,
+      //    same value as spells/inscribe.dart's kRulesetVersionHex). This is the
       //    M3.4 step-6 gate: the first real exercise of public-input
       //    (T/owner_pubkey/ruleset_version) marshalling across FRB, and of
       //    the hardware_concurrency fix (ffi/src/api/prover.rs's #[ctor])
@@ -107,7 +108,7 @@ class _SpikeScreenState extends State<SpikeScreen> {
         keyLoHex: '0x0',
         tHex: '0x1',
         ownerPubkeyHex: _ownerPubkeyHex,
-        rulesetVersionHex: '0x2',
+        rulesetVersionHex: '0x3',
         vkBytes: vk,
       );
 

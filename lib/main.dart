@@ -10,12 +10,15 @@ import 'engine/element.dart';
 import 'engine/formula.dart';
 import 'engine/hex_grid.dart';
 import 'engine/stepper.dart';
+import 'battle/models/effect_kind.dart' show formulaTripletKind;
 import 'identity/identity.dart';
 import 'spells/inscribe.dart';
+import 'spells/recipe_book.dart';
 import 'spells/spell_asset.dart';
 import 'ui/formula_bar.dart';
 import 'ui/hex_grid_painter.dart';
 import 'ui/app_root.dart';
+import 'ui/recipes_screen.dart';
 import 'ui/manuscript_theme.dart' show kIlluminationGold;
 import 'src/rust/frb_generated.dart';
 
@@ -67,9 +70,16 @@ class GameScreen extends StatefulWidget {
 }
 
 class _GameScreenState extends State<GameScreen>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   static const _innerRadius = 8;
   static const _radius = 12; // inscribable 0-8, buffer 9-11, border 12
+
+  // Single source of truth for auto-run pacing: the ink growth/shrink
+  // animation is pinned to half a step, so changing this alone keeps them
+  // in sync.
+  static const _stepMillis = 1000;
+  static const _stepInterval = Duration(milliseconds: _stepMillis);
+  static const _growthDuration = Duration(milliseconds: _stepMillis ~/ 2);
 
   late HexGrid _grid;
   late CARules _rules;
@@ -78,10 +88,21 @@ class _GameScreenState extends State<GameScreen>
   bool _inscribing = false;
   Timer? _timer;
   HexGrid? _initialGrid;
+  // Grid state from just before the most recent step, retained only so the
+  // painter can animate lines/dots growing or shrinking into `_grid`. Null
+  // whenever the change wasn't a step (manual edit, revert, reset, load).
+  HexGrid? _previousGrid;
   final _formulaTracker = FormulaTracker();
   final _supremeElements = <String>{};
 
+  // How many of _formulaTracker.formulas we've already reported to the
+  // RecipeBook -- lets _recordNewFormulas() process only newly-completed
+  // groups instead of re-marking everything on every step.
+  int _recordedFormulaCount = 0;
+
   late AnimationController _flickerCtrl;
+  late AnimationController _growthCtrl;
+  late Animation<double> _growth;
   Set<HexCoord> _activatedCells = {};
 
   @override
@@ -96,6 +117,11 @@ class _GameScreenState extends State<GameScreen>
         setState(() => _activatedCells = {});
       }
     });
+    _growthCtrl = AnimationController(
+      vsync: this,
+      duration: _growthDuration,
+    );
+    _growth = CurvedAnimation(parent: _growthCtrl, curve: Curves.easeOutCubic);
     final spell = widget.loadedSpell;
     if (spell != null) {
       _initialGrid = HexGrid.fromPackedState(spell.initialGrid, _radius);
@@ -115,6 +141,7 @@ class _GameScreenState extends State<GameScreen>
         _grid = next;
         _rules = dom.rule;
       }
+      _recordNewFormulas();
     } else {
       _grid = HexGrid(_radius);
       _rules = CARules.neutral;
@@ -163,7 +190,9 @@ class _GameScreenState extends State<GameScreen>
     _initialGrid ??= _grid.copy();
     final next = CAStep.step(_grid, _rules);
     final dominance = advanceDominance(_rules, next);
+    final previous = _grid;
     setState(() {
+      _previousGrid = previous;
       _grid = next;
       _rules = dominance.rule;
       if (dominance.isSupreme) {
@@ -178,7 +207,9 @@ class _GameScreenState extends State<GameScreen>
         _activatedCells = next.lastActivatedBorderCells;
       }
     });
+    _recordNewFormulas();
     _triggerFlicker(next);
+    _growthCtrl.forward(from: 0.0);
   }
 
   void _toggleRun() {
@@ -188,7 +219,7 @@ class _GameScreenState extends State<GameScreen>
     } else {
       _initialGrid ??= _grid.copy();
       setState(() => _running = true);
-      _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _timer = Timer.periodic(_stepInterval, (_) {
         final next = CAStep.step(_grid, _rules);
         if (_gridsEqual(_grid, next)) {
           _timer?.cancel();
@@ -196,7 +227,9 @@ class _GameScreenState extends State<GameScreen>
           return;
         }
         final dominance = advanceDominance(_rules, next);
+        final previous = _grid;
         setState(() {
+          _previousGrid = previous;
           _grid = next;
           _rules = dominance.rule;
           if (dominance.isSupreme) {
@@ -211,7 +244,9 @@ class _GameScreenState extends State<GameScreen>
             _activatedCells = next.lastActivatedBorderCells;
           }
         });
+        _recordNewFormulas();
         _triggerFlicker(next);
+        _growthCtrl.forward(from: 0.0);
       });
     }
   }
@@ -220,12 +255,15 @@ class _GameScreenState extends State<GameScreen>
     if (_initialGrid == null) return;
     _timer?.cancel();
     _flickerCtrl.stop();
+    _growthCtrl.stop();
     setState(() {
       _grid = _initialGrid!.copy();
+      _previousGrid = null;
       _rules = CARules.neutral;
       _running = false;
       _activatedCells = {};
       _formulaTracker.reset();
+      _recordedFormulaCount = 0;
       _supremeElements.clear();
     });
   }
@@ -233,15 +271,35 @@ class _GameScreenState extends State<GameScreen>
   void _reset() {
     _timer?.cancel();
     _flickerCtrl.stop();
+    _growthCtrl.stop();
     setState(() {
       _grid = HexGrid(_radius);
+      _previousGrid = null;
       _rules = CARules.neutral;
       _running = false;
       _initialGrid = null;
       _activatedCells = {};
       _formulaTracker.reset();
+      _recordedFormulaCount = 0;
       _supremeElements.clear();
     });
+  }
+
+  // Diffs _formulaTracker.formulas against _recordedFormulaCount and marks
+  // any newly-completed groups as discovered in the RecipeBook -- called
+  // after every _formulaTracker.step(), so a formula is recorded the moment
+  // it completes, live during play, whether or not the spell is ever
+  // inscribed.
+  void _recordNewFormulas() {
+    final formulas = _formulaTracker.formulas;
+    if (formulas.length <= _recordedFormulaCount) return;
+    final newKeys = <String>[];
+    for (var i = _recordedFormulaCount; i < formulas.length; i++) {
+      final (affinity, kind) = formulaTripletKind(formulas[i]);
+      newKeys.add(recipeKey(affinity, kind));
+    }
+    _recordedFormulaCount = formulas.length;
+    RecipeBook.markDiscovered(newKeys);
   }
 
   void _triggerFlicker(HexGrid next) {
@@ -253,6 +311,7 @@ class _GameScreenState extends State<GameScreen>
   @override
   void dispose() {
     _flickerCtrl.dispose();
+    _growthCtrl.dispose();
     _timer?.cancel();
     super.dispose();
   }
@@ -373,6 +432,14 @@ class _GameScreenState extends State<GameScreen>
         iconTheme: const IconThemeData(color: Color(0xFFF5F0E8)),
         actions: [
           IconButton(
+            icon: const Icon(Icons.menu_book),
+            tooltip: 'Recipes',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const RecipesScreen()),
+            ),
+          ),
+          IconButton(
             icon: const Icon(Icons.undo),
             tooltip: 'Revert',
             onPressed: (_initialGrid != null && !_inscribing) ? _revert : null,
@@ -400,7 +467,9 @@ class _GameScreenState extends State<GameScreen>
                       innerRadius: _innerRadius,
                       activeZone: activeZoneFor(_rules),
                       activatedBorderCells: _activatedCells,
+                      previousGrid: _previousGrid,
                       flicker: _flickerCtrl,
+                      growth: _growth,
                     ),
                     child: const SizedBox.expand(),
                   );
