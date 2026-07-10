@@ -51,6 +51,40 @@ void main() {
     expect(restored.name, equals(original.name));
     expect(restored.commitmentHex, equals(original.commitmentHex));
     expect(restored.spellHashHex, equals(original.spellHashHex));
+    expect(restored.artHash, isNull);
+    expect(restored.artSource, isNull);
+    expect(restored.artUpdatedAt, isNull);
+  });
+
+  test('withArt() sets artHash/artSource and stamps artUpdatedAt, leaving other fields unchanged',
+      () {
+    final original = sample();
+    final withArt =
+        original.withArt(hash: '0xdeadbeef', source: SpellArtSource.localImport);
+
+    expect(withArt.artHash, equals('0xdeadbeef'));
+    expect(withArt.artSource, equals(SpellArtSource.localImport));
+    expect(withArt.artUpdatedAt, isNotNull);
+    expect(withArt.id, equals(original.id));
+    expect(withArt.spellHashHex, equals(original.spellHashHex));
+
+    final restored = SpellAsset.fromJson(withArt.toJson());
+    expect(restored.artHash, equals('0xdeadbeef'));
+    expect(restored.artSource, equals(SpellArtSource.localImport));
+    expect(restored.artUpdatedAt, equals(withArt.artUpdatedAt));
+  });
+
+  test('withoutArt() clears art metadata', () {
+    final withArt =
+        sample().withArt(hash: '0xdeadbeef', source: SpellArtSource.localImport);
+    final cleared = withArt.withoutArt();
+
+    expect(cleared.artHash, isNull);
+    expect(cleared.artSource, isNull);
+    expect(cleared.artUpdatedAt, isNull);
+
+    final restored = SpellAsset.fromJson(cleared.toJson());
+    expect(restored.artHash, isNull);
   });
 
   test('save() writes a JSON file under <docs>/spells/<id>.json', () async {

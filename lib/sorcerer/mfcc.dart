@@ -252,6 +252,48 @@ class DtwMatcher {
     return math.exp(-distance / scale).clamp(0.0, 1.0);
   }
 
+  /// Corner-anchored DTW between [query] and [ref], returning both the
+  /// accumulated path cost and the path's step count (length in cells).
+  ///
+  /// Used by Practice Mode's StreamingPhonemeScorer to derive a
+  /// length-normalized (cost / steps) local match quality — accumulated
+  /// cost alone rises with path length (more warping/more frames), which
+  /// would penalize slower deliveries even when every frame matches well.
+  /// Dividing by steps removes that bias. Not used by [distance]/[score]
+  /// above, which real Sorcerer-mode casting depends on unchanged.
+  static ({double cost, int steps}) distanceWithSteps(
+    List<List<double>> query,
+    List<List<double>> ref,
+  ) {
+    if (query.isEmpty || ref.isEmpty) return (cost: double.infinity, steps: 1);
+    final n = query.length, m = ref.length;
+
+    final dtw = List<List<double>>.generate(
+      n, (_) => List<double>.filled(m, double.infinity),
+    );
+    final steps = List<List<int>>.generate(n, (_) => List<int>.filled(m, 1));
+
+    dtw[0][0] = _euclidean(query[0], ref[0]);
+    for (int i = 1; i < n; i++) {
+      dtw[i][0] = dtw[i - 1][0] + _euclidean(query[i], ref[0]);
+      steps[i][0] = steps[i - 1][0] + 1;
+    }
+    for (int j = 1; j < m; j++) {
+      dtw[0][j] = dtw[0][j - 1] + _euclidean(query[0], ref[j]);
+      steps[0][j] = steps[0][j - 1] + 1;
+    }
+    for (int i = 1; i < n; i++) {
+      for (int j = 1; j < m; j++) {
+        final up = dtw[i - 1][j], left = dtw[i][j - 1], diag = dtw[i - 1][j - 1];
+        final best = math.min(up, math.min(left, diag));
+        dtw[i][j] = _euclidean(query[i], ref[j]) + best;
+        steps[i][j] = 1 +
+            (best == diag ? steps[i - 1][j - 1] : (best == up ? steps[i - 1][j] : steps[i][j - 1]));
+      }
+    }
+    return (cost: dtw[n - 1][m - 1], steps: steps[n - 1][m - 1]);
+  }
+
   static double _euclidean(List<double> a, List<double> b) {
     var sum = 0.0;
     final len = math.min(a.length, b.length);

@@ -20,7 +20,7 @@ enum VocalWord {
   aer,    // air
   aqua,   // water
   terra,  // earth
-  finis;  // terminator (dismissal / chain break)
+  finitus;  // terminator (dismissal / chain break)
 
   /// Maps a spell's primary affinity zone name (SpellAsset.formula[0]; one
   /// of 'fire'/'air'/'water'/'earth', see spell_asset.dart) to the

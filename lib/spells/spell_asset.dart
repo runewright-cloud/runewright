@@ -14,6 +14,12 @@ import 'dart:typed_data';
 
 import 'package:path_provider/path_provider.dart';
 
+/// Where a spell's custom art (lib/spells/spell_art_store.dart) came from.
+/// P1 only ever writes [localImport]. [received]/[synced] are reserved for
+/// P2 (opponent art advertised in battle) and P3 (post-match sync) -- values,
+/// not behavior, so this enum doesn't have to change shape when those land.
+enum SpellArtSource { localImport, received, synced }
+
 class SpellAsset {
   SpellAsset({
     required this.id,
@@ -31,6 +37,9 @@ class SpellAsset {
     required this.spellHashHex,
     this.formula = const [],
     this.supremeTags = const [],
+    this.artHash,
+    this.artSource,
+    this.artUpdatedAt,
   });
 
   /// Unique within a device install -- a microsecond timestamp is more than
@@ -95,6 +104,24 @@ class SpellAsset {
   /// options are available when adding to a chapter. Empty for older spells.
   final List<String> supremeTags;
 
+  /// Hex SHA-256 of the player-imported custom art's canonical full-size
+  /// bytes (lib/spells/spell_art_import.dart), or null if this spell has no
+  /// custom art and renders the commitmentHex-derived coat of arms.
+  ///
+  /// The art bytes themselves are NOT stored here -- see
+  /// lib/spells/spell_art_store.dart's header comment for why (inline blobs
+  /// would balloon the loadAll() dedup scan every inscribeSpell() call runs).
+  /// This field is only a pointer + integrity check for that side store.
+  final String? artHash;
+
+  /// Where this spell's custom art came from. P1 only ever writes
+  /// [SpellArtSource.localImport]; the other values are reserved for P2
+  /// (received from an opponent) and P3 (post-match sync).
+  final SpellArtSource? artSource;
+
+  /// When [artHash] was last set. Null iff [artHash] is null.
+  final DateTime? artUpdatedAt;
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'createdAt': createdAt.toIso8601String(),
@@ -111,6 +138,9 @@ class SpellAsset {
         'spellHashHex': spellHashHex,
         'formula': formula,
         'supremeTags': supremeTags,
+        if (artHash != null) 'artHash': artHash,
+        if (artSource != null) 'artSource': artSource!.name,
+        if (artUpdatedAt != null) 'artUpdatedAt': artUpdatedAt!.toIso8601String(),
       };
 
   static SpellAsset fromJson(Map<String, dynamic> json) => SpellAsset(
@@ -131,6 +161,15 @@ class SpellAsset {
         spellHashHex: (json['spellHashHex'] as String?) ?? '',
         formula: (json['formula'] as List<dynamic>? ?? []).cast<String>(),
         supremeTags: (json['supremeTags'] as List<dynamic>? ?? []).cast<String>(),
+        artHash: json['artHash'] as String?,
+        artSource: switch (json['artSource'] as String?) {
+          null => null,
+          final s => SpellArtSource.values.firstWhere((v) => v.name == s,
+              orElse: () => SpellArtSource.localImport),
+        },
+        artUpdatedAt: json['artUpdatedAt'] != null
+            ? DateTime.parse(json['artUpdatedAt'] as String)
+            : null,
       );
 
   static Future<Directory> _spellsDir() async {
@@ -161,6 +200,54 @@ class SpellAsset {
         spellHashHex: spellHashHex,
         formula: formula,
         supremeTags: tags,
+        artHash: artHash,
+        artSource: artSource,
+        artUpdatedAt: artUpdatedAt,
+      );
+
+  /// Returns a copy with custom-art metadata set to [hash]/[source], stamped
+  /// with the current time. The art bytes themselves go to
+  /// [SpellArtStore.save] separately -- this only updates the pointer.
+  SpellAsset withArt({required String hash, required SpellArtSource source}) => SpellAsset(
+        id: id,
+        createdAt: createdAt,
+        tier: tier,
+        t: t,
+        ownerPubkeyHex: ownerPubkeyHex,
+        manaCost: manaCost,
+        segmentCount: segmentCount,
+        dotCount: dotCount,
+        initialGrid: initialGrid,
+        proofBytes: proofBytes,
+        name: name,
+        commitmentHex: commitmentHex,
+        spellHashHex: spellHashHex,
+        formula: formula,
+        supremeTags: supremeTags,
+        artHash: hash,
+        artSource: source,
+        artUpdatedAt: DateTime.now().toUtc(),
+      );
+
+  /// Returns a copy with custom-art metadata cleared -- the card reverts to
+  /// the commitmentHex-derived coat of arms. Does NOT delete the stored
+  /// blob; callers pair this with [SpellArtStore.delete].
+  SpellAsset withoutArt() => SpellAsset(
+        id: id,
+        createdAt: createdAt,
+        tier: tier,
+        t: t,
+        ownerPubkeyHex: ownerPubkeyHex,
+        manaCost: manaCost,
+        segmentCount: segmentCount,
+        dotCount: dotCount,
+        initialGrid: initialGrid,
+        proofBytes: proofBytes,
+        name: name,
+        commitmentHex: commitmentHex,
+        spellHashHex: spellHashHex,
+        formula: formula,
+        supremeTags: supremeTags,
       );
 
   /// Deletes this spell's persisted JSON file. Silently no-ops if already gone.

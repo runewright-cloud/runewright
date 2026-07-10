@@ -273,7 +273,7 @@ The 16 base effect types, mapped to second-third element combinations (first ele
 | Earth-Water | Tile Modification [may place second effect in adjacent tile] | Floor is Lava (2 damage to pass through) | Impassable terrain that also blocks spells from passing through for line of sight| Costs 2 movement to enter and drains mana on entry |Conveyor tiles force-move whatever stands on them; direction chosen at effect resolution and permanent|
 | Earth-Air | Range Modification | Penetrating: spells can't be blocked by walls; 1 damage to anything in hexes en route, 2[3] turns | Reduce spell range by 1 for 3[4] turns | Turbulent: next spell fires in intended direction but range randomized 1–max, 3[4] turns | Increase spell range by 1 for 2[3] turns |
 | Water-Fire |Clouds, tiles covered by clouds can only be targeted by adjacent entities entities in clouds can only target adjacent tiles. Clouds are radius 1 for 2[3] turns|Entities entering or ending turn in cloud take 1 damage| Entities that leave this cloud may still only target adjacent tiles for 2 additional turns (is a status effect)| Cloud radius 2 | Cloud will move 1 tile during summon phase every turn to try and center itself on closest enemy entity, preferring players over summons|
-| Water-Earth | Artifacts Interaction | Burn Random Player Artifact to deal 1[2] damage *(random target via joint entropy; can't hit core gem; burning a counter charm reveals its target)* | Summon 1[2] Rod of Banishment| Summon 1[2] mana gems | Summon 1[2] bookmarks |
+| Water-Earth | Artifacts Interaction | Burn Random Player Artifact to deal 1[2] damage *(random target via joint entropy; can't hit core gem; burning a counter charm reveals its target)* | Summon 1[2] Rod of Spreading| Summon 1[2] mana gems | Summon 1[2] bookmarks |
 | Water-Air | Illusions |Copy target summon, it attacks aggressively and only has 1 hitpoint| Copy Terrain and expand it to all adjacent tiles without terrain already, the copies have 1 hitpoint.| Create 3 Illusions of the wizard spaced evenly in the surrounding radius. If the wizard is subjected to a spell or attack, on a chance equal to 1/number of illusions remaining, the wizard is hit with the effect, otherwise destroy a random illusion and move the wizard to that tile.| Non wizard entity becomes an illusion with 1 hit point.|
 | Air-Fire | Multiplier cycles | Your next air effect is twice [thrice] as powerful |Your next fire effect is twice[thrice] as powerful| Your next earth effect is twice [thrice] as powerful | Your next water effect is twice [thrice] as powerful|
 | Air-Earth | melee attack Interaction, 2[3] turns | Stacking fire DoT, damage = turns remaining, 2 turns at a time | Target move speed reduced by 1 | Target status effects lose a turn | Bonus damage equal to spaces moved toward target |
@@ -284,30 +284,49 @@ The 16 base effect types, mapped to second-third element combinations (first ele
 
 ---
 
-## Summons — Spirits & Hounds
+## Summons
 
-> **`[STALE — pending Rune Craft "summons" mode]`** The Effect Table above no
-> longer assigns Fire-Earth/Earth-Fire to Spirit/Hound Summoning (those cells
-> are now Status Effect Interaction / Fuel Transmutation) — creature summoning
-> is moving to a separate Rune Craft mode toggle instead: switching Rune Craft
-> from "incantations" to "summons" will craft a creature whose stats come from
-> the count of each element earned during the CA run, with special abilities
-> unlocked by specific formula sequences (similar in spirit to Wild Magic).
-> The section below describes the *old* formula-triggered mechanic and needs
-> a rewrite once the summons-mode toggle is designed; treat the base
-> profiles/flavor-variant tables as raw material to carry over, not as
-> current truth about how Spirits/Hounds are created.
+Instead of creating spell effect incantations, players may use glyph crafting to summon creatures from world's beyond.  All possible creatures exist in some parallel world, by using the elements to describe that creature's attributes. Once linked to in this way mana may be paid to summon a matching creature onto the battlefield and bind it to the caster's will.
 
-Two summonable creature families, distinguished by **which element leads the formula** (the ordered-pair rule the review §3/§7 flagged as a systemic asset to protect):
+Creatures stats are determined by logarithms of the elements they are linked to. Adjusting the logarithm base is the primary lever for tuning and balancing creatures
+Summons **may take an immediate turn the generation they are summoned if spell is made potent** (per the effect table). Both act on the Summons step of turn order (step 1), in creation order, moving then attacking the nearest enemy.
+### Elemental Affinity
 
-- **Sprites** — summoned by **Fire-Earth** formulas (fire leads). Suggested identity: *agile, ranged, fragile* — flying/hovering attackers that strike from a distance and ignore ground terrain.
-- **Hounds** — summoned by **Earth-Fire** formulas (earth leads). Suggested identity: *melee, fast, sturdy* — ground pursuers that must close to attack but take a hit.
+A summon's elemental affinity match whatever element appeared the most in it's formulation. If there's a tie whichever element (between the elements in the tie) appeared first determines the affinity.
 
-Both **may take an immediate turn the generation they are summoned if spell is made potent** (per the effect table). Both act on the Summons step of turn order (step 1), in creation order, moving then attacking the nearest enemy.
+Summons deal damage in the type that their affinity is. And they take half damage rounded up from a type that matches their elemental affinity, normal damage from adjacent element types, and double damage from enemy types. For example, A fire summon would take half damage from fire, normal from air and earth, and double from water.
 
-Summons always act with the following priorities.
-1a. *Sprites* Try to be 4 tiles away from nearest enemy player, where they can hit but not be hit in return by wizards (unless they've enhanced their base range)
-1b. *Hounds* Move on path most directly to nearest enemy player. They are not particularly intelligent and kiting them into damaging terrain or clouds is a common tactic to deal with them. The only terrain they acknowledge is the impassible earth walls which they will try to path around.
+### Stats
+
+|Element|Stat|Logarithm Base|
+|---|---|---|
+|Fire|Attack Damage|2|
+|Air|Move Speed|2|
+|Water|Attack Range|3|
+|Earth|Hit Points|1|
+
+### Abilities
+
+Creatures exact elemental sequences can be parsed to detect specific creature abilities, similar to how wild magic parses hashes. An element may be used more than one time when searching for ability patterns. This table describes what patterns link to what abilities. Elements patterns are abbreviated by their initials. The primary mechanism for balancing these abilities is the length of the formula and how difficult it is to achieve. Defaulting to 4 long for all for initial play testing.
+
+|Pattern|Ability|Description|
+|---|---|---|
+|AAAA|Flying|May move through other entities as if they were not there, but still not end their move in the same tile as another entity. Unaffected by modified terrain (though still by clouds)|
+|FFFF|Cleave|Attack damage will be applied to a second enemy entity if that second enemy is adjacent to both the primary target and this creature.|
+|EEEE|Big|Creature now occupieds 3 adjacent hexes (forming a triangle of sorts) and is unable to be moved by exterior forces. It's range and the range of things effecting it applies from any of it's tiles.|
+|WWWW|Morphic|Upon death will reform into new creature with half the number of elements rounded down and selected at random|
+|FAFA|Charger|Adds damage equal to half the distance it moved before attacking rounded up|
+|AWAW|Stealthy|Other summons will treat this creature as if it doesn't exist unless it's within an adjacent tile.|
+|WEWE|Muddy|Attack will reduce move speed of target by 1 for 1 turn.|
+|EFEF|Molten Carapace|Attacks from sources within 1 range of this creature cause 1 fire damage to be reflected.|
+
+
+### Personalities
+When added to a spell book a set of glyphs may be added to force a particular personality onto the creature to govern it's behavior in battle.
+Evasive: these creatures try to put themselves at a distance from all enemies while still being in attack range of at least one. Prefer targeting players in decision making ties.
+Aggressive: Move on path most directly to nearest enemy player. They are not particularly intelligent and kiting them into damaging terrain or clouds is a common tactic to deal with them. The only terrain they acknowledge is the impassible earth walls which they will try to path around.
+Protective: Prioritize trying Insert themselves between their summoner and other hostile entities.
+Tactical: Will prioritize trying to slay targets with the fewest hitpoints. Factoring in resistances and vulnerabilities.
 2. Attack, targeting the closest enemy player (or illusion, they are unable to discern the difference). If no enemy players are around, they will target the closest enemy minion. Targets that are both equally close and equal priority chosen at random.
 
 
@@ -524,8 +543,8 @@ Select 12 artifacts across 4 element-typed kinds:
 - **Fire — Counter Charms:** name a known spell (by its Poseidon hash = its initial grid state). If that spell is cast during the battle it fizzles — action wasted, mana returned. The countered spell isn't publicly revealed until it activates.
   - **`[RESOLVED]` Targeting rule:** a counter charm fires against **any spell sharing the same initial grid-state hash**, regardless of owner, T, loan status, or custody chain. Requires commit-reveal with salt (above).
   - a counter charm keyed to the original commitment also fizzles a *copied* cast of it.
-- **Air — Bookmarks:** each bookmark tracks a spell within the spellbook no matter how it hides; once used it auto-finds a new random spell to track. Players toggle between bookmarked spells for casting (effectively hand size).
-- **Earth — Absorption Rod:** if an enemy-controlled spell would inflict a status effect, each absorption rod nullifies one turn of that status effect.
+- **Air — Rod of Spreading:** A rod of spreading may be activated to increase the spell effect radius by 1 for each effect in the next spell. This consumes the rod. Only one rod may be used per spell. Earth while tiles still prevent spell effects from traveling past them through this AoE.
+- **Earth — Bookmarks:** each bookmark tracks a spell within the spellbook no matter how it hides; once used it auto-finds a new random spell to track. Players toggle between bookmarked spells for casting (effectively hand size).
 
 > **`[RESOLVED — v2.3 review §1 + your ruling]` No dedicated artifact-defense, by choice; Burn-artifacts interactions specified.** The rod's redefinition (from "neutralizes spells that interact with artifacts" to "nullifies one turn of a status effect") removed the only answer to artifact attacks — at the same revision that added Water-Earth's **Burn Random Player artifacts**. **This is intentional:** a single attack vector on artifacts isn't worth dedicating a quarter of all artifact slots to defending them, and the burn is fine *unguarded* because its random targeting (EV ≈ 1/12 against any specific artifact) makes it **diffuse attrition that punishes hoarding twelve eggs in one basket**, not a "deny my opponent all mana" denial strategy. Its real role is letting a drawn-out game eventually grind through a killer counter charm. Required interaction spec:
 > - **Cannot hit the core gem** (indestructible by definition).

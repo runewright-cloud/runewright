@@ -20,6 +20,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import '../spells/spell_art_store.dart';
 import '../spells/spell_asset.dart';
 import 'manuscript_theme.dart';
 import 'sigil_painter.dart';
@@ -407,13 +408,59 @@ SpellCardPainter _painterFor(SpellAsset spell) => SpellCardPainter(
       symbols: elementSymbolsFor(spell.formula, spell.t),
     );
 
-void _showSpellCardFullscreen(BuildContext context, SpellCardPainter painter) {
+/// True iff [spell] has custom art to look up in [SpellArtStore]. Both the
+/// hash pointer and a non-empty key must be present -- the latter guards
+/// against pre-P1 spells that somehow round-tripped a stray artHash with no
+/// spellHashHex (shouldn't happen, but the store key would be meaningless).
+bool _hasCustomArt(SpellAsset spell) =>
+    spell.artHash != null && spell.spellHashHex.isNotEmpty;
+
+void _showSpellCardFullscreen(
+    BuildContext context, SpellAsset spell, SpellCardPainter emblemPainter) {
   showDialog<void>(
     context: context,
     barrierColor: Colors.black.withValues(alpha: 0.92),
     barrierDismissible: true,
-    builder: (ctx) => GestureDetector(
-      onTap: () => Navigator.of(ctx).pop(),
+    builder: (ctx) => _FullscreenSpellCard(spell: spell, emblemPainter: emblemPainter),
+  );
+}
+
+/// Full-screen overlay for a spell card. When the spell has custom art, this
+/// is a two-layer flip: art in front, the commitmentHex-derived coat of arms
+/// behind, reachable by a horizontal swipe. The true emblem must never be
+/// fully hidden (anti-spoof guarantee -- CLAUDE.md custom-art invariant 3),
+/// so the swipe-to-emblem gesture is always live whenever art is set. A tap
+/// dismisses the dialog either way, matching the pre-existing behavior for
+/// spells with no custom art.
+class _FullscreenSpellCard extends StatefulWidget {
+  const _FullscreenSpellCard({required this.spell, required this.emblemPainter});
+
+  final SpellAsset spell;
+  final SpellCardPainter emblemPainter;
+
+  @override
+  State<_FullscreenSpellCard> createState() => _FullscreenSpellCardState();
+}
+
+class _FullscreenSpellCardState extends State<_FullscreenSpellCard> {
+  bool _showEmblem = false;
+  Future<Uint8List?>? _fullArtFuture;
+
+  bool get _hasArt => _hasCustomArt(widget.spell);
+
+  @override
+  void initState() {
+    super.initState();
+    if (_hasArt) {
+      _fullArtFuture = SpellArtStore.loadFull(widget.spell.spellHashHex);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () => Navigator.of(context).pop(),
+      onHorizontalDragEnd: _hasArt ? (_) => setState(() => _showEmblem = !_showEmblem) : null,
       behavior: HitTestBehavior.opaque,
       child: Dialog.fullscreen(
         backgroundColor: Colors.transparent,
@@ -421,17 +468,44 @@ void _showSpellCardFullscreen(BuildContext context, SpellCardPainter painter) {
           child: Builder(
             builder: (innerCtx) {
               final side = MediaQuery.of(innerCtx).size.shortestSide * 0.88;
-              return SizedBox(
-                width: side,
-                height: side,
-                child: CustomPaint(painter: painter),
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: side,
+                    height: side,
+                    child: !_hasArt || _showEmblem
+                        ? CustomPaint(painter: widget.emblemPainter)
+                        : FutureBuilder<Uint8List?>(
+                            future: _fullArtFuture,
+                            builder: (context, snap) {
+                              final full = snap.data;
+                              if (full == null) {
+                                return CustomPaint(painter: widget.emblemPainter);
+                              }
+                              return ClipRRect(
+                                borderRadius: BorderRadius.circular(6),
+                                child: Image.memory(full,
+                                    fit: BoxFit.cover, gaplessPlayback: true),
+                              );
+                            },
+                          ),
+                  ),
+                  if (_hasArt) ...[
+                    const SizedBox(height: 16),
+                    Text(
+                      _showEmblem ? 'Swipe to see the custom art' : 'Swipe to see the true sigil',
+                      style: const TextStyle(color: Colors.white54, fontSize: 13),
+                    ),
+                  ],
+                ],
               );
             },
           ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 /// Default card art for a [SpellAsset].
@@ -439,8 +513,14 @@ void _showSpellCardFullscreen(BuildContext context, SpellCardPainter painter) {
 /// A heraldic coat of arms (keyed to [SpellAsset.commitmentHex], so Kin spells
 /// share it) ringed by one elemental symbol per CA step the spell ran for
 /// ([SpellAsset.t]), split across elements by the spell's effect affinities.
-/// Tapping opens a full-screen overlay that dismisses on any tap.
-class SpellCardWidget extends StatelessWidget {
+///
+/// If [SpellAsset.artHash] is set, the small thumbnail shows the player's
+/// imported custom art instead (loaded from [SpellArtStore]) while it's
+/// available, falling back to the coat of arms while loading or on a store
+/// miss. Tapping always opens a full-screen overlay; when custom art is set,
+/// that overlay is a two-layer flip (see [_FullscreenSpellCard]) so the true
+/// emblem stays reachable.
+class SpellCardWidget extends StatefulWidget {
   const SpellCardWidget({
     super.key,
     required this.spell,
@@ -451,14 +531,48 @@ class SpellCardWidget extends StatelessWidget {
   final double size;
 
   @override
+  State<SpellCardWidget> createState() => _SpellCardWidgetState();
+}
+
+class _SpellCardWidgetState extends State<SpellCardWidget> {
+  late Future<Uint8List?> _thumbFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _thumbFuture = _loadThumb();
+  }
+
+  @override
+  void didUpdateWidget(covariant SpellCardWidget old) {
+    super.didUpdateWidget(old);
+    if (old.spell.spellHashHex != widget.spell.spellHashHex ||
+        old.spell.artHash != widget.spell.artHash) {
+      _thumbFuture = _loadThumb();
+    }
+  }
+
+  Future<Uint8List?> _loadThumb() {
+    if (!_hasCustomArt(widget.spell)) return Future.value(null);
+    return SpellArtStore.loadThumb(widget.spell.spellHashHex);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final painter = _painterFor(spell);
+    final painter = _painterFor(widget.spell);
     return GestureDetector(
-      onTap: () => _showSpellCardFullscreen(context, painter),
+      onTap: () => _showSpellCardFullscreen(context, widget.spell, painter),
       child: SizedBox(
-        width: size,
-        height: size,
-        child: CustomPaint(painter: painter),
+        width: widget.size,
+        height: widget.size,
+        child: FutureBuilder<Uint8List?>(
+          future: _thumbFuture,
+          builder: (context, snap) {
+            final thumb = snap.data;
+            if (thumb == null) return CustomPaint(painter: painter);
+            return Image.memory(thumb, fit: BoxFit.cover, gaplessPlayback: true);
+          },
+        ),
       ),
     );
   }

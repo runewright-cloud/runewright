@@ -1,5 +1,431 @@
 # M4 — Findings Log (live, updated per milestone)
 
+## Custom Spell Art P1 landed — own-library art, image caps, data-layout decision (2026-07-10)
+
+Built P1 of the custom-spell-art feature (see the CLAUDE.md custom-art
+umbrella prompt + P1 go-ahead): a player can import an image to replace the
+coat of arms on their own library spells. Own spells only, no networking, no
+opponent art — those stay gated behind P2/P3.
+
+**Format substitution: JPEG, not WebP.** The umbrella prompt specified
+canonical WebP; Phase 0 accepted the `image` pub package (^4.8.0) as the new
+dependency without checking encode support. Turns out `image` 4.8.0 can
+*decode* WebP (`lib/src/formats/webp_decoder.dart`) but has no WebP encoder
+at all. Re-encoding to WebP would need a second package or a native binary.
+Rather than block P1 on that, canonicalized to JPEG instead — same caps, same
+hashing, same "small bounded raster" goal, just a different container. See
+`lib/spells/spell_art_import.dart`'s header comment. Worth revisiting if a
+future phase (P4 trading, or a nicer transparency story) actually needs
+alpha/WebP.
+
+**Confirmed image caps** (pre-decode guards, then re-encode targets):
+pre-decode ≤ 8 MB source / ≤ 4096×4096 declared dimensions (checked via a
+header-only `Decoder.startDecode()` parse, so a compression-bomb file is
+rejected before the expensive full pixel decode); re-encode full art to
+512×512 canonical JPEG ≤ 256 KB, thumbnail to 256×256 ≤ 32 KB (quality
+backed off 90→80→65→50→35 until it fits, keeping whichever step first hits
+the ceiling). Decode + resize + encode all run off the UI isolate via
+`compute()`, wrapped in a 20s wall-clock timeout on the caller side.
+
+**Data-layout decision: art bytes are NEVER inlined on `SpellAsset`.**
+`inscribeSpell()` calls `SpellAsset.loadAll()` on every inscription to check
+for a duplicate `spellHashHex`, which parses every persisted spell's full
+JSON file. Inlining full-size art blobs there would make that dedup scan
+read tens of MB per inscription on a mature library. Instead: `SpellAsset`
+gained only lightweight metadata (`artHash`, `artSource`, `artUpdatedAt`);
+the actual bytes live in a new side store (`lib/spells/spell_art_store.dart`)
+keyed by `spellHashHex`, loaded only when a card is actually rendered.
+Confirmed `SpellAsset.loadAll()` is a genuine load-all (parses every file),
+so this split was mandatory, not a nice-to-have.
+
+**Two-layer front/back card model.** `SpellCardWidget`
+(`lib/ui/spell_card_painter.dart`) now resolves custom art at the small-card
+level (falls back to the existing `commitmentHex`-keyed vector coat of arms
+while loading or on a store miss — the pre-P1 rendering path is untouched
+when no art is set). The full-screen overlay is a genuine two-layer flip:
+custom art shows by default when present, a horizontal swipe reveals the
+true, locally-derived emblem underneath, and a text hint ("Swipe to see the
+true sigil" / "...the custom art") makes the gesture discoverable. This is
+the anti-spoof guarantee from the umbrella prompt's hard invariant 3 — the
+true emblem must never be fully unreachable — verified end-to-end by a real
+widget test (swipe, assert the emblem `CustomPaint` is now showing), not
+just by reading the code.
+
+**Bug the tests actually caught: EXIF wasn't being stripped.** The first
+draft of `_encodeCanonical` in `spell_art_import.dart` assumed re-encoding
+through a fresh `Image` object would drop source metadata for free. A test
+asserting `decoded.exif.imageIfd.isEmpty` failed: `copyCrop`/`copyResize`
+deliberately *carry the source `Image`'s EXIF forward* (so orientation-aware
+resizing works), so a camera photo's make/model/GPS/timestamp would have
+survived into stored spell art untouched. Fix: explicitly
+`resized.exif = img.ExifData()` before encoding. Left as a test, not just a
+comment, so a future refactor of that function can't silently regress it.
+
+**Flutter test gotcha: real file I/O + `Image.memory` hang `pump()`
+forever, not just fail.** Widget tests that populate `SpellArtStore` (real
+`dart:io` file writes/reads) and then render the result via `Image.memory`
+(real `dart:ui` codec decode) must wrap the whole sequence in
+`tester.runAsync()` — `AutomatedTestWidgetsFlutterBinding`'s fake-clock test
+zone doesn't drive real async I/O forward, so plain `pump()`/`pumpAndSettle()`
+just hangs (observed: 2+ minute timeout, not a fast failure). Even inside
+`runAsync`, `pumpAndSettle()` alone raced the real file read once; added a
+short real `Future.delayed` before the final pump. See
+`test/ui/spell_card_widget_test.dart`.
+
+**Pre-existing, unrelated flakiness noted in passing:** `test/spells/
+inscribe_test.dart`'s "second inscription reuses the on-disk SRS cache" test
+can blow its fixed 30s per-test timeout when `flutter test` runs multiple
+proving test files concurrently (default concurrency) — three real
+UltraHonk proofs run back-to-back with growing RSS (1.3 GB → 2.2 GB →
+2.8 GB+), and under CPU contention the third can miss the deadline. Confirmed
+via `git stash` that this reproduces on the pre-P1 codebase too (not caused
+by this work) and disappears entirely with `--concurrency=1`. Not fixed here
+— flagging since it'll bite the next person who runs the full suite by
+default.
+
+## Practice Mode — floor was too loose on-device, not just drift-inflated (2026-07-10, fourth follow-up)
+
+First real-device (Pixel, good mic, quiet room) pass exposed the floor
+problem directly rather than as a slow plateau: the formula completed the
+instant capture started, before any word was spoken -- too fast to even
+read the live quality number. This is the same root cause flagged as
+"still unresolved" in the previous entry (synthetic noise settling at
+~10.6 against the bounded window, uncomfortably close to
+`kDefaultCheckpointFloor = 11.0`), now confirmed as the actual bug rather
+than a synthetic-test artifact: **11.0 doesn't discriminate real speech
+from near-silence/ambient audio at all.**
+
+Likely trigger mechanics: Android's mic backend appears to deliver a
+larger first buffered chunk than Linux's `parecord`-piped stream did, so
+the very first `acceptPcmChunk` call processes many frames of
+mostly-pre-speech ambient audio in one synchronous burst (the per-frame
+evaluation loop can cross multiple segments within a single call — see
+`acceptPcmChunk`). On Linux's finer-grained delivery the same underlying
+looseness only ever showed up as a slow plateau (the 8-8.5 real-voice
+numbers, themselves gathered before the windowing-drift fix and so already
+suspect); on Android's chunkier delivery it's severe enough to cascade
+through the entire formula in one callback.
+
+**Fix:** dropped `kDefaultCheckpointFloor` from 11.0 to 7.0 — real margin
+below the ~10.6 noise baseline. The 8.0-8.5 real-voice data point that
+justified 11.0 is now explicitly treated as stale in the code comment;
+using it again to justify the next number would be repeating the same
+mistake. Confirmed `flutter test`/`flutter analyze` still clean at 7.0 (no
+constant-dependent test assertions — see the "explicit strict test-only
+floor" note in the previous entry).
+
+**Not yet confirmed:** whether 7.0 lets genuine correct speech complete on
+this device at all, or is now too strict given the disruption of removing the
+drift crutch. That's the next real-device data point, not something
+resolved in this session — and this time, get it with the live quality
+readout actually visible (the previous device's completion was too fast to
+read a number; watch for whether that's still true at 7.0, since if it is,
+the "floor too loose" diagnosis may not be the whole story and the large-
+initial-chunk hypothesis itself needs checking, e.g. via a debug log of
+chunk sizes as they arrive on Android).
+
+## Practice Mode — unbounded query window let ANY sustained sound eventually pass (2026-07-09, third follow-up)
+
+While chasing why real speech plateaued around 8-8.5 (previous entry),
+built a synthetic stress test feeding pure random noise against a toy
+reference and watching `currentNormalizedQuality` over time via the new
+live-diagnostic getters, rather than trusting real-mic sessions to
+localize it. Result was a real, previously-invisible bug: **quality drifted
+downward over time from ~12 to ~9.8 purely from feeding more (still
+random, still wrong) audio** — meaning if a player just kept making any
+sound at all long enough, the checkpoint would eventually cross regardless
+of content. This directly breaks the "anti-gabble is emergent" design
+requirement (mumbling/wrong content must never complete, full stop).
+
+**Root cause:** `_evaluateCurrentSegment` compared "every query frame since
+this segment started" against the fixed-length reference via corner-
+anchored DTW (both endpoints forced). As query length grows far past the
+reference's length, most of the excess collapses onto repeated reference
+columns, and cost/steps asymptotically approaches the reference's own
+*typical* nearest-neighbour distance — a property of the reference's scale,
+not of whether the query matches it. This is a known failure mode of
+naively-unbounded online DTW; real online-DTW/score-following
+implementations bound the comparison to a sliding window for exactly this
+reason, which this design had not done.
+
+**Fix:** capped the comparison window to the most recent `2x` the
+segment's reference length (`_evaluateCurrentSegment`'s `windowCap`), not
+"everything since the segment started." This is a sliding window, not a
+timeout — there is still no limit on how long the pointer may stall; it
+just can no longer coast to a pass purely from elapsed wrong audio. `2x`
+was chosen because the "identical audio" test independently showed a
+genuine match converges to near-zero cost by roughly that point.
+
+**Still unresolved:** even with the bounded window, synthetic noise against
+the toy sine-sweep reference used in unit tests settles at a steady-state
+quality (~10.6) close to the real-voice range (8-8.5) that had prompted
+`kDefaultCheckpointFloor = 11.0`. This might mean CMN + a short reference
+genuinely leaves too little dynamic range to separate "correct" from
+"wrong" — or it might mean a synthetic sine-sweep reference (extremely
+regular, unlike real speech's formant structure) is simply not a
+representative stand-in for real word templates and shouldn't be trusted
+as a proxy for calibration decisions either way. Split the difference: the
+unit test asserting rejection now uses an explicit, deliberately strict
+test-only floor (3.0) to verify the mechanism works, decoupled from
+whatever `kDefaultCheckpointFloor`'s real value should be — that's now
+clearly a real-data question, not a synthetic-test question.
+
+**Next real step, not done in this session:** re-test with a real voice
+now that the drift bug is fixed (the previous 8-8.5 plateau may itself have
+been partly drift-inflated, so that data point should be treated as stale),
+AND get a real *wrong-word* attempt's quality number (e.g. deliberately
+saying "terra" against an "aqua" target) — calibrating the floor needs both
+a real correct-case and a real incorrect-case number to know if there's
+enough separation between them, not just the correct-case number gathered
+so far.
+
+## Practice Mode — cepstral mean normalization added after real-voice calibration data (2026-07-09, second follow-up)
+
+After the c0-drop fix (below), Soren's real voice against the Piper
+reference "couldn't get under 9" on the live quality readout (floor is
+6.0) — a real, hard number, not a hang. A quality stuck a few points above
+the floor (not wildly high) is the signature of a *systematic* per-
+coefficient offset (mic/room/vocal-tract-length differences between a real
+voice and Piper's studio-quality render), not random mismatch — the standard
+fix for that in speech processing is cepstral mean normalization (CMN):
+subtract each segment's own per-coefficient mean from its frames before
+comparing, so a roughly-constant bias cancels on both sides while the
+frame-to-frame pattern (the actual phonetic content) survives.
+
+**First attempt broke a unit test, and rightly so.** Applying CMN naively
+made the "audio that never matches the reference" test start reporting a
+false match. Root cause: that test's reference fixture was all-zero silence
+— every frame literally identical, zero internal variance. Mean-centering a
+set of identical frames zeroes them out completely, wiping out the one
+thing CMN is supposed to preserve. This could have been a real design flaw
+(CMN destroying signal at phoneme-checkpoint granularity generally) or a
+test-fixture artifact (degenerate-by-construction silence reference) —
+checked empirically against an actual generated template
+(`assets/practice_templates/aqua.json`) before deciding: even a 10-frame
+slice of real reference audio has meaningful per-coefficient stddev (1-3,
+not 0). Silence was never representative of real word references. Fixed
+the test fixture (a frequency sweep, not silence/a steady tone) rather than
+reverting the feature — see `_chirpPcm` in
+`test/practice/streaming_phoneme_scorer_test.dart`.
+
+**Second empirical surprise while fixing the test:** matching audio only
+converges to a clean (near-zero) DTW cost once *more* than one
+reference-length of matching content has been fed — feeding exactly one
+reference-length's worth left quality still measurably above zero. The
+corner-anchored DTW alignment needs some slack (more query frames than
+reference frames) to fully resolve minor across-computation numerical
+differences even for literally-identical underlying signal content. Not
+itself a bug, just a real property of this design worth knowing before
+tuning `kDefaultDebounceFrames`/expecting instant convergence.
+
+Also added `StreamingPhonemeScorer.floor`/`currentNormalizedQuality`
+getters and a live "quality: X / floor: Y" readout in `PracticeScreen`,
+specifically so the floor can keep being calibrated against real voices
+with real numbers rather than guessed at blind — this is what surfaced the
+"9" data point in the first place. **Still open:** whether CMN closes
+enough of the gap on Soren's actual voice, or whether the floor also needs
+raising, is unconfirmed — next step is another real-mic pass with this
+build.
+
+## Practice Mode — first real-mic pass found two live bugs (2026-07-09, same day follow-up)
+
+First `flutter run -d linux` pass (device-testing note from the entry below
+is now partially resolved) surfaced two real bugs the unit tests couldn't
+catch because they only ever used synthetic all-zero-PCM "speech":
+
+1. **`_startCapture` had no error handling.** A failure inside it (permission
+   check or `record`'s `startStream` throwing) died completely silently —
+   the Start button's press ripple would show and nothing else would ever
+   happen, no error, no snackbar, nothing in the UI. Root cause turned out to
+   be environmental (missing `ffmpeg`/`pulseaudio-utils` on the test
+   machine — `record_linux` shells out to `parecord`/`ffmpeg` rather than
+   using a native binding; its actual plugin `.cc` file is a no-op stub,
+   all real capture logic is in Dart via `Process.start`), but the real fix
+   is structural: wrapped the whole body in try/catch, surfacing failures
+   via SnackBar + `debugPrint`. Any future capture-path failure (on any
+   platform) will now be visible instead of silent.
+
+2. **The DTW distance included MFCC coefficient c0 (log-energy/loudness).**
+   Once capture actually started, the pointer never advanced past word 1
+   against real speech, despite passing every unit test. c0 encodes overall
+   loudness, not phonetic shape — so a real mic recording at some arbitrary
+   gain/distance, compared against Piper's fixed studio-quality render, would
+   inflate the DTW distance for reasons that have nothing to do with
+   pronunciation. This is a known pitfall in DTW-based pronunciation scoring
+   (c0 is conventionally dropped for exactly this reason) that the unit
+   tests couldn't surface, because they fed literally-identical synthetic
+   audio as both "reference" and "query" — identical audio matches at any
+   loudness, including with c0 included, so the bug was invisible until
+   real, differently-recorded audio was used. Fixed by dropping index 0 from
+   every MFCC frame before any distance comparison in
+   `streaming_phoneme_scorer.dart` (`_dropC0`/`_dropC0All`), applied
+   symmetrically to both reference and query frames. Confirmed one of the
+   existing unit tests (the "audio that never matches" stall test) had
+   accidentally been testing loudness-invariance rather than content-
+   mismatch — a differently-loud *constant* signal produces ~zero AC content
+   regardless of amplitude (same as silence), so once c0 is excluded it
+   spuriously "passes" as a match. Replaced with a genuine tone (non-constant
+   waveform) as the mismatch case.
+
+Also added a live diagnostic readout to `PracticeScreen` (current
+normalized quality vs. the floor, shown while capturing) specifically so
+`kDefaultCheckpointFloor`/`kDefaultDebounceFrames` can be calibrated against
+real voices with real numbers, rather than guessed at again. **Still open:**
+neither constant has been tuned against an actual human voice yet — that's
+the next real-device step, not done in this session.
+
+## Practice Mode (vocal, Phase 1) — scoring architecture and asset pipeline (2026-07-09)
+
+Built on `feature/practice-mode`, branched from `origin/feature/ink-substrate`
+(not `main` — `main` predates the entire sorcerer/battle/menu codebase; see
+"main is far behind ink-substrate" below). Pure client scaffolding under
+`lib/practice/` + `lib/ui/practice_screen.dart`; does not touch the circuit,
+proving, commitments, lockstep, or networking.
+
+### `finis` renamed to `finitus`
+
+`VocalWord.finis` (`lib/sorcerer/vocal_score.dart`) is now `VocalWord.finitus`,
+per Soren's explicit decision. Grep-confirmed zero wire-format impact (the
+wire encoding is 3 quantised score bytes, never the word enum itself) and
+only 3 total references repo-wide before the rename (the enum value plus two
+comments in `sherpa_vocal_scorer.dart`) — safe, contained change.
+
+### Sherpa-ONNX cannot satisfy the no-static-window requirement even once integrated
+
+`lib/sorcerer/sherpa_vocal_scorer.dart` was already an explicit
+"NOT YET INTEGRATED" stub, but its own integration checklist targets a
+**KWS (keyword-spotter)** model — whole-keyword confidence, not streaming
+per-phoneme/forced-alignment output. Real Sorcerer-mode casting itself is
+also static-window today (`battle_screen.dart`'s `_onCast`: fixed
+`Future.delayed(_voiceCaptureWindow)` then whole-utterance MFCC+DTW). Neither
+existing nor planned infrastructure could have supported Practice Mode's
+rate-invariant, no-fixed-window pointer model — this was a real architectural
+gap, not a corner we cut.
+
+### Chosen fallback: checkpoint-based online DTW, not a phoneme classifier
+
+`lib/practice/streaming_phoneme_scorer.dart` reuses the existing
+`lib/sorcerer/mfcc.dart` MFCC/DTW machinery rather than standing up a trained
+acoustic model. Each word's reference audio is sliced into "checkpoint"
+segments (a coarse duration-weighted heuristic over `LatinPhonemes`'
+hardcoded phoneme table, **not** true forced-alignment boundaries — see that
+file's header). A pointer advances checkpoint-by-checkpoint; on every new
+~10ms MFCC frame, a fresh corner-anchored DTW runs between "all query frames
+since the last checkpoint crossed" and that checkpoint's reference slice
+(`DtwMatcher.distanceWithSteps`, added alongside the existing `distance()` —
+additive, doesn't touch real Sorcerer-mode's call path).
+
+**Length-normalized floor, the load-bearing fix:** the checkpoint-clear
+condition is `cost / steps` (cost-per-DTW-step), not raw accumulated cost.
+Raw cost is a running sum that grows with path length even for a perfect
+match (more frames → more nonnegative terms), so a fixed threshold on raw
+cost would force slower speech to match tighter per frame than fast speech
+just to clear the same bar — exactly backwards for a "fast and slow clean
+casts score identically" requirement. Dividing by step count removes that
+bias. `test/sorcerer/mfcc_dtw_steps_test.dart` proves this directly: raw cost
+triples when the same content is stretched 3x, cost/steps stays close.
+Debounce (`kDefaultDebounceFrames`, currently 4) requires this to hold for
+several consecutive frames — a real hysteresis, not a listening window; there
+is no timeout anywhere in the scorer, so a floor that's never cleared simply
+stalls the pointer forever (this **is** the anti-gabble mechanism, not a
+separate check).
+
+**What made this non-trivial to express:** the natural per-call granularity
+(evaluate once per `acceptPcmChunk` call) would have made the debounce
+duration depend on the host platform's audio-stream chunk size rather than
+elapsed audio time — a real bug I caught via the unit tests, not by
+inspection. Fixed by evaluating one new MFCC frame at a time inside
+`acceptPcmChunk`'s loop, so `_framesClear` counts actual ~10ms frames
+regardless of how many frames a single chunk delivers.
+
+### Template-source shape: single Piper voice now, swappable by design
+
+`lib/practice/vocal_template_source.dart` defines `VocalTemplateSource`
+(one method, `templateFor(VocalWord)`) with `SingleVoiceTemplateSource` as
+the only implementation shipped. Per Soren's decision: Piper (not a human
+recording) is the reference speaker, chosen for reproducibility — a Piper
+render is deterministic and regenerable as a build artifact keyed to the
+voice model version (`it_IT-paola-medium`, sha256 pinned in
+`scripts/generate_practice_assets.dart`), unlike a one-off human take.
+`MultiVoiceTemplateSource` (average several Piper voices to dilute
+speaker-timbre bias) and `PerUserEnrolledTemplateSource` (record the
+player's own voice) are documented as deferred fast-follows in that file's
+header, not built. **Known limitation, accepted for this playtest:** MFCC
+encodes timbre/vocal-tract length, which DTW doesn't correct for, so a single
+voice is still speaker-dependent — but it's an *impartial* bias (not tuned to
+any one player), which is the bar for a first friends-playtest, not for
+ship.
+
+### One Piper render feeds both the trainer clip and the scoring template
+
+`scripts/generate_practice_assets.dart` renders each word exactly once
+through Piper's Italian voice; the same output is copied verbatim to
+`assets/audio/practice/<word>.wav` (playback) and separately resampled
+22050→16000 Hz + run through `MfccExtractor.extract()` to produce
+`assets/practice_templates/<word>.json` (scoring). No second render, no
+phoneme-driven pass distinct from the trainer audio — per Soren's explicit
+requirement that what the player hears and what they're scored against can't
+silently diverge.
+
+### `ignis`/`finitus` G2P verified empirically, not assumed
+
+Ran the actual `espeak-ng` binary bundled inside the Piper release (not a
+guess) before writing `lib/practice/latin_phonemes.dart`:
+```
+ignis   -> ˈiɲɲis    (gn palatalizes+geminates, as the design brief predicted)
+aer     -> aˈɛr
+aqua    -> ˈakwa
+terra   -> tˈɛrɾa     (rr -> geminate trill+tap)
+finitus -> finˈitʊs   (Italian /ʊ/ on the un-Italian "-us" ending, not /u/)
+```
+No spelling workarounds were needed — Italian orthographic rules already
+produce the intended targets for all 5 words. The phoneme table is a
+hardcoded 5-entry lookup (the vocabulary is closed), not a general G2P
+engine.
+
+### Piper toolchain (not committed to the repo)
+
+No root/apt access in this dev environment (`sudo` requires a password,
+`pip`/`ensurepip` both absent). Used the self-contained Piper release
+instead of system packages:
+- Piper 2023.11.14-2, `piper_linux_x86_64.tar.gz` from
+  `github.com/rhasspy/piper` releases — bundles its own `espeak-ng` +
+  `onnxruntime`, no system install needed. Installed to `~/.piper/piper-bin/`
+  (persistent, not `/tmp` — `/tmp/nargo` already taught this lesson once).
+- Voice: `rhasspy/piper-voices` `it_IT-paola-medium` (medium quality; the
+  other Italian voice, `riccardo`, is x_low only). Installed to
+  `~/.piper/voices/`. sha256 of the `.onnx` pinned in
+  `scripts/generate_practice_assets.dart` (`6fc918b5...c04210c`) so a re-fetch
+  can be verified byte-identical.
+- No `ffmpeg`/`sox` available either (no apt access) — the 22050→16000 Hz
+  resample in `scripts/generate_practice_assets.dart` is a small
+  hand-written linear-interpolation resampler. Adequate for MFCC feature
+  extraction on short offline-generated clips; not used anywhere at runtime.
+
+### `main` is far behind `feature/ink-substrate` — branch bases need care
+
+Asked to branch off `main` for decoupling from ink-substrate's in-flight
+work; discovered `main` predates the *entire* current game (`lib/sorcerer/`,
+`lib/battle/`, `MenuScreen`, the current `formula.dart` — 146 files / ~28k
+lines of diff) — it's the old crypto-core-only milestone. Branched off
+`origin/feature/ink-substrate` instead (last pushed commit — has everything
+Practice Mode depends on, excludes only the uncommitted local WIP). **If
+"branch off main" comes up again before ink-substrate merges, check this
+first** — the ask is almost always "decouple from uncommitted work," not
+"decouple from everything built since the crypto-core milestone."
+
+### Not device-tested this pass
+
+Everything above is `flutter analyze` clean and covered by
+`flutter test test/practice/ test/sorcerer/mfcc_dtw_steps_test.dart` (21/21
+pass) plus a full-suite regression run (pre-existing SRS-network-download
+and temp-dir-race flakes only, none touching Practice Mode files). Per the
+verification hierarchy, "it compiles"/unit tests are not the top of the
+ladder — a real-device or at least `flutter run -d linux` interactive pass
+(mic permission prompt, real audio playback, live checkpoint highlighting)
+was handed to Soren to run manually rather than automated in this session.
+**Do not call Phase 1 done until that pass happens.**
+
 ## Mod-system seam orientation — deferred-feature findings (2026-07-05)
 
 Orientation pass for a possible future mod system (player-toggleable formula

@@ -3,7 +3,7 @@
 // sherpa_vocal_scorer.dart — SherpaVocalScorer: Sherpa-ONNX integration scaffold.
 //
 // NOT YET INTEGRATED. sherpa_onnx is absent from pubspec.yaml until Latin-phoneme
-// accuracy has been validated against real recordings of ignis/aer/aqua/terra/finis.
+// accuracy has been validated against real recordings of ignis/aer/aqua/terra/finitus.
 //
 // Integration checklist (complete in order before switching the factory):
 //   1. Add to pubspec.yaml:
@@ -18,7 +18,7 @@
 //   5. In VocalScorerFactory.create(), return SherpaVocalScorer(...) instead.
 //   6. Delete this comment block once stable.
 //
-// TODO(sorcerer): validate Latin-phoneme accuracy for ignis, aer, aqua, terra, finis
+// TODO(sorcerer): validate Latin-phoneme accuracy for ignis, aer, aqua, terra, finitus
 //   against the sherpa-onnx-kws-zipformer-gigaspeech-3.3M model before promoting this
 //   to the active implementation. Phoneme coverage for short Latin words trained on
 //   English GigaSpeech data is an open empirical question.

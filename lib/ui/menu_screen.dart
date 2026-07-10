@@ -7,6 +7,7 @@ import '../main.dart';
 import 'battle_lobby_screen.dart';
 import 'library_screen.dart';
 import 'onboarding/onboarding_landing_screen.dart';
+import 'practice_screen.dart';
 import 'sigil_painter.dart';
 
 class MenuScreen extends StatelessWidget {
@@ -87,6 +88,13 @@ class MenuScreen extends StatelessWidget {
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const LibraryScreen()),
+                  ),
+                ),
+                _MenuButton(
+                  label: 'Practice',
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const PracticeScreen()),
                   ),
                 ),
                 _MenuButton(

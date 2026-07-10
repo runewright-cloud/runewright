@@ -19,6 +19,9 @@ import '../identity/identity.dart';
 import '../identity/key_packing.dart';
 import '../battle/models/effect_kind.dart' show formulaEffectLabels;
 import '../spells/chapter_asset.dart';
+import '../spells/spell_art_import.dart';
+import '../spells/spell_art_io.dart';
+import '../spells/spell_art_store.dart';
 import '../spells/spell_asset.dart';
 import '../main.dart' show GameScreen;
 import 'manuscript_theme.dart';
@@ -46,6 +49,74 @@ Set<String> _deriveSupremeTags(SpellAsset spell) {
     rule = dom.rule;
   }
   return tags;
+}
+
+// ── Custom spell art (P1: own library spells only) ──────────────────────────
+//
+// Shared by the Craftings and Tests tabs' _SpellCard menu actions. Own-spell
+// art is entirely local: pick a file, decode/re-encode it off the UI isolate
+// (spell_art_import.dart), stash the bytes in SpellArtStore keyed by
+// spellHashHex, and stamp lightweight metadata onto the SpellAsset. No
+// networking, no opponent art -- see CLAUDE.md custom-art P1 go-ahead.
+
+/// Runs the pick -> decode/re-encode -> store -> persist pipeline for
+/// [spell], showing a non-dismissible progress indicator while the
+/// (potentially several-second) decode/re-encode step runs. Any failure
+/// (cancelled picker, rejected image, decode timeout) is reported via a
+/// snackbar and leaves [spell] untouched -- never crashes, never partially
+/// writes (the store write and the SpellAsset save both happen only after
+/// import succeeds).
+Future<void> _setCustomArtOnSpell(
+  BuildContext context,
+  SpellAsset spell,
+  VoidCallback onReload,
+) async {
+  final Uint8List? sourceBytes;
+  try {
+    sourceBytes = await pickSpellArtFile();
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Could not open the file picker: $e')));
+    }
+    return;
+  }
+  if (sourceBytes == null) return; // player cancelled the picker
+
+  if (context.mounted) {
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(
+        child: CircularProgressIndicator(color: kIlluminationGold),
+      ),
+    );
+  }
+
+  final SpellArtBytes art;
+  try {
+    art = await importSpellArt(sourceBytes);
+  } on SpellArtImportException catch (e) {
+    if (context.mounted) Navigator.of(context, rootNavigator: true).pop();
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    }
+    return;
+  }
+
+  await SpellArtStore.save(spell.spellHashHex, full: art.full, thumb: art.thumb);
+  await spell.withArt(hash: art.artHashHex, source: SpellArtSource.localImport).save();
+
+  if (context.mounted) Navigator.of(context, rootNavigator: true).pop();
+  onReload();
+}
+
+/// Deletes [spell]'s stored art bytes and clears its art metadata, reverting
+/// its card to the commitmentHex-derived coat of arms.
+Future<void> _clearCustomArtOnSpell(SpellAsset spell, VoidCallback onReload) async {
+  await SpellArtStore.delete(spell.spellHashHex);
+  await spell.withoutArt().save();
+  onReload();
 }
 
 // Shared across embellishment dialog and chapter detail view.
@@ -266,6 +337,11 @@ class _CraftingsTabState extends State<_CraftingsTab>
     _reload();
   }
 
+  Future<void> _setCustomArt(SpellAsset spell) =>
+      _setCustomArtOnSpell(context, spell, _reload);
+
+  Future<void> _clearCustomArt(SpellAsset spell) => _clearCustomArtOnSpell(spell, _reload);
+
   Future<void> _addToChapter(SpellAsset spell) async {
     final chapterId = widget.selectedChapterId;
     if (chapterId == null) {
@@ -387,6 +463,8 @@ class _CraftingsTabState extends State<_CraftingsTab>
                 onView: () => _viewSpell(spell),
                 onDelete: () => _deleteSpell(spell),
                 onAddToChapter: () => _addToChapter(spell),
+                onSetArt: () => _setCustomArt(spell),
+                onClearArt: () => _clearCustomArt(spell),
               );
             },
           ),
@@ -446,6 +524,11 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
     await spell.delete();
     _reload();
   }
+
+  Future<void> _setCustomArt(SpellAsset spell) =>
+      _setCustomArtOnSpell(context, spell, _reload);
+
+  Future<void> _clearCustomArt(SpellAsset spell) => _clearCustomArtOnSpell(spell, _reload);
 
   /// Adds every spell in [spells] to the selected chapter as a single batch:
   /// one chapter load, one save, skipping any whose grid commitment is
@@ -552,6 +635,8 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
                 onView: () => _viewSpell(spell),
                 onDelete: () => _deleteSpell(spell),
                 onAddToChapter: () => _addAllToChapter([spell]),
+                onSetArt: () => _setCustomArt(spell),
+                onClearArt: () => _clearCustomArt(spell),
               );
             },
           ),
@@ -570,6 +655,8 @@ class _SpellCard extends StatelessWidget {
     required this.onDelete,
     required this.onAddToChapter,
     required this.onView,
+    required this.onSetArt,
+    required this.onClearArt,
     this.wizardName,
     this.creatorKeyBytes,
   });
@@ -579,6 +666,8 @@ class _SpellCard extends StatelessWidget {
   final VoidCallback onDelete;
   final VoidCallback onAddToChapter;
   final VoidCallback onView;
+  final VoidCallback onSetArt;
+  final VoidCallback onClearArt;
   final String? wizardName;
   final Uint8List? creatorKeyBytes;
 
@@ -631,6 +720,10 @@ class _SpellCard extends StatelessWidget {
       });
     } else if (action == 'add') {
       onAddToChapter();
+    } else if (action == 'set_art') {
+      onSetArt();
+    } else if (action == 'clear_art') {
+      onClearArt();
     }
   }
 
@@ -686,10 +779,21 @@ class _SpellCard extends StatelessWidget {
                             color: kInkColor.withValues(alpha: 0.45),
                           ),
                           onSelected: (v) => _onMenuSelected(context, v),
-                          itemBuilder: (_) => const [
-                            PopupMenuItem(value: 'view', child: Text('View')),
-                            PopupMenuItem(value: 'add', child: Text('Add to Chapter')),
-                            PopupMenuItem(value: 'delete', child: Text('Delete Spell')),
+                          itemBuilder: (_) => [
+                            const PopupMenuItem(value: 'view', child: Text('View')),
+                            const PopupMenuItem(value: 'add', child: Text('Add to Chapter')),
+                            PopupMenuItem(
+                              value: 'set_art',
+                              child: Text(spell.artHash == null
+                                  ? 'Set Custom Art'
+                                  : 'Replace Custom Art'),
+                            ),
+                            if (spell.artHash != null)
+                              const PopupMenuItem(
+                                value: 'clear_art',
+                                child: Text('Revert to Coat of Arms'),
+                              ),
+                            const PopupMenuItem(value: 'delete', child: Text('Delete Spell')),
                           ],
                         ),
                       ],
