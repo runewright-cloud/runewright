@@ -30,6 +30,7 @@ import 'package:rune_duel/battle/models/terrain.dart'
 import 'match_config.dart';
 import 'pending_delayed_spell.dart';
 import 'reflection_link.dart';
+import 'divination_link.dart';
 import 'illusion.dart';
 import 'wizard_avatar.dart';
 import 'hex_battlefield.dart';
@@ -74,6 +75,7 @@ class BattleState {
     List<CloudObject>? clouds,
     List<PendingDelayedSpell>? pendingDelayedSpells,
     List<ReflectionLink>? reflectionLinks,
+    List<DivinationLink>? divinationLinks,
     List<WizardIllusionSet>? wizardIllusions,
     Set<HexCoord>? illusionTerrainTiles,
   })  : minions = minions ?? [],
@@ -81,6 +83,7 @@ class BattleState {
         clouds = clouds ?? [],
         pendingDelayedSpells = pendingDelayedSpells ?? [],
         reflectionLinks = reflectionLinks ?? [],
+        divinationLinks = divinationLinks ?? [],
         wizardIllusions = wizardIllusions ?? [],
         illusionTerrainTiles = illusionTerrainTiles ?? {};
 
@@ -109,6 +112,12 @@ class BattleState {
   /// target for the remainder of the match, carrying 2–3 randomly-chosen
   /// reaction triggers. Removed when either participant dies.
   final List<ReflectionLink> reflectionLinks;
+
+  /// Active Divination (Air-Water) links. Each link binds a scryer (caster)
+  /// to the player whose committed spell target is revealed to them each
+  /// turn — see MESH_ARCHITECTURE.md §13b and TurnLoop.beginTurn. Removed
+  /// when either participant dies or the duration expires.
+  final List<DivinationLink> divinationLinks;
 
   /// Active wizard-decoy sets from Illusions (Water-Air, Water flavor). At
   /// most one per owner; removed once its last decoy is consumed.
@@ -275,7 +284,8 @@ class BattleState {
       }
     }
 
-    // Minions
+    // Minions. Footprint (see Minion.occupiedTiles) is a pure function of
+    // position + abilities, so it doesn't need its own encoding here.
     final sortedMinions = (List<Minion>.from(minions)..sort((a, b) => a.id.compareTo(b.id)));
     buf.writeUint16(sortedMinions.length);
     for (final m in sortedMinions) {
@@ -285,7 +295,17 @@ class BattleState {
       buf.writeInt16(m.position.q);
       buf.writeInt16(m.position.r);
       buf.writeInt32(m.hp);
-      buf.writeUint8(m is SpiritMinion ? 0 : 1); // 0=spirit, 1=hound
+      buf.writeUint8(m.affinity.index);
+      buf.writeInt32(m.stats.maxHp);
+      buf.writeInt32(m.stats.damage);
+      buf.writeInt32(m.stats.moveSpeed);
+      buf.writeInt32(m.stats.attackRange);
+      var abilityMask = 0;
+      for (final a in m.abilities) {
+        abilityMask |= 1 << a.index;
+      }
+      buf.writeUint16(abilityMask);
+      buf.writeUint8(m.personality.index);
     }
 
     // Tile effects
@@ -330,6 +350,17 @@ class BattleState {
       ..sort((a, b) => a.id.compareTo(b.id)));
     buf.writeUint16(sortedLinks.length);
     for (final l in sortedLinks) {
+      final lb = BytesBuilder();
+      l.writeToBytes(lb);
+      final bytes = lb.toBytes();
+      buf.writeUint16(bytes.length);
+      buf.writeBytes(bytes);
+    }
+
+    final sortedDivinationLinks = (List<DivinationLink>.from(divinationLinks)
+      ..sort((a, b) => a.id.compareTo(b.id)));
+    buf.writeUint16(sortedDivinationLinks.length);
+    for (final l in sortedDivinationLinks) {
       final lb = BytesBuilder();
       l.writeToBytes(lb);
       final bytes = lb.toBytes();

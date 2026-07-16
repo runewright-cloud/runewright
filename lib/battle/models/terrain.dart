@@ -58,15 +58,26 @@ class SlowTile extends TileEffect {
   final int manaDrainOnEntry;
 }
 
-/// Air flavor (Earth-Water): any entity that starts its turn on this tile is
-/// force-moved one hex in [direction].
+/// Air flavor (Earth-Water): any entity that enters this tile -- by any
+/// cause (voluntary movement's final tile, a knockback/push landing them
+/// here, or another conveyor tile pushing them into this one) -- is
+/// force-moved one hex in [direction], immediately, before anything else
+/// resolves. Pushes cascade through further conveyor tiles; a cycle of
+/// conveyor tiles forms a closed loop with its own traversal/exit/damage
+/// mechanic. See lib/battle/engine/tile_entry_resolver.dart for the full
+/// resolution (cascading pushes, loop detection, exit search, damage).
 ///
-/// [direction] is chosen at resolution time (HexCoord(0,0) = not yet set).
-/// Permanent — does not expire.
+/// [direction] is chosen by the casting wizard when this tile is created
+/// (HexCoord(0,0) = not yet set -- resolved to a real direction, chosen or
+/// randomly, before the tile is ever placed into BattleState.tileEffects;
+/// see EffectApplicator._applyTileModification). Permanent — does not
+/// expire.
 ///
 /// Sorcerer seam: in real-time mode, display an on-screen directional
 /// indicator; physical movement handling deferred pending sorcerer-mode design.
-// TODO(sorcerer): conveyor indicator UI for real-time mode.
+// TODO(sorcerer): conveyor indicator UI for real-time mode; direction-choice
+//   prompt should race against a timeout and fall back to random (the same
+//   fallback EffectApplicator already uses when no direction is supplied).
 class ConveyorTile extends TileEffect {
   const ConveyorTile({this.direction = const HexCoord(0, 0)});
 

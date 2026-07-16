@@ -1,15 +1,6 @@
 # Runewright — Game Design Document (v3.0)
 *Briefing document for Claude Projects context*
 
-*Last updated: post-v2.3 revision review (Fable) and follow-up discussion. Incorporates the 12-item punch list and three substantive findings (void gate, scroll single-use, absorption-rod/artifact defense), the mana/chain "chain-as-currency-for-T" resolution, the burn-artifacts ruling, owner-pubkey representation fix, the reversed difficulty gradient, and an errata sweep. Open decisions are flagged inline in **DECISION** and **TODO** blocks.*
-
-> **v2.4 changelog (this pass):** void wild-magic re-gated by *tier cap* (the cost curve alone doesn't tax grinders — combinatorics defeat it); scrolls bound to a named opponent at issuance (no global state → "one-time" otherwise unenforceable); `owner_pubkey` carried as `Poseidon2(pubkey)` (256-bit Ed25519 key won't fit one BN254 field); absorption-rod artifact-defense role deliberately dropped, Burn-artifacts interactions specified; difficulty gradient reversed (repeat formulas *easiest*, opposites hardest) with an effect-table power-audit goal; mana exponential affirmed (cognitive-load throttle) with the free threshold set to **T−4** (dominance can't begin before the border is reached at gen 4); **T-architecture changed from a single circuit to three discrete tiers `T_max ∈ {12, 24, 48}`** (12/24 green everyday play, 48 a yellow opt-in spectacle tier — occasional big-spell memories matter, and low-seed bloomers are tier-gated not mana-gated); HP standardized to 24; chain break-vs-regress resolved (action breaks, inaction regresses); errata sweep (ring 13→12, apprenticeship numbering, worksheet sync, truncated cell, version header).
-
-> **How to read the decision flags in this doc**
-> - **`[DECISION — needs Soren]`** — a genuinely open choice the review surfaced that only you can make (game feel, missing constant, or a factual question about prior measurements). I've laid out the options but have *not* picked one. These are also collected in the "Open Decisions" section at the end.
-> - **`[APPLIED — confirm]`** — I resolved this per your stated prior intent or per the review's clear recommendation, and wrote the doc as if it's settled. If you disagree, flag it and I'll flip it.
-> - **`[TODO — playtest]`** — settled in principle, tuning deferred to playtesting.
-
 ---
 
 ## Vision & Design Philosophy
@@ -24,8 +15,6 @@ A mobile game simulating the experience of being a D&D-style wizard in real life
 - **Free, ad-free, no microtransactions** — donation-only model, no data harvesting.
 - **Word-of-mouth distribution** — designed to feel like a discovery shared between people with similar taste.
 - **Story Telling Engine** -- Ability to set stakes for battles and crytographically confirm outcomes in a written record and embedded in written stories. Comparable to recording actual play podcasts / shows of TTRPGs.
-
-> **Scope-of-secrecy honesty note (from review §1).** The cryptography protects the *exact grid* — your rune cannot be forged, replayed, or counter-targeted without being witnessed. It does **not** make your spell's *function* unstealable: because the CA is deterministic, public, and open-source, a tool-using player who has seen your spell's effects can search offline for *some* grid producing the same trajectory. They get a functional clone, not your commitment. The design embraces this bifurcated meta (by-hand artisans vs. "spell foundry" optimizers) rather than pretending to prevent it. The promise that survives scrutiny is *"your exact rune cannot be forged or countered without being witnessed,"* not *"your spell cannot be copied."* However the clone may have different mana costs (likely cheaper for power users). Mitigation of this split approach comes in the form of social preferences, and the wild-magic system (which depends on the exact grid via the commitment, not just the trajectory) already gives hand-crafted grids residual value a clone lacks.
 
 ---
 
@@ -288,7 +277,7 @@ The 16 base effect types, mapped to second-third element combinations (first ele
 
 Instead of creating spell effect incantations, players may use glyph crafting to summon creatures from world's beyond.  All possible creatures exist in some parallel world, by using the elements to describe that creature's attributes. Once linked to in this way mana may be paid to summon a matching creature onto the battlefield and bind it to the caster's will.
 
-Creatures stats are determined by logarithms of the elements they are linked to. Adjusting the logarithm base is the primary lever for tuning and balancing creatures
+Creatures stats are determined by multipliers of the elements they are linked to. Adjusting the multiplier base is the primary lever for tuning and balancing creatures
 Summons **may take an immediate turn the generation they are summoned if spell is made potent** (per the effect table). Both act on the Summons step of turn order (step 1), in creation order, moving then attacking the nearest enemy.
 ### Elemental Affinity
 
@@ -298,11 +287,11 @@ Summons deal damage in the type that their affinity is. And they take half damag
 
 ### Stats
 
-|Element|Stat|Logarithm Base|
+|Element|Stat|Multiplier (rounded down)|
 |---|---|---|
-|Fire|Attack Damage|2|
-|Air|Move Speed|2|
-|Water|Attack Range|3|
+|Fire|Attack Damage|.5|
+|Air|Move Speed|.5|
+|Water|Attack Range|.33|
 |Earth|Hit Points|1|
 
 ### Abilities
@@ -328,27 +317,6 @@ Aggressive: Move on path most directly to nearest enemy player. They are not par
 Protective: Prioritize trying Insert themselves between their summoner and other hostile entities.
 Tactical: Will prioritize trying to slay targets with the fewest hitpoints. Factoring in resistances and vulnerabilities.
 2. Attack, targeting the closest enemy player (or illusion, they are unable to discern the difference). If no enemy players are around, they will target the closest enemy minion. Targets that are both equally close and equal priority chosen at random.
-
-
-### Base profiles (suggested)
-
-| Creature | HP | Damage | Move | Attack Range | Special |
-|---|---|---|---|---|---|
-| **Sprite** (Fire-Earth) | 2 | 1 | 1 | 4 | ignores effects of terrain modifier; may act immediately on summon |
-| **Hound** (Earth-Fire) | 4 | 2 | 2 | 1 (melee) | Must close to attack; may act immediately on summon |
-
-### Flavor variants (suggested deltas from base — fill / tune)
-
-Each summon's *fourth* element (the affinity flavor of its formula) modifies the base profile:
-
-| Affinity flavor | Sprite variant (Fire-Earth-**X**) | Hound variant (Earth-Fire-**X**) |
-|---|---|---|
-| **Fire** | High damage: Damage +2 (→4) | Extra damage: Damage +2 (→4) |
-| **Earth** | High HP: HP +2 (→8) | Extra health: HP +4 (→12) |
-| **Water** | Splash: attacks hit radius 1 | Splash: attacks hit radius 1 |
-| **Air** | Knockback: hits push target back 1 hex | Extra fast: Move +2 (→5) |
-
-> Open tuning questions to settle during playtest: do summons persist indefinitely or have a lifespan? Defaulting to persisting indefinitely for now.Can a player control more than one at once (and is there a cap)? Do they block movement / occupy tiles as obstacles? Does friendly fire from your own AoE hit your summons? Leaving these as `[TODO — playtest]` for now; flag any you want pinned down on paper instead.
 
 ---
 

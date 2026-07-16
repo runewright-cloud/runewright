@@ -37,6 +37,8 @@ class SpellAsset {
     required this.spellHashHex,
     this.formula = const [],
     this.supremeTags = const [],
+    this.isSummon = false,
+    this.summonPersonality = 'aggressive',
     this.artHash,
     this.artSource,
     this.artUpdatedAt,
@@ -100,9 +102,24 @@ class SpellAsset {
   final List<String> formula;
 
   /// BorderZone enum names for elements that achieved supreme dominance at
-  /// least once during this spell's simulation. Determines which embellishment
-  /// options are available when adding to a chapter. Empty for older spells.
+  /// least once during this spell's simulation. Determines which cast-time
+  /// enhancement (Potency/Velocity/Efficiency/Mystery) is choosable when
+  /// casting this spell in battle. Empty for older spells.
   final List<String> supremeTags;
+
+  /// design doc "Summons": when true, casting this spell derives a creature
+  /// from [formula] (see CreatureSpec.fromElements) instead of resolving it
+  /// as a 16-cell incantation effect. False for ordinary spells.
+  final bool isSummon;
+
+  /// design doc "Personalities": the battlefield-behavior glyph assigned to
+  /// this summon, stored as the SummonPersonality enum name ('aggressive',
+  /// 'evasive', 'protective', 'tactical'). A raw string, not the enum
+  /// itself, so this persistence-layer file doesn't depend on the battle
+  /// engine's minion.dart -- mirrors how [formula] stores raw BorderZone
+  /// names rather than the enum. No assignment UI exists yet; every summon
+  /// defaults to 'aggressive'. Meaningless when [isSummon] is false.
+  final String summonPersonality;
 
   /// Hex SHA-256 of the player-imported custom art's canonical full-size
   /// bytes (lib/spells/spell_art_import.dart), or null if this spell has no
@@ -138,6 +155,8 @@ class SpellAsset {
         'spellHashHex': spellHashHex,
         'formula': formula,
         'supremeTags': supremeTags,
+        'isSummon': isSummon,
+        'summonPersonality': summonPersonality,
         if (artHash != null) 'artHash': artHash,
         if (artSource != null) 'artSource': artSource!.name,
         if (artUpdatedAt != null) 'artUpdatedAt': artUpdatedAt!.toIso8601String(),
@@ -161,6 +180,8 @@ class SpellAsset {
         spellHashHex: (json['spellHashHex'] as String?) ?? '',
         formula: (json['formula'] as List<dynamic>? ?? []).cast<String>(),
         supremeTags: (json['supremeTags'] as List<dynamic>? ?? []).cast<String>(),
+        isSummon: (json['isSummon'] as bool?) ?? false,
+        summonPersonality: (json['summonPersonality'] as String?) ?? 'aggressive',
         artHash: json['artHash'] as String?,
         artSource: switch (json['artSource'] as String?) {
           null => null,
@@ -200,6 +221,8 @@ class SpellAsset {
         spellHashHex: spellHashHex,
         formula: formula,
         supremeTags: tags,
+        isSummon: isSummon,
+        summonPersonality: summonPersonality,
         artHash: artHash,
         artSource: artSource,
         artUpdatedAt: artUpdatedAt,
@@ -224,6 +247,8 @@ class SpellAsset {
         spellHashHex: spellHashHex,
         formula: formula,
         supremeTags: supremeTags,
+        isSummon: isSummon,
+        summonPersonality: summonPersonality,
         artHash: hash,
         artSource: source,
         artUpdatedAt: DateTime.now().toUtc(),
@@ -248,6 +273,8 @@ class SpellAsset {
         spellHashHex: spellHashHex,
         formula: formula,
         supremeTags: supremeTags,
+        isSummon: isSummon,
+        summonPersonality: summonPersonality,
       );
 
   /// Deletes this spell's persisted JSON file. Silently no-ops if already gone.

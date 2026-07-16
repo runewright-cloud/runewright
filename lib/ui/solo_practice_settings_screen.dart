@@ -5,9 +5,11 @@
 // the turn loop is implemented; for now routes to the match-starting stub.
 
 import 'package:flutter/material.dart';
+import 'package:rune_duel/engine/hex_grid.dart';
 
 import '../battle/models/match_config.dart';
 import '../battle/models/solo_battle_setup.dart';
+import '../battle/networking/solo_battle_session.dart';
 import '../spells/chapter_asset.dart';
 import 'battle_screen.dart';
 import 'manuscript_theme.dart';
@@ -322,6 +324,12 @@ class _SoloPracticeSettingsScreenState
 
     const localId = 'local';
     final setup = buildSoloBattleState(chapter, _config, localId: localId);
+    final dummyPos = setup.dummyPosition;
+    // "Two squares south" — south is +r at constant q on this hex layout
+    // (battlefield_painter's axialToPixel: dy increases with r at q=0), i.e.
+    // toward the local player's side of the field. Same target-tile logic
+    // as Spell Test Lab's dummy so both practice surfaces behave alike.
+    final target = HexCoord(dummyPos.q, dummyPos.r + 2);
 
     Navigator.push(
       context,
@@ -330,6 +338,10 @@ class _SoloPracticeSettingsScreenState
           state: setup.state,
           localPlayerId: localId,
           chapter: chapter,
+          session: SoloBattleSession(
+            dummyAutoCast: true,
+            dummyCastTarget: target,
+          ),
         ),
       ),
     );

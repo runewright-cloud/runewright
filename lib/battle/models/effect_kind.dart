@@ -40,11 +40,183 @@ const Map<SpellAffinity, String> kAffinityLabel = {
   SpellAffinity.air:   'Airy',
 };
 
+/// Per-(kind, affinity) flavor-text description and per-kind flavor note
+/// (duration/trigger caveat), transcribed from the Effect Table in
+/// docs/runewright_design_v3_0.md §Effect Table, base values only — Potency's
+/// bracketed numbers are omitted (see recipes_screen.dart's header comment).
+/// Shared by the recipe reference screen and the spell card's rules-text box
+/// so the flavor text lives in exactly one place.
+const Map<EffectKind, Map<SpellAffinity, String>> kEffectDescription = {
+  EffectKind.damage: {
+    SpellAffinity.fire: '4 damage.',
+    SpellAffinity.earth:
+        '2 damage; also damages walls or sprites it intersects en route to the target.',
+    SpellAffinity.water: '2 splash damage (area radius 2).',
+    SpellAffinity.air: '2 damage and 1 knockback.',
+  },
+  EffectKind.barrier: {
+    SpellAffinity.fire: '2 HP; adjacent tiles take 1 fire damage at end of turn.',
+    SpellAffinity.earth: '4 HP.',
+    SpellAffinity.water: '2 HP, plus 10% mana regen while active.',
+    SpellAffinity.air: '2 HP; caster gets a free move when it collapses.',
+  },
+  EffectKind.reflections: {
+    SpellAffinity.fire: 'Whenever the caster takes damage, the target takes equal damage.',
+    SpellAffinity.earth:
+        'Whenever the target creates a summon, the caster creates an identical summon under the caster\'s control.',
+    SpellAffinity.water: 'Whenever the target gains mana, the caster gains equal mana.',
+    SpellAffinity.air:
+        'Whenever the target gains a status effect it cast on itself, the caster gains the same status effect.',
+  },
+  EffectKind.speedManipulation: {
+    SpellAffinity.fire: 'Move n extra tiles at a cost of n(n+1)/2 health (1 tile free).',
+    SpellAffinity.earth: 'Reduce target move speed by 1 for 3 turns.',
+    SpellAffinity.water:
+        'High Liquidity: move n extra tiles at a cost of n(n+1)/2 × 100 mana (1 tile free).',
+    SpellAffinity.air: 'Increase target move speed by 1 for 2 turns.',
+  },
+  EffectKind.statusEffectInteraction: {
+    SpellAffinity.fire: '1 damage per active status effect.',
+    SpellAffinity.earth: 'All status effects go dormant for 2 turns.',
+    SpellAffinity.water: 'Status effects lose 1 turn.',
+    SpellAffinity.air: 'All status effects gain 1 turn.',
+  },
+  EffectKind.chainInteraction: {
+    SpellAffinity.fire: 'Chain bonuses accumulate twice as fast for the next 2 turns.',
+    SpellAffinity.earth: 'Chain bonuses grow at half speed for the next 3 turns.',
+    SpellAffinity.water:
+        'Gain all chain status of the affected target, overwriting your existing chains.',
+    SpellAffinity.air: 'All chain bonuses removed.',
+  },
+  EffectKind.spellInteraction: {
+    SpellAffinity.fire:
+        'Next spell\'s cost is paid twice; any mana shortfall converts to health damage at 1 HP per 10 mana.',
+    SpellAffinity.earth:
+        '"Sluggish" — always resolves last unless others are also sluggish, for 3 turns.',
+    SpellAffinity.water: 'Copy the enemy\'s spell.',
+    SpellAffinity.air:
+        '"Quick" — always resolves first unless others are also quick, for 2 turns.',
+  },
+  EffectKind.fuelTransmutation: {
+    SpellAffinity.fire:
+        'Wither 1 random active spell, found via bookmark; gain 1 random non-counter-charm artifact.',
+    SpellAffinity.earth: 'Burn 4 life; reactivate 1 withered spell.',
+    SpellAffinity.water: 'Burn 100 mana; gain 4 life.',
+    SpellAffinity.air: 'Burn 1 random artifact; gain 100 mana.',
+  },
+  EffectKind.tileModification: {
+    SpellAffinity.fire: 'Floor is Lava: 2 damage to pass through.',
+    SpellAffinity.earth:
+        'Impassable terrain that also blocks spells passing through it for line of sight.',
+    SpellAffinity.water: 'Costs 2 movement to enter and drains mana on entry.',
+    SpellAffinity.air:
+        'Conveyor tile force-moves whatever stands on it; direction is chosen at effect resolution and is permanent.',
+  },
+  EffectKind.rangeModification: {
+    SpellAffinity.fire:
+        'Penetrating: spells can\'t be blocked by walls; 1 damage to anything in hexes en route.',
+    SpellAffinity.earth: 'Reduce spell range by 1 for 3 turns.',
+    SpellAffinity.water:
+        'Turbulent: next spell fires in the intended direction but its range is randomized 1–max.',
+    SpellAffinity.air: 'Increase spell range by 1.',
+  },
+  EffectKind.clouds: {
+    SpellAffinity.fire: 'Entities entering or ending their turn in the cloud take 1 damage.',
+    SpellAffinity.earth:
+        'The adjacent-only targeting restriction lingers 2 turns after leaving the cloud.',
+    SpellAffinity.water: 'The cloud is radius 2 instead of 1.',
+    SpellAffinity.air:
+        'The cloud moves 1 tile each turn, trying to center on the closest enemy (players before summons).',
+  },
+  EffectKind.artifactsInteraction: {
+    SpellAffinity.fire:
+        'Burn a random player artifact to deal 1 damage (random target via joint entropy; can\'t hit the core gem; burning a counter charm reveals its target).',
+    SpellAffinity.earth: 'Summon 1 Absorption Totem.',
+    SpellAffinity.water: 'Summon 1 mana gem.',
+    SpellAffinity.air: 'Summon 1 bookmark.',
+  },
+  EffectKind.illusions: {
+    SpellAffinity.fire:
+        'Copy the summon on the target tile for yourself; the copy attacks aggressively and has 1 HP.',
+    SpellAffinity.earth:
+        'Copy the terrain on the target tile onto every terrain-free neighboring tile; the copies have 1 HP.',
+    SpellAffinity.water:
+        'Create 3 illusions of yourself spaced around your position. When you\'re subjected to a spell or '
+            'attack, a chance of 1 in the number of illusions remaining means you\'re hit; otherwise a random '
+            'illusion is destroyed and you\'re moved to its tile instead.',
+    SpellAffinity.air: 'The non-wizard entity on the target tile is reduced to 1 HP.',
+  },
+  EffectKind.multiplierCycles: {
+    SpellAffinity.fire: 'Your next air effect is twice as powerful.',
+    SpellAffinity.earth: 'Your next fire effect is twice as powerful.',
+    SpellAffinity.water: 'Your next earth effect is twice as powerful.',
+    SpellAffinity.air: 'Your next water effect is twice as powerful.',
+  },
+  EffectKind.haymakerInteraction: {
+    SpellAffinity.fire:
+        'Stacking fire damage-over-time; damage equals turns remaining, 2 turns at a time.',
+    SpellAffinity.earth: 'Target move speed reduced by 1.',
+    SpellAffinity.water: 'Target\'s status effects lose a turn.',
+    SpellAffinity.air: 'Bonus damage equal to spaces moved toward the target.',
+  },
+  EffectKind.divination: {
+    SpellAffinity.fire:
+        'See the target\'s counter-charm alignment; turns bookmarks marking those spells red for the rest of the match.',
+    SpellAffinity.earth: 'Identify illusions and see through clouds, 1 turn.',
+    SpellAffinity.water: 'See the target\'s available spells, 2 turns.',
+    SpellAffinity.air: 'See the target\'s spell target tile, 2 turns.',
+  },
+};
+
+const Map<EffectKind, String> kEffectNote = {
+  EffectKind.damage: 'Instant.',
+  EffectKind.barrier: 'Barrier lasts 2 turns.',
+  EffectKind.reflections: '2 triggers. Only valid if the spell resolves on an enemy.',
+  EffectKind.speedManipulation:
+      'Self-targeted flavors are instant; targeted flavors have a duration.',
+  EffectKind.statusEffectInteraction: 'Acts on active status effects.',
+  EffectKind.chainInteraction: 'Acts on the caster\'s elemental chain bonuses.',
+  EffectKind.spellInteraction: 'Acts on the target\'s next spell cast.',
+  EffectKind.fuelTransmutation: 'Trades one resource for another.',
+  EffectKind.tileModification: '',
+  EffectKind.rangeModification: 'Acts on spell range, for 2 turns unless noted.',
+  EffectKind.clouds:
+      'Radius 1 (2 for Water), 2 turns. Entities in the cloud may only '
+          'target/be targeted by adjacent entities.',
+  EffectKind.artifactsInteraction: '',
+  EffectKind.illusions: 'Illusory copies.',
+  EffectKind.multiplierCycles: 'Doubles the power of the caster\'s next effect of the named element.',
+  EffectKind.haymakerInteraction: 'Lasts 2 turns.',
+  EffectKind.divination: 'Information effects.',
+};
+
+/// One resolved effect from a formula: the (affinity, kind) pair plus its
+/// display name and flavor-text description, resolved via
+/// [kAffinityLabel]/[kEffectKindLabel]/[kEffectDescription].
+class FormulaEffect {
+  const FormulaEffect({
+    required this.affinity,
+    required this.kind,
+    required this.name,
+    required this.description,
+  });
+
+  final SpellAffinity affinity;
+  final EffectKind kind;
+
+  /// "[flavor adjective] [base effect]", e.g. "Firey Blast".
+  final String name;
+
+  /// Flavor-text description for this (kind, affinity) pair, from
+  /// [kEffectDescription].
+  final String description;
+}
+
 /// Resolves a stored [formula] list (flat zone names from [SpellAsset.formula])
-/// into a list of human-readable effect labels, one per complete triplet.
-/// Residuals (1–2 leftover entries) are silently dropped, matching the battle
-/// resolution behaviour in TurnLoop._applySpell.
-List<String> formulaEffectLabels(List<String> formula) {
+/// into one [FormulaEffect] per complete triplet. Residuals (1–2 leftover
+/// entries) are silently dropped, matching the battle resolution behaviour in
+/// TurnLoop._applySpell.
+List<FormulaEffect> formulaEffects(List<String> formula) {
   final zones = formula
       .map((n) => switch (n.toLowerCase()) {
             'fire'  => BorderZone.fire,
@@ -55,14 +227,25 @@ List<String> formulaEffectLabels(List<String> formula) {
           })
       .whereType<BorderZone>()
       .toList();
-  final labels = <String>[];
+  final effects = <FormulaEffect>[];
   for (var i = 0; i + 2 < zones.length; i += 3) {
     final affinity = spellAffinityFromZone(zones[i]);
     final kind     = effectKindFromPair(zones[i + 1], zones[i + 2]);
-    labels.add('${kAffinityLabel[affinity]!} ${kEffectKindLabel[kind]!}');
+    effects.add(FormulaEffect(
+      affinity: affinity,
+      kind: kind,
+      name: '${kAffinityLabel[affinity]!} ${kEffectKindLabel[kind]!}',
+      description: kEffectDescription[kind]![affinity]!,
+    ));
   }
-  return labels;
+  return effects;
 }
+
+/// Resolves a stored [formula] list into a list of human-readable effect
+/// labels (just the names), one per complete triplet. See [formulaEffects]
+/// for the structured form with descriptions.
+List<String> formulaEffectLabels(List<String> formula) =>
+    [for (final e in formulaEffects(formula)) e.name];
 
 // ── Spell affinity ─────────────────────────────────────────────────────────────
 

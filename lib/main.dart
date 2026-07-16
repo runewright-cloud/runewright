@@ -10,7 +10,9 @@ import 'engine/element.dart';
 import 'engine/formula.dart';
 import 'engine/hex_grid.dart';
 import 'engine/stepper.dart';
+import 'battle/models/creature_spec.dart' show CreatureSpec, summonSummaryLabel;
 import 'battle/models/effect_kind.dart' show formulaTripletKind;
+import 'battle/models/minion.dart' show SummonPersonality, kSummonPersonalityLabel;
 import 'identity/identity.dart';
 import 'spells/inscribe.dart';
 import 'spells/recipe_book.dart';
@@ -95,6 +97,14 @@ class _GameScreenState extends State<GameScreen>
   final _formulaTracker = FormulaTracker();
   final _supremeElements = <String>{};
 
+  // Rune Craft mode: whether the next inscription reads this grid's element
+  // sequence as an incantation effect (default) or a summoned creature (see
+  // CreatureSpec.fromElements) -- design doc "Summons". Personality is only
+  // meaningful when _isSummonMode is true; picked in _SpellNameDialog at
+  // inscribe time (design doc "Personalities": glyph-assigned, permanent).
+  bool _isSummonMode = false;
+  SummonPersonality _summonPersonality = SummonPersonality.aggressive;
+
   // How many of _formulaTracker.formulas we've already reported to the
   // RecipeBook -- lets _recordNewFormulas() process only newly-completed
   // groups instead of re-marking everything on every step.
@@ -124,6 +134,11 @@ class _GameScreenState extends State<GameScreen>
     _growth = CurvedAnimation(parent: _growthCtrl, curve: Curves.easeOutCubic);
     final spell = widget.loadedSpell;
     if (spell != null) {
+      _isSummonMode = spell.isSummon;
+      _summonPersonality = SummonPersonality.values.firstWhere(
+        (p) => p.name == spell.summonPersonality,
+        orElse: () => SummonPersonality.aggressive,
+      );
       _initialGrid = HexGrid.fromPackedState(spell.initialGrid, _radius);
       _grid = _initialGrid!.copy();
       _rules = CARules.neutral;
@@ -282,6 +297,8 @@ class _GameScreenState extends State<GameScreen>
       _formulaTracker.reset();
       _recordedFormulaCount = 0;
       _supremeElements.clear();
+      _isSummonMode = false;
+      _summonPersonality = SummonPersonality.aggressive;
     });
   }
 
@@ -339,12 +356,18 @@ class _GameScreenState extends State<GameScreen>
   Future<void> _inscribe() async {
     if (!_canInscribe) return;
 
-    // Prompt for the spell name before starting the non-cancellable prove.
-    final spellName = await showDialog<String>(
+    // Prompt for the spell name (and, in Summon mode, a personality) before
+    // starting the non-cancellable prove.
+    final details = await showDialog<_InscribeDetails>(
       context: context,
-      builder: (_) => const _SpellNameDialog(),
+      builder: (_) => _SpellNameDialog(
+        isSummon: _isSummonMode,
+        initialPersonality: _summonPersonality,
+      ),
     );
-    if (spellName == null || !mounted) return;
+    if (details == null || !mounted) return;
+    final spellName = details.name;
+    _summonPersonality = details.personality;
 
     final initialGrid = _initialGrid!;
     final steps = _grid.stepCount;
@@ -375,6 +398,8 @@ class _GameScreenState extends State<GameScreen>
         name: spellName,
         formula: _formulaTracker.committed.map((z) => z.name).toList(),
         supremeTags: _supremeElements.toList(),
+        isSummon: _isSummonMode,
+        summonPersonality: _summonPersonality.name,
         loadCircuitJson: rootBundle.loadString,
         loadVkBytes: (path) async => (await rootBundle.load(path)).buffer.asUint8List(),
         onProgress: (message) => status.value = message,
@@ -488,11 +513,17 @@ class _GameScreenState extends State<GameScreen>
                 : const SizedBox.shrink(key: ValueKey<BorderZone?>(null)),
           ),
           _ZoneCounters(activations: _grid.zoneActivations),
-          FormulaBar(
-            formulas: _formulaTracker.formulas,
-            residuals: _formulaTracker.residuals,
-            pendingZone: _formulaTracker.pendingZone,
+          _ModeBar(
+            isSummon: _isSummonMode,
+            onSelect: (v) => setState(() => _isSummonMode = v),
           ),
+          _isSummonMode
+              ? _SummonPreview(sequence: _formulaTracker.committed)
+              : FormulaBar(
+                  formulas: _formulaTracker.formulas,
+                  residuals: _formulaTracker.residuals,
+                  pendingZone: _formulaTracker.pendingZone,
+                ),
           _RuleBar(
             selected: _rules,
             onSelect: (r) => setState(() => _rules = r),
@@ -648,8 +679,21 @@ class _InscribingDialog extends StatelessWidget {
   }
 }
 
+/// Result of [_SpellNameDialog]: the chosen name, plus (meaningfully, only
+/// when [_SpellNameDialog.isSummon]) the personality glyph to bind. Always
+/// populated -- callers ignore [personality] for incantation-mode spells
+/// rather than dealing with a nullable field.
+class _InscribeDetails {
+  const _InscribeDetails({required this.name, required this.personality});
+  final String name;
+  final SummonPersonality personality;
+}
+
 class _SpellNameDialog extends StatefulWidget {
-  const _SpellNameDialog();
+  const _SpellNameDialog({required this.isSummon, required this.initialPersonality});
+
+  final bool isSummon;
+  final SummonPersonality initialPersonality;
 
   @override
   State<_SpellNameDialog> createState() => _SpellNameDialogState();
@@ -658,6 +702,7 @@ class _SpellNameDialog extends StatefulWidget {
 class _SpellNameDialogState extends State<_SpellNameDialog> {
   final _ctrl = TextEditingController();
   bool _isEmpty = true;
+  late SummonPersonality _personality = widget.initialPersonality;
 
   @override
   void dispose() {
@@ -667,20 +712,47 @@ class _SpellNameDialogState extends State<_SpellNameDialog> {
 
   void _submit() {
     final name = _ctrl.text.trim();
-    if (name.isNotEmpty) Navigator.of(context).pop(name);
+    if (name.isNotEmpty) {
+      Navigator.of(context).pop(_InscribeDetails(name: name, personality: _personality));
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Name Your Spell'),
-      content: TextField(
-        controller: _ctrl,
-        autofocus: true,
-        decoration: const InputDecoration(hintText: 'Spell name'),
-        textCapitalization: TextCapitalization.words,
-        onChanged: (v) => setState(() => _isEmpty = v.trim().isEmpty),
-        onSubmitted: (_) => _submit(),
+      title: Text(widget.isSummon ? 'Name Your Summon' : 'Name Your Spell'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            controller: _ctrl,
+            autofocus: true,
+            decoration: const InputDecoration(hintText: 'Spell name'),
+            textCapitalization: TextCapitalization.words,
+            onChanged: (v) => setState(() => _isEmpty = v.trim().isEmpty),
+            onSubmitted: (_) => _submit(),
+          ),
+          if (widget.isSummon) ...[
+            const SizedBox(height: 16),
+            const Text(
+              'Personality',
+              style: TextStyle(fontSize: 12, letterSpacing: 0.5, color: Colors.black54),
+            ),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: SummonPersonality.values.map((p) {
+                return ChoiceChip(
+                  label: Text(kSummonPersonalityLabel[p]!),
+                  selected: _personality == p,
+                  onSelected: (_) => setState(() => _personality = p),
+                );
+              }).toList(),
+            ),
+          ],
+        ],
       ),
       actions: [
         TextButton(
@@ -692,6 +764,105 @@ class _SpellNameDialogState extends State<_SpellNameDialog> {
           child: const Text('Inscribe'),
         ),
       ],
+    );
+  }
+}
+
+/// Incantation/Summon toggle (design doc "Summons") -- chooses whether
+/// _inscribe() reads this grid's element sequence as a 16-cell incantation
+/// effect (default) or a summoned creature. Styled like _RuleBar's own
+/// hand-rolled toggle row rather than a Material SegmentedButton, to match
+/// the rest of this screen.
+class _ModeBar extends StatelessWidget {
+  final bool isSummon;
+  final ValueChanged<bool> onSelect;
+
+  const _ModeBar({required this.isSummon, required this.onSelect});
+
+  Widget _button(String label, bool value) {
+    final active = isSummon == value;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: TextButton(
+        onPressed: active ? null : () => onSelect(value),
+        style: TextButton.styleFrom(
+          foregroundColor: active ? const Color(0xFFF5F0E8) : const Color(0xFF9A9488),
+          backgroundColor: active ? const Color(0xFF5A3828) : Colors.transparent,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(4),
+            side: BorderSide(
+              color: active ? const Color(0xFF5A3828) : const Color(0xFF4A3020),
+            ),
+          ),
+        ),
+        child: Text(label, style: const TextStyle(fontSize: 12)),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: const Color(0xFF1E0E08),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: Row(
+        children: [
+          _button('Incantation', false),
+          _button('Summon', true),
+        ],
+      ),
+    );
+  }
+}
+
+/// Live "what will this inscribe as" preview for Summon mode -- mirrors
+/// FormulaBar's layout/colors so the two feel like the same UI element
+/// swapping content, not a different screen. [sequence] is the full flat
+/// activation list (FormulaTracker.committed already includes any residual).
+class _SummonPreview extends StatelessWidget {
+  final List<BorderZone> sequence;
+
+  const _SummonPreview({required this.sequence});
+
+  @override
+  Widget build(BuildContext context) {
+    final spec = CreatureSpec.fromElements(sequence);
+    final zeroHp = spec != null && spec.stats.maxHp == 0;
+    return Container(
+      color: const Color(0xFF1E0E08),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              const Text(
+                'Summon',
+                style: TextStyle(color: Color(0xFF9A9488), fontSize: 11, letterSpacing: 1),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  spec == null ? '— (void: nothing will be summoned)' : summonSummaryLabel(spec),
+                  style: const TextStyle(color: Color(0xFFCCA870), fontSize: 11),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          if (zeroHp)
+            const Padding(
+              padding: EdgeInsets.only(top: 2),
+              child: Text(
+                '0 HP — creature will immediately perish upon summoning.',
+                style: TextStyle(color: Color(0xFFD46A5A), fontSize: 11),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

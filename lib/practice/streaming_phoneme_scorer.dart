@@ -11,10 +11,13 @@
 // (lib/sorcerer/mfcc.dart) as a closed-vocabulary, checkpoint-based scorer:
 //
 //   - The target formula's words are looked up via VocalTemplateSource and
-//     concatenated into a flat list of phoneme "segments" (one per
-//     LatinPhonemes entry), each segment carrying its slice of that word's
-//     reference MFCC frames.
-//   - A pointer advances through segments in order. For the segment the
+//     turned into a flat list of "segments," one per word (originally one
+//     per phoneme within a word — see vocal_template_source.dart's header
+//     for why that was reverted: static, duration-proportional boundaries
+//     aren't real forced alignment, and let the pointer race ahead mid-
+//     word on real speech, bleeding leftover audio into the next word's
+//     segment).
+//   - A pointer advances through segments (words) in order. For the segment the
 //     pointer currently sits on, every time new audio frames arrive, this
 //     recomputes a fresh corner-to-corner DTW between "all query frames
 //     captured since the previous segment was crossed" and that segment's
@@ -66,12 +69,12 @@ import 'vocal_template_source.dart';
 class _Segment {
   _Segment({
     required this.wordIndex,
-    required this.phonemeLabel,
+    required this.label,
     required this.referenceFrames,
   });
 
   final int wordIndex;
-  final String phonemeLabel;
+  final String label;
   final List<List<double>> referenceFrames;
 }
 
@@ -169,12 +172,12 @@ class StreamingPhonemeScorer {
   /// scoring logic itself.
   double? get currentNormalizedQuality => _lastNormalizedQuality;
 
-  /// Current pointer position, for UI highlighting: (wordIndex, phonemeLabel)
-  /// of the segment currently being listened for, or null once complete.
-  ({int wordIndex, String phonemeLabel})? get currentTarget {
+  /// Current pointer position, for UI highlighting: (wordIndex, label) of
+  /// the segment currently being listened for, or null once complete.
+  ({int wordIndex, String label})? get currentTarget {
     if (_currentSegmentIdx >= _segments.length) return null;
     final s = _segments[_currentSegmentIdx];
-    return (wordIndex: s.wordIndex, phonemeLabel: s.phonemeLabel);
+    return (wordIndex: s.wordIndex, label: s.label);
   }
 
   bool get isComplete => _segments.isNotEmpty && _currentSegmentIdx >= _segments.length;
@@ -192,7 +195,7 @@ class StreamingPhonemeScorer {
         final slice = template.mfccFrames.sublist(prevBoundary + 1, boundary + 1);
         segments.add(_Segment(
           wordIndex: wordIndex,
-          phonemeLabel: template.phonemeLabels[p],
+          label: template.checkpointLabels[p],
           referenceFrames: _meanNormalize(_dropC0All(slice)),
         ));
         prevBoundary = boundary;
@@ -277,7 +280,7 @@ class StreamingPhonemeScorer {
     final now = DateTime.now();
     _completedCheckpoints.add(CheckpointClarity(
       wordIndex: segment.wordIndex,
-      phonemeLabel: segment.phonemeLabel,
+      label: segment.label,
       normalizedQuality: normalized,
       dwellMs: now.difference(_segmentStart!).inMilliseconds,
     ));

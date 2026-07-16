@@ -10,46 +10,21 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
-import '../engine/ca_rules.dart';
-import '../engine/ca_run.dart' show advanceDominance;
-import '../engine/formula.dart';
-import '../engine/hex_grid.dart';
-import '../engine/stepper.dart' show CAStep;
 import '../identity/identity.dart';
 import '../identity/key_packing.dart';
+import '../battle/models/creature_spec.dart' show summonSummaryFromFormula;
 import '../battle/models/effect_kind.dart' show formulaEffectLabels;
 import '../spells/chapter_asset.dart';
 import '../spells/spell_art_import.dart';
 import '../spells/spell_art_io.dart';
 import '../spells/spell_art_store.dart';
 import '../spells/spell_asset.dart';
+import '../spells/supreme_tags.dart' show deriveSupremeTags;
 import '../main.dart' show GameScreen;
 import 'manuscript_theme.dart';
 import 'sigil_painter.dart';
 import 'spell_card_painter.dart';
 import 'spell_test_lab_screen.dart' show kTestSpellNamePrefix;
-
-// Replays spell.initialGrid for spell.t generations and collects the zone
-// names of any elements that achieved supreme dominance. Fast (Dart CA only,
-// no proving). Used to migrate spells inscribed before supremeTags tracking
-// was added.
-Set<String> _deriveSupremeTags(SpellAsset spell) {
-  if (spell.initialGrid.isEmpty) return {};
-  var grid = HexGrid.fromPackedState(spell.initialGrid, 12);
-  var rule = CARules.neutral;
-  final tags = <String>{};
-  for (int gen = 0; gen < spell.t; gen++) {
-    final next = CAStep.step(grid, rule);
-    final dom = advanceDominance(rule, next);
-    if (dom.isSupreme) {
-      final zone = FormulaTracker.zoneFor(dom.dominant);
-      if (zone != null) tags.add(zone.name);
-    }
-    grid = next;
-    rule = dom.rule;
-  }
-  return tags;
-}
 
 // ── Custom spell art (P1: own library spells only) ──────────────────────────
 //
@@ -118,20 +93,6 @@ Future<void> _clearCustomArtOnSpell(SpellAsset spell, VoidCallback onReload) asy
   await spell.withoutArt().save();
   onReload();
 }
-
-// Shared across embellishment dialog and chapter detail view.
-const _kEmbellishLabel = {
-  'fire': 'Potency',
-  'air': 'Velocity',
-  'water': 'Efficiency',
-  'earth': 'Mystery',
-};
-const _kEmbellishColor = {
-  'fire': Color(0xFFB84040),
-  'air': Color(0xFF5588BB),
-  'water': Color(0xFF3399AA),
-  'earth': Color(0xFF7A6040),
-};
 
 const _kArtifactLabel = {
   ArtifactKind.manaGem: 'Mana Gem',
@@ -357,7 +318,7 @@ class _CraftingsTabState extends State<_CraftingsTab>
     // list. Derive and persist the tags now so subsequent adds are free.
     var effectiveSpell = spell;
     if (spell.supremeTags.isEmpty && spell.initialGrid.isNotEmpty) {
-      final derived = _deriveSupremeTags(spell);
+      final derived = deriveSupremeTags(spell);
       if (derived.isNotEmpty) {
         effectiveSpell = spell.withSupremeTags(derived.toList());
         await effectiveSpell.save();
@@ -388,21 +349,8 @@ class _CraftingsTabState extends State<_CraftingsTab>
       }
     }
 
-    String? finalEmbellishment;
-    if (effectiveSpell.supremeTags.isNotEmpty && mounted) {
-      final result = await showDialog<String>(
-        context: context,
-        builder: (_) => _EmbellishmentDialog(
-          availableTags: Set<String>.from(effectiveSpell.supremeTags),
-        ),
-      );
-      if (!mounted) return;
-      if (result == null) return; // user cancelled
-      finalEmbellishment = result.isEmpty ? null : result;
-    }
-
     final updated = chapter.withEntry(
-      ChapterEntry(spellId: effectiveSpell.id, embellishment: finalEmbellishment),
+      ChapterEntry(spellId: effectiveSpell.id),
     );
     await updated.save();
     widget.onChaptersChanged();
@@ -478,8 +426,8 @@ class _CraftingsTabState extends State<_CraftingsTab>
 //
 // Lists only spells fabricated by the Spell Test Lab (kTestSpellNamePrefix).
 // Test spells never derive supremeTags (their grid is all-zero — see
-// spell_test_lab_screen.dart) so, unlike Craftings, adding one never pops the
-// embellishment dialog; that lets "add all" batch straight through.
+// spell_test_lab_screen.dart), so they're never eligible for a cast-time
+// enhancement — irrelevant to adding them to a chapter either way.
 
 class _TestsTab extends StatefulWidget {
   const _TestsTab({
@@ -680,6 +628,7 @@ class _SpellCard extends StatelessWidget {
 
   String get _formulaText {
     if (spell.formula.isEmpty) return '';
+    if (spell.isSummon) return summonSummaryFromFormula(spell.formula) ?? '';
     final labels = formulaEffectLabels(spell.formula);
     if (labels.isEmpty) return '';
     return labels.join('  ·  ');
@@ -749,7 +698,13 @@ class _SpellCard extends StatelessWidget {
                 topLeft:    Radius.circular(3),
                 bottomLeft: Radius.circular(3),
               ),
-              child: SpellCardWidget(spell: spell, size: 84),
+              child: Stack(
+                children: [
+                  SpellCardWidget(spell: spell, size: 84),
+                  if (spell.isSummon)
+                    const Positioned(right: 3, bottom: 3, child: _SummonBadge()),
+                ],
+              ),
             ),
             Expanded(
               child: Padding(
@@ -839,6 +794,25 @@ class _SpellCard extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Small corner marker distinguishing a summon-mode spell card from an
+/// incantation one at a glance (design doc "Summons").
+class _SummonBadge extends StatelessWidget {
+  const _SummonBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: kParchmentPanelColor,
+        borderRadius: BorderRadius.circular(3),
+        border: Border.all(color: kIlluminationGold.withValues(alpha: 0.7), width: 0.5),
+      ),
+      child: const Icon(Icons.pets, size: 10, color: kIlluminationGold),
     );
   }
 }
@@ -1365,12 +1339,6 @@ class _ChapterSpellTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final name = spell?.name.isNotEmpty == true ? spell!.name : 'Unnamed Spell';
     final meta = spell != null ? 'Gen ${spell!.t}  ·  ♦ ${spell!.manaCost}' : '';
-    final embLabel = entry.embellishment != null
-        ? _kEmbellishLabel[entry.embellishment]
-        : null;
-    final embColor = entry.embellishment != null
-        ? _kEmbellishColor[entry.embellishment]
-        : null;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
@@ -1404,27 +1372,6 @@ class _ChapterSpellTile extends StatelessWidget {
                             ),
                           ),
                         ),
-                        if (embLabel != null && embColor != null)
-                          Container(
-                            margin: const EdgeInsets.only(right: 4),
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(
-                              border: Border.all(
-                                  color: embColor.withValues(alpha: 0.7)),
-                              borderRadius: BorderRadius.circular(2),
-                            ),
-                            child: Text(
-                              embLabel.toUpperCase(),
-                              style: TextStyle(
-                                fontFamily: 'serif',
-                                fontSize: 9,
-                                letterSpacing: 1.2,
-                                color: embColor,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
                       ],
                     ),
                     if (meta.isNotEmpty) ...[
@@ -1994,133 +1941,6 @@ class _AttunementSectionLabel extends StatelessWidget {
           letterSpacing: 2,
           fontWeight: FontWeight.w600,
           color: kInkMutedColor,
-        ),
-      ),
-    );
-  }
-}
-
-// ── Embellishment dialog ──────────────────────────────────────────────────────
-
-class _EmbellishmentDialog extends StatelessWidget {
-  const _EmbellishmentDialog({required this.availableTags});
-
-  final Set<String> availableTags;
-
-  static const _descs = {
-    'fire': 'Increase the power of your spell.',
-    'air': 'Increase spell range by 2.',
-    'water': 'Reduce mana cost by a third.',
-    'earth': 'Delay casting 1 to 3 turns, the delay time and target are secret.',
-  };
-  static const _tags = ['fire', 'air', 'water', 'earth'];
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text(
-        'Add Embellishment?',
-        style: TextStyle(fontFamily: 'serif', fontWeight: FontWeight.w600),
-      ),
-      contentPadding: const EdgeInsets.fromLTRB(24, 12, 24, 0),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          for (final tag in _tags)
-            _EmbellishOption(
-              label: _kEmbellishLabel[tag]!,
-              description: _descs[tag]!,
-              enabled: availableTags.contains(tag),
-              color: _kEmbellishColor[tag]!,
-              onTap: () => Navigator.pop(context, tag),
-            ),
-          const SizedBox(height: 4),
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context, ''),
-          child: const Text('Add Without'),
-        ),
-        TextButton(
-          onPressed: () => Navigator.pop(context, null),
-          child: const Text('Cancel'),
-        ),
-      ],
-    );
-  }
-}
-
-class _EmbellishOption extends StatelessWidget {
-  const _EmbellishOption({
-    required this.label,
-    required this.description,
-    required this.enabled,
-    required this.color,
-    required this.onTap,
-  });
-
-  final String label;
-  final String description;
-  final bool enabled;
-  final Color color;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final fg = enabled ? color : kInkMutedColor.withValues(alpha: 0.4);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: InkWell(
-        onTap: enabled ? onTap : null,
-        borderRadius: BorderRadius.circular(4),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          decoration: BoxDecoration(
-            color: enabled ? color.withValues(alpha: 0.05) : Colors.transparent,
-            border: Border.all(color: fg),
-            borderRadius: BorderRadius.circular(4),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      label,
-                      style: TextStyle(
-                        fontFamily: 'serif',
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: fg,
-                        letterSpacing: 0.3,
-                      ),
-                    ),
-                    Text(
-                      description,
-                      style: TextStyle(
-                        fontFamily: 'serif',
-                        fontSize: 12,
-                        color: enabled
-                            ? kInkColor.withValues(alpha: 0.7)
-                            : kInkMutedColor.withValues(alpha: 0.5),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              if (!enabled)
-                Padding(
-                  padding: const EdgeInsets.only(left: 6),
-                  child: Icon(
-                    Icons.lock_outline,
-                    size: 14,
-                    color: kInkMutedColor.withValues(alpha: 0.4),
-                  ),
-                ),
-            ],
-          ),
         ),
       ),
     );

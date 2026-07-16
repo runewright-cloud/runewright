@@ -3,13 +3,22 @@
 // casting_enhancements.dart — CastingEnhancements and GameMode.
 //
 // Enhancements come from two sources:
-//   1. Pre-battle loadout choice: Fire=Potency, Air=Velocity, Water=Efficiency.
+//   1. Cast-time choice: the player picks one of Fire=Potency, Air=Velocity,
+//      Water=Efficiency, or Earth=Mystery (routed separately via
+//      MysterySpellCastAction) at the moment they cast, gated by whether that
+//      spell achieved supreme dominance in the matching zone
+//      (SpellAsset.supremeTags). See battle_screen.dart's enhancement picker.
 //   2. Sorcerer-mode per-cast somatic/vocal quality scores — the seam lives
-//      here; implementation is deferred until those sensor systems are built.
+//      here; somatic implementation is deferred until gesture capture is
+//      built (see lib/sorcerer/gesture.dart), vocal is implemented via
+//      fromSorcererQuality below.
 //
 // Potency:  bracketed values in the effect table become active.
-// Velocity: spell range +2 (applied in EffectResolver before resolving range).
-// Efficiency: mana cost −1/3 (applied in the mana-cost calculation, not here).
+// Velocity: spell range +2. No engine-side range enforcement exists to hook
+//   this into yet (see turn_loop.dart/battle_screen.dart) — the flag is wired
+//   everywhere but currently has no mechanical effect; tracked as a follow-up.
+// Efficiency: mana cost −1/3 (applied in _spellManaCost/_certifiedManaCost in
+//   turn_loop.dart, not here).
 //
 // In sorcerer mode the vocal quality score (and eventually somatic) modifies
 // which enhancements are active and scales the mana cost multiplier. High
@@ -32,7 +41,7 @@ class CastingEnhancements {
   const CastingEnhancements({
     this.isPotent = false,
     this.isVelocity = false,
-    this.isMystery = false,
+    this.isEfficiency = false,
     this.manaCostMultiplier = 1.0,
     this.gameMode = GameMode.wizard,
     this.enhancementEnabled = true,
@@ -45,9 +54,9 @@ class CastingEnhancements {
   /// Air loadout enhancement — spell range +2.
   final bool isVelocity;
 
-  /// Earth loadout enhancement — spell may be delayed 0–3 turns; target tile
-  /// and delay are hidden until the spell fires.
-  final bool isMystery;
+  /// Water loadout enhancement — mana cost −1/3, applied in
+  /// TurnLoop._spellManaCost/_certifiedManaCost.
+  final bool isEfficiency;
 
   /// Mana cost factor from somatic/vocal quality (sorcerer mode only).
   /// 1.0 = normal; >1.0 = poor casting (more expensive); <1.0 = exceptional.
@@ -92,9 +101,10 @@ class CastingEnhancements {
   /// it's ever put on the wire) and the peer device (which only ever sees the
   /// wire-decoded score): both snap to the same u8 grid before the curve runs.
   ///
-  /// [hasPotentLoadout]/[hasVelocityLoadout] gate which loadout enhancement
-  /// (if any) the caster is even eligible for; [VocalScore] quality then
-  /// gates whether that eligibility is actually realised this cast.
+  /// [hasPotentLoadout]/[hasVelocityLoadout]/[hasEfficiencyLoadout] gate
+  /// which loadout enhancement (if any) the caster is even eligible for;
+  /// [VocalScore] quality then gates whether that eligibility is actually
+  /// realised this cast.
   ///
   // TODO(sorcerer): combine seam — pronunciation and volume are weighted
   //   equally (simple mean) for now. Weighting them differently is a later,
@@ -105,6 +115,7 @@ class CastingEnhancements {
     required VocalScore vocalScore,
     required bool hasPotentLoadout,
     required bool hasVelocityLoadout,
+    required bool hasEfficiencyLoadout,
   }) {
     final q = (vocalScore.pronunciationU8 + vocalScore.volumeU8) / (2 * 254.0);
 
@@ -136,6 +147,7 @@ class CastingEnhancements {
       enhancementEnabled: true,
       isPotent: hasPotentLoadout,
       isVelocity: hasVelocityLoadout,
+      isEfficiency: hasEfficiencyLoadout,
       manaCostMultiplier: 1.0,
     );
   }
@@ -143,7 +155,7 @@ class CastingEnhancements {
   CastingEnhancements copyWith({
     bool? isPotent,
     bool? isVelocity,
-    bool? isMystery,
+    bool? isEfficiency,
     double? manaCostMultiplier,
     GameMode? gameMode,
     bool? enhancementEnabled,
@@ -152,7 +164,7 @@ class CastingEnhancements {
       CastingEnhancements(
         isPotent: isPotent ?? this.isPotent,
         isVelocity: isVelocity ?? this.isVelocity,
-        isMystery: isMystery ?? this.isMystery,
+        isEfficiency: isEfficiency ?? this.isEfficiency,
         manaCostMultiplier: manaCostMultiplier ?? this.manaCostMultiplier,
         gameMode: gameMode ?? this.gameMode,
         enhancementEnabled: enhancementEnabled ?? this.enhancementEnabled,

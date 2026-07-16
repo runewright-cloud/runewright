@@ -30,6 +30,23 @@ Future<void> _settleReal(WidgetTester tester) async {
   await tester.pump();
 }
 
+/// Like [_settleReal], but keeps polling [condition] (which reads real
+/// on-disk state) until it's satisfied instead of guessing a fixed delay.
+/// Needed after actions that trigger many sequential real file writes (e.g.
+/// seeding 64 test spells) where a single 50ms delay is not reliably enough,
+/// especially under CPU contention from other test files running in parallel.
+Future<void> _settleUntil(
+  WidgetTester tester,
+  Future<bool> Function() condition, {
+  Duration timeout = const Duration(seconds: 20),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (DateTime.now().isBefore(deadline)) {
+    await _settleReal(tester);
+    if (await condition()) return;
+  }
+}
+
 void main() {
   late Directory tempDir;
 
@@ -55,7 +72,7 @@ void main() {
       await tester.pump();
 
       await tester.tap(find.text('SAVE TEST SPELL'));
-      await _settleReal(tester);
+      await _settleUntil(tester, () async => (await SpellAsset.loadAll()).isNotEmpty);
 
       expect(find.text('Test Fireball'), findsOneWidget);
       expect(find.text('No test spells yet.'), findsNothing);
@@ -76,13 +93,13 @@ void main() {
       await _settleReal(tester);
 
       await tester.tap(find.text('SAVE TEST SPELL'));
-      await _settleReal(tester);
+      await _settleUntil(tester, () async => (await SpellAsset.loadAll()).isNotEmpty);
       expect(await SpellAsset.loadAll(), hasLength(1));
 
       await tester.ensureVisible(find.byIcon(Icons.delete_outline));
       await tester.pump();
       await tester.tap(find.byIcon(Icons.delete_outline));
-      await _settleReal(tester);
+      await _settleUntil(tester, () async => (await SpellAsset.loadAll()).isEmpty);
 
       expect(find.text('No test spells yet.'), findsOneWidget);
       expect(await SpellAsset.loadAll(), isEmpty);
@@ -94,10 +111,10 @@ void main() {
       await tester.pumpWidget(const MaterialApp(home: SpellTestLabScreen()));
       await _settleReal(tester);
 
-      await tester.tap(find.text('Seed all pairings (64)'));
-      await _settleReal(tester);
-
       final expectedCount = SpellAffinity.values.length * EffectKind.values.length;
+      await tester.tap(find.text('Seed all pairings (64)'));
+      await _settleUntil(tester, () async => (await SpellAsset.loadAll()).length >= expectedCount);
+
       final saved = await SpellAsset.loadAll();
       expect(saved, hasLength(expectedCount));
       for (final affinity in SpellAffinity.values) {
@@ -116,7 +133,7 @@ void main() {
       // Re-seeding is idempotent: no duplicates, same ids.
       final idsBefore = saved.map((s) => s.id).toSet();
       await tester.tap(find.text('Seed all pairings (64)'));
-      await _settleReal(tester);
+      await _settleUntil(tester, () async => (await SpellAsset.loadAll()).length >= expectedCount);
       final resaved = await SpellAsset.loadAll();
       expect(resaved, hasLength(expectedCount));
       expect(resaved.map((s) => s.id).toSet(), idsBefore);

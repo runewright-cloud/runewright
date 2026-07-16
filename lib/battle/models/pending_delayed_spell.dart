@@ -14,6 +14,8 @@
 
 import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart';
+import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
 
 class PendingDelayedSpell {
@@ -23,6 +25,7 @@ class PendingDelayedSpell {
     required this.spell,
     required this.commitment,
     required this.castTurn,
+    required this.origin,
     this.isPotent = false,
     this.isVelocity = false,
   });
@@ -42,6 +45,12 @@ class PendingDelayedSpell {
   /// Turn number on which the spell was cast (public).
   final int castTurn;
 
+  /// The caster's board position at the moment of casting (public — only the
+  /// target tile and delay are secret, per the commitment above). Used to
+  /// render the pulsing "pending cast" orb, and as the true launch origin
+  /// when the spell later fires, since the caster may have moved since.
+  final HexCoord origin;
+
   final bool isPotent;
   final bool isVelocity;
 
@@ -50,4 +59,45 @@ class PendingDelayedSpell {
 
   static String idFromCommitment(Uint8List c) =>
       c.take(16).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+  /// Encodes [h] as 4 bytes: q then r, each signed big-endian 16-bit.
+  /// Byte-identical to TurnLoop's private wire coord encoding — kept here too
+  /// (rather than only in TurnLoop) so the mystery commitment preimage has a
+  /// single canonical implementation shared by the caster's UI (which builds
+  /// the commitment before the cast is ever sent) and TurnLoop's verification
+  /// (which rebuilds it from the revealed target/delay/nonce).
+  static Uint8List encodeCoord(HexCoord h) => Uint8List(4)
+    ..[0] = (h.q >> 8) & 0xFF
+    ..[1] = h.q & 0xFF
+    ..[2] = (h.r >> 8) & 0xFF
+    ..[3] = h.r & 0xFF;
+
+  static HexCoord decodeCoord(Uint8List data, int offset) {
+    int readInt16(int at) {
+      final u = (data[at] << 8) | data[at + 1];
+      return u >= 0x8000 ? u - 0x10000 : u;
+    }
+
+    return HexCoord(readInt16(offset), readInt16(offset + 2));
+  }
+
+  /// The mystery commitment preimage: encodeCoord(target) ‖ delay_byte ‖ nonce.
+  static Uint8List commitmentPreimage({
+    required HexCoord target,
+    required int delay,
+    required Uint8List nonce,
+  }) =>
+      Uint8List.fromList([...encodeCoord(target), delay & 0xFF, ...nonce]);
+
+  /// SHA-256 of [commitmentPreimage] — the value hidden inside a Mystery cast
+  /// until it's revealed. See the file header's wire contract.
+  static Future<Uint8List> commitmentHash({
+    required HexCoord target,
+    required int delay,
+    required Uint8List nonce,
+  }) async {
+    final hash = await Sha256().hash(
+        commitmentPreimage(target: target, delay: delay, nonce: nonce));
+    return Uint8List.fromList(hash.bytes);
+  }
 }

@@ -20,6 +20,9 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import '../battle/models/creature_spec.dart';
+import '../battle/models/effect_kind.dart';
+import '../engine/border_zone.dart';
 import '../spells/spell_art_store.dart';
 import '../spells/spell_asset.dart';
 import 'manuscript_theme.dart';
@@ -44,6 +47,137 @@ Color _elementColor(String element) => switch (element) {
 /// tiebreak when distributing symbols and ordering them around the ring.
 const List<String> _elementOrder = ['fire', 'air', 'water', 'earth'];
 
+const Map<String, String> _kElementDisplayName = {
+  'fire': 'Fire',
+  'air': 'Air',
+  'water': 'Water',
+  'earth': 'Earth',
+};
+
+const Map<SpellAffinity, String> _kSpellAffinityName = {
+  SpellAffinity.fire: 'Fire',
+  SpellAffinity.air: 'Air',
+  SpellAffinity.water: 'Water',
+  SpellAffinity.earth: 'Earth',
+};
+
+/// Effect-affinity counts for [formula]: the first entry of each complete
+/// triplet, falling back to raw activation counts when there's no complete
+/// triplet (legacy/very short castings so the result isn't empty). Shared by
+/// [elementSymbolsFor] and the frame color helpers below.
+Map<String, int> _formulaAffinityCounts(List<String> formula) {
+  final counts = <String, int>{};
+  for (var i = 0; i + 3 <= formula.length; i += 3) {
+    final a = formula[i].toLowerCase();
+    if (_elementOrder.contains(a)) counts[a] = (counts[a] ?? 0) + 1;
+  }
+  if (counts.isEmpty) {
+    for (final z in formula) {
+      final a = z.toLowerCase();
+      if (_elementOrder.contains(a)) counts[a] = (counts[a] ?? 0) + 1;
+    }
+  }
+  return counts;
+}
+
+/// [formula]'s zone-name entries, parsed into [BorderZone]s (unrecognised
+/// entries dropped) — used to derive a summon's [CreatureSpec].
+List<BorderZone> _borderZoneSequence(List<String> formula) => formula
+    .map((n) => switch (n.toLowerCase()) {
+          'fire' => BorderZone.fire,
+          'earth' => BorderZone.earth,
+          'water' => BorderZone.water,
+          'air' => BorderZone.air,
+          _ => null,
+        })
+    .whereType<BorderZone>()
+    .toList();
+
+/// The card frame's color(s) for [formula]'s effect-affinity mix, paired with
+/// each color's share of the total (fractions sum to 1), in canonical
+/// fire/air/water/earth order. A single-element formula (or one with no
+/// recognisable elements, e.g. a legacy spell predating formula tracking)
+/// returns a single entry — callers should paint a solid frame; two or more
+/// elements returns a proportional blend.
+List<(Color, double)> frameColorShares(List<String> formula) {
+  final counts = _formulaAffinityCounts(formula);
+  if (counts.isEmpty) return [(kIlluminationGold, 1.0)];
+  final total = counts.values.fold<int>(0, (s, v) => s + v);
+  return [
+    for (final e in _elementOrder.where(counts.containsKey))
+      (_elementColor(e), counts[e]! / total),
+  ];
+}
+
+/// A diagonal (top-left to bottom-right) gradient built from
+/// [frameColorShares], for painting the fullscreen card's outer frame. Each
+/// color is anchored at the midpoint of its proportional share so the blend
+/// leans toward whichever element contributed more effects; a single-color
+/// result degenerates to a solid fill.
+Gradient frameGradient(List<String> formula) {
+  final shares = frameColorShares(formula);
+  final colors = [for (final s in shares) s.$1];
+  if (colors.length == 1) {
+    return LinearGradient(colors: [colors[0], colors[0]]);
+  }
+  // Each color's stop sits at the midpoint of its cumulative share -- e.g.
+  // fire 0.67/water 0.33 puts fire's stop at 0.335 and water's at 0.835, so
+  // fire holds solid through roughly its own half-share before blending.
+  // Deliberately NOT clamped to [0, 1] at the ends: LinearGradient clamps
+  // colors outside the stop range to the nearest endpoint on its own, and
+  // forcing the first/last stops to 0/1 would collapse the two-color case
+  // (the most common mix) into a plain unweighted blend.
+  final stops = <double>[];
+  var cum = 0.0;
+  for (final s in shares) {
+    stops.add(cum + s.$2 / 2);
+    cum += s.$2;
+  }
+  return LinearGradient(
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+    colors: colors,
+    stops: stops,
+  );
+}
+
+Color _colorForAffinity(SpellAffinity a) => switch (a) {
+      SpellAffinity.fire => _kFireColor,
+      SpellAffinity.air => _kAirColor,
+      SpellAffinity.water => _kWaterColor,
+      SpellAffinity.earth => _kEarthColor,
+    };
+
+/// The fullscreen card's frame gradient: for incantations, the ratio-weighted
+/// blend from [frameGradient]; for summons, a SOLID color from the
+/// creature's single derived affinity ([CreatureSpec.affinity]) rather than a
+/// gradient over its casting sequence's full element mix — a summon has
+/// exactly one canonical affinity (also used for its resistance wheel), even
+/// though the sequence that derived it may touch several elements.
+Gradient cardFrameGradient(SpellAsset spell) {
+  if (!spell.isSummon) return frameGradient(spell.formula);
+  final spec = CreatureSpec.fromElements(_borderZoneSequence(spell.formula));
+  final color = spec == null ? kIlluminationGold : _colorForAffinity(spec.affinity);
+  return LinearGradient(colors: [color, color]);
+}
+
+/// The fullscreen card's type line, e.g. "Incantation — Fire, Water" or
+/// "Summon — Fire". Falls back to the bare category when no elemental data
+/// is recoverable (a legacy spell with an empty formula).
+String cardTypeLine(SpellAsset spell) {
+  if (spell.isSummon) {
+    final spec = CreatureSpec.fromElements(_borderZoneSequence(spell.formula));
+    if (spec == null) return 'Summon';
+    return 'Summon — ${_kSpellAffinityName[spec.affinity]}';
+  }
+  final counts = _formulaAffinityCounts(spell.formula);
+  if (counts.isEmpty) return 'Incantation';
+  final names = [
+    for (final e in _elementOrder.where(counts.containsKey)) _kElementDisplayName[e]!,
+  ];
+  return 'Incantation — ${names.join(', ')}';
+}
+
 // ── Symbol allocation ─────────────────────────────────────────────────────────
 
 /// Computes the ring of elemental symbols for a spell that ran [steps] CA steps
@@ -63,24 +197,9 @@ const List<String> _elementOrder = ['fire', 'air', 'water', 'earth'];
 List<List<String>> elementSymbolsFor(List<String> formula, int steps) {
   if (steps <= 0) return const [];
 
-  // Count effect affinities: the first entry of each complete triplet.
-  final counts = <String, int>{};
-  var effects = 0;
-  for (var i = 0; i + 3 <= formula.length; i += 3) {
-    final a = formula[i].toLowerCase();
-    if (_elementOrder.contains(a)) {
-      counts[a] = (counts[a] ?? 0) + 1;
-      effects++;
-    }
-  }
-  // Fallback for spells with no complete effect (e.g. legacy or very short
-  // castings): count the raw activations instead so the ring isn't empty.
-  if (effects == 0) {
-    for (final z in formula) {
-      final a = z.toLowerCase();
-      if (_elementOrder.contains(a)) counts[a] = (counts[a] ?? 0) + 1;
-    }
-  }
+  // Count effect affinities: the first entry of each complete triplet
+  // (falling back to raw activation counts for legacy/very-short castings).
+  final counts = _formulaAffinityCounts(formula);
 
   final total = counts.values.fold<int>(0, (s, v) => s + v);
   if (total == 0) return const [];
@@ -415,13 +534,17 @@ SpellCardPainter _painterFor(SpellAsset spell) => SpellCardPainter(
 bool _hasCustomArt(SpellAsset spell) =>
     spell.artHash != null && spell.spellHashHex.isNotEmpty;
 
-void _showSpellCardFullscreen(
-    BuildContext context, SpellAsset spell, SpellCardPainter emblemPainter) {
+/// Opens a full-screen overlay of [spell]'s card art, dismissed by tapping
+/// anywhere. Exposed publicly so callers that need a custom gesture mapping
+/// (e.g. long-press instead of tap) can trigger it directly rather than
+/// going through [SpellCardWidget]'s own tap handler.
+void showSpellCardFullscreen(BuildContext context, SpellAsset spell) {
   showDialog<void>(
     context: context,
     barrierColor: Colors.black.withValues(alpha: 0.92),
     barrierDismissible: true,
-    builder: (ctx) => _FullscreenSpellCard(spell: spell, emblemPainter: emblemPainter),
+    builder: (ctx) =>
+        _FullscreenSpellCard(spell: spell, emblemPainter: _painterFor(spell)),
   );
 }
 
@@ -467,29 +590,30 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard> {
         child: Center(
           child: Builder(
             builder: (innerCtx) {
-              final side = MediaQuery.of(innerCtx).size.shortestSide * 0.88;
+              final screen = MediaQuery.of(innerCtx).size;
+              final maxW = screen.width * 0.86;
+              final maxH = screen.height * 0.82;
+              // Trading-card portrait aspect (~2.5:3.5), clamped to the screen.
+              const cardAspect = 0.68;
+              var w = maxW;
+              var h = w / cardAspect;
+              if (h > maxH) {
+                h = maxH;
+                w = h * cardAspect;
+              }
               return Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   SizedBox(
-                    width: side,
-                    height: side,
-                    child: !_hasArt || _showEmblem
-                        ? CustomPaint(painter: widget.emblemPainter)
-                        : FutureBuilder<Uint8List?>(
-                            future: _fullArtFuture,
-                            builder: (context, snap) {
-                              final full = snap.data;
-                              if (full == null) {
-                                return CustomPaint(painter: widget.emblemPainter);
-                              }
-                              return ClipRRect(
-                                borderRadius: BorderRadius.circular(6),
-                                child: Image.memory(full,
-                                    fit: BoxFit.cover, gaplessPlayback: true),
-                              );
-                            },
-                          ),
+                    width: w,
+                    height: h,
+                    child: _CardFrame(
+                      spell: widget.spell,
+                      emblemPainter: widget.emblemPainter,
+                      showEmblem: _showEmblem,
+                      hasArt: _hasArt,
+                      fullArtFuture: _fullArtFuture,
+                    ),
                   ),
                   if (_hasArt) ...[
                     const SizedBox(height: 16),
@@ -506,6 +630,179 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard> {
       ),
     );
   }
+}
+
+/// The MTG/Pokémon-style trading-card frame: a gradient border (keyed to the
+/// spell's elemental affinity mix, see [frameGradient]) around an art window,
+/// a type line, and a rules-text box listing incantation effects or, for
+/// summons, stats and abilities.
+class _CardFrame extends StatelessWidget {
+  const _CardFrame({
+    required this.spell,
+    required this.emblemPainter,
+    required this.showEmblem,
+    required this.hasArt,
+    required this.fullArtFuture,
+  });
+
+  final SpellAsset spell;
+  final SpellCardPainter emblemPainter;
+  final bool showEmblem;
+  final bool hasArt;
+  final Future<Uint8List?>? fullArtFuture;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(7),
+      decoration: BoxDecoration(
+        gradient: cardFrameGradient(spell),
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withValues(alpha: 0.5), blurRadius: 16, offset: const Offset(0, 6)),
+        ],
+      ),
+      child: Container(
+        decoration: BoxDecoration(color: kParchmentColor, borderRadius: BorderRadius.circular(9)),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          children: [
+            _titleBar(),
+            AspectRatio(aspectRatio: 1, child: _artWindow()),
+            _typeLineBar(),
+            Expanded(child: _rulesBox()),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _titleBar() => Container(
+        color: kInkColor,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                spell.name.isEmpty ? 'Unnamed Spell' : spell.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Color(0xFFF5F0E8),
+                  fontFamily: 'serif',
+                  fontWeight: FontWeight.w700,
+                  fontSize: 16,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '♦ ${spell.manaCost}',
+              style: const TextStyle(
+                color: kIlluminationGold,
+                fontFamily: 'serif',
+                fontWeight: FontWeight.w700,
+                fontSize: 15,
+              ),
+            ),
+          ],
+        ),
+      );
+
+  Widget _artWindow() {
+    if (!hasArt || showEmblem) return CustomPaint(painter: emblemPainter);
+    return FutureBuilder<Uint8List?>(
+      future: fullArtFuture,
+      builder: (context, snap) {
+        final full = snap.data;
+        if (full == null) return CustomPaint(painter: emblemPainter);
+        return Image.memory(full, fit: BoxFit.cover, gaplessPlayback: true);
+      },
+    );
+  }
+
+  Widget _typeLineBar() => Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: kParchmentPanelColor,
+          border: Border(
+            top: BorderSide(color: kInkColor.withValues(alpha: 0.4)),
+            bottom: BorderSide(color: kInkColor.withValues(alpha: 0.4)),
+          ),
+        ),
+        child: Text(
+          cardTypeLine(spell),
+          style: manuscriptBodyStyle(fontSize: 13).copyWith(fontWeight: FontWeight.w600),
+        ),
+      );
+
+  Widget _rulesBox() => Padding(
+        padding: const EdgeInsets.all(10),
+        child: spell.isSummon ? _summonRulesBody() : _incantationRulesBody(),
+      );
+
+  Widget _incantationRulesBody() {
+    final effects = formulaEffects(spell.formula);
+    if (effects.isEmpty) {
+      return Text('No recorded effects.', style: manuscriptBodyStyle(fontSize: 13, color: kInkMutedColor));
+    }
+    return ListView.separated(
+      itemCount: effects.length,
+      separatorBuilder: (_, _) => const SizedBox(height: 8),
+      itemBuilder: (context, i) => _ruleLine(effects[i].name, effects[i].description),
+    );
+  }
+
+  Widget _summonRulesBody() {
+    final spec = CreatureSpec.fromElements(_borderZoneSequence(spell.formula));
+    if (spec == null) {
+      return Text('Void Summon — no recorded elements.',
+          style: manuscriptBodyStyle(fontSize: 13, color: kInkMutedColor));
+    }
+    final abilities = spec.abilities.toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 14,
+          runSpacing: 4,
+          children: [
+            _statChip('HP', spec.stats.maxHp),
+            _statChip('DMG', spec.stats.damage),
+            _statChip('Move', spec.stats.moveSpeed),
+            _statChip('Range', spec.stats.attackRange),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Expanded(
+          child: abilities.isEmpty
+              ? Text('No abilities.', style: manuscriptBodyStyle(fontSize: 13, color: kInkMutedColor))
+              : ListView.separated(
+                  itemCount: abilities.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 8),
+                  itemBuilder: (context, i) => _ruleLine(
+                      kSummonAbilityLabel[abilities[i]]!, kSummonAbilityDescription[abilities[i]]!),
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _statChip(String label, int value) => Text(
+        '$label $value',
+        style: manuscriptBodyStyle(fontSize: 13).copyWith(fontWeight: FontWeight.w700),
+      );
+
+  Widget _ruleLine(String name, String description) => RichText(
+        text: TextSpan(
+          style: manuscriptBodyStyle(fontSize: 13),
+          children: [
+            TextSpan(text: '$name: ', style: const TextStyle(fontWeight: FontWeight.w700)),
+            TextSpan(text: description),
+          ],
+        ),
+      );
 }
 
 /// Default card art for a [SpellAsset].
@@ -525,10 +822,17 @@ class SpellCardWidget extends StatefulWidget {
     super.key,
     required this.spell,
     this.size = 88,
+    this.interactive = true,
   });
 
   final SpellAsset spell;
   final double size;
+
+  /// When false, this widget renders only the art with no gesture handling
+  /// of its own -- for callers that wrap it in their own tap/long-press
+  /// logic (e.g. a spell tile where a tap should select the spell rather
+  /// than zoom the art).
+  final bool interactive;
 
   @override
   State<SpellCardWidget> createState() => _SpellCardWidgetState();
@@ -560,20 +864,22 @@ class _SpellCardWidgetState extends State<SpellCardWidget> {
   @override
   Widget build(BuildContext context) {
     final painter = _painterFor(widget.spell);
-    return GestureDetector(
-      onTap: () => _showSpellCardFullscreen(context, widget.spell, painter),
-      child: SizedBox(
-        width: widget.size,
-        height: widget.size,
-        child: FutureBuilder<Uint8List?>(
-          future: _thumbFuture,
-          builder: (context, snap) {
-            final thumb = snap.data;
-            if (thumb == null) return CustomPaint(painter: painter);
-            return Image.memory(thumb, fit: BoxFit.cover, gaplessPlayback: true);
-          },
-        ),
+    final art = SizedBox(
+      width: widget.size,
+      height: widget.size,
+      child: FutureBuilder<Uint8List?>(
+        future: _thumbFuture,
+        builder: (context, snap) {
+          final thumb = snap.data;
+          if (thumb == null) return CustomPaint(painter: painter);
+          return Image.memory(thumb, fit: BoxFit.cover, gaplessPlayback: true);
+        },
       ),
+    );
+    if (!widget.interactive) return art;
+    return GestureDetector(
+      onTap: () => showSpellCardFullscreen(context, widget.spell),
+      child: art,
     );
   }
 }

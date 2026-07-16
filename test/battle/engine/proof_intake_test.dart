@@ -13,16 +13,19 @@ Future<bool> _alwaysReject(Uint8List _, Uint8List _) async => false;
 /// Build synthetic proof bytes in the canonical wire format:
 ///   [4 BE bytes: field count N][N × 32-byte fields][1 byte padding]
 ///
-/// Field layout matches CIRCUIT_IO.md §8:
+/// Field layout matches proof_intake.dart's ABI doc (RULESET_VERSION 3+,
+/// CIRCUIT_IO.md §8):
 ///   [0] T (set to [t])
 ///   [1] owner_pubkey (zero)
-///   [2] ruleset_version (= 2)
+///   [2] ruleset_version (= 3)
 ///   [3] commitment (zero)
 ///   [4..7] border_activations (zero)
 ///   [8..8+tier-1] dominance_trajectory (zero)
 ///   [8+tier..8+2*tier-1] supreme_dominance_flags (zero)
+///   [8+2*tier] segment_count (zero)
+///   [8+2*tier+1] dot_count (zero)
 Uint8List _syntheticProof(int tier, {int t = 1}) {
-  final count = 8 + 2 * tier;
+  final count = 10 + 2 * tier;
   // header (4) + fields (count*32) + 1 byte proof body
   final bytes = Uint8List(4 + count * 32 + 1);
   final data = ByteData.sublistView(bytes);
@@ -33,10 +36,11 @@ Uint8List _syntheticProof(int tier, {int t = 1}) {
   // Field 0: T — written into the last 4 bytes of the 32-byte field.
   data.setUint32(4 + 0 * 32 + 28, t, Endian.big);
 
-  // Field 2: ruleset_version = 2.
-  data.setUint32(4 + 2 * 32 + 28, 2, Endian.big);
+  // Field 2: ruleset_version = 3.
+  data.setUint32(4 + 2 * 32 + 28, 3, Endian.big);
 
-  // All other fields (commitment, border counts, trajectory, flags): zero.
+  // All other fields (commitment, border counts, trajectory, flags,
+  // segment_count, dot_count): zero.
   return bytes;
 }
 
@@ -56,7 +60,7 @@ void main() {
       final out = await ProofIntake.verifyAndParse(proof, Uint8List(0), _alwaysOk, 12);
       expect(out.tierMax, equals(12));
       expect(out.t, equals(1));
-      expect(out.rulesetVersion, equals(2));
+      expect(out.rulesetVersion, equals(3));
       expect(out.dominanceTrajectory.length, equals(12));
       expect(out.supremeDominanceFlags.length, equals(12));
     });
@@ -114,7 +118,7 @@ void main() {
         fail('expected ProofIntakeException');
       } on ProofIntakeException catch (e) {
         expect(e.reason, contains('48'));   // declared tier mentioned
-        expect(e.reason, contains('104')); // expected count for tier 48
+        expect(e.reason, contains('106')); // expected count for tier 48
       }
     });
 

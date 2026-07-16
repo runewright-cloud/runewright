@@ -59,7 +59,7 @@ void main() {
     word: VocalWord.ignis,
     mfccFrames: referenceFrames,
     checkpointFrameIndices: [referenceFrames.length - 1],
-    phonemeLabels: const ['x'],
+    checkpointLabels: const ['x'],
   );
 
   StreamingPhonemeScorer buildScorer({int debounceFrames = 3}) =>

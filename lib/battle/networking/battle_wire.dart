@@ -39,6 +39,9 @@ enum BattleMsgType {
   actionCommit(0x35),
   actionReveal(0x36),
   delayedSpellReveal(0x37),
+  // Divination (Air-Water) scrying pattern — MESH_ARCHITECTURE.md §13b.
+  scryKey(0x38),
+  scryOpen(0x39),
 
   // Match control (§2)
   forfeit(0x40),

@@ -9,11 +9,11 @@
 
 import 'dart:math' as math;
 
-/// Per-checkpoint (word index + phoneme label) result.
+/// Per-checkpoint (currently: per whole word) result.
 class CheckpointClarity {
   const CheckpointClarity({
     required this.wordIndex,
-    required this.phonemeLabel,
+    required this.label,
     required this.normalizedQuality,
     required this.dwellMs,
   });
@@ -21,8 +21,11 @@ class CheckpointClarity {
   /// Index into the formula's word list this checkpoint belongs to.
   final int wordIndex;
 
-  /// Human-readable phoneme label (e.g. "ɲː"), from LatinPhonemes.
-  final String phonemeLabel;
+  /// Human-readable checkpoint label — currently always the spoken word
+  /// itself (e.g. "terra"), since checkpoints are whole-word; see
+  /// vocal_template_source.dart for why sub-word phoneme labels were
+  /// reverted.
+  final String label;
 
   /// Length-normalized DTW cost-per-step at the moment this checkpoint
   /// cleared (lower = cleaner match). Not itself a 0-1 score — see

@@ -16,7 +16,6 @@
 // Stubs (require additional system seams — noted inline):
 //   - Water / SpellInteraction: copy target's last-cast spell (needs history)
 //   - Water+Air / Divination: requires DivinationReveal protocol message
-//   - Air / TileModification: conveyor direction requires caster input (UI)
 //   - Fire+Earth / FuelTransmutation: wither/reactivate a hand spell (needs
 //     SpellDraw wired into BattleState — see battle_state.dart TODO)
 //
@@ -34,10 +33,12 @@ import 'package:rune_duel/battle/models/hex_battlefield.dart' show hexDistance;
 import 'package:rune_duel/battle/models/illusion.dart';
 import 'package:rune_duel/battle/models/minion.dart';
 import 'package:rune_duel/battle/models/reflection_link.dart';
+import 'package:rune_duel/battle/models/divination_link.dart';
 import 'package:rune_duel/battle/models/spell_effect.dart';
 import 'package:rune_duel/battle/models/status_effect_ids.dart';
 import 'package:rune_duel/battle/models/terrain.dart';
 import 'package:rune_duel/battle/models/wizard_avatar.dart';
+import 'tile_entry_resolver.dart';
 
 // ── Apply context ─────────────────────────────────────────────────────────────
 
@@ -51,8 +52,11 @@ class ApplyContext {
     required this.rng,
     Set<String>? rodConsumedFor,
     Map<String, List<HexCoord>>? movePaths,
+    this.chosenConveyorDirection,
+    List<ConveyorChainEvent>? conveyorChainEvents,
   }) : rodConsumedFor = rodConsumedFor ?? {},
-       movePaths      = movePaths      ?? {};
+       movePaths      = movePaths      ?? {},
+       conveyorChainEvents = conveyorChainEvents ?? [];
 
   final EffectDescriptor descriptor;
   final HexCoord targetTile;
@@ -66,6 +70,19 @@ class ApplyContext {
   /// Full traversed paths for this turn: playerId → [origin, step1, ..., dest].
   /// Used by knockback to bounce the target back along the path they walked.
   final Map<String, List<HexCoord>> movePaths;
+
+  /// The caster's chosen push direction for a ConveyorTile this formula is
+  /// about to create, if the cast flow collected one (see battle_screen.dart
+  /// direction picker). Null means "not supplied" -- _applyTileModification
+  /// falls back to a random direction (also the seam for a future real-time
+  /// choose-or-timeout mode, and for Mystery/delayed casts, which don't
+  /// collect a direction this pass).
+  final HexCoord? chosenConveyorDirection;
+
+  /// Collects ConveyorChainEvents emitted by knockback landing an entity on
+  /// a conveyor tile mid-spell, so the caller (TurnLoop) can fold them into
+  /// its per-turn event list for UI animation.
+  final List<ConveyorChainEvent> conveyorChainEvents;
 }
 
 // ── Effect applicator ─────────────────────────────────────────────────────────
@@ -100,7 +117,7 @@ class EffectApplicator {
           _hitAvatar(av, e.amount, ctx);
         }
         for (final m in _minionsAt(ctx.state, ctx.targetTile)) {
-          _hitMinion(m, e.amount);
+          _hitMinion(ctx, m, e.amount);
         }
         _destroyIllusionTerrainIfPresent(ctx, ctx.targetTile);
 
@@ -113,7 +130,7 @@ class EffectApplicator {
             _hitAvatar(av, e.amount, ctx);
           }
           for (final m in _minionsAt(ctx.state, hex)) {
-            if (m is SpiritMinion) _hitMinion(m, e.amount); // traversal hits spirits
+            _hitMinion(ctx, m, e.amount);
           }
           _destroyIllusionTerrainIfPresent(ctx, hex);
         }
@@ -122,7 +139,7 @@ class EffectApplicator {
           _hitAvatar(av, e.amount, ctx);
         }
         for (final m in _minionsAt(ctx.state, ctx.targetTile)) {
-          _hitMinion(m, e.amount);
+          _hitMinion(ctx, m, e.amount);
         }
         _destroyIllusionTerrainIfPresent(ctx, ctx.targetTile);
 
@@ -132,7 +149,7 @@ class EffectApplicator {
           _hitAvatar(av, e.amount, ctx);
         }
         for (final m in inRadius.$2) {
-          _hitMinion(m, e.amount);
+          _hitMinion(ctx, m, e.amount);
         }
         for (final hex in ctx.state.illusionTerrainTiles.toList()) {
           if (hexDistance(hex, ctx.targetTile) <= e.splashRadius) {
@@ -146,7 +163,7 @@ class EffectApplicator {
           _knockback(av, ctx);
         }
         for (final m in _minionsAt(ctx.state, ctx.targetTile)) {
-          _hitMinion(m, e.amount);
+          _hitMinion(ctx, m, e.amount);
           _knockbackMinion(m, ctx);
         }
         _destroyIllusionTerrainIfPresent(ctx, ctx.targetTile);
@@ -313,62 +330,27 @@ class EffectApplicator {
     }
   }
 
-  // ── Reflection trigger helpers ────────────────────────────────────────────
-
-  /// summonMirror: when the Reflections link TARGET summons a minion, the
-  /// CASTER receives an identical minion on a nearby spawn tile.
-  ///
-  /// Currently unreachable: incantation formulas no longer create Minions
-  /// directly (Fire-Earth/Earth-Fire moved to Status Effect Interaction/Fuel
-  /// Transmutation in the v3.0 effect-table rework). Kept for the upcoming
-  /// Rune Craft "summons" mode toggle, which will call this again once it has
-  /// its own minion-creation path.
-  // ignore: unused_element
-  static void _fireSummonMirror(
-      ApplyContext ctx, MinionStats stats, SpellAffinity affinity,
-      {required bool isSpiritNotHound}) {
-    for (final link in ctx.state.reflectionLinks) {
-      if (link.targetId != ctx.caster.playerId) continue;
-      if (!link.activeTriggers.contains(ReflectionTrigger.summonMirror)) continue;
-      final mirror = ctx.state.avatars
-          .where((a) => a.playerId == link.casterId && a.isAlive)
-          .firstOrNull;
-      if (mirror == null) continue;
-      final spawn = _findSpawnTile(ctx.state, mirror.position);
-      if (isSpiritNotHound) {
-        ctx.state.minions.add(SpiritMinion(
-          id: _uid(ctx, 'ms'),
-          ownerId: link.casterId,
-          teamId: mirror.teamId,
-          position: spawn,
-          affinity: affinity,
-          stats: stats,
-          actedThisTurn: true,
-        ));
-      } else {
-        ctx.state.minions.add(HoundMinion(
-          id: _uid(ctx, 'mh'),
-          ownerId: link.casterId,
-          teamId: mirror.teamId,
-          position: spawn,
-          affinity: affinity,
-          stats: stats,
-          actedThisTurn: true,
-        ));
-      }
-    }
-  }
-
   // ── Tile Modification (Earth-Water) ──────────────────────────────────────
 
   static void _applyTileModification(ApplyContext ctx, TileModificationEffect e) {
-    ctx.state.tileEffects[ctx.targetTile] = e.tileEffect;
+    var effect = e.tileEffect;
+    if (effect is ConveyorTile && !effect.directionSet) {
+      final dir = ctx.chosenConveyorDirection ?? _randomDirection(ctx.rng);
+      effect = effect.withDirection(dir);
+    }
+    ctx.state.tileEffects[ctx.targetTile] = effect;
     if (e.canPlaceSecond) {
       // TODO(ui): second tile placement requires caster to select an adjacent
       //   tile during effect resolution. Stub: no second tile placed.
-      //   For ConveyorTile, the direction is also selected here.
     }
   }
+
+  /// Fallback conveyor direction when the caster didn't supply one (real-time
+  /// timeout seam, or the Mystery/delayed-cast path, which doesn't collect a
+  /// direction this pass). ctx.rng is the shared deterministic per-turn RNG,
+  /// so this replays identically on both peers with no interactivity.
+  static HexCoord _randomDirection(Random rng) =>
+      HexGrid.directions[rng.nextInt(HexGrid.directions.length)];
 
   // ── Range Modification (Earth-Air) ───────────────────────────────────────
 
@@ -565,45 +547,79 @@ class EffectApplicator {
   }
 
   /// Fire flavor: clone the minion on the target tile for the caster at 1 HP,
-  /// always closing to attack rather than kiting (Minion.aggressive).
+  /// always closing to attack rather than following its personality's normal
+  /// positioning (Minion.forceCloseToAttack).
   static void _applyIllusionMinionCopy(ApplyContext ctx) {
     final source = _minionsAt(ctx.state, ctx.targetTile).firstOrNull;
     if (source == null) return;
-    final spawn = _findSpawnTile(ctx.state, ctx.targetTile);
-    final clonedStats = source.stats.copyWith(maxHp: 1);
-    final Minion clone = source is SpiritMinion
-        ? SpiritMinion(
-            id: _uid(ctx, 'ic'),
-            ownerId: ctx.caster.playerId,
-            teamId: ctx.caster.teamId,
-            position: spawn,
-            affinity: source.affinity,
-            stats: clonedStats,
-            aggressive: true,
-          )
-        : HoundMinion(
-            id: _uid(ctx, 'ic'),
-            ownerId: ctx.caster.playerId,
-            teamId: ctx.caster.teamId,
-            position: spawn,
-            affinity: source.affinity,
-            stats: clonedStats,
-            aggressive: true,
-          );
-    ctx.state.minions.add(clone);
+    final spawn = _findCreatureSpawnTile(ctx.state, ctx.targetTile, source.abilities);
+    ctx.state.minions.add(Minion(
+      id: _uid(ctx, 'ic'),
+      ownerId: ctx.caster.playerId,
+      teamId: ctx.caster.teamId,
+      position: spawn,
+      affinity: source.affinity,
+      stats: source.stats.copyWith(maxHp: 1),
+      elementSequence: source.elementSequence,
+      abilities: source.abilities,
+      personality: source.personality,
+      forceCloseToAttack: true,
+    ));
   }
 
   /// Earth flavor: clone the TileEffect on the target tile onto every
   /// terrain-free neighbor; copies are destroyed by any damage touching
   /// their tile (see BattleState.illusionTerrainTiles / _applyDamage).
+  ///
+  /// Special-cased for a ConveyorTile source: the copies default to forming
+  /// a clockwise-or-counterclockwise loop around the source (random
+  /// rotation, chosen once for this cast) rather than all sharing the exact
+  /// same direction as a coincidence of copy-by-reference. (Today's
+  /// non-conveyor copy path *does* share the source instance by reference,
+  /// which is also how conveyor copies would share one direction if this
+  /// special case were removed -- flagged here as the seam if the loop
+  /// default is ever swapped for independent per-copy directions.)
   static void _applyIllusionTerrainCopy(ApplyContext ctx) {
     final source = ctx.state.tileEffects[ctx.targetTile];
     if (source == null) return;
-    for (final n in _hexNeighbors(ctx.targetTile)) {
+
+    // (tile, ringIndex) for every eligible (in bounds, terrain-free)
+    // neighbor, in HexGrid.clockwiseDirections' angular order.
+    final ring = HexGrid.clockwiseDirections;
+    final eligible = <(HexCoord, int)>[];
+    for (var i = 0; i < ring.length; i++) {
+      final n = HexCoord(ctx.targetTile.q + ring[i].q, ctx.targetTile.r + ring[i].r);
       if (!ctx.state.battlefield.isInBounds(n)) continue;
       if (ctx.state.tileEffects.containsKey(n)) continue;
-      ctx.state.tileEffects[n] = source;
-      ctx.state.illusionTerrainTiles.add(n);
+      eligible.add((n, i));
+    }
+    if (eligible.isEmpty) return;
+
+    if (source is! ConveyorTile) {
+      for (final (tile, _) in eligible) {
+        ctx.state.tileEffects[tile] = source;
+        ctx.state.illusionTerrainTiles.add(tile);
+      }
+      return;
+    }
+
+    // ConveyorTile source: approximate a loop. A gap (missing/blocked
+    // neighbor) breaks ring-adjacency there; that copy falls back to an
+    // independent random direction instead of forcing an invalid
+    // multi-tile-jump "direction".
+    final reversed = ctx.rng.nextBool();
+    final ordered = reversed ? eligible.reversed.toList() : eligible;
+    for (var i = 0; i < ordered.length; i++) {
+      final (tile, ringIndex) = ordered[i];
+      final (nextTile, nextRingIndex) = ordered[(i + 1) % ordered.length];
+      final expectedNextRingIndex =
+          reversed ? (ringIndex - 1 + ring.length) % ring.length : (ringIndex + 1) % ring.length;
+      final ringAdjacent = nextRingIndex == expectedNextRingIndex;
+      final dir = (ordered.length > 1 && ringAdjacent)
+          ? HexCoord(nextTile.q - tile.q, nextTile.r - tile.r)
+          : _randomDirection(ctx.rng);
+      ctx.state.tileEffects[tile] = ConveyorTile(direction: dir);
+      ctx.state.illusionTerrainTiles.add(tile);
     }
   }
 
@@ -663,16 +679,34 @@ class EffectApplicator {
           e.durationTurns == 0 ? 999 : e.durationTurns, ctx);
       return;
     }
-    if (e.requiresOpponentReveal) {
-      // Water/Air Divination: opponent must send a DivinationReveal protocol message.
-      // TODO(battle): send DivinationRevealRequest via BattleSession; await
-      //   DivinationReveal frame; apply revealed data to local UI state.
-      //   Stub: mark the status effect so the UI can show "divination pending."
-      final typeId = ctx.descriptor.affinity == SpellAffinity.water
-          ? StatusEffectId.revealSpells
-          : StatusEffectId.revealTargetTile;
-      _addStatusWithDuration(ctx.caster, typeId, {}, e.durationTurns, ctx);
+    if (!e.requiresOpponentReveal) return;
+
+    if (ctx.descriptor.affinity == SpellAffinity.water) {
+      // Water Divination ("see target's available spell list") needs
+      // SpellDraw/hand state wired into BattleState first (see
+      // battle_state.dart TODO) — still a stub.
+      _addStatusWithDuration(ctx.caster, StatusEffectId.revealSpells, {}, e.durationTurns, ctx);
+      return;
     }
+
+    // Air Divination (Airy Scrying Pool): "see target's committed spell
+    // target tile." Only valid when the target tile holds a living enemy —
+    // links to that avatar so TurnLoop.beginTurn knows whose committed
+    // target to open for ctx.caster each turn (MESH_ARCHITECTURE.md §13b).
+    final target = _avatarsAt(ctx.state, ctx.targetTile)
+        .where((av) => av.teamId != ctx.caster.teamId)
+        .firstOrNull;
+    if (target == null) return;
+
+    ctx.state.divinationLinks.add(DivinationLink(
+      id: _uid(ctx, 'dv'),
+      casterId: ctx.caster.playerId,
+      targetId: target.playerId,
+      remainingTurns: e.durationTurns,
+    ));
+    // Cosmetic chip only; TurnLoop.beginTurn/state.divinationLinks is the
+    // actual source of truth for the reveal mechanism.
+    _addStatusWithDuration(ctx.caster, StatusEffectId.revealTargetTile, {}, e.durationTurns, ctx);
   }
 
   // ── Absorption rod / illusion-decoy helpers ───────────────────────────────
@@ -741,41 +775,104 @@ class EffectApplicator {
     }
   }
 
-  static void _hitMinion(Minion m, int amount) {
+  /// Damages [m] with [ctx.descriptor.affinity] as the attack type (so the
+  /// resistance wheel applies), then handles Molten Carapace (EFEF): a hit
+  /// from a source within 1 range reflects 1 fire damage back to the caster.
+  static void _hitMinion(ApplyContext ctx, Minion m, int amount) {
     if (amount <= 0) return;
-    m.takeDamage(amount);
+    m.takeDamage(amount, attackType: ctx.descriptor.affinity);
+    if (m.abilities.contains(SummonAbility.moltenCarapace) &&
+        hexDistance(ctx.caster.position, m.position) <= 1) {
+      ctx.caster.absorbDamage(1);
+    }
   }
 
-  /// Push [av] back along their move path (or away from caster if they didn't move).
+  /// Push [av] back along their move path (or away from caster if they didn't
+  /// move), then resolve tile-entry effects (lava, cascading/looping conveyor
+  /// pushes) on the tile they land on -- see tile_entry_resolver.dart. This is
+  /// what makes a knockback-into-a-conveyor immediately push further before
+  /// the next formula in the same spell cast resolves.
   static void _knockback(WizardAvatar av, ApplyContext ctx) {
     final path = ctx.movePaths[av.playerId];
+    HexCoord? landed;
     if (path != null && path.length >= 2) {
       // Bounce: step back one tile along the path they walked this turn.
       final bounceTarget = path[path.length - 2];
       if (ctx.state.battlefield.isInBounds(bounceTarget) &&
           ctx.state.tileEffects[bounceTarget] is! ImpassableTile) {
-        av.position = bounceTarget;
-        ctx.state.battlefield.occupancy[av.playerId] = bounceTarget;
-        return;
+        landed = bounceTarget;
       }
     }
     // Fallback: push one tile away from the caster.
-    final dir = _pushDir(ctx.caster.position, av.position);
-    if (dir == null) return;
-    final pushed = HexCoord(av.position.q + dir.q, av.position.r + dir.r);
-    if (!ctx.state.battlefield.isInBounds(pushed)) return;
-    if (ctx.state.tileEffects[pushed] is ImpassableTile) return;
-    av.position = pushed;
-    ctx.state.battlefield.occupancy[av.playerId] = pushed;
+    landed ??= () {
+      final dir = _pushDir(ctx.caster.position, av.position);
+      if (dir == null) return null;
+      final pushed = HexCoord(av.position.q + dir.q, av.position.r + dir.r);
+      if (!ctx.state.battlefield.isInBounds(pushed)) return null;
+      if (ctx.state.tileEffects[pushed] is ImpassableTile) return null;
+      return pushed;
+    }();
+    if (landed == null) return;
+
+    final outcome = resolveTileEntry(
+      state: ctx.state,
+      rng: ctx.rng,
+      enteredTile: landed,
+      flying: false,
+      currentHp: av.hp,
+    );
+    av.position = outcome.finalPosition;
+    ctx.state.battlefield.occupancy[av.playerId] = outcome.finalPosition;
+    if (outcome.totalDamage > 0) av.absorbDamage(outcome.totalDamage);
+    if (outcome.animationPath.length > 1) {
+      ctx.conveyorChainEvents.add(ConveyorChainEvent(
+        entityId: av.playerId,
+        path: outcome.animationPath,
+        damage: outcome.totalDamage,
+        killed: outcome.killed,
+      ));
+    }
   }
 
   static void _knockbackMinion(Minion m, ApplyContext ctx) {
+    if (m.abilities.contains(SummonAbility.big)) return; // EEEE: immovable
     final dir = _pushDir(ctx.caster.position, m.position);
     if (dir == null) return;
     final pushed = HexCoord(m.position.q + dir.q, m.position.r + dir.r);
     if (!ctx.state.battlefield.isInBounds(pushed)) return;
     if (ctx.state.tileEffects[pushed] is ImpassableTile) return;
-    m.position = pushed;
+
+    final flying = m.abilities.contains(SummonAbility.flying);
+    final outcome = resolveTileEntry(
+      state: ctx.state,
+      rng: ctx.rng,
+      enteredTile: pushed,
+      flying: flying,
+      currentHp: m.hp,
+      footprintValid: (t) => _minionFootprintValid(ctx.state, t, m),
+    );
+    m.position = outcome.finalPosition;
+    if (outcome.totalDamage > 0) m.takeDamage(outcome.totalDamage);
+    if (outcome.animationPath.length > 1) {
+      ctx.conveyorChainEvents.add(ConveyorChainEvent(
+        entityId: m.id,
+        path: outcome.animationPath,
+        damage: outcome.totalDamage,
+        killed: outcome.killed,
+      ));
+    }
+  }
+
+  /// Whether [m]'s full footprint (Big/EEEE occupies 3 tiles) fits centered
+  /// at [center]: in bounds and not ImpassableTile (flying minions ignore
+  /// ImpassableTile, matching TurnLoop._footprintValid's movement rule).
+  static bool _minionFootprintValid(BattleState state, HexCoord center, Minion m) {
+    final flying = m.abilities.contains(SummonAbility.flying);
+    for (final t in footprintFor(center, m.abilities)) {
+      if (!state.battlefield.isInBounds(t)) return false;
+      if (!flying && state.tileEffects[t] is ImpassableTile) return false;
+    }
+    return true;
   }
 
   // ── Status-effect helpers ─────────────────────────────────────────────────
@@ -830,19 +927,30 @@ class EffectApplicator {
 
   // ── Summon helpers ────────────────────────────────────────────────────────
 
-  /// Find the nearest unoccupied tile to [preferred], including [preferred].
-  static HexCoord _findSpawnTile(BattleState state, HexCoord preferred) {
-    if (_isTileOpen(state, preferred)) return preferred;
-    for (final n in _hexNeighbors(preferred)) {
-      if (state.battlefield.isInBounds(n) && _isTileOpen(state, n)) return n;
+  /// Finds the nearest tile whose full footprint (see [footprintFor] --
+  /// non-Big creatures occupy just the one tile) is open, preferring
+  /// [preferred] itself.
+  static HexCoord _findCreatureSpawnTile(
+      BattleState state, HexCoord preferred, Set<SummonAbility> abilities) {
+    bool footprintOpen(HexCoord center) {
+      for (final t in footprintFor(center, abilities)) {
+        if (!state.battlefield.isInBounds(t)) return false;
+        if (!_isTileOpen(state, t)) return false;
+      }
+      return true;
     }
-    return preferred; // fallback: stack on the target tile
+
+    if (footprintOpen(preferred)) return preferred;
+    for (final n in _hexNeighbors(preferred)) {
+      if (footprintOpen(n)) return n;
+    }
+    return preferred; // fallback: stack anyway
   }
 
   static bool _isTileOpen(BattleState state, HexCoord hex) {
     if (state.tileEffects[hex] is ImpassableTile) return false;
     if (state.avatars.any((av) => av.position == hex)) return false;
-    if (state.minions.any((m) => m is HoundMinion && m.position == hex)) return false;
+    if (state.minions.any((m) => m.isAlive && m.occupiedTiles.contains(hex))) return false;
     return true;
   }
 
@@ -852,7 +960,7 @@ class EffectApplicator {
       state.avatars.where((av) => av.isAlive && av.position == hex).toList();
 
   static List<Minion> _minionsAt(BattleState state, HexCoord hex) =>
-      state.minions.where((m) => m.isAlive && m.position == hex).toList();
+      state.minions.where((m) => m.isAlive && m.occupiedTiles.contains(hex)).toList();
 
   /// All avatars and minions within [radius] tiles of [center].
   static (List<WizardAvatar>, List<Minion>) _entitiesInRadius(
@@ -861,7 +969,7 @@ class EffectApplicator {
         .where((av) => av.isAlive && hexDistance(av.position, center) <= radius)
         .toList();
     final mns = state.minions
-        .where((m) => m.isAlive && hexDistance(m.position, center) <= radius)
+        .where((m) => m.isAlive && m.distanceTo(center) <= radius)
         .toList();
     return (avs, mns);
   }

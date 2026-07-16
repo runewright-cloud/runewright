@@ -1,5 +1,422 @@
 # M4 — Findings Log (live, updated per milestone)
 
+## Summons UI vertical slice — Rune Craft toggle, personality picker, battle display (2026-07-14, follow-up)
+
+Closed the gap the previous entry flagged: the Summons engine had no way to
+actually be *reached* from the UI. Added the missing UI plumbing so summon
+spells can be inscribed and battle-tested, per Soren's ask after noticing the
+Rune Craft screen had no Incantation/Summon toggle.
+
+**What shipped:**
+- `lib/main.dart` (Rune Craft / `GameScreen`): an Incantation/Summon `_ModeBar`
+  toggle styled like the existing `_RuleBar`; a live `_SummonPreview` widget
+  (swaps in for `FormulaBar` in Summon mode, built from
+  `CreatureSpec.fromElements(_formulaTracker.committed)` — no new tracker
+  plumbing needed, `committed` was already the full flat sequence); a
+  personality picker folded into `_SpellNameDialog` (returns a small
+  `_InscribeDetails` record instead of a bare `String` now); `isSummon`/
+  `summonPersonality` threaded into the existing `inscribeSpell()` call.
+  `GameScreen(loadedSpell:)` (the "view/re-edit a spell" path — see below)
+  now also restores `_isSummonMode`/`_summonPersonality` from the loaded
+  spell in `initState()`, so re-opening a summon spell shows it correctly
+  instead of silently defaulting back to Incantation mode.
+- `lib/battle/models/creature_spec.dart`: new display-only additions
+  (`kSummonAbilityLabel`, `summonSummaryLabel`, `summonSummaryFromFormula`) —
+  the single shared formatter every UI call site uses, mirroring
+  `formulaEffectLabels`/`kEffectKindLabel`'s existing pattern in the sibling
+  `effect_kind.dart`. `kSummonPersonalityLabel` went in `minion.dart` instead
+  (it defines `SummonPersonality`; `creature_spec.dart` doesn't import
+  `minion.dart` and adding that import would create a cycle, since
+  `minion.dart` already imports `creature_spec.dart`).
+- `lib/ui/battle_screen.dart` / `lib/ui/library_screen.dart`: the
+  selected-spell caption and library list both branch on `spell.isSummon` to
+  show `summonSummaryFromFormula(...)` instead of incantation effect labels;
+  both spellbook/library card lists get a small `Icons.pets` corner badge on
+  summon-mode cards (added by *wrapping* `SpellCardWidget` in a `Stack` at
+  each call site, not by editing `SpellCardWidget`/`SpellCardPainter`
+  themselves — that widget's rendering is pinned by
+  `test/ui/spell_card_widget_test.dart`).
+
+**Two scope cuts, made from evidence, not guesswork:**
+- `lib/ui/spell_view_screen.dart` (`SpellViewScreen`) is **dead code** —
+  grepped every call site; `library_screen.dart`'s actual "View" action
+  navigates to `GameScreen(loadedSpell: spell)`, not `SpellViewScreen`. It's
+  never instantiated anywhere. Skipped touching it; the loaded-spell path
+  through `GameScreen` already got the mode-restore fix above, which is the
+  thing that's actually reachable.
+- `kEnhancementDescription` (`lib/spells/enhancement_zone.dart`) is **also
+  dead** — defined, but no widget currently renders it (the cast-time
+  `_EnhancementPicker` only shows the short zone label, e.g. "POTENCY", never
+  the longer description string). The plan assumed swapping its Potency
+  entry for a summon-aware one; since nothing displays it today, there was
+  nothing to swap. Didn't invent a new description tooltip just to have a
+  branch to write.
+
+**Real finding: `testWidgets()` + real `dart:io` hangs, and why the fix only
+gets you halfway.** Wrote `test/ui/battle_screen_summon_test.dart` to widget-test
+the badge/caption end-to-end through the real `BattleScreen` tree. It hung
+indefinitely — not slow, *actually stuck*, confirmed by killing it after 5+
+minutes with zero progress and no timeout error (a genuine infinite loop or
+zone deadlock would look exactly like this; a slow-but-alive process would
+have eventually printed `package:test`'s own timeout failure).
+
+Bisected with throwaway probe scripts (`dart run` doesn't work for
+Flutter-dependent code — `dart:ui` isn't resolvable outside a `flutter test`
+binding; had to probe via a real `testWidgets`/`test` pair instead):
+`SpellAsset.save()` alone, under a plain `test()`, resolves instantly. The
+*identical* call, under `testWidgets()`, hangs forever. Root cause:
+`testWidgets` runs its body inside `package:fake_async`'s `FakeAsync` zone
+(so animation timing is deterministic and controllable via `pump(duration)`)
+— and genuine `dart:io` operations awaited from inside that zone never get a
+chance to complete, because nothing pumps the *real* event loop while the
+fake zone is driving. This is `flutter_test`'s own documented gotcha
+(`WidgetTester.runAsync` exists specifically for it), just not one this
+codebase had hit before — `spell_asset_test.dart` only ever uses plain
+`test()`, and no existing widget test does real `SpellAsset` I/O mid-test.
+
+Wrapping the direct `spell.save()` call in `tester.runAsync()` fixed *that*
+call — but `BattleScreen.initState()` also fires `_loadSpells()`
+(`SpellAsset.loadAll()`, a real disk read) as an un-awaited side effect of
+`pumpWidget()`, which runs *outside* any `runAsync` wrapping (it has to —
+`pumpWidget` needs the fake-async clock). That Future's completion can't be
+reliably synchronized with from outside; the widget has no constructor seam
+to inject pre-loaded spells for a test. Concluded this specific widget
+(real-disk-loaded `BattleScreen`) isn't practically testable via
+`testWidgets` without a production-code change (a spell-injection seam)
+that's a real architecture decision, not something to sneak in to satisfy a
+test. **Didn't make that change without asking** — deleted the widget test
+and covered the same logic instead with direct unit tests on
+`summonSummaryLabel`/`summonSummaryFromFormula` (`creature_spec_test.dart`,
++8 cases: ability-clause formatting, zone-name parsing, case-insensitivity,
+void-formula null case) — the part that actually needed verifying was the
+*string content* the caption shows, not that `Stack`/`Icon`/`Text` render
+(Flutter's own job to guarantee that).
+`test/ui/game_screen_summon_mode_test.dart` (the Rune Craft toggle, added
+alongside the main pass below) hit none of this, because `GameScreen` does
+no disk I/O until the player explicitly presses Inscribe.
+
+**Verification run:**
+- `flutter analyze`: clean project-wide (same pre-existing warnings only).
+- `flutter test`: 310 run (up from 303 pre-slice), same 6 pre-existing
+  unrelated `proof_intake_test.dart` failures, zero new failures, zero
+  hangs after the above fix/cut.
+- Manual: confirmed `flutter run -d linux` still boots cleanly; full
+  interactive click-through (toggle → draw → inscribe → battle → cast) not
+  independently re-driven this pass beyond the automated widget test for the
+  Rune Craft half — no GUI automation tooling (`xdotool`/`scrot`/etc.) or
+  `integration_test` harness exists in this sandbox to drive a real mouse
+  through the battle-screen half, and building one was out of scope for a
+  UI-plumbing pass. Flagging this explicitly: `game_screen_summon_mode_test.dart`
+  is real automated verification of the Rune Craft toggle/preview through
+  the actual widget tree; the battle-screen badge/caption verification is
+  one level down (unit-tested string content + code review + `flutter analyze`),
+  for the reasons above.
+
+## Summons system implemented — engine + battle wiring, no crafting/casting UI yet (2026-07-14)
+
+Implemented the design doc's "Summons" section: a summon-mode spell reads its
+element sequence as a creature instead of an incantation effect. Scope was
+explicitly limited (per plan) to the engine + battle wiring — no Rune Craft
+"summons mode" toggle, personality-glyph picker, or in-battle summon-casting
+UI. Every summon this pass is created programmatically (tests, or a future
+UI pass); `SpellAsset.isSummon`/`summonPersonality` exist and round-trip
+through JSON, but nothing in `main.dart`/`battle_screen.dart` sets them yet.
+
+**New module: `lib/battle/models/creature_spec.dart`.** Pure, no-Flutter,
+fully unit-tested (`test/battle/models/creature_spec_test.dart`, 41 cases).
+`CreatureSpec.fromElements(List<BorderZone>)` derives affinity (most-common
+element, first-appearance tiebreak), stats, and the 8 ability patterns from
+a flat element sequence. Also carries the resistance wheel
+(`applyResistance`/`resistanceTierOf`) and `morphicReducedSequence` (WWWW
+death-reform selection).
+
+**Stat formula — a real design gap, resolved with a documented default.**
+The design's "logarithm base 1" for Earth/HP is mathematically undefined
+(division by ln(1) = 0). Read as linear growth instead: `maxHp =
+max(1, earthCount)`. Fire/Air/Water use `1 + floor(log_base(count))` with
+base 2/2/3 respectively. Used **integer repeated-division log**, not
+`dart:math`'s `log(n)/log(base)` — the latter lands on the wrong side of
+exact powers due to float error (`log(4)/log(2)` can evaluate to
+`1.9999999999999998`, silently off-by-one at every power-of-base boundary).
+This would have been a very easy bug to ship undetected without the boundary
+tests in `creature_spec_test.dart` (counts 1/2/3/4/7/8 for damage/move,
+0/2/3/8/9 for range).
+
+**`Minion` collapsed from a sealed Sprite/Hound hierarchy to one concrete
+class.** The v2.4 model (kept dormant in the codebase since the v3.0
+effect-table rework, per `effect_kind.dart`'s own comment) is gone:
+`spiritStats`/`houndStats`/`ignoresTerrain`/`splashRadius`/`knockback` all
+deleted. A creature's identity is now `affinity` + `stats` (from
+`CreatureSpec`) + `abilities` (`Set<SummonAbility>`) + `personality`
+(`SummonPersonality`, glyph-assigned in the design, defaults to
+`aggressive` — no picker UI yet) + `elementSequence` (retained for Morphic
+reform, not just the derived spec).
+
+**A real `actedThisTurn` bug caught by the integration tests, not by
+inline reasoning.** First-pass logic set `actedThisTurn: !enhancements.isPotent`
+at creation — backwards. `actedThisTurn` is a transient "acted this
+Summons-phase pass" flag, unconditionally reset to `false` at the end of
+every `_resolveSummons` call; a creature created during action resolution
+(phase 5) never participates in the *current* turn's already-finished
+Summons phase (phase 4) regardless of this flag's value — it only
+determines eligibility for the *next* turn's Summons phase. Setting it
+`true` for non-Potent summons made them skip their actual first turn
+entirely; the "Potent = immediate turn" case needs the flag to *stay*
+`false` after the bonus action too, since Potency grants an *additional*
+action, not a replacement for the next Summons-phase turn. Two of the eleven
+`summon_cast_test.dart` cases failed against the first-pass code and pinned
+the fix — the kind of bug that reads as obviously correct until you trace
+the phase-4/phase-5 ordering by hand.
+
+**Big (EEEE) footprint is a pure function of position, not stored state.**
+`footprintFor(center, abilities)` = `[center]` normally, or `[center,
+neighbor0, neighbor1]` for Big (two *consecutive* hex-neighbor directions,
+which are themselves mutually adjacent — a true triangle). This meant the
+state-hash serialization (`battle_state.dart toCanonicalBytes`) only needs
+to write `position` once, not three coordinates — footprint, spawn-tile
+validity, targeting distance, and knockback-immunity all derive it on
+demand via `Minion.occupiedTiles`/`distanceTo`.
+
+**Molten Carapace (EFEF) reflects through the *effect's* attacker position,
+not a per-ability special case.** `EffectApplicator._hitMinion(ctx, m,
+amount)` now takes the `ApplyContext` directly and derives both the
+resistance-wheel `attackType` (`ctx.descriptor.affinity`) and the carapace
+check (`hexDistance(ctx.caster.position, m.position) <= 1`) from it — every
+existing damage path (direct/traversal/splash/knockback) gets both behaviors
+for free, no new call-site plumbing needed beyond the signature change.
+
+**Peer trust boundary extended, not reinvented.** Added
+`TrajectoryParser.certifiedElementSequence` (refactored `parse` and it to
+share one `_drive(outputs)` helper) and threaded a parallel
+`certifiedPeerElementSequences` map through `_verifyPeerSpellCast` /
+`_resolveActions` / `_applySpell`, alongside the existing `certifiedPeerFormulas`
+(B-1/B-8). A peer's summoned creature is derived from the SNARK-certified
+trajectory, never the wire-declared `SpellAsset.formula` — same pattern,
+same verification gate (`verifyProof`/`vkBytes` non-null), no new trust
+surface. **Not covered by a full two-client forgery integration test this
+pass** — that would need real proof bytes through the whole
+`_TurnSessionPair` harness (see `turn_loop_determinism_test.dart`), which is
+heavy (FFI proving, ~7s/proof). Covered instead at the unit level
+(`certifiedElementSequence` correctness, `trajectory_parser_test.dart`) plus
+structural analogy to the already-tested `certFormulas` mechanism it
+mirrors exactly (`formula_certified_test.dart`'s "wire-formula bypass"
+case). Flagging this gap explicitly rather than overclaiming coverage.
+
+**Verification run:**
+- `flutter analyze`: clean project-wide (only pre-existing warnings in files
+  this change never touched: `spell_test_lab_screen.dart`,
+  `scripts/find_mask_vector.dart`).
+- `flutter test`: 299 run, only the same 6 pre-existing
+  `test/battle/engine/proof_intake_test.dart` failures (confirmed via
+  `git stash` — reproduce identically with this change removed; a
+  proof-field-count fixture mismatch unrelated to Summons).
+- `flutter build linux --debug`: succeeds; the binary boots and runs cleanly
+  for 8s with no error output (no summon UI exists yet to drive
+  interactively, so this is a boot/regression check on the screens this
+  change's files feed — spell cards, battlefield rendering, inscription).
+- No `RULESET_VERSION` bump (summon derivation is off-circuit Dart, no CA
+  rule changed). The `BattleState.toCanonicalBytes` format *did* change
+  (new creature identity fields) — fine pre-release, but both clients need
+  the same build for the state-hash exchange to agree.
+
+**Not built this pass (flagged for the next one, per the locked plan
+scope):** Rune Craft summons-mode toggle, personality-glyph assignment UI,
+in-battle summon-casting affordance, and a full two-client peer-forgery
+integration test for the certified element sequence.
+
+## Practice Mode — reverted to whole-word checkpoints after mid-word bleed-through on real speech (2026-07-10, fifth follow-up)
+
+First proper multi-word real-device session (Pixel, quiet room) surfaced a
+structural bug the floor value couldn't fix: sometimes a checkpoint would
+clear semi-instantly mid-word. Soren's own diagnosis, confirmed correct:
+saying "terra" could register the first syllable ("ter") as a poor-but-
+sufficient match for terra's first phoneme checkpoint, crossing it
+prematurely, and then the trailing "-ra" would get scored against
+whatever checkpoint came *next* (e.g. aer's first phoneme, if aer followed
+in the formula) — a wrong-word match purely from bad luck of onset timing.
+
+**Root cause:** `LatinPhonemes`' per-phoneme checkpoint boundaries within a
+word were static, duration-weighted splits of the *reference* audio's own
+frame count — never real forced alignment. They have no way to know where
+a given speaker's actual articulation transitions between phones, which
+varies a lot person to person and even utterance to utterance. Once wrong,
+a boundary crossed too early doesn't just mis-score one phoneme, it feeds
+that segment's leftover audio into the next checkpoint's window, so an
+error at one boundary propagates into the next word entirely with no
+recovery mechanism.
+
+**Fix: reverted to one checkpoint per whole word**, not per phoneme.
+`VocalTemplate.checkpointFrameIndices`/`checkpointLabels` are now always
+length 1 in `SingleVoiceTemplateSource` (see that file's updated header).
+This removes the mid-word-bleed failure mode structurally — there's no
+sub-word boundary left to misplace — at the cost of losing "which specific
+phoneme within a word stalled" feedback granularity (still keeping "which
+*word* stalled," via `wordIndex`). This matches the granularity real
+Sorcerer-mode casting already uses successfully. `LatinPhonemes` itself
+(the phoneme table + G2P derivation trail) is kept, unused by the scorer
+for now, as groundwork for a real future forced-alignment source rather
+than deleted.
+
+Renamed `phonemeLabel(s)` -> `label`/`checkpointLabels` throughout
+(`_Segment`, `CheckpointClarity`, `VocalTemplate`, `PracticeScreen`) since
+the field no longer ever holds a phoneme — it's the whole word now, and
+the old name would have been actively misleading, not just imprecise.
+
+**Not yet re-tested:** this needs a fresh real-device pass to confirm the
+mid-word-bleed symptom is actually gone (it should be, structurally, but
+"should be" isn't "confirmed" — see the standing verification-hierarchy
+rule). The floor (7.0) and CMN/windowing fixes from the last several
+entries are unchanged and still apply on top of this.
+
+## Cast-time enhancement selection — dormant wire/UI gaps found and fixed (2026-07-13)
+
+Moved spell enhancement choice (Potency/Velocity/Efficiency/Mystery) from
+library/chapter-add time (`ChapterEntry.embellishment`) to cast time in
+battle (`battle_screen.dart`'s new `_EnhancementPicker`). Eligibility rule
+unchanged: still gated on `SpellAsset.supremeTags` (supreme/torrential
+dominance achieved during that spell's own simulation).
+
+**This was not a pure UI relocation — the old mechanism was already dead.**
+Investigation before touching anything found the add-time choice never
+actually reached battle: `battle_screen.dart`'s `_loadSpells()` discarded
+`ChapterEntry.embellishment` entirely, both `SpellCastAction(...)`
+construction sites never passed `isPotent`/`isVelocity`, and — the real
+find — `turn_loop.dart`'s wire encoder (`_encodeAction`, case `0x01`
+`SpellCastAction`) never serialized `isPotent`/`isVelocity` onto the wire at
+all, unlike `0x03` (`MysterySpellCastAction`), which already did. Since
+`_resolveActions` rebuilds `CastingEnhancements` from the wire-decoded
+action for *both* players every turn, this meant a peer's enhancement choice
+would have silently desynced effect magnitude/mana cost between the two
+devices in any real (non-solo) duel — invisible in solo practice, where the
+"peer" is the same local action object. Fixed by mirroring `0x03`'s pattern
+exactly for `0x01` (3 new bytes: isPotent/isVelocity/isEfficiency).
+
+**Added a fourth enhancement flag, `isEfficiency` (Water), that never
+existed before** — only a sorcerer-mode vocal-quality `manaCostMultiplier`
+existed previously, unrelated to loadout enhancements. Because Efficiency
+directly reduces mana cost (not just effect magnitude, like Potency), Soren
+opted to have it — and, for consistency, Potency/Velocity/Mystery too —
+cryptographically verified rather than trusted from the wire: added
+`TrajectoryParser.certifiedSupremeTags(VerifiedSpellOutputs)` (mirrors
+`_deriveSupremeTags`'s local-CA-replay logic, but reads the SNARK-certified
+`dominanceTrajectory`/`supremeDominanceFlags` instead) and a check in
+`_verifyPeerSpellCast` that forfeits the match if a peer claims an
+enhancement zone their spell's own certified data doesn't back. This
+subsumes the older, narrower precedent at the old `_certifiedManaCost` call
+site ("hasPotentLoadout/hasVelocityLoadout only gate effects, not cost; pass
+false") — all four claims are now verified up front, so the cost/effect
+formulas can trust the wire flags directly afterward.
+
+**Velocity's "+2 range" has no engine seam to attach to, confirmed by
+investigation, not assumed.** `_applySpell`/`_resolveActions` apply a cast
+to whatever `targetHex` is on the action unconditionally — there is no
+server/engine-side range enforcement anywhere in `turn_loop.dart`. The only
+range concept is `battle_screen.dart`'s `_maxCastRange`, which is
+client-side UX only (gates which taps the local player's own device
+accepts). `isVelocity` is now wired correctly everywhere (data model, wire,
+certified verification, effect-resolution eligibility) but the actual
+mechanical range bonus remains a no-op, same as before this change —
+flagged to Soren explicitly as a follow-up rather than inventing new range
+mechanics unprompted.
+
+**Also extracted `_deriveSupremeTags` (formerly private to
+`library_screen.dart`) into `lib/spells/supreme_tags.dart`**, since
+`battle_screen.dart` now needs the same eligibility derivation to backfill
+`supremeTags` for spells added to a chapter before that tracking existed —
+previously only the library screen's add-to-chapter flow did this backfill,
+so a spell added to a chapter long ago and never re-touched in the library
+could reach battle with stale/empty `supremeTags`.
+
+Verification: `flutter analyze` clean project-wide; `flutter test`
+(excluding `proof_intake_test.dart`, which has 6 pre-existing failures
+confirmed unrelated — that file and `proof_intake.dart` are byte-identical
+to `HEAD`, untouched by this change) — 241/241 pass, including
+`turn_loop_determinism_test.dart`'s two-client determinism test, which
+exercises the exact wire encode/decode path that was fixed.
+
+## Custom Spell Art P1 — on-device verification pass, Pixel 6 (2026-07-13)
+
+Ran the full P1 on-device checklist against a real Pixel 6 (Android 16, 8 GB)
+over adb (no `xvfb`/`xdotool` in this environment, so driven via
+`input tap`/`swipe` + screenshots rather than a scripted UI driver). Required
+rebuilding the Android `.so` first (`bash scripts/build_android_ffi.sh` —
+`ffi/src/{bin/desktop_vk_test.rs,api/prover.rs}` had drifted ahead of the
+bundled `.so`; CLAUDE.md Bug Avoidance #3). All five checklist sections pass.
+
+**Memory (Section 1).** Baseline app PSS ~555 MB (post-proving from an
+earlier real inscription in the same session — proving itself hit
+RSS ~1.5 GB / wall 14.8s on-device for a T12 proof, logged separately here as
+a useful data point). A single MAX import (4096×4096, 7.5 MB JPEG — the
+worst legally-importable case: right at both the dimension and byte
+ceilings) didn't produce a measurable spike in 0.5s-granularity sampling,
+suggesting the decode+resize+encode is fast enough on Tensor G1 that the
+~67 MB decode buffer comes and goes within a fraction of a second. Five
+back-to-back re-imports of the same MAX file (real `Replace Custom Art`
+round trips, continuously sampled at 300ms) peaked at **PSS 991,769 KB
+(~968 MB)**, settling to ~653 MB five seconds after the last one — no
+climbing trend across repeats, no crash, no ANR. The blob store correctly
+*overwrites* the same `spellHashHex` key rather than accumulating files
+(confirmed only 2 files present in `spell_art/` after 6+ total imports across
+the session). `compute()` isolate confirmed: UI stayed tap-responsive
+throughout every import (never needed a retry tap), and the 20s timeout
+never fired on any legitimate image.
+
+**Visual (Section 2).** 84dp library card and the full-screen 512² overlay
+both render cleanly — no visible JPEG blocking at quality=96 (MAX's
+selected quality step). Swipe-to-reveal-emblem works correctly and feels
+right (a plain horizontal `tester.drag`-equivalent gesture, no fighting with
+scroll). **Open finding, not yet a `[DECISION]`:** ALPHA (PNG with a
+transparent background) flattens to **plain white** on import — but this is
+*not* an explicit compositing choice in `_encodeCanonical`; it's the
+`image` package's implicit default when its JPEG encoder drops the alpha
+channel. Looked clean and intentional-reading in practice (not garbage), but
+relying on an unstated library default for a design-visible outcome is
+fragile — a future `image` version bump could silently change it. If white
+is in fact the desired background, it should become an explicit
+`compositeOnto(white)` step in the code so it can't drift.
+
+**Persistence & correctness (Section 3).** Survives `am force-stop` +
+relaunch (fresh PID confirmed) — art reloads from the blob store immediately
+on the new process, no re-import needed. Old-shaped (pre-P1, no
+artHash/artSource/artUpdatedAt keys at all) spell JSON hand-fabricated and
+dropped into `app_flutter/spells/` loads with zero parse errors, renders the
+vector emblem, and is even correctly grouped into the existing Kin badge —
+the nullable-field migration path is solid on-device, not just in
+`spell_asset_test.dart`. `Revert to Coat of Arms` deletes both
+`.full.jpg`/`.thumb.jpg` from `spell_art/` (confirmed empty directory after,
+not just hidden) and clears all three metadata fields from the JSON.
+
+**EXIF / privacy (Section 4) — confirmed on genuine camera hardware, not
+just the synthetic test fixture.** Shot two real photos on the Pixel 6 with
+location services on (`location_mode=3`); pulled EXIF showed real GPS
+(lat/lon + altitude), timestamp, and `Make=Google`/`Model=Pixel 6`/HDR+
+software tag — a full, real EXIF payload, not a stub. After import, the
+stored blob's EXIF is completely empty (`imageIfd` empty, no GPS IFD) at the
+correct 512×512 canonical size. **Treat "stored spell art is always
+EXIF-stripped" as a confirmed invariant, not just a code-level intention** —
+this is the finding P2 most needs, since it's the one that becomes a real
+privacy leak the moment art starts crossing the wire.
+
+**Failure paths (Section 5).** OVERSIZE (>8 MB, pushed via `adb push`,
+rejected before decode) → clean snackbar "That image is too large
+(max 8 MB)." JUNK (text file renamed `.jpg`) → clean snackbar "Unrecognized
+image format (PNG, JPEG, or WebP only)." Neither crashed, neither left a
+partial/corrupt file in `spell_art/` (checked directly on-device both times).
+
+**Not a bug, but noted:** immediately after a scripted rapid-fire
+`import → screenshot` sequence, the small library card occasionally still
+showed the *previous* art for one frame/screenshot despite the underlying
+`SpellAsset` JSON and blob store already being correctly updated. Root-caused
+via a new widget test (`spell_card_widget_test.dart`, "reload transition..."
+— the exact no-art→art transition on an already-mounted `SpellCardWidget`)
+which passes cleanly, and confirmed harmless on-device by forcing a full tab
+remount (data was always correct; only the very next paint occasionally
+lagged the disk write by a beat under back-to-back scripted taps faster than
+a human would drive the UI). Not a P1 blocker.
+
+**P1 is playtest-ready per this pass.** P2 (opponent art, sync,
+`SpellSighting`) can proceed against this baseline whenever it's greenlit.
+
 ## Custom Spell Art P1 landed — own-library art, image caps, data-layout decision (2026-07-10)
 
 Built P1 of the custom-spell-art feature (see the CLAUDE.md custom-art

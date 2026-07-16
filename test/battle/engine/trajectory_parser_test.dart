@@ -183,4 +183,59 @@ void main() {
       expect(result.residuals, equals([BorderZone.air]));
     });
   });
+
+  group('TrajectoryParser.certifiedElementSequence — design doc "Summons"', () {
+    test('all neutral → empty sequence', () {
+      final out = _outputs(
+        t: 6,
+        trajectory: _pad([], 12),
+        supremeFlags: _pad([], 12),
+      );
+      expect(TrajectoryParser.certifiedElementSequence(out), isEmpty);
+    });
+
+    test('returns the FULL flat committed sequence, including the residual '
+        '-- unlike parse(), which drops it into a separate list', () {
+      final out = _outputs(
+        t: 4,
+        trajectory: _pad([1, 2, 1, 2], 12), // fire, air, fire, air
+        supremeFlags: _pad([0, 0, 0, 0], 12),
+      );
+      final sequence = TrajectoryParser.certifiedElementSequence(out);
+      expect(sequence, equals([
+        BorderZone.fire, BorderZone.air, BorderZone.fire, BorderZone.air,
+      ]));
+
+      // Cross-check against parse(): sequence == formulas flattened ++ residuals.
+      final parsed = TrajectoryParser.parse(out);
+      final flattened = [
+        for (final f in parsed.formulas) ...[f.affinity, f.effectType1, f.effectType2],
+        ...parsed.residuals,
+      ];
+      expect(sequence, equals(flattened));
+    });
+
+    test('four distinct elements with a residual', () {
+      final out = _outputs(
+        t: 4,
+        trajectory: _pad([1, 3, 4, 2], 12), // fire, water, earth, air
+        supremeFlags: _pad([0, 0, 0, 0], 12),
+      );
+      expect(TrajectoryParser.certifiedElementSequence(out), equals([
+        BorderZone.fire, BorderZone.water, BorderZone.earth, BorderZone.air,
+      ]));
+    });
+
+    test('only the first outputs.t generations are read (masked tail ignored)', () {
+      // Same trajectory as above but T=2: only fire, water should commit.
+      final out = _outputs(
+        t: 2,
+        trajectory: _pad([1, 3, 4, 2], 12),
+        supremeFlags: _pad([0, 0, 0, 0], 12),
+      );
+      expect(TrajectoryParser.certifiedElementSequence(out), equals([
+        BorderZone.fire, BorderZone.water,
+      ]));
+    });
+  });
 }

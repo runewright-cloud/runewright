@@ -79,15 +79,7 @@ class TrajectoryParser {
   /// Only the first [outputs.t] generations are fed to the tracker; entries
   /// at gen ≥ t are 0 (masked) and correctly contribute nothing.
   static TrajectoryResult parse(VerifiedSpellOutputs outputs) {
-    final tracker = FormulaTracker();
-
-    for (var gen = 0; gen < outputs.t; gen++) {
-      final domIdx = outputs.dominanceTrajectory[gen];
-      final isSupreme = outputs.supremeDominanceFlags[gen] == 1;
-      final rule = ruleFromIndex(domIdx);
-      final zone = activeZoneFor(rule); // null for neutral
-      tracker.step(zone, supremeDominant: isSupreme);
-    }
+    final tracker = _drive(outputs);
 
     // FormulaTracker.formulas returns List<List<BorderZone>>, each of length 3.
     final formulas = tracker.formulas
@@ -102,5 +94,49 @@ class TrajectoryParser {
       formulas: formulas,
       residuals: List<BorderZone>.from(tracker.residuals),
     );
+  }
+
+  /// Certified analog of `SpellAsset.formula` (design doc "Summons"):
+  /// replays the SNARK-certified trajectory and returns the full flat
+  /// committed element sequence -- including any trailing residual, exactly
+  /// like `FormulaTracker.committed` populates `SpellAsset.formula` in
+  /// main.dart -- rather than [parse]'s complete-triplets-only view.
+  ///
+  /// Used to derive a peer's summoned creature (CreatureSpec.fromElements)
+  /// from certified data instead of the untrusted wire SpellAsset.formula:
+  /// the same B-1/B-8 trust-boundary pattern [certifiedSupremeTags] and
+  /// [parse] already apply to effect resolution and enhancement claims,
+  /// extended to creature summoning.
+  static List<BorderZone> certifiedElementSequence(VerifiedSpellOutputs outputs) =>
+      _drive(outputs).committed;
+
+  static FormulaTracker _drive(VerifiedSpellOutputs outputs) {
+    final tracker = FormulaTracker();
+    for (var gen = 0; gen < outputs.t; gen++) {
+      final domIdx = outputs.dominanceTrajectory[gen];
+      final isSupreme = outputs.supremeDominanceFlags[gen] == 1;
+      final rule = ruleFromIndex(domIdx);
+      final zone = activeZoneFor(rule); // null for neutral
+      tracker.step(zone, supremeDominant: isSupreme);
+    }
+    return tracker;
+  }
+
+  /// Certified analog of `deriveSupremeTags` (lib/spells/supreme_tags.dart),
+  /// which replays a spell's CA locally. This derives the same zone-name set
+  /// from the SNARK-certified [outputs] instead — used by
+  /// TurnLoop._verifyPeerSpellCast to check that a peer's claimed cast-time
+  /// enhancement (Potency/Velocity/Efficiency/Mystery) is actually backed by
+  /// this spell's own certified supreme-dominance data, not merely
+  /// self-declared on the wire.
+  static Set<String> certifiedSupremeTags(VerifiedSpellOutputs outputs) {
+    final tags = <String>{};
+    for (var gen = 0; gen < outputs.t; gen++) {
+      if (outputs.supremeDominanceFlags[gen] != 1) continue;
+      final rule = ruleFromIndex(outputs.dominanceTrajectory[gen]);
+      final zone = activeZoneFor(rule);
+      if (zone != null) tags.add(zone.name);
+    }
+    return tags;
   }
 }

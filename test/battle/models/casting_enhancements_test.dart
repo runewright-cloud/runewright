@@ -22,6 +22,7 @@ void main() {
         vocalScore: score,
         hasPotentLoadout: true,
         hasVelocityLoadout: false,
+        hasEfficiencyLoadout: false,
       );
       expect(result.fizzle, isFalse);
       expect(result.enhancementEnabled, isTrue);
@@ -36,6 +37,7 @@ void main() {
         vocalScore: score,
         hasPotentLoadout: true,
         hasVelocityLoadout: true,
+        hasEfficiencyLoadout: true,
       );
       expect(result.fizzle, isTrue);
       expect(result.enhancementEnabled, isFalse);
@@ -51,6 +53,7 @@ void main() {
         vocalScore: nearMin,
         hasPotentLoadout: true,
         hasVelocityLoadout: true,
+        hasEfficiencyLoadout: true,
       );
       expect(nearMinResult.fizzle, isFalse);
       expect(nearMinResult.enhancementEnabled, isFalse);
@@ -63,6 +66,7 @@ void main() {
         vocalScore: nearFizzle,
         hasPotentLoadout: true,
         hasVelocityLoadout: true,
+        hasEfficiencyLoadout: true,
       );
       expect(nearFizzleResult.fizzle, isFalse);
       expect(nearFizzleResult.manaCostMultiplier, greaterThan(1.30));
@@ -75,6 +79,7 @@ void main() {
         vocalScore: mid,
         hasPotentLoadout: false,
         hasVelocityLoadout: false,
+        hasEfficiencyLoadout: false,
       );
       const linearMidpoint = (1.01 + 1.50) / 2;
       expect(midResult.manaCostMultiplier, lessThan(linearMidpoint));
@@ -88,11 +93,13 @@ void main() {
         vocalScore: raw,
         hasPotentLoadout: true,
         hasVelocityLoadout: true,
+        hasEfficiencyLoadout: true,
       );
       final decodedResult = CastingEnhancements.fromSorcererQuality(
         vocalScore: wireDecoded,
         hasPotentLoadout: true,
         hasVelocityLoadout: true,
+        hasEfficiencyLoadout: true,
       );
 
       expect(decodedResult.fizzle, rawResult.fizzle);
@@ -108,10 +115,31 @@ void main() {
         vocalScore: score,
         hasPotentLoadout: false,
         hasVelocityLoadout: false,
+        hasEfficiencyLoadout: false,
       );
       expect(result.enhancementEnabled, isTrue);
       expect(result.isPotent, isFalse);
       expect(result.isVelocity, isFalse);
+    });
+
+    test('isEfficiency follows the same enable/disable gate as isPotent', () {
+      const good = VocalScore(pronunciation: 0.95, volume: 0.95);
+      final enabled = CastingEnhancements.fromSorcererQuality(
+        vocalScore: good,
+        hasPotentLoadout: false,
+        hasVelocityLoadout: false,
+        hasEfficiencyLoadout: true,
+      );
+      expect(enabled.isEfficiency, isTrue);
+
+      const bad = VocalScore(pronunciation: 0.05, volume: 0.05);
+      final fizzled = CastingEnhancements.fromSorcererQuality(
+        vocalScore: bad,
+        hasPotentLoadout: false,
+        hasVelocityLoadout: false,
+        hasEfficiencyLoadout: true,
+      );
+      expect(fizzled.isEfficiency, isFalse);
     });
   });
 }

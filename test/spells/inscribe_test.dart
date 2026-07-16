@@ -118,9 +118,10 @@ void main() {
     // particular call needs a connection.
     expect(progress.first, contains('first inscription needs a connection'));
     expect(progress, containsAllInOrder(['Inscribing your spell…', 'Verifying…']));
-  });
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('a second inscription reuses the on-disk SRS cache and says so', () async {
+    // Two sequential real on-device proofs; default 30s timeout isn't enough.
     final grid = HexGrid(12);
     final identity = await Identity.ephemeral();
 
@@ -161,5 +162,5 @@ void main() {
     expect(secondAsset.proofBytes, isNotEmpty);
     expect(secondProgress.first, equals('Preparing the loom…'));
     expect(secondProgress.first, isNot(contains('connection')));
-  });
+  }, timeout: const Timeout(Duration(minutes: 3)));
 }

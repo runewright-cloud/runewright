@@ -43,6 +43,21 @@ abstract class BattleTurnSession {
   Future<Uint8List> exchangeDelayedSpellReveals(Uint8List ourReveals);
   Future<Uint8List> exchangeStateHash(Uint8List ourHash);
 
+  /// Divination (Air-Water) scrying pattern (MESH_ARCHITECTURE.md §13b).
+  ///
+  /// Always called once per turn regardless of whether either side has an
+  /// active scry link this turn (uniform slot; content is conditional —
+  /// [0x00] means "no active outgoing scry"). [ourFrame] carries a fresh,
+  /// single-use X25519 public key when the local player is scrying the peer
+  /// this turn.
+  Future<Uint8List> exchangeScryKey(Uint8List ourFrame);
+
+  /// The reply half of the scrying pattern: an AEAD-encrypted opening of the
+  /// local player's committed spell-target leaf, addressed to the peer's
+  /// [exchangeScryKey] public key, when the peer is scrying the local player
+  /// this turn. [0x00] means "no active incoming scry to open."
+  Future<Uint8List> exchangeScryOpen(Uint8List ourFrame);
+
   /// Request a fresh commit-reveal entropy exchange during spell resolution.
   ///
   /// For interactive effects where foreknowledge of pseudo-random outcomes
@@ -248,6 +263,22 @@ class BattleSession implements BattleTurnSession {
   Future<Uint8List> exchangeDelayedSpellReveals(Uint8List ourReveals) async {
     send(BattleMsgType.delayedSpellReveal, ourReveals);
     final frame = await framesOfType(BattleMsgType.delayedSpellReveal).first;
+    return frame.payload;
+  }
+
+  // ── Divination scrying pattern (§13b) ──────────────────────────────────────
+
+  @override
+  Future<Uint8List> exchangeScryKey(Uint8List ourFrame) async {
+    send(BattleMsgType.scryKey, ourFrame);
+    final frame = await framesOfType(BattleMsgType.scryKey).first;
+    return frame.payload;
+  }
+
+  @override
+  Future<Uint8List> exchangeScryOpen(Uint8List ourFrame) async {
+    send(BattleMsgType.scryOpen, ourFrame);
+    final frame = await framesOfType(BattleMsgType.scryOpen).first;
     return frame.payload;
   }
 

@@ -41,7 +41,7 @@ class _PracticeScreenState extends State<PracticeScreen>
   PracticeFeedback? _feedback;
   bool _isCapturing = false;
   int _formulaCount = 1;
-  ({int wordIndex, String phonemeLabel})? _target;
+  ({int wordIndex, String label})? _target;
 
   @override
   void initState() {
@@ -227,7 +227,7 @@ class _PracticeScreenState extends State<PracticeScreen>
             if (_isCapturing && _target != null) ...[
               const SizedBox(height: 12),
               Text(
-                'Listening for: word ${_target!.wordIndex + 1} — "${_target!.phonemeLabel}"',
+                'Listening for: word ${_target!.wordIndex + 1} — "${_target!.label}"',
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontStyle: FontStyle.italic),
               ),
@@ -272,7 +272,7 @@ class _PracticeScreenState extends State<PracticeScreen>
         Text('Time to completion: ${feedback.timeToCompletionMs} ms (informational only)'),
         Text('Loudness: ${(feedback.averageLoudness * 100).round()}% (informational, non-gating)'),
         if (stall != null)
-          Text('Held you up most: word ${stall.wordIndex + 1}, "${stall.phonemeLabel}" '
+          Text('Held you up most: word ${stall.wordIndex + 1}, "${stall.label}" '
               '(${stall.dwellMs} ms)'),
         const SizedBox(height: 12),
         const Text('Per-checkpoint clarity:'),
@@ -282,9 +282,22 @@ class _PracticeScreenState extends State<PracticeScreen>
             child: Row(
               children: [
                 SizedBox(width: 80, child: Text('word ${c.wordIndex + 1}')),
-                SizedBox(width: 48, child: Text('"${c.phonemeLabel}"')),
+                SizedBox(width: 48, child: Text('"${c.label}"')),
                 Expanded(
                   child: LinearProgressIndicator(value: c.clarity01),
+                ),
+                SizedBox(
+                  width: 56,
+                  child: Text(
+                    // Raw normalizedQuality, not just the clarity bar --
+                    // this is what actually cleared the floor (currently
+                    // 7.0) at crossing time. Shown even though completion
+                    // may have happened "too fast to read live," since this
+                    // is the after-the-fact record of it.
+                    c.normalizedQuality.toStringAsFixed(1),
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
                 ),
               ],
             ),

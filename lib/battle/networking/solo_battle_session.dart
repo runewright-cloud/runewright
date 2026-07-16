@@ -45,7 +45,8 @@ class SoloBattleSession implements BattleTurnSession {
   static final Uint8List _dummyCommitment = Uint8List.fromList(List.filled(32, 0xFE));
 
   // Scratch storage for one-turn peer data; refreshed each call.
-  Uint8List _peerActionNonce = Uint8List(16);
+  Uint8List _peerActionSaltA = Uint8List(16);
+  Uint8List _peerActionSaltB = Uint8List(16);
   Uint8List _peerActionBytes = Uint8List.fromList([0x00]);
   Uint8List _peerMoveNonce = Uint8List(16);
   Uint8List _peerMoveBytes = Uint8List.fromList([0x00]); // empty path: count=0
@@ -66,24 +67,41 @@ class SoloBattleSession implements BattleTurnSession {
 
   @override
   Future<Uint8List> exchangeActionCommit(Uint8List ourCommit) async {
-    // Peer: PassAction = [0x00], nonce = 16 zero bytes — unless the Test Lab
-    // has scripted the dummy to cast this turn.
-    // Commit format matches _verifyReveal: SHA-256(actionBytes ‖ nonce16).
+    // Peer: PassAction = [0x00], salts = 16 zero bytes each — unless the Test
+    // Lab has scripted the dummy to cast this turn.
+    // Commit format matches TurnLoop._splitActionCommit (keep in sync — see
+    // that method's doc comment for the split-leaf/salted-Merkle scheme):
+    // SHA-256( H(remainder ‖ saltA) ‖ H(target ‖ saltB) ).
     final target = dummyCastTarget;
-    _peerActionNonce = Uint8List(16);
+    _peerActionSaltA = Uint8List(16);
+    _peerActionSaltB = Uint8List(16);
     _peerActionBytes = (dummyAutoCast && target != null)
         ? _encodeDummySpellCast(target, dummyCastFormula)
         : Uint8List.fromList([0x00]);
-    final hash = await Sha256().hash(
-      Uint8List.fromList([..._peerActionBytes, ..._peerActionNonce]),
-    );
-    return Uint8List.fromList(hash.bytes);
+    return _splitActionCommit(_peerActionBytes, _peerActionSaltA, _peerActionSaltB);
   }
 
   @override
   Future<Uint8List> exchangeActionReveal(Uint8List ourReveal) async {
-    // Reveal format: nonce(16) ‖ actionBytes — matches _verifyReveal.
-    return Uint8List.fromList([..._peerActionNonce, ..._peerActionBytes]);
+    // Reveal format: saltA(16) ‖ saltB(16) ‖ actionBytes — matches
+    // TurnLoop._verifyActionReveal.
+    return Uint8List.fromList(
+        [..._peerActionSaltA, ..._peerActionSaltB, ..._peerActionBytes]);
+  }
+
+  // ── Divination scrying pattern (§13b) ────────────────────────────────────
+  //
+  // The dummy never casts a Divination spell and never commits one to scry,
+  // so both halves of the exchange are always "no active scry this turn."
+
+  @override
+  Future<Uint8List> exchangeScryKey(Uint8List ourFrame) async {
+    return Uint8List.fromList([0x00]);
+  }
+
+  @override
+  Future<Uint8List> exchangeScryOpen(Uint8List ourFrame) async {
+    return Uint8List.fromList([0x00]);
   }
 
   /// Encodes TurnLoop's [0x01] spell-cast wire format for the scripted dummy
@@ -109,6 +127,35 @@ class SoloBattleSession implements BattleTurnSession {
     ..[1] = h.q & 0xFF
     ..[2] = (h.r >> 8) & 0xFF
     ..[3] = h.r & 0xFF;
+
+  /// Duplicates TurnLoop._splitActionCommit (private to that file) — keep in
+  /// sync if the split-leaf scheme ever changes.
+  static Future<Uint8List> _splitActionCommit(
+      Uint8List actionBytes, Uint8List saltA, Uint8List saltB) async {
+    int? targetOffset;
+    if (actionBytes.isNotEmpty) {
+      switch (actionBytes[0]) {
+        case 0x01: targetOffset = 1 + 32 + 2;
+        case 0x02: targetOffset = 1;
+      }
+    }
+    final Uint8List target;
+    final Uint8List remainder;
+    if (targetOffset == null || actionBytes.length < targetOffset + 4) {
+      target = Uint8List(0);
+      remainder = actionBytes;
+    } else {
+      target = actionBytes.sublist(targetOffset, targetOffset + 4);
+      remainder = Uint8List.fromList([
+        ...actionBytes.sublist(0, targetOffset),
+        ...actionBytes.sublist(targetOffset + 4),
+      ]);
+    }
+    final leafA = await Sha256().hash(Uint8List.fromList([...remainder, ...saltA]));
+    final leafB = await Sha256().hash(Uint8List.fromList([...target, ...saltB]));
+    final root = await Sha256().hash(Uint8List.fromList([...leafA.bytes, ...leafB.bytes]));
+    return Uint8List.fromList(root.bytes);
+  }
 
   // ── Move commit-reveal ───────────────────────────────────────────────────────
 

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // chapter_asset.dart — a persisted bundle of spell references and artifact
-// loadout the player intends to carry into battle. Each spell entry optionally
-// carries an embellishment derived from a supreme-dominance tag earned during
-// inscription. Each artifact slot holds one of four kinds of battle items.
+// loadout the player intends to carry into battle. The enhancement (Potency/
+// Velocity/Efficiency/Mystery) a spell is cast with is chosen at cast time in
+// battle, not stored here — see battle_screen.dart's cast-time picker. Each
+// artifact slot holds one of four kinds of battle items.
 
 import 'dart:convert';
 import 'dart:io';
@@ -49,23 +50,17 @@ class ArtifactEntry {
 // ── Spell loadout ─────────────────────────────────────────────────────────────
 
 class ChapterEntry {
-  const ChapterEntry({required this.spellId, this.embellishment});
+  const ChapterEntry({required this.spellId});
 
   /// ID of the included spell (matches SpellAsset.id).
   final String spellId;
 
-  /// Zone name ('fire'/'air'/'water'/'earth') of the chosen embellishment,
-  /// or null if the spell was added without one.
-  final String? embellishment;
-
   Map<String, dynamic> toJson() => {
         'spellId': spellId,
-        if (embellishment != null) 'embellishment': embellishment,
       };
 
   static ChapterEntry fromJson(Map<String, dynamic> json) => ChapterEntry(
         spellId: json['spellId'] as String,
-        embellishment: json['embellishment'] as String?,
       );
 }
 

@@ -223,6 +223,10 @@ class _TurnSessionPair {
   var _bDelayed = Completer<Uint8List>();
   var _aStateHash = Completer<Uint8List>();
   var _bStateHash = Completer<Uint8List>();
+  var _aScryKey = Completer<Uint8List>();
+  var _bScryKey = Completer<Uint8List>();
+  var _aScryOpen = Completer<Uint8List>();
+  var _bScryOpen = Completer<Uint8List>();
 
   void reset() {
     _aActionCommit = Completer();
@@ -237,6 +241,10 @@ class _TurnSessionPair {
     _bDelayed = Completer();
     _aStateHash = Completer();
     _bStateHash = Completer();
+    _aScryKey = Completer();
+    _bScryKey = Completer();
+    _aScryOpen = Completer();
+    _bScryOpen = Completer();
   }
 }
 
@@ -285,6 +293,30 @@ class _PairedSession implements BattleTurnSession {
     } else {
       _pair._bActionReveal.complete(ourReveal);
       return _pair._aActionReveal.future;
+    }
+  }
+
+  // ── Divination scrying pattern (§13b) ─────────────────────────────────────
+
+  @override
+  Future<Uint8List> exchangeScryKey(Uint8List ourFrame) {
+    if (isA) {
+      _pair._aScryKey.complete(ourFrame);
+      return _pair._bScryKey.future;
+    } else {
+      _pair._bScryKey.complete(ourFrame);
+      return _pair._aScryKey.future;
+    }
+  }
+
+  @override
+  Future<Uint8List> exchangeScryOpen(Uint8List ourFrame) {
+    if (isA) {
+      _pair._aScryOpen.complete(ourFrame);
+      return _pair._bScryOpen.future;
+    } else {
+      _pair._bScryOpen.complete(ourFrame);
+      return _pair._aScryOpen.future;
     }
   }
 

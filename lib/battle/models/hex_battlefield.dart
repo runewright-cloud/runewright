@@ -21,7 +21,7 @@ import 'dart:math';
 
 import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/battle/models/terrain.dart'
-    show TileEffect, ImpassableTile, SlowTile, ConveyorTile;
+    show TileEffect, ImpassableTile, SlowTile;
 
 // ── Hex distance / neighbor helpers ──────────────────────────────────────────
 
@@ -47,45 +47,21 @@ List<HexCoord> hexNeighbors(HexCoord h) =>
 
 // ── Movement result ───────────────────────────────────────────────────────────
 
-/// Side-effect produced when a player enters a tile with a terrain effect.
-sealed class TileEntryEvent {
-  const TileEntryEvent(this.playerId);
-  final String playerId;
-}
-
-/// Player entered a SlowTile: drain [manaDrain] mana on entry.
-class SlowTileEntryEvent extends TileEntryEvent {
-  const SlowTileEntryEvent(super.playerId, {required this.manaDrain});
-  final int manaDrain;
-}
-
-/// Player was pushed by a ConveyorTile from [from] to [to].
-class ConveyorPushEvent extends TileEntryEvent {
-  const ConveyorPushEvent(super.playerId, {required this.from, required this.to});
-  final HexCoord from;
-  final HexCoord to;
-}
-
-/// Return value from [Battlefield.resolveMovement].
+/// Return value from [Battlefield.resolveMovement]: a deterministic,
+/// no-RNG *preview* used only to decide who wins a contested destination
+/// tile. It deliberately ignores terrain (SlowTile cost aside, for budget
+/// purposes) and ConveyorTile entirely -- the real, terrain-aware walk
+/// (budget consumption, SlowTile mana drain, FloorIsLava damage, and
+/// ConveyorTile pushes/cascades/loops) runs afterward in
+/// TurnLoop._walkAvatar, which needs a seeded RNG (loop-exit randomness,
+/// see tile_entry_resolver.dart) and BattleState (occupancy/avatars/minions)
+/// this self-contained Battlefield class deliberately doesn't reference.
 class MovementResult {
-  const MovementResult({
-    required this.positions,
-    required this.events,
-    required this.traversedPaths,
-  });
+  const MovementResult({required this.bounced});
 
-  /// playerId → resolved position (after terrain side-effects).
-  final Map<String, HexCoord> positions;
-
-  /// Terrain entry events: mana drains, conveyor pushes, etc. Apply in order.
-  final List<TileEntryEvent> events;
-
-  /// playerId → full path taken this turn, starting with the origin and ending
-  /// at the final resolved position (including any conveyor push destination).
-  /// A player who did not move has a single-entry list [origin].
-  /// Used by TurnLoop for per-tile terrain damage and by EffectApplicator for
-  /// path-based knockback bounce.
-  final Map<String, List<HexCoord>> traversedPaths;
+  /// playerIds who lost a contested-destination collision this turn (tied or
+  /// out-sped) and so don't move at all, regardless of their declared path.
+  final Set<String> bounced;
 }
 
 // ── Battlefield ───────────────────────────────────────────────────────────────
@@ -109,8 +85,13 @@ class Battlefield {
 
   // ── Movement validation ───────────────────────────────────────────────────
 
-  /// Resolves simultaneous movement and returns updated positions, terrain
-  /// entry events, and each player's fully traversed path.
+  /// Deterministic (no-RNG) collision preview: walks each player's declared
+  /// [paths] ignoring ConveyorTile (see [MovementResult]) purely to find each
+  /// player's naive intended destination, then arbitrates any tile two or
+  /// more players would land on simultaneously. This does NOT mutate
+  /// [occupancy] or apply any terrain side-effect (budget cost aside, for
+  /// arbitration purposes) -- the caller (TurnLoop._resolveAvatarMovement)
+  /// does the real walk for every non-bounced player afterward.
   ///
   /// Rules (design doc §movement):
   ///   - Each player supplies an ordered list of tiles to enter ([paths]).
@@ -118,12 +99,9 @@ class Battlefield {
   ///     to the player's origin. An empty list means "stay put".
   ///   - [ImpassableTile]: a step into an impassable tile truncates the path at
   ///     the previous tile.
-  ///   - [SlowTile]: each SlowTile entered costs 1 + [extraMoveCost] budget and
-  ///     drains mana (one [SlowTileEntryEvent] per tile entered).
-  ///   - [ConveyorTile]: after the path is walked the player is pushed one step
-  ///     in the conveyor direction from the landing tile.
-  ///   - [FloorIsLava]: passable; per-tile damage is applied by the TurnLoop
-  ///     using [MovementResult.traversedPaths].
+  ///   - [SlowTile]: each tile entered costs 1 + [extraMoveCost] budget here
+  ///     (for arbitration only -- the real mana drain happens in the caller's
+  ///     real walk).
   ///   - Contested destination: highest speed wins; ties bounce both to origin.
   ///
   /// [paths] maps playerId → ordered list of tiles to enter (not including origin).
@@ -170,16 +148,11 @@ class Battlefield {
       destToPlayers.putIfAbsent(entry.value.last, () => []).add(entry.key);
     }
 
-    final resolved = Map<String, HexCoord>.from(origins);
-    final bounced  = <String>{};
+    final bounced = <String>{};
 
     for (final entry in destToPlayers.entries) {
-      final dest        = entry.key;
       final contestants = entry.value;
-      if (contestants.length == 1) {
-        resolved[contestants.first] = dest;
-        continue;
-      }
+      if (contestants.length == 1) continue;
       final maxSpeed = contestants
           .map((id) => speeds[id] ?? maxTilesPerTurn)
           .reduce(max);
@@ -187,68 +160,13 @@ class Battlefield {
           .where((id) => (speeds[id] ?? maxTilesPerTurn) == maxSpeed)
           .toList();
       if (winners.length == 1) {
-        resolved[winners.first] = dest;
-        for (final loser in contestants.where((id) => id != winners.first)) {
-          resolved[loser] = origins[loser]!;
-          bounced.add(loser);
-        }
+        bounced.addAll(contestants.where((id) => id != winners.first));
       } else {
-        for (final id in contestants) {
-          resolved[id] = origins[id]!;
-          bounced.add(id);
-        }
+        bounced.addAll(contestants);
       }
     }
 
-    // ── Step 3: Terrain entry events + conveyor pushes ────────────────────────
-    final events       = <TileEntryEvent>[];
-    final finalPaths   = Map<String, List<HexCoord>>.from(walkedPaths);
-
-    for (final id in origins.keys) {
-      if (bounced.contains(id)) {
-        // Bounced: reset path to origin-only, no terrain events.
-        finalPaths[id] = [origins[id]!];
-        resolved[id]   = origins[id]!;
-        continue;
-      }
-
-      final walked = walkedPaths[id]!;
-      if (walked.length <= 1) continue; // stayed put
-
-      // SlowTile mana drains: one event per SlowTile entered along path.
-      for (final hex in walked.skip(1)) {
-        final effect = tileEffects[hex];
-        if (effect is SlowTile) {
-          events.add(SlowTileEntryEvent(id, manaDrain: effect.manaDrainOnEntry));
-        }
-      }
-
-      // Conveyor push from landing tile.
-      final landing = walked.last;
-      final landEffect = tileEffects[landing];
-      if (landEffect is ConveyorTile) {
-        final pushed = HexCoord(
-            landing.q + landEffect.direction.q,
-            landing.r + landEffect.direction.r);
-        final pushedEffect = tileEffects[pushed];
-        if (isInBounds(pushed) && pushedEffect is! ImpassableTile) {
-          resolved[id]   = pushed;
-          finalPaths[id] = [...walked, pushed];
-          events.add(ConveyorPushEvent(id, from: landing, to: pushed));
-        }
-      }
-    }
-
-    return MovementResult(
-      positions:      resolved,
-      events:         events,
-      traversedPaths: finalPaths,
-    );
-  }
-
-  /// Apply a [MovementResult.positions] map back to [occupancy].
-  void applyMovement(Map<String, HexCoord> resolved) {
-    occupancy.addAll(resolved);
+    return MovementResult(bounced: bounced);
   }
 
   // ── Pathfinding ───────────────────────────────────────────────────────────

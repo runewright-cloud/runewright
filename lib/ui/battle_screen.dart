@@ -12,34 +12,42 @@
 //   Artifact row — 4 icon+count chips
 //   Spell book  — horizontal scroll of SpellCardWidgets (tap → select)
 
+import 'dart:async' show Completer, unawaited;
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:flutter/material.dart';
 
+import '../battle/engine/tile_entry_resolver.dart' show predictAvatarMove;
 import '../battle/engine/turn_loop.dart';
 import '../battle/models/battle_state.dart';
 import '../battle/models/barrier.dart';
 import '../battle/models/casting_enhancements.dart';
+import '../battle/models/creature_spec.dart' show summonSummaryFromFormula;
 import '../battle/models/effect_kind.dart'
-    show SpellAffinity, formulaEffectLabels, kAffinityLabel;
+    show SpellAffinity, EffectKind, formulaEffects, formulaEffectLabels,
+        kAffinityLabel, primaryFormulaAffinity;
 import '../battle/models/hex_battlefield.dart' show hexDistance;
+import '../battle/models/pending_delayed_spell.dart' show PendingDelayedSpell;
 import '../battle/models/terrain.dart' show ImpassableTile, SlowTile;
 import '../battle/models/status_effect_ids.dart';
 import '../battle/models/wizard_avatar.dart';
 import '../battle/networking/battle_session.dart';
 import '../battle/networking/solo_battle_session.dart';
 import '../engine/hex_grid.dart';
+import '../sorcerer/gesture.dart';
 import '../sorcerer/vocal_score.dart';
 import '../sorcerer/vocal_scorer.dart';
 import '../spells/chapter_asset.dart';
+import '../spells/enhancement_zone.dart';
 import '../spells/spell_asset.dart';
+import '../spells/supreme_tags.dart' show deriveSupremeTags;
 import 'battlefield_painter.dart';
 import 'manuscript_theme.dart';
 import 'spell_card_painter.dart';
-import 'spell_view_screen.dart';
 
-enum _InputPhase { action, movement }
+enum _InputPhase { action, movement, pickingDirection }
 
 // ── Artifact display table ────────────────────────────────────────────────────
 
@@ -125,6 +133,15 @@ class _BattleScreenState extends State<BattleScreen>
   // (and the controller restarted) each time a new turn resolves with casts.
   late AnimationController _castAnimController;
   List<CastAnimation> _castAnimations = const [];
+  List<ConveyorChainAnimation> _conveyorChainAnimations = const [];
+
+  // Phase A of the local player's own in-flight cast this turn: the held,
+  // pulsing orb at the cast tile, set the instant the cast is confirmed and
+  // cleared once the turn resolves and _castAnimations takes over for the
+  // travel+burst leg (phase B). Null whenever no cast is pending -- see
+  // _commitAction / _submitTurn / _pendingCastOrbs.
+  HexCoord?      _pendingCastOrigin;
+  SpellAffinity? _pendingCastAffinity;
 
   // Turn interaction state — two phases: action then movement.
   _InputPhase      _phase         = _InputPhase.action;
@@ -133,6 +150,36 @@ class _BattleScreenState extends State<BattleScreen>
   TurnAction?      _pendingAction;
   List<HexCoord>   _movePath      = const []; // movement path (movement phase)
   bool             _isBusy        = false;
+
+  // Airy Scrying Pool reveal (MESH_ARCHITECTURE.md §13b): the opponent's
+  // committed spell-target tile for this turn, if an active DivinationLink
+  // resolved one. Set asynchronously by _beginTurnAndRevealScry once
+  // _commitAction's TurnLoop.beginTurn() call returns; null otherwise. Shown
+  // on the battlefield during the movement phase so the scrying player can
+  // make an informed move before submitting the turn.
+  HexCoord?        _scryRevealedTile;
+
+  // Conveyor push-direction prompt (pickingDirection phase): the tile the
+  // ConveyorTile is about to be created on, and the completer _onTapBattlefield
+  // resolves when the player taps one of its 6 highlighted neighbor hexes
+  // (or null on cancel). See _pickConveyorDirection.
+  HexCoord? _conveyorPickOrigin;
+  Completer<HexCoord?>? _conveyorPickCompleter;
+
+  // Cast-time enhancement choice — zone tag ('fire'/'air'/'water'/'earth')
+  // or null for neutral (no enhancement). Eligibility is
+  // _selectedSpell.supremeTags; see _EnhancementPicker.
+  String? _selectedEnhancement;
+
+  // Earth/Mystery only: chosen delay in turns (0 = fire immediately).
+  int _mysteryDelay = 0;
+
+  // A Mystery cast's local secret, staged when CAST is pressed and promoted
+  // to _myPendingMysterySecrets only once _submitTurn's runTurn call
+  // actually succeeds — a turn that fails to send must not leave behind a
+  // reveal the engine never created a matching PendingDelayedSpell for.
+  _PendingMysterySecret? _stagedMysterySecret;
+  final List<_PendingMysterySecret> _myPendingMysterySecrets = [];
 
   // Status-effect inspection: null = show local player; non-null = show opponent.
   WizardAvatar?    _inspectedAvatar;
@@ -198,9 +245,27 @@ class _BattleScreenState extends State<BattleScreen>
     final all = await SpellAsset.loadAll();
     if (!mounted) return;
     final byId = {for (final s in all) s.id: s};
-    setState(() {
-      _spells = widget.chapter.entries.map((e) => byId[e.spellId]).toList();
-    });
+    final loaded = widget.chapter.entries.map((e) => byId[e.spellId]).toList();
+
+    // Backfill supremeTags for spells added to a chapter before this
+    // eligibility tracking existed, so the cast-time enhancement picker
+    // sees correct eligibility even for older chapters — mirrors
+    // library_screen.dart's _addToChapter backfill.
+    final resolved = <SpellAsset?>[];
+    for (final spell in loaded) {
+      if (spell != null && spell.supremeTags.isEmpty && spell.initialGrid.isNotEmpty) {
+        final derived = deriveSupremeTags(spell);
+        if (derived.isNotEmpty) {
+          final updated = spell.withSupremeTags(derived.toList());
+          await updated.save();
+          resolved.add(updated);
+          continue;
+        }
+      }
+      resolved.add(spell);
+    }
+    if (!mounted) return;
+    setState(() => _spells = resolved);
   }
 
   WizardAvatar? get _local => widget.state.avatars
@@ -213,6 +278,36 @@ class _BattleScreenState extends State<BattleScreen>
   List<WizardAvatar> get _opponents => widget.state.avatars
       .where((a) => a.playerId != widget.localPlayerId)
       .toList();
+
+  /// Every committed-but-unresolved cast to render as a held, pulsing orb:
+  /// this client's own same-turn cast (phase A, before the turn resolves)
+  /// plus every in-flight Mystery cast from the shared, public
+  /// [BattleState.pendingDelayedSpells] -- so opponents' pending Mystery
+  /// casts render here too, not just the local player's own.
+  List<PendingCastOrb> get _pendingCastOrbs {
+    final orbs = <PendingCastOrb>[];
+    final origin = _pendingCastOrigin;
+    final affinity = _pendingCastAffinity;
+    if (origin != null && affinity != null) {
+      orbs.add(PendingCastOrb(
+        origin: origin,
+        color: BattlefieldPainter.colorForAffinity(affinity),
+      ));
+    }
+    for (final pending in widget.state.pendingDelayedSpells) {
+      final pendingAffinity = primaryFormulaAffinity(pending.spell.formula);
+      if (pendingAffinity == null) continue;
+      final caster = widget.state.avatars
+          .where((a) => a.playerId == pending.ownerId)
+          .firstOrNull;
+      orbs.add(PendingCastOrb(
+        origin: pending.origin,
+        color: BattlefieldPainter.colorForAffinity(pendingAffinity),
+        rangeRadius: caster != null ? _maxCastRange(caster, pending.origin) : 0,
+      ));
+    }
+    return orbs;
+  }
 
   Map<HexCoord, List<SpellAffinity>> _barrierRings() {
     final result = <HexCoord, List<SpellAffinity>>{};
@@ -255,6 +350,14 @@ class _BattleScreenState extends State<BattleScreen>
     _pendingAction  = null;
     _movePath       = const [];
     _isBusy         = false;
+    _selectedEnhancement = null;
+    _mysteryDelay   = 0;
+    // Phase A of the held cast orb ends here -- on success, _submitTurn's
+    // caller populates _castAnimations right after this for phase B; on
+    // failure (turn never committed), there's nothing left to hold.
+    _pendingCastOrigin   = null;
+    _pendingCastAffinity = null;
+    _scryRevealedTile    = null;
   }
 
   // ── Action phase ─────────────────────────────────────────────────────────────
@@ -264,6 +367,8 @@ class _BattleScreenState extends State<BattleScreen>
     setState(() {
       _selectedSpell = _selectedSpell?.id == spell.id ? null : spell;
       if (_selectedSpell == null) _targetHex = null;
+      _selectedEnhancement = null;
+      _mysteryDelay = 0;
     });
   }
 
@@ -273,7 +378,47 @@ class _BattleScreenState extends State<BattleScreen>
       _pendingAction = action;
       _phase         = _InputPhase.movement;
       _movePath      = const [];
+      _scryRevealedTile = null;
+      // Same-turn cast, phase A: hold a pulsing orb at the cast tile from
+      // the moment the cast is confirmed (before movement/resolution) until
+      // the turn resolves and _submitTurn hands off to the travel+burst
+      // playback. Mystery casts are excluded -- their pending orb comes from
+      // the shared widget.state.pendingDelayedSpells instead (see
+      // _pendingCastOrbs), since it must persist across turns and be visible
+      // to the opponent too.
+      if (action case SpellCastAction(:final spell) when _local != null) {
+        _pendingCastOrigin   = _local!.position;
+        _pendingCastAffinity = primaryFormulaAffinity(spell.formula);
+      }
     });
+    // Exchanges this turn's action commit with the peer right away (rather
+    // than waiting for TurnLoop.runTurn at final submit) so an active Airy
+    // Scrying Pool link can reveal the opponent's spell target in time to
+    // inform the movement choice below (MESH_ARCHITECTURE.md §13b). Fire-
+    // and-forget: the movement phase UI is usable immediately; the reveal
+    // (if any) paints in as soon as the round trip completes.
+    unawaited(_beginTurnAndRevealScry(action));
+  }
+
+  Future<void> _beginTurnAndRevealScry(TurnAction action) async {
+    final HexCoord? revealed;
+    try {
+      revealed = await _loop.beginTurn(action);
+    } catch (e) {
+      // A genuine protocol failure (bad reveal, bad scry opening) — surface
+      // it exactly like _submitTurn's catch-all does, and discard the failed
+      // call so the next beginTurn() (for whatever action the player picks
+      // next) starts clean instead of replaying this cached failure.
+      _loop.cancelPendingTurn();
+      if (!mounted) return;
+      setState(_resetTurn);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Turn error: $e')),
+      );
+      return;
+    }
+    if (!mounted || _phase != _InputPhase.movement) return;
+    setState(() => _scryRevealedTile = revealed);
   }
 
   void _onPass() => _commitAction(PassAction());
@@ -283,6 +428,26 @@ class _BattleScreenState extends State<BattleScreen>
     final target = _targetHex;
     if (spell == null || target == null) return;
 
+    if (_selectedEnhancement == 'earth') {
+      await _onCastMystery(spell, target);
+      return;
+    }
+
+    // Air-flavor tileModification (ConveyorTile): the casting wizard picks a
+    // push direction whenever this cast will create one -- not tied to
+    // targeting. Mystery/delayed casts don't get this prompt (handled above,
+    // before this point) and fall back to a random direction in the engine.
+    HexCoord? conveyorDirection;
+    if (_spellNeedsConveyorDirection(spell)) {
+      conveyorDirection = await _pickConveyorDirection(target);
+      if (conveyorDirection == null) return; // player cancelled
+      if (!mounted) return;
+    }
+
+    final isPotent     = _selectedEnhancement == 'fire';
+    final isVelocity   = _selectedEnhancement == 'air';
+    final isEfficiency = _selectedEnhancement == 'water';
+
     final scorer = _vocalScorer;
     final word = spell.formula.isNotEmpty
         ? VocalWord.fromAffinityZone(spell.formula.first)
@@ -291,7 +456,14 @@ class _BattleScreenState extends State<BattleScreen>
       // Wizard mode, or sorcerer mode before calibration finishes, or a
       // formula with no recognised primary affinity (e.g. wild magic) — cast
       // with no vocal component rather than block the player.
-      _commitAction(SpellCastAction(spell: spell, targetHex: target));
+      _commitAction(SpellCastAction(
+        spell: spell,
+        targetHex: target,
+        isPotent: isPotent,
+        isVelocity: isVelocity,
+        isEfficiency: isEfficiency,
+        conveyorDirection: conveyorDirection,
+      ));
       return;
     }
 
@@ -308,14 +480,25 @@ class _BattleScreenState extends State<BattleScreen>
       _capturingWord    = null;
     });
 
+    // Somatic/gesture seam (lib/sorcerer/gesture.dart) — stubbed off, since
+    // no gesture-capture pipeline exists yet. When one does, this is where a
+    // captured Gesture would be read and its .enhancementZone folded into
+    // the enhancement choice above, exactly parallel to how vocalScore feeds
+    // CastingEnhancements.fromSorcererQuality via hasPotentLoadout/
+    // hasVelocityLoadout/hasEfficiencyLoadout below.
+    if (kSomaticCaptureEnabled) {
+      // TODO(somatic): capture a Gesture, map via .enhancementZone, fold in.
+    }
+
     if (kDebugMode) {
       // Mirrors exactly what TurnLoop will independently (re)compute from
       // this same VocalScore at commit time and at resolution — see
       // CastingEnhancements.fromSorcererQuality's determinism note.
       final enhancements = CastingEnhancements.fromSorcererQuality(
         vocalScore: vocalScore,
-        hasPotentLoadout: false,
-        hasVelocityLoadout: false,
+        hasPotentLoadout: isPotent,
+        hasVelocityLoadout: isVelocity,
+        hasEfficiencyLoadout: isEfficiency,
       );
       final q = (vocalScore.pronunciationU8 + vocalScore.volumeU8) / (2 * 254.0);
       debugPrint(
@@ -330,7 +513,101 @@ class _BattleScreenState extends State<BattleScreen>
       );
     }
 
-    _commitAction(SpellCastAction(spell: spell, targetHex: target, vocalScore: vocalScore));
+    _commitAction(SpellCastAction(
+      spell: spell,
+      targetHex: target,
+      isPotent: isPotent,
+      isVelocity: isVelocity,
+      isEfficiency: isEfficiency,
+      vocalScore: vocalScore,
+      conveyorDirection: conveyorDirection,
+    ));
+  }
+
+  /// Whether casting [spell] will resolve to an Air-flavor tileModification
+  /// effect (always a ConveyorTile for that pairing) -- pure/cheap, needs
+  /// only the spell's own formula (see effect_kind.dart formulaEffects).
+  bool _spellNeedsConveyorDirection(SpellAsset spell) => formulaEffects(spell.formula).any(
+      (e) => e.kind == EffectKind.tileModification && e.affinity == SpellAffinity.air);
+
+  /// Prompts the caster to choose a push direction for the ConveyorTile
+  /// about to be created at [origin], by tapping one of its 6 highlighted
+  /// neighbor hexes (see BattlefieldPainter.directionPickHexes). Returns the
+  /// chosen unit HexCoord, or null if the player cancelled.
+  Future<HexCoord?> _pickConveyorDirection(HexCoord origin) async {
+    final completer = Completer<HexCoord?>();
+    setState(() {
+      _conveyorPickOrigin = origin;
+      _conveyorPickCompleter = completer;
+      _phase = _InputPhase.pickingDirection;
+    });
+    final result = await completer.future;
+    if (mounted) {
+      setState(() {
+        _conveyorPickOrigin = null;
+        _conveyorPickCompleter = null;
+        _phase = _InputPhase.action;
+      });
+    }
+    return result;
+  }
+
+  /// Earth/Mystery cast: hides [target] and [_mysteryDelay] inside a
+  /// commitment. Delay 0 fires immediately (same-turn) via
+  /// MysterySpellCastAction.immediateTarget; delay 1–3 stages a local secret
+  /// that _submitTurn reveals automatically once its fireTurn arrives.
+  Future<void> _onCastMystery(SpellAsset spell, HexCoord target) async {
+    final rng = Random.secure();
+    final nonce = Uint8List.fromList(List<int>.generate(16, (_) => rng.nextInt(256)));
+    final commitment = await PendingDelayedSpell.commitmentHash(
+      target: target, delay: _mysteryDelay, nonce: nonce,
+    );
+    final isImmediate = _mysteryDelay == 0;
+
+    if (!isImmediate) {
+      _stagedMysterySecret = _PendingMysterySecret(
+        id: PendingDelayedSpell.idFromCommitment(commitment),
+        target: target,
+        delay: _mysteryDelay,
+        nonce: nonce,
+        fireTurn: widget.state.turnNumber + 1 + _mysteryDelay,
+      );
+    }
+
+    final scorer = _vocalScorer;
+    final word = spell.formula.isNotEmpty
+        ? VocalWord.fromAffinityZone(spell.formula.first)
+        : null;
+    if (!widget.state.config.sorcererMode || scorer == null || word == null) {
+      _commitAction(MysterySpellCastAction(
+        spell: spell,
+        mysteryCommitment: commitment,
+        immediateTarget: isImmediate ? target : null,
+        immediateNonce: isImmediate ? nonce : null,
+      ));
+      return;
+    }
+
+    setState(() {
+      _isCapturingVoice = true;
+      _capturingWord    = word;
+    });
+    await scorer.beginCapture(word);
+    await Future<void>.delayed(_voiceCaptureWindow);
+    final vocalScore = await scorer.endCapture(ambientFloorRms: _ambientFloorRms);
+    if (!mounted) return;
+    setState(() {
+      _isCapturingVoice = false;
+      _capturingWord    = null;
+    });
+
+    _commitAction(MysterySpellCastAction(
+      spell: spell,
+      mysteryCommitment: commitment,
+      immediateTarget: isImmediate ? target : null,
+      immediateNonce: isImmediate ? nonce : null,
+      vocalScore: vocalScore,
+    ));
   }
 
   // ── Movement phase ────────────────────────────────────────────────────────────
@@ -376,6 +653,21 @@ class _BattleScreenState extends State<BattleScreen>
   void _onTapBattlefield(Offset localPos) {
     if (_isBusy) return;
     final hex = pixelToHex(localPos, _fieldCenter, _hexSize);
+
+    if (_phase == _InputPhase.pickingDirection) {
+      // Candidate direction hexes are relative to the pick origin, not
+      // necessarily in-bounds themselves (the direction is a property of
+      // the tile being created, independent of where that happens to sit
+      // relative to the board edge) -- checked before _isValidHex on purpose.
+      final origin = _conveyorPickOrigin;
+      if (origin == null) return;
+      final delta = HexCoord(hex.q - origin.q, hex.r - origin.r);
+      if (HexGrid.directions.contains(delta)) {
+        _conveyorPickCompleter?.complete(delta);
+      }
+      return;
+    }
+
     if (!_isValidHex(hex)) return;
 
     if (_phase == _InputPhase.action) {
@@ -388,10 +680,21 @@ class _BattleScreenState extends State<BattleScreen>
       final local = _local;
       if (local == null) return;
       final origin = local.position;
-      final tip = _movePath.isEmpty ? origin : _movePath.last;
+      // Simulates TurnLoop._walkAvatar's real walk -- including any conveyor
+      // pushes along the way -- so the tap target the player sees matches
+      // what will actually happen when the turn resolves. See
+      // predictAvatarMove's doc comment for why this can't predict past a
+      // closed conveyor loop (needs post-entropy RNG not known yet).
+      final prediction = predictAvatarMove(
+        state: widget.state,
+        origin: origin,
+        declaredPath: _movePath,
+        budget: local.effectiveMoveSpeed,
+      );
+      final tip = prediction.path.last;
 
-      // Tap the last step → undo it.
-      if (_movePath.isNotEmpty && hex == _movePath.last) {
+      // Tap the last voluntary step (or the simulated tip it pushed to) → undo it.
+      if (_movePath.isNotEmpty && (hex == _movePath.last || hex == tip)) {
         setState(() => _movePath = _movePath.sublist(0, _movePath.length - 1));
         return;
       }
@@ -400,20 +703,19 @@ class _BattleScreenState extends State<BattleScreen>
         setState(() => _movePath = const []);
         return;
       }
-      // Next step must be adjacent to the current tip.
+      // Once the simulated walk hits an unresolved conveyor loop, nothing
+      // past that point is predictable client-side -- stop planning there.
+      if (prediction.indeterminate) return;
+      // Next step must be adjacent to the simulated current position (i.e.
+      // after any conveyor pushes so far), not just the last tile tapped.
       if (hexDistance(tip, hex) != 1) return;
       // Must not be impassable.
       final tileEffect = widget.state.tileEffects[hex];
       if (tileEffect is ImpassableTile) return;
-      // Must fit within remaining move budget.
-      final budget = local.effectiveMoveSpeed;
-      var spent = 0;
-      for (final h in _movePath) {
-        final e = widget.state.tileEffects[h];
-        spent += 1 + (e is SlowTile ? e.extraMoveCost : 0);
-      }
+      // Must fit within remaining move budget (pushes are free, already
+      // reflected in prediction.budgetRemaining).
       final stepCost = 1 + (tileEffect is SlowTile ? tileEffect.extraMoveCost : 0);
-      if (spent + stepCost > budget) return;
+      if (stepCost > prediction.budgetRemaining) return;
 
       setState(() => _movePath = [..._movePath, hex]);
     }
@@ -428,11 +730,30 @@ class _BattleScreenState extends State<BattleScreen>
     if (_isBusy) return;
     setState(() => _isBusy = true);
 
-    final input = TurnInput(action: action, movePath: movePath);
+    // Reveal any of our own pending Mystery casts whose fireTurn is the turn
+    // this call is about to produce (state.turnNumber increments as the
+    // very first step of TurnLoop.runTurn — see its doc comment).
+    final upcomingTurn = widget.state.turnNumber + 1;
+    final dueSecrets =
+        _myPendingMysterySecrets.where((s) => s.fireTurn == upcomingTurn).toList();
+    final reveals = dueSecrets
+        .map((s) => DelayedSpellReveal(
+              pendingSpellId: s.id,
+              targetTile: s.target,
+              delay: s.delay,
+              nonce: s.nonce,
+            ))
+        .toList();
+
+    final input = TurnInput(action: action, movePath: movePath, delayedSpellReveals: reveals);
+    final staged = _stagedMysterySecret;
 
     try {
       await _loop.runTurn(input);
       if (!mounted) return;
+      _myPendingMysterySecrets.removeWhere(dueSecrets.contains);
+      if (staged != null) _myPendingMysterySecrets.add(staged);
+      _stagedMysterySecret = null;
       final casts = _loop.lastCastEvents
           .map((e) => CastAnimation(
                 fromHex: e.fromHex,
@@ -440,13 +761,21 @@ class _BattleScreenState extends State<BattleScreen>
                 color:   BattlefieldPainter.colorForAffinity(e.affinity),
               ))
           .toList();
+      final chains = _loop.lastConveyorChainEvents
+          .map((e) => ConveyorChainAnimation(path: e.path, killed: e.killed))
+          .toList();
       setState(() {
         _resetTurn();
         _castAnimations = casts;
+        _conveyorChainAnimations = chains;
       });
-      if (casts.isNotEmpty) _castAnimController.forward(from: 0);
+      if (casts.isNotEmpty || chains.isNotEmpty) _castAnimController.forward(from: 0);
     } catch (e) {
       if (!mounted) return;
+      // Turn never committed — discard the not-yet-real staged secret rather
+      // than leaving a reveal the engine has no matching PendingDelayedSpell
+      // for (dueSecrets are left in place; they'll be retried next submit).
+      _stagedMysterySecret = null;
       setState(_resetTurn);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Turn error: $e')),
@@ -505,7 +834,18 @@ class _BattleScreenState extends State<BattleScreen>
                       occupancy:        widget.state.battlefield.occupancy,
                       localPlayerId:    widget.localPlayerId,
                       highlightHex:     _targetHex,
-                      movePath:         _movePath,
+                      // Renders the *simulated* path (including any free
+                      // conveyor push-throughs), not just the raw tiles
+                      // tapped, so the player sees where they'll actually
+                      // end up -- see predictAvatarMove.
+                      movePath:         _local != null
+                          ? predictAvatarMove(
+                              state: widget.state,
+                              origin: _local!.position,
+                              declaredPath: _movePath,
+                              budget: _local!.effectiveMoveSpeed,
+                            ).path.skip(1).toList()
+                          : _movePath,
                       spellRangeRadius: _selectedSpell != null && _local != null
                           ? _maxCastRange(_local!, _local!.position) : 0,
                       casterPos:        _local?.position,
@@ -515,6 +855,18 @@ class _BattleScreenState extends State<BattleScreen>
                       pulseAnimation:   _pulseController,
                       castAnimations:   _castAnimations,
                       castAnimation:    _castAnimController,
+                      tileEffects:      widget.state.tileEffects,
+                      clouds:           widget.state.clouds,
+                      directionPickHexes: _phase == _InputPhase.pickingDirection &&
+                              _conveyorPickOrigin != null
+                          ? HexGrid.directions
+                              .map((d) => HexCoord(
+                                  _conveyorPickOrigin!.q + d.q, _conveyorPickOrigin!.r + d.r))
+                              .toList()
+                          : const [],
+                      conveyorChainAnimations: _conveyorChainAnimations,
+                      pendingCastOrbs:  _pendingCastOrbs,
+                      scryRevealHex:    _scryRevealedTile,
                     ),
                     child: const SizedBox.expand(),
                   ),
@@ -522,6 +874,22 @@ class _BattleScreenState extends State<BattleScreen>
               },
             ),
           ),
+
+          // Cast-time enhancement picker — only when the selected spell
+          // achieved supreme dominance in at least one zone.
+          if (_phase == _InputPhase.action &&
+              _selectedSpell != null &&
+              _selectedSpell!.supremeTags.isNotEmpty)
+            _EnhancementPicker(
+              availableTags: _selectedSpell!.supremeTags.toSet(),
+              selected: _selectedEnhancement,
+              mysteryDelay: _mysteryDelay,
+              onSelect: (zone) => setState(() {
+                _selectedEnhancement = _selectedEnhancement == zone ? null : zone;
+                if (_selectedEnhancement != 'earth') _mysteryDelay = 0;
+              }),
+              onDelayChanged: (d) => setState(() => _mysteryDelay = d),
+            ),
 
           // Sorcerer mode: vocal capture indicator
           if (_isCapturingVoice && _capturingWord != null)
@@ -548,10 +916,13 @@ class _BattleScreenState extends State<BattleScreen>
             onCancel:       () => setState(() {
               _selectedSpell = null;
               _targetHex     = null;
+              _selectedEnhancement = null;
+              _mysteryDelay  = 0;
             }),
             onStay:        _onStay,
             onConfirmMove: _onConfirmMove,
             onCancelMove:  () => setState(() => _movePath = const []),
+            onCancelDirectionPick: () => _conveyorPickCompleter?.complete(null),
           ),
 
           // Player HP / MP bars
@@ -572,15 +943,33 @@ class _BattleScreenState extends State<BattleScreen>
             spells:    _spells,
             selectedId: _selectedSpell?.id,
             onSelect:  _selectSpell,
-            onView:    (spell) => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => SpellViewScreen(spell: spell)),
-            ),
+            onView:    (spell) => showSpellCardFullscreen(context, spell),
           ),
         ],
       ),
     );
   }
+}
+
+/// A local Mystery cast's hidden target/delay/nonce, tracked client-side
+/// until its fireTurn arrives — see _BattleScreenState._submitTurn.
+class _PendingMysterySecret {
+  const _PendingMysterySecret({
+    required this.id,
+    required this.target,
+    required this.delay,
+    required this.nonce,
+    required this.fireTurn,
+  });
+
+  /// Matches PendingDelayedSpell.id once the engine creates it.
+  final String id;
+  final HexCoord target;
+  final int delay;
+  final Uint8List nonce;
+
+  /// Absolute turn number this must be revealed on.
+  final int fireTurn;
 }
 
 // ── Action bar ────────────────────────────────────────────────────────────────
@@ -598,6 +987,7 @@ class _ActionBar extends StatelessWidget {
     required this.onStay,
     required this.onConfirmMove,
     required this.onCancelMove,
+    required this.onCancelDirectionPick,
   });
 
   final _InputPhase phase;
@@ -611,9 +1001,39 @@ class _ActionBar extends StatelessWidget {
   final VoidCallback onStay;
   final VoidCallback onConfirmMove;
   final VoidCallback onCancelMove;
+  final VoidCallback onCancelDirectionPick;
 
   @override
   Widget build(BuildContext context) {
+    if (phase == _InputPhase.pickingDirection) {
+      return Container(
+        color: const Color(0xFF0F0804),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: Row(
+          children: [
+            _ActionButton(
+              label: 'CANCEL',
+              color: kInkMutedColor,
+              enabled: true,
+              onTap: onCancelDirectionPick,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Choose the direction the wind will push — tap a highlighted tile',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontFamily: 'serif',
+                  fontSize: 13,
+                  color: kParchmentColor.withValues(alpha: 0.90),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     if (phase == _InputPhase.movement) {
       return Container(
         color: const Color(0xFF0F0804),
@@ -700,7 +1120,9 @@ class _ActionBar extends StatelessWidget {
                 if (selecting) ...[
                   const SizedBox(height: 2),
                   Text(
-                    formulaEffectLabels(selectedSpell!.formula).join('  ·  '),
+                    selectedSpell!.isSummon
+                        ? (summonSummaryFromFormula(selectedSpell!.formula) ?? 'Void Summon')
+                        : formulaEffectLabels(selectedSpell!.formula).join('  ·  '),
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontFamily: 'serif',
@@ -721,6 +1143,174 @@ class _ActionBar extends StatelessWidget {
             onTap: onCast,
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ── Cast-time enhancement picker ─────────────────────────────────────────────
+
+class _EnhancementPicker extends StatelessWidget {
+  const _EnhancementPicker({
+    required this.availableTags,
+    required this.selected,
+    required this.mysteryDelay,
+    required this.onSelect,
+    required this.onDelayChanged,
+  });
+
+  final Set<String> availableTags;
+  final String? selected;
+  final int mysteryDelay;
+  final ValueChanged<String?> onSelect;
+  final ValueChanged<int> onDelayChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: const Color(0xFF0F0804),
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              _EnhancementChip(
+                label: 'NONE',
+                color: kInkMutedColor,
+                selected: selected == null,
+                enabled: true,
+                onTap: () => onSelect(null),
+              ),
+              for (final zone in kEnhancementZones) ...[
+                const SizedBox(width: 6),
+                Expanded(
+                  child: _EnhancementChip(
+                    label: kEnhancementLabel[zone]!.toUpperCase(),
+                    color: kEnhancementColor[zone]!,
+                    selected: selected == zone,
+                    enabled: availableTags.contains(zone),
+                    onTap: () => onSelect(zone),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          if (selected == 'earth') ...[
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Text(
+                  'Delay:',
+                  style: TextStyle(
+                    fontFamily: 'serif',
+                    fontSize: 12,
+                    color: kParchmentColor.withValues(alpha: 0.8),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                for (var d = 0; d <= 3; d++) ...[
+                  _DelayChip(value: d, selected: mysteryDelay == d, onTap: () => onDelayChanged(d)),
+                  const SizedBox(width: 4),
+                ],
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Target and delay stay hidden until it fires.',
+                    style: TextStyle(
+                      fontFamily: 'serif',
+                      fontSize: 10,
+                      fontStyle: FontStyle.italic,
+                      color: kInkMutedColor,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+          const SizedBox(height: 6),
+        ],
+      ),
+    );
+  }
+}
+
+class _EnhancementChip extends StatelessWidget {
+  const _EnhancementChip({
+    required this.label,
+    required this.color,
+    required this.selected,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  final String label;
+  final Color color;
+  final bool selected;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = enabled ? color : kInkMutedColor.withValues(alpha: 0.35);
+    return InkWell(
+      onTap: enabled ? onTap : null,
+      borderRadius: BorderRadius.circular(4),
+      child: Container(
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
+        decoration: BoxDecoration(
+          color: selected ? fg.withValues(alpha: 0.20) : Colors.transparent,
+          border: Border.all(color: fg),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text(
+          label,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontFamily: 'serif',
+            fontSize: 10,
+            letterSpacing: 0.6,
+            fontWeight: FontWeight.w600,
+            color: fg,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DelayChip extends StatelessWidget {
+  const _DelayChip({required this.value, required this.selected, required this.onTap});
+
+  final int value;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = kEnhancementColor['earth']!;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(4),
+      child: Container(
+        width: 22,
+        height: 22,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: selected ? fg.withValues(alpha: 0.25) : Colors.transparent,
+          border: Border.all(color: fg),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text(
+          '$value',
+          style: TextStyle(
+            fontFamily: 'serif',
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: fg,
+          ),
+        ),
       ),
     );
   }
@@ -1105,7 +1695,21 @@ class _SpellBook extends StatelessWidget {
                                 : null,
                             borderRadius: BorderRadius.circular(4),
                           ),
-                          child: SpellCardWidget(spell: spell, size: 72),
+                          child: Stack(
+                            children: [
+                              SpellCardWidget(
+                                spell: spell,
+                                size: 72,
+                                interactive: false,
+                              ),
+                              if (spell.isSummon)
+                                const Positioned(
+                                  right: 2,
+                                  bottom: 2,
+                                  child: _SummonBadge(),
+                                ),
+                            ],
+                          ),
                         ),
                         const SizedBox(height: 3),
                         SizedBox(
@@ -1131,6 +1735,25 @@ class _SpellBook extends StatelessWidget {
                 );
               },
             ),
+    );
+  }
+}
+
+/// Small corner marker distinguishing a summon-mode spell card from an
+/// incantation one at a glance (design doc "Summons").
+class _SummonBadge extends StatelessWidget {
+  const _SummonBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: const Color(0xFF130C04),
+        borderRadius: BorderRadius.circular(3),
+        border: Border.all(color: kIlluminationGold.withValues(alpha: 0.6), width: 0.5),
+      ),
+      child: Icon(Icons.pets, size: 10, color: kIlluminationGold.withValues(alpha: 0.85)),
     );
   }
 }

@@ -139,4 +139,58 @@ void main() {
       expect(find.byType(CustomPaint), findsWidgets); // emblem painter now showing
     });
   });
+
+  testWidgets(
+      'reload transition: same mounted widget goes from no-art to art (the real library-screen reload path)',
+      (tester) async {
+    final noArt = _sample();
+    final withArt = _sample(artHash: '0xfeed');
+    final thumb = _tinyValidPng();
+
+    await tester.runAsync(() async {
+      // Mirrors _CraftingsTabState: first render with no art (matches the
+      // "set custom art" menu action starting point).
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(body: SpellCardWidget(spell: noArt)),
+      ));
+      await tester.pumpAndSettle();
+      expect(find.byType(Image), findsNothing);
+
+      // Import completes, blob store now has the thumb, then the screen's
+      // _reload() re-fetches SpellAsset.loadAll() and rebuilds the SAME
+      // SpellCardWidget slot with a new `spell` object (same id, artHash
+      // now set) -- exactly what library_screen.dart's ListView.builder does.
+      await SpellArtStore.save(withArt.spellHashHex, full: thumb, thumb: thumb);
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(body: SpellCardWidget(spell: withArt)),
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(Image), findsOneWidget);
+    });
+  });
+
+  testWidgets(
+      'interactive: false lets an outer tap handler (e.g. a spell-select tile) '
+      'see taps on the art instead of the widget opening its own zoom overlay',
+      (tester) async {
+    var selected = false;
+
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: GestureDetector(
+          onTap: () => selected = true,
+          child: SpellCardWidget(spell: _sample(), interactive: false),
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byType(SpellCardWidget));
+    await tester.pumpAndSettle();
+
+    expect(selected, isTrue);
+    expect(find.byType(Dialog), findsNothing);
+  });
 }

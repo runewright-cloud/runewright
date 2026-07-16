@@ -53,7 +53,7 @@ const Map<EffectKind, (BorderZone, BorderZone)> _kEffectKindZones = {
 };
 
 class _EffectSlot {
-  _EffectSlot({this.affinity = SpellAffinity.fire, this.kind = EffectKind.damage});
+  _EffectSlot({this.kind = EffectKind.damage}) : affinity = SpellAffinity.fire;
   SpellAffinity affinity;
   EffectKind kind;
 }
@@ -109,7 +109,9 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
     final all = await SpellAsset.loadAll();
     if (!mounted) return;
     setState(() {
-      _testSpells = all.where((s) => s.name.startsWith(kTestSpellNamePrefix)).toList();
+      _testSpells = all
+          .where((s) => s.name.startsWith(kTestSpellNamePrefix))
+          .toList();
       _loadingSpells = false;
     });
   }
@@ -152,7 +154,8 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
     // key, since this spell never runs through the circuit.
     final commitmentHex =
         '0x${sha256.convert(utf8.encode('test-spell|$id|${formula.join(",")}')).toString()}';
-    final spellHashHex = '0x${sha256.convert(utf8.encode('$commitmentHex|$id')).toString()}';
+    final spellHashHex =
+        '0x${sha256.convert(utf8.encode('$commitmentHex|$id')).toString()}';
 
     final spell = SpellAsset(
       id: id,
@@ -181,7 +184,8 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
       return;
     }
     final rawName = _nameController.text.trim();
-    final name = '$kTestSpellNamePrefix${rawName.isEmpty ? 'Untitled' : rawName}';
+    final name =
+        '$kTestSpellNamePrefix${rawName.isEmpty ? 'Untitled' : rawName}';
     await _persistTestSpell(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
       name: name,
@@ -197,7 +201,9 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
     await _reloadTestSpells();
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Saved "$name" — add it to a chapter in the Library.')),
+      SnackBar(
+        content: Text('Saved "$name" — add it to a chapter in the Library.'),
+      ),
     );
   }
 
@@ -223,7 +229,8 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
         final (z1, z2) = _kEffectKindZones[kind]!;
         await _persistTestSpell(
           id: id,
-          name: '$kTestSpellNamePrefix${kAffinityLabel[affinity]} ${kEffectKindLabel[kind]}',
+          name:
+              '$kTestSpellNamePrefix${kAffinityLabel[affinity]} ${kEffectKindLabel[kind]}',
           formula: [affinity.name, z1.name, z2.name],
         );
         seeded++;
@@ -234,9 +241,11 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(seeded == 0
-            ? 'All 64 element × effect test spells already exist.'
-            : 'Seeded $seeded test spell${seeded == 1 ? '' : 's'} — every element × effect pairing.'),
+        content: Text(
+          seeded == 0
+              ? 'All 64 element × effect test spells already exist.'
+              : 'Seeded $seeded test spell${seeded == 1 ? '' : 's'} — every element × effect pairing.',
+        ),
       ),
     );
   }
@@ -251,9 +260,9 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
   void _beginTestBattle() {
     final chapter = _selectedChapter;
     if (chapter == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No Chapter Selected')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('No Chapter Selected')));
       return;
     }
     const localId = 'local';
@@ -315,7 +324,11 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
             const SizedBox(height: 10),
             TextField(
               controller: _nameController,
-              style: const TextStyle(fontFamily: 'serif', fontSize: 16, color: kInkColor),
+              style: const TextStyle(
+                fontFamily: 'serif',
+                fontSize: 16,
+                color: kInkColor,
+              ),
               decoration: const InputDecoration(
                 hintText: 'Spell name',
                 border: OutlineInputBorder(),
@@ -329,7 +342,10 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
               child: TextButton.icon(
                 onPressed: _addSlot,
                 icon: const Icon(Icons.add, color: kIlluminationGold),
-                label: const Text('Add Effect', style: TextStyle(color: kIlluminationGold)),
+                label: const Text(
+                  'Add Effect',
+                  style: TextStyle(color: kIlluminationGold),
+                ),
               ),
             ),
             const SizedBox(height: 6),
@@ -348,7 +364,10 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
                   foregroundColor: kIlluminationGold,
                   side: const BorderSide(color: kIlluminationGold, width: 2),
                 ),
-                child: const Text('SAVE TEST SPELL', style: TextStyle(letterSpacing: 2)),
+                child: const Text(
+                  'SAVE TEST SPELL',
+                  style: TextStyle(letterSpacing: 2),
+                ),
               ),
             ),
             const SizedBox(height: 24),
@@ -386,8 +405,12 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
             _buildStepper(
               label: 'GRID SIZE',
               value: _gridRadius,
-              onDec: _gridRadius > _gridRadiusMin ? () => setState(() => _gridRadius--) : null,
-              onInc: _gridRadius < _gridRadiusMax ? () => setState(() => _gridRadius++) : null,
+              onDec: _gridRadius > _gridRadiusMin
+                  ? () => setState(() => _gridRadius--)
+                  : null,
+              onInc: _gridRadius < _gridRadiusMax
+                  ? () => setState(() => _gridRadius++)
+                  : null,
             ),
             const SizedBox(height: 20),
             SizedBox(
@@ -400,7 +423,11 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
                 ),
                 child: const Text(
                   'BEGIN TEST BATTLE',
-                  style: TextStyle(fontFamily: 'serif', fontSize: 16, letterSpacing: 2),
+                  style: TextStyle(
+                    fontFamily: 'serif',
+                    fontSize: 16,
+                    letterSpacing: 2,
+                  ),
                 ),
               ),
             ),
@@ -438,7 +465,10 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
                 isExpanded: true,
                 items: [
                   for (final k in EffectKind.values)
-                    DropdownMenuItem(value: k, child: Text(kEffectKindLabel[k]!)),
+                    DropdownMenuItem(
+                      value: k,
+                      child: Text(kEffectKindLabel[k]!),
+                    ),
                 ],
                 onChanged: (v) => setState(() => slot.kind = v!),
               ),
@@ -458,7 +488,10 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
     if (_loadingSpells) {
       return const Padding(
         padding: EdgeInsets.symmetric(vertical: 8),
-        child: Text('Loading...', style: TextStyle(fontFamily: 'serif', color: kInkMutedColor)),
+        child: Text(
+          'Loading...',
+          style: TextStyle(fontFamily: 'serif', color: kInkMutedColor),
+        ),
       );
     }
     if (_testSpells.isEmpty) {
@@ -480,7 +513,11 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
                 Expanded(
                   child: Text(
                     spell.name.substring(kTestSpellNamePrefix.length),
-                    style: const TextStyle(fontFamily: 'serif', fontSize: 15, color: kInkColor),
+                    style: const TextStyle(
+                      fontFamily: 'serif',
+                      fontSize: 15,
+                      color: kInkColor,
+                    ),
                   ),
                 ),
                 IconButton(
@@ -506,21 +543,37 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
       child: _loadingChapters
           ? const Padding(
               padding: EdgeInsets.symmetric(vertical: 14),
-              child: Text('Loading...', style: TextStyle(fontFamily: 'serif', color: kInkMutedColor)),
+              child: Text(
+                'Loading...',
+                style: TextStyle(fontFamily: 'serif', color: kInkMutedColor),
+              ),
             )
           : DropdownButtonHideUnderline(
               child: DropdownButton<ChapterAsset?>(
                 value: _selectedChapter,
                 isExpanded: true,
                 dropdownColor: kParchmentPanelColor,
-                style: const TextStyle(fontFamily: 'serif', fontSize: 16, color: kInkColor),
+                style: const TextStyle(
+                  fontFamily: 'serif',
+                  fontSize: 16,
+                  color: kInkColor,
+                ),
                 items: [
                   const DropdownMenuItem<ChapterAsset?>(
                     value: null,
-                    child: Text('Select Chapter', style: TextStyle(fontFamily: 'serif', color: kInkMutedColor)),
+                    child: Text(
+                      'Select Chapter',
+                      style: TextStyle(
+                        fontFamily: 'serif',
+                        color: kInkMutedColor,
+                      ),
+                    ),
                   ),
                   for (final c in _chapters)
-                    DropdownMenuItem<ChapterAsset?>(value: c, child: Text(c.name)),
+                    DropdownMenuItem<ChapterAsset?>(
+                      value: c,
+                      child: Text(c.name),
+                    ),
                 ],
                 onChanged: (c) => setState(() => _selectedChapter = c),
               ),
@@ -548,7 +601,12 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
               child: Text(
                 '$value',
                 textAlign: TextAlign.center,
-                style: const TextStyle(fontFamily: 'serif', fontSize: 24, fontWeight: FontWeight.w600, color: kInkColor),
+                style: const TextStyle(
+                  fontFamily: 'serif',
+                  fontSize: 24,
+                  fontWeight: FontWeight.w600,
+                  color: kInkColor,
+                ),
               ),
             ),
             IconButton(onPressed: onInc, icon: const Icon(Icons.add)),
