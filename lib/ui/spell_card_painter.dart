@@ -15,6 +15,7 @@
 //     single affinity shows all-identical symbols; mixed affinities split the
 //     count by the effect ratio (see [elementSymbolsFor]).
 
+import 'dart:async' show Timer;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -538,13 +539,33 @@ bool _hasCustomArt(SpellAsset spell) =>
 /// anywhere. Exposed publicly so callers that need a custom gesture mapping
 /// (e.g. long-press instead of tap) can trigger it directly rather than
 /// going through [SpellCardWidget]'s own tap handler.
-void showSpellCardFullscreen(BuildContext context, SpellAsset spell) {
-  showDialog<void>(
+///
+/// When [autoDismissAfter] is set, the overlay also pops itself after that
+/// duration (a tap still dismisses it early) — used by battle_screen.dart's
+/// resolution-phase card reveal ("show the full card for 2 seconds").
+///
+/// [liveHp] is set only for a live on-grid summon (battle_screen.dart's
+/// minion-thumbnail long-tap): when non-null, a summon's rules box shows
+/// "HP: current/max" instead of just the formula-derived max, so players can
+/// see how much damage their creature has taken. Null (the default, and
+/// always the case for a library/hand card, which has no battlefield HP yet)
+/// shows just the max, as before.
+Future<void> showSpellCardFullscreen(
+  BuildContext context,
+  SpellAsset spell, {
+  Duration? autoDismissAfter,
+  int? liveHp,
+}) {
+  return showDialog<void>(
     context: context,
     barrierColor: Colors.black.withValues(alpha: 0.92),
     barrierDismissible: true,
-    builder: (ctx) =>
-        _FullscreenSpellCard(spell: spell, emblemPainter: _painterFor(spell)),
+    builder: (ctx) => _FullscreenSpellCard(
+      spell: spell,
+      emblemPainter: _painterFor(spell),
+      autoDismissAfter: autoDismissAfter,
+      liveHp: liveHp,
+    ),
   );
 }
 
@@ -556,10 +577,17 @@ void showSpellCardFullscreen(BuildContext context, SpellAsset spell) {
 /// dismisses the dialog either way, matching the pre-existing behavior for
 /// spells with no custom art.
 class _FullscreenSpellCard extends StatefulWidget {
-  const _FullscreenSpellCard({required this.spell, required this.emblemPainter});
+  const _FullscreenSpellCard({
+    required this.spell,
+    required this.emblemPainter,
+    this.autoDismissAfter,
+    this.liveHp,
+  });
 
   final SpellAsset spell;
   final SpellCardPainter emblemPainter;
+  final Duration? autoDismissAfter;
+  final int? liveHp;
 
   @override
   State<_FullscreenSpellCard> createState() => _FullscreenSpellCardState();
@@ -568,6 +596,7 @@ class _FullscreenSpellCard extends StatefulWidget {
 class _FullscreenSpellCardState extends State<_FullscreenSpellCard> {
   bool _showEmblem = false;
   Future<Uint8List?>? _fullArtFuture;
+  Timer? _autoDismissTimer;
 
   bool get _hasArt => _hasCustomArt(widget.spell);
 
@@ -577,6 +606,18 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard> {
     if (_hasArt) {
       _fullArtFuture = SpellArtStore.loadFull(widget.spell.spellHashHex);
     }
+    final delay = widget.autoDismissAfter;
+    if (delay != null) {
+      _autoDismissTimer = Timer(delay, () {
+        if (mounted) Navigator.of(context).pop();
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _autoDismissTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -613,6 +654,7 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard> {
                       showEmblem: _showEmblem,
                       hasArt: _hasArt,
                       fullArtFuture: _fullArtFuture,
+                      liveHp: widget.liveHp,
                     ),
                   ),
                   if (_hasArt) ...[
@@ -643,6 +685,7 @@ class _CardFrame extends StatelessWidget {
     required this.showEmblem,
     required this.hasArt,
     required this.fullArtFuture,
+    this.liveHp,
   });
 
   final SpellAsset spell;
@@ -650,6 +693,10 @@ class _CardFrame extends StatelessWidget {
   final bool showEmblem;
   final bool hasArt;
   final Future<Uint8List?>? fullArtFuture;
+
+  /// Current battlefield HP for a live summon — see [showSpellCardFullscreen]'s
+  /// doc comment. Null shows just the formula-derived max (unchanged default).
+  final int? liveHp;
 
   @override
   Widget build(BuildContext context) {
@@ -768,7 +815,9 @@ class _CardFrame extends StatelessWidget {
           spacing: 14,
           runSpacing: 4,
           children: [
-            _statChip('HP', spec.stats.maxHp),
+            liveHp != null
+                ? _statChipText('HP', '$liveHp/${spec.stats.maxHp}')
+                : _statChip('HP', spec.stats.maxHp),
             _statChip('DMG', spec.stats.damage),
             _statChip('Move', spec.stats.moveSpeed),
             _statChip('Range', spec.stats.attackRange),
@@ -789,7 +838,9 @@ class _CardFrame extends StatelessWidget {
     );
   }
 
-  Widget _statChip(String label, int value) => Text(
+  Widget _statChip(String label, int value) => _statChipText(label, '$value');
+
+  Widget _statChipText(String label, String value) => Text(
         '$label $value',
         style: manuscriptBodyStyle(fontSize: 13).copyWith(fontWeight: FontWeight.w700),
       );

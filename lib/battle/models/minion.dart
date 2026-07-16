@@ -47,6 +47,17 @@ enum SummonPersonality {
   /// "Prioritize trying to slay targets with the fewest hitpoints. Factoring
   /// in resistances and vulnerabilities."
   tactical,
+
+  /// Lets the summoner manually dictate this creature's move and attack
+  /// during the Summons phase instead of following an AI personality, or
+  /// let it default to [aggressive] behaviour when not directed.
+  ///
+  /// Seam only this pass: no picker UI or live manual-control path exists
+  /// yet — TurnLoop._creatureTurn falls through to aggressive for every
+  /// obedient creature. Wiring up real player control requires moving the
+  /// Summons phase ahead of the B-5 entropy reveal (a protocol change), so
+  /// it's deliberately deferred — see battle_screen.dart's phase banner.
+  obedient,
 }
 
 /// Friendly display names for [SummonPersonality] -- for the inscription-time
@@ -58,6 +69,7 @@ const Map<SummonPersonality, String> kSummonPersonalityLabel = {
   SummonPersonality.evasive: 'Evasive',
   SummonPersonality.protective: 'Protective',
   SummonPersonality.tactical: 'Tactical',
+  SummonPersonality.obedient: 'Obedient',
 };
 
 // ── Footprint geometry (Big / EEEE) ───────────────────────────────────────────

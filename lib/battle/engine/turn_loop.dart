@@ -1,16 +1,33 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// turn_loop.dart — TurnLoop: drives one full turn through all five phases.
+// turn_loop.dart — TurnLoop: drives one full turn through all phases.
+//
+// UI-facing phase labels vs. engine phase order: the player experiences
+// Summons → Main → Move → Resolution (see battle_screen.dart's phase
+// banner), but the *decisions* are locked in as Main → Move → (an implicit
+// Melee prompt folded into submission) before any of it is revealed. The
+// engine phase order below is what actually executes on the wire:
 //
 // Phase order (B-5: entropy reveal moved after all player decisions):
-//   1. Action commit — each player commits their action (spell / haymaker / pass)
-//      before entropy is known. Mana is deducted at commit time.
+//   1. Action commit — each player commits their main-phase action
+//      (spell / dash / meditate / pass) before entropy is known. Mana is
+//      deducted at commit time (Cast cost, or Meditate's +25 gain).
 //   2. Movement commit-reveal — simultaneous declaration and resolution.
-//   3. Entropy reveal — joint commit-reveal entropy derived once all decisions
-//      are locked in. Seeds all resolution RNG in phases 4–6.
-//   4. Summons act  — deterministic AI for all living minions, creation order.
-//   5. Action resolution — reveal actions, sort (quick→haymaker→normal→sluggish),
-//      apply each in order.
+//      The declared path bytes also carry the caster's own Dash/Meditate
+//      flags (see below) so both clients can size movement budgets
+//      identically without waiting for the later action reveal.
+//   3. Entropy reveal — joint commit-reveal entropy derived once all
+//      decisions are locked in. Seeds all resolution RNG in phases 4–6.
+//   4. Summons act — deterministic AI for all living minions, creation order.
+//      ("obedient" summons are a stubbed seam — see SummonPersonality.obedient
+//      in minion.dart — no live manual control yet.)
+//   4b. Melee commit-reveal — after movement has resolved, each player with
+//      an adjacent hostile target may commit an optional melee choice;
+//      resolved at the start of phase 5, independent of the main action (a
+//      player may cast AND melee the same turn).
+//   5. Action resolution — reveal main-phase actions, sort spells
+//      (quick→haymaker-tier→normal→sluggish, then by step count T ascending,
+//      then commitmentHex), apply each in order.
 //   6. End-of-turn — tile effects, clouds, barrier auras, mana regen, status
 //      tick, state-hash exchange.
 //
@@ -28,10 +45,28 @@
 //             [isPotent:1][isVelocity:1][isEfficiency:1]
 //             [optional proof tail when book proofs are enabled]
 //             [sorcerer mode only: pronunciation_u8:1, volume_u8:1, somatic_u8:1]
-//   Haymaker: [0x02][q:2][r:2]
+//   Dash:     [0x04]  — doubles this turn's movement budget (see move-path
+//             wire encoding below for how the flag actually reaches the peer
+//             in time to affect movement resolution).
+//   Meditate: [0x05]  — restores +25 mana (main phase). May stack with a
+//             move-phase Meditate (see below) for +50 total.
 //
 // Commit:  SHA-256(action_bytes ‖ nonce)  32 bytes
 // Reveal:  nonce(16) ‖ action_bytes       variable
+//
+// Move-path wire encoding: [isDashing:1][meditateInMove:1][count:1][q:2][r:2]…
+// isDashing/meditateInMove are folded into the *movement* commit-reveal
+// (not the action commit-reveal) specifically so both clients know each
+// other's dash status before _resolveAvatarMovement runs — the action
+// reveal itself is deliberately deferred until after movement resolves (so
+// a spell's target can't inform the opponent's move), which would otherwise
+// make Dash's same-turn speed boost impossible to apply deterministically.
+// meditateInMove forces the declared path to be treated as empty (stay put)
+// regardless of what was sent, and grants +25 mana at reveal time.
+//
+// Melee wire encoding (separate commit-reveal, after movement resolves):
+//   No melee: [0x00]   Melee: [0x01][q:2][r:2]
+// Commit/reveal shape identical to movement's.
 
 import 'dart:convert' show utf8;
 import 'dart:math' show max, min, pow;
@@ -50,7 +85,7 @@ import '../models/pending_delayed_spell.dart';
 import '../models/reflection_link.dart';
 import '../models/divination_link.dart';
 import '../models/effect_descriptor.dart'; // exports SpellAffinity, spellAffinityFromZone
-import '../models/hex_battlefield.dart' show hexDistance;
+import '../models/hex_battlefield.dart' show hexDistance, hexNeighbors;
 import '../models/minion.dart';
 import '../models/status_effect_ids.dart';
 import '../models/terrain.dart'
@@ -98,15 +133,23 @@ class TurnInput {
   const TurnInput({
     required this.action,
     this.movePath = const [],
+    this.meditateInMove = false,
     this.delayedSpellReveals = const [],
   });
 
-  /// What the player wants to do: cast a spell, haymaker, or pass.
+  /// What the player wants to do in the main phase: cast a spell, dash,
+  /// meditate, or pass.
   final TurnAction action;
 
   /// Ordered list of tiles to enter this turn (not including current position).
   /// Empty means stay put. Each tile must be adjacent to the previous.
+  /// Ignored (forced empty) when [meditateInMove] is true.
   final List<HexCoord> movePath;
+
+  /// Move-phase Meditate: forgo movement this turn for +25 mana. Independent
+  /// of (and stacks with) a main-phase [MeditateAction] — see turn_loop.dart's
+  /// header comment on the move-path wire encoding.
+  final bool meditateInMove;
 
   /// Private reveals for any pending delayed spells firing this turn.
   final List<DelayedSpellReveal> delayedSpellReveals;
@@ -155,12 +198,14 @@ class SpellCastAction extends TurnAction {
   final HexCoord? delayedOriginHex;
 }
 
-/// Haymaker: deal 1 base HP damage to entity on [targetTile] (must be adjacent).
-/// Only valid if the player has not cast a spell this turn.
-class HaymakerAction extends TurnAction {
-  HaymakerAction({required this.targetTile});
-  final HexCoord targetTile;
-}
+/// Main-phase Dash: doubles the caster's movement budget for this turn's
+/// move phase. See turn_loop.dart's header comment for why the flag travels
+/// inside the movement commit-reveal rather than the action reveal.
+class DashAction extends TurnAction {}
+
+/// Main-phase Meditate: forgo casting for +25 mana. Independent of (and
+/// stacks with) a move-phase Meditate — see [TurnInput.meditateInMove].
+class MeditateAction extends TurnAction {}
 
 class PassAction extends TurnAction {}
 
@@ -179,6 +224,30 @@ class SpellCastEvent {
   final HexCoord fromHex;
   final HexCoord toHex;
   final SpellAffinity affinity;
+}
+
+/// One spell resolved this turn, in resolution order — drives the UI's
+/// MtG-style card reveal sequence (battle_screen.dart): each entry is shown
+/// full-card for 2s, then becomes a thumbnail (neutral tray for incantations,
+/// on-grid for summons). [summonMinionId]/[summonPosition] are set only when
+/// [isSummon] is true and the summon actually spawned (null for a void/no-op
+/// summon cast — no thumbnail to place).
+class ResolvedSpellEvent {
+  const ResolvedSpellEvent({
+    required this.spell,
+    required this.casterId,
+    required this.targetHex,
+    required this.isSummon,
+    this.summonMinionId,
+    this.summonPosition,
+  });
+
+  final SpellAsset spell;
+  final String casterId;
+  final HexCoord targetHex;
+  final bool isSummon;
+  final String? summonMinionId;
+  final HexCoord? summonPosition;
 }
 
 /// A mystery-enhanced spell. Target tile and delay are hidden in
@@ -222,7 +291,7 @@ enum TurnPhase { summons, actionCommit, movement, actionResolve, endOfTurn, winC
 
 // ── Resolution group (step 4 ordering) ───────────────────────────────────────
 
-enum _ResolutionGroup { quickSpell, haymaker, normalSpell, sluggishSpell }
+enum _ResolutionGroup { quickSpell, normalSpell, sluggishSpell }
 
 // ── Summon AI target ──────────────────────────────────────────────────────────
 
@@ -248,6 +317,21 @@ const _kRevealNonceBytes = 16;
 // cannot diverge between the local and verifier paths.
 const _kMaxMana = 9999;
 
+/// Mana restored by a single Meditate choice (main phase or move phase).
+/// Taking both in the same turn grants 2 × this amount — see
+/// [TurnInput.meditateInMove] and [MeditateAction].
+const _kMeditateManaGain = 25;
+
+/// Asks the local UI which adjacent tile (if any) to melee this turn, given
+/// the list of adjacent tiles that hold at least one living hostile entity.
+/// [candidates] is always non-empty when this is called — [TurnLoop] only
+/// invokes it for a player who actually has a valid target (design: "pass
+/// and make no melee attack" is the implicit choice for everyone else, with
+/// no prompt shown at all). Return null to decline.
+typedef MeleeTargetPicker = Future<HexCoord?> Function(List<HexCoord> candidates);
+
+Future<HexCoord?> _defaultNoMelee(List<HexCoord> candidates) async => null;
+
 class TurnLoop {
   TurnLoop({
     required this.state,
@@ -259,11 +343,30 @@ class TurnLoop {
     this.peerBookRoot,
     this.tier = 24,
     this.isSorcererMode = false,
+    this.meleeTargetPicker = _defaultNoMelee,
+    this.onPhase,
   });
 
   final BattleState state;
   final BattleTurnSession session;
   final String localPlayerId;
+
+  /// Called once per turn, after movement resolves, only when the local
+  /// avatar has at least one adjacent hostile target. Defaults to always
+  /// declining (headless callers — tests, solo mode's scripted dummy — never
+  /// melee unless they override this).
+  final MeleeTargetPicker meleeTargetPicker;
+
+  /// Optional UI notification hook: fired at the two phase boundaries a
+  /// caller can't otherwise observe from outside [runTurn] — [TurnPhase
+  /// .summons] just before the Summons-phase AI runs, and [TurnPhase
+  /// .actionResolve] once the melee round has resolved and spell resolution
+  /// is about to begin. The pre-submission phases (main/move) are already
+  /// known locally by whatever UI called [beginTurn]/[runTurn], so this
+  /// deliberately only covers the two phases that happen *inside* the
+  /// opaque `await runTurn(...)` call. Never awaited, never affects
+  /// resolution — purely a presentation seam.
+  final void Function(TurnPhase phase)? onPhase;
 
   /// Cross-match domain separator folded into every phase seed.
   /// Set from [BattleSession.matchId] in production; null in solo/test.
@@ -309,6 +412,11 @@ class TurnLoop {
   /// Spell casts resolved during the most recent [runTurn] call, for the UI's
   /// cast animation. Cleared and repopulated at the start of every turn.
   List<SpellCastEvent> lastCastEvents = [];
+
+  /// Spells resolved during the most recent [runTurn] call, in resolution
+  /// order (the same order [_resolveActions] applied them). Cleared and
+  /// repopulated at the start of every turn. See [ResolvedSpellEvent].
+  List<ResolvedSpellEvent> lastResolvedSpells = [];
 
   /// Conveyor-tile pushes (cascades, closed loops) resolved during the most
   /// recent [runTurn] call, for the UI's belt/loop animation. Cleared and
@@ -460,6 +568,7 @@ class TurnLoop {
   Future<WinCheckResult?> runTurn(TurnInput input) async {
     state.turnNumber++;
     lastCastEvents = [];
+    lastResolvedSpells = [];
     lastConveyorChainEvents = [];
 
     // Turn-scoped map from commitmentHex → certified ParsedFormulas derived from
@@ -511,9 +620,16 @@ class TurnLoop {
       state.avatars.map((av) => MapEntry(av.playerId, av.position)),
     );
 
-    final localPath = input.movePath;
+    // isDashing/meditateInMove ride along with the movement commit-reveal
+    // (not the action commit-reveal) — see this file's header comment on
+    // why: the action reveal is deliberately deferred until after movement
+    // resolves, so Dash's same-turn speed boost has to travel some other
+    // way to be known before _resolveAvatarMovement runs.
+    final iAmDashing = input.action is DashAction;
+    final localPath = input.meditateInMove ? const <HexCoord>[] : input.movePath;
     final moveNonce = CommitRevealEntropy.generateNonce().sublist(0, _kRevealNonceBytes);
-    final moveBytes = _encodePath(localPath);
+    final moveBytes = _encodeMovePayload(
+        isDashing: iAmDashing, meditateInMove: input.meditateInMove, path: localPath);
     final moveCommit = await Sha256()
         .hash(Uint8List.fromList([...moveBytes, ...moveNonce]))
         .then((h) => Uint8List.fromList(h.bytes));
@@ -524,12 +640,32 @@ class TurnLoop {
     final peerMoveReveal = await session.exchangeMoveReveal(myMoveReveal);
     await _verifyReveal(peerMoveReveal, peerMoveCommit, 'movement');
 
-    final peerPath = _decodePath(peerMoveReveal, _kRevealNonceBytes);
+    final peerMovePayload = _decodeMovePayload(peerMoveReveal, _kRevealNonceBytes);
+    final peerPath = peerMovePayload.path;
     final peerId   = _peerId();
 
     // ignore: use_null_aware_elements
     final movePaths = {localPlayerId: localPath, if (peerId != null) peerId: peerPath};
-    final speeds = {for (final av in state.avatars) av.playerId: av.effectiveMoveSpeed};
+    final speeds = {
+      for (final av in state.avatars)
+        av.playerId: av.effectiveMoveSpeed *
+            (((av.playerId == localPlayerId && iAmDashing) ||
+                    (peerId != null &&
+                        av.playerId == peerId &&
+                        peerMovePayload.isDashing))
+                ? 2
+                : 1)
+    };
+
+    // Move-phase Meditate: forgo movement (path already forced empty above/
+    // in the decoder) for +25 mana, independent of a main-phase Meditate.
+    if (input.meditateInMove) _applyManaGain(_localAvatar(), _kMeditateManaGain);
+    if (peerId != null && peerMovePayload.meditateInMove) {
+      final peerAvatarForMeditate = _avatarById(peerId);
+      if (peerAvatarForMeditate != null) {
+        _applyManaGain(peerAvatarForMeditate, _kMeditateManaGain);
+      }
+    }
 
     // ── Phase 3: Entropy reveal ───────────────────────────────────────────
     // All player decisions for this turn are committed. Reveal joint entropy
@@ -546,9 +682,48 @@ class TurnLoop {
         movePaths, speeds, HashRng(_phaseSeed(entropy, matchId, state.turnNumber, 0x02)));
 
     // ── Phase 4: Summons act ──────────────────────────────────────────────
+    onPhase?.call(TurnPhase.summons);
     final summonsRng = HashRng(_phaseSeed(entropy, matchId, state.turnNumber, 0x01));
     _resolveSummons(summonsRng);
     _moveClouds();
+
+    // ── Phase 4b: Melee commit-reveal ──────────────────────────────────────
+    // Post-movement, post-summons: final positions are known, so this can
+    // ask the local player which adjacent hostile tile (if any) to melee.
+    // Independent of the main-phase action — a player may cast a spell AND
+    // melee the same turn. Only prompted when a target actually exists;
+    // everyone else implicitly passes. No look-ahead concern (unlike
+    // Phase 1/2): entropy is already public by this point.
+    final localMeleeCandidates = _meleeCandidates(_localAvatar());
+    final localMeleeTarget = localMeleeCandidates.isEmpty
+        ? null
+        : await meleeTargetPicker(localMeleeCandidates);
+    final meleeNonce = CommitRevealEntropy.generateNonce().sublist(0, _kRevealNonceBytes);
+    final meleeBytes = _encodeMeleeChoice(localMeleeTarget);
+    final meleeCommit = await Sha256()
+        .hash(Uint8List.fromList([...meleeBytes, ...meleeNonce]))
+        .then((h) => Uint8List.fromList(h.bytes));
+    final peerMeleeCommit = await session.exchangeMeleeCommit(meleeCommit);
+
+    final myMeleeReveal = Uint8List.fromList([...meleeNonce, ...meleeBytes]);
+    final peerMeleeReveal = await session.exchangeMeleeReveal(myMeleeReveal);
+    await _verifyReveal(peerMeleeReveal, peerMeleeCommit, 'melee');
+    final peerMeleeTarget = _decodeMeleeChoice(peerMeleeReveal, _kRevealNonceBytes);
+
+    // Resolved at the very start of the resolution phase, before any spell
+    // — see this file's header comment.
+    final meleeRng = HashRng(_phaseSeed(entropy, matchId, state.turnNumber, 0x04));
+    if (localMeleeTarget != null) {
+      _applyHaymaker(_localAvatar(), localMeleeTarget, preMovPos, meleeRng);
+    }
+    if (peerId != null && peerMeleeTarget != null) {
+      final peerAvatarForMelee = _avatarById(peerId);
+      if (peerAvatarForMelee != null) {
+        _applyHaymaker(peerAvatarForMelee, peerMeleeTarget, preMovPos, meleeRng);
+      }
+    }
+
+    onPhase?.call(TurnPhase.actionResolve);
 
     // ── Phase 5: Delayed spell reveals + Action reveal + resolution ───────
     // Both players simultaneously announce any pending delayed spells firing
@@ -687,8 +862,15 @@ class TurnLoop {
   void _creatureTurn(Minion creature, HashRng rng) {
     // Illusions (Water-Air, Fire flavor) clones always close in and attack
     // rather than following their copied personality's normal positioning.
-    final personality =
-        creature.forceCloseToAttack ? SummonPersonality.aggressive : creature.personality;
+    // Obedient creatures fall through to aggressive AI this pass — see
+    // SummonPersonality.obedient's doc comment: live manual control needs a
+    // protocol change (Summons phase can't move ahead of the B-5 entropy
+    // reveal without reopening the look-ahead hole) and is deliberately
+    // deferred.
+    final personality = (creature.forceCloseToAttack ||
+            creature.personality == SummonPersonality.obedient)
+        ? SummonPersonality.aggressive
+        : creature.personality;
 
     final target = switch (personality) {
       SummonPersonality.tactical => _tacticalTarget(creature),
@@ -698,7 +880,10 @@ class TurnLoop {
           return _nearestEnemyEntity(from, creature.teamId, rng);
         }(),
       SummonPersonality.aggressive ||
-      SummonPersonality.evasive =>
+      SummonPersonality.evasive ||
+      // Unreachable: reassigned to aggressive above. Listed only to keep
+      // this switch exhaustive over the full enum.
+      SummonPersonality.obedient =>
         _nearestEnemyEntity(creature.position, creature.teamId, rng),
     };
     if (target == null) return;
@@ -721,6 +906,7 @@ class TurnLoop {
         }
       case SummonPersonality.aggressive:
       case SummonPersonality.tactical:
+      case SummonPersonality.obedient: // unreachable — see above
         _aggressiveMove(creature, target.position, rng);
     }
     final movedTiles = hexDistance(before, creature.position);
@@ -1131,8 +1317,7 @@ class TurnLoop {
       final av = pair.$1;
       final action = pair.$2;
       return switch (action) {
-        PassAction() => _ResolutionGroup.normalSpell,
-        HaymakerAction() => _ResolutionGroup.haymaker,
+        PassAction() || DashAction() || MeditateAction() => _ResolutionGroup.normalSpell,
         SpellCastAction() || MysterySpellCastAction() => av.isQuick
             ? _ResolutionGroup.quickSpell
             : av.isSluggish
@@ -1164,8 +1349,16 @@ class TurnLoop {
         case PassAction():
           _regressChain(actor);
 
-        case HaymakerAction(:final targetTile):
-          _applyHaymaker(actor, targetTile, preMovPos, rng);
+        case DashAction():
+          // Speed doubling already applied during movement resolution (see
+          // the isDashing flag folded into the move commit-reveal). Nothing
+          // left to do at resolution time — treated like Pass for chain
+          // purposes.
+          _regressChain(actor);
+
+        case MeditateAction():
+          _applyManaGain(actor, _kMeditateManaGain);
+          _regressChain(actor);
 
         case SpellCastAction(:final spell, :final targetHex, :final isPotent,
             :final isVelocity, :final isEfficiency, :final vocalScore,
@@ -1200,11 +1393,19 @@ class TurnLoop {
                 affinity: affinity,
               ));
             }
-            _applySpell(actor, spell, targetHex, enhancements, rng,
+            final summoned = _applySpell(actor, spell, targetHex, enhancements, rng,
                 traversedPaths: traversedPaths,
                 certFormulas: certifiedPeerFormulas[spell.commitmentHex],
                 certElementSequence: certifiedPeerElementSequences[spell.commitmentHex],
                 conveyorDirection: conveyorDirection);
+            lastResolvedSpells.add(ResolvedSpellEvent(
+              spell: spell,
+              casterId: actor.playerId,
+              targetHex: targetHex,
+              isSummon: spell.isSummon,
+              summonMinionId: summoned?.id,
+              summonPosition: summoned?.position,
+            ));
           }
 
         case MysterySpellCastAction(:final spell, :final mysteryCommitment,
@@ -1386,7 +1587,9 @@ class TurnLoop {
     }
   }
 
-  void _applySpell(
+  /// Returns the [Minion] just summoned, if [spell.isSummon] and the cast
+  /// actually produced a creature (see [_castSummon]); null otherwise.
+  Minion? _applySpell(
     WizardAvatar actor,
     SpellAsset spell,
     HexCoord targetHex,
@@ -1404,8 +1607,7 @@ class TurnLoop {
     // incantations", not a 17th effect kind.
     if (spell.isSummon) {
       final sequence = certElementSequence ?? _elementSequence(spell);
-      _castSummon(actor, targetHex, sequence, spell.summonPersonality, enhancements, rng);
-      return;
+      return _castSummon(actor, targetHex, sequence, spell.summonPersonality, enhancements, rng);
     }
 
     // TODO(B-1): null certFormulas means either a local spell (trusted wire
@@ -1415,7 +1617,7 @@ class TurnLoop {
     final formulas = certFormulas ?? _parsedFormulas(spell);
     if (formulas.isEmpty) {
       // Wild-magic stub (zero formulas = void spell).
-      return;
+      return null;
     }
 
     // Absorption rod: tracked per-target for this whole spell.
@@ -1454,6 +1656,7 @@ class TurnLoop {
 
     // Update chain state after casting.
     _updateChainState(actor, spell, certFormulas: certFormulas);
+    return null;
   }
 
   // ── Summoning (design doc "Summons") ──────────────────────────────────────
@@ -1463,7 +1666,7 @@ class TurnLoop {
   /// the creature act immediately this generation (design doc: "Summons may
   /// take an immediate turn the generation they are summoned if spell is
   /// made potent"); otherwise it first acts in the next Summons phase.
-  void _castSummon(
+  Minion? _castSummon(
     WizardAvatar actor,
     HexCoord targetHex,
     List<BorderZone> sequence,
@@ -1472,7 +1675,7 @@ class TurnLoop {
     HashRng rng,
   ) {
     final spec = CreatureSpec.fromElements(sequence);
-    if (spec == null) return; // no activations -- nothing to summon (void)
+    if (spec == null) return null; // no activations -- nothing to summon (void)
 
     final personality = SummonPersonality.values.firstWhere(
       (p) => p.name == personalityName,
@@ -1501,6 +1704,7 @@ class TurnLoop {
       _creatureTurn(creature, rng);
     }
     _fireSummonMirror(actor, creature, rng);
+    return creature;
   }
 
   /// summonMirror (Reflections/Water-Water): when the Reflections link
@@ -1842,7 +2046,6 @@ class TurnLoop {
     int? targetOffset;
     switch (actionBytes[0]) {
       case 0x01: targetOffset = 1 + 32 + 2; // SpellCastAction: after type+commit+t.
-      case 0x02: targetOffset = 1;          // HaymakerAction: after type.
     }
     if (targetOffset == null || actionBytes.length < targetOffset + 4) {
       return (Uint8List(0), actionBytes);
@@ -2029,9 +2232,11 @@ class TurnLoop {
         _appendSpellProofTail(buf, spell);
         if (isSorcererMode) _appendSorcererBytes(buf, vocalScore);
 
-      case HaymakerAction(:final targetTile):
-        buf.addByte(0x02);
-        buf.add(_encodeCoord(targetTile));
+      case DashAction():
+        buf.addByte(0x04);
+
+      case MeditateAction():
+        buf.addByte(0x05);
 
       case MysterySpellCastAction(
           :final spell,
@@ -2220,11 +2425,11 @@ class TurnLoop {
           merkleProof: merkle,
         );
 
-      case 0x02:
-        if (bytes.length < 5) return (action: PassAction(), merkleProof: null);
-        final q = _readInt16(bytes, 1);
-        final r = _readInt16(bytes, 3);
-        return (action: HaymakerAction(targetTile: HexCoord(q, r)), merkleProof: null);
+      case 0x04:
+        return (action: DashAction(), merkleProof: null);
+
+      case 0x05:
+        return (action: MeditateAction(), merkleProof: null);
 
       case 0x03:
         if (bytes.length < 1 + 32 + 2 + 2) return (action: PassAction(), merkleProof: null);
@@ -2629,6 +2834,21 @@ class TurnLoop {
 
   static bool _isAdjacent(HexCoord a, HexCoord b) => hexDistance(a, b) == 1;
 
+  /// Adjacent tiles holding at least one living hostile entity (enemy avatar
+  /// or minion) — the melee-round prompt candidates for [actor]. Empty means
+  /// no prompt is shown (see [MeleeTargetPicker]).
+  List<HexCoord> _meleeCandidates(WizardAvatar actor) {
+    if (!actor.isAlive) return const [];
+    final candidates = <HexCoord>[];
+    for (final tile in hexNeighbors(actor.position)) {
+      final hasHostile =
+          _avatarsAt(tile).any((av) => av.teamId != actor.teamId && av.isAlive) ||
+          _minionsAt(tile).any((m) => m.teamId != actor.teamId && m.isAlive);
+      if (hasHostile) candidates.add(tile);
+    }
+    return candidates;
+  }
+
   /// Water-Air Illusions (Water flavor), melee-punch path: if [target] has
   /// active wizard decoys, roll 1/remaining -- on a hit the real wizard takes
   /// it (returns false); otherwise a random decoy is destroyed and [target]
@@ -2718,6 +2938,52 @@ class TurnLoop {
       pos += 4;
     }
     return path;
+  }
+
+  /// Encode the movement-phase payload: [isDashing:1][meditateInMove:1]
+  /// followed by [_encodePath]'s bytes. See this file's header comment for
+  /// why Dash/Meditate flags travel with movement rather than the action.
+  static Uint8List _encodeMovePayload({
+    required bool isDashing,
+    required bool meditateInMove,
+    required List<HexCoord> path,
+  }) {
+    final buf = BytesBuilder();
+    buf.addByte(isDashing ? 1 : 0);
+    buf.addByte(meditateInMove ? 1 : 0);
+    buf.add(_encodePath(path));
+    return buf.toBytes();
+  }
+
+  /// Decode a movement-phase payload from [data] starting at [offset].
+  /// When [meditateInMove] is true, [path] is forced empty regardless of
+  /// what was transmitted (defence-in-depth against a modified peer).
+  static ({bool isDashing, bool meditateInMove, List<HexCoord> path})
+      _decodeMovePayload(Uint8List data, int offset) {
+    if (offset + 2 > data.length) {
+      return (isDashing: false, meditateInMove: false, path: const <HexCoord>[]);
+    }
+    final isDashing = data[offset] == 1;
+    final meditateInMove = data[offset + 1] == 1;
+    final path = meditateInMove ? const <HexCoord>[] : _decodePath(data, offset + 2);
+    return (isDashing: isDashing, meditateInMove: meditateInMove, path: path);
+  }
+
+  /// Encode an optional resolution-phase melee target: [0x00] = no melee,
+  /// [0x01][q:2][r:2] = melee that tile.
+  static Uint8List _encodeMeleeChoice(HexCoord? target) {
+    if (target == null) return Uint8List.fromList([0x00]);
+    final buf = BytesBuilder();
+    buf.addByte(0x01);
+    buf.add(_encodeCoord(target));
+    return buf.toBytes();
+  }
+
+  /// Decode an optional melee target from [data] starting at [offset].
+  static HexCoord? _decodeMeleeChoice(Uint8List data, int offset) {
+    if (offset >= data.length || data[offset] != 0x01) return null;
+    if (offset + 5 > data.length) return null;
+    return _decodeCoord(data, offset + 1);
   }
 
   static Uint8List _encodeCoord(HexCoord h) =>

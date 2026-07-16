@@ -166,6 +166,35 @@ class _BattleScreenState extends State<BattleScreen>
   HexCoord? _conveyorPickOrigin;
   Completer<HexCoord?>? _conveyorPickCompleter;
 
+  // Resolution-phase melee prompt: set by _pickMeleeTarget (TurnLoop's
+  // meleeTargetPicker callback, invoked mid-runTurn once movement has
+  // resolved). _isBusy is already true by this point (we're inside
+  // _submitTurn's await), so _onTapBattlefield's usual busy-guard is
+  // special-cased for this state — see its top.
+  bool _pickingMelee = false;
+  List<HexCoord> _meleeCandidates = const [];
+  Completer<HexCoord?>? _meleePickCompleter;
+
+  // UI-facing phase label for the phase banner, driven by TurnLoop.onPhase
+  // for the two internal phases (Summons, Resolution) the pre-submission
+  // _InputPhase can't see — see _phaseLabel.
+  TurnPhase? _submittingPhase;
+
+  // Resolution-phase MtG-style card reveal sequence (see _playResolvedSpellSequence):
+  // incantation thumbnails move to this neutral tray after their 2s card
+  // reveal, and are cleared at the start of the next turn's sequence ("end
+  // of turn"). Long-tapping a thumbnail re-opens its card.
+  List<_ResolvedThumbnail> _incantationTray = [];
+
+  // commitmentHex-independent lookup so a live on-grid summon's long-tap can
+  // re-show the exact SpellAsset that created it (for the full card + live
+  // HP) — keyed by Minion.id, populated as each summon's ResolvedSpellEvent
+  // is processed. Not pruned on death (match-scoped, small); a minion
+  // created by a mirror/copy effect rather than a direct cast (e.g.
+  // Reflections' summonMirror) has no entry and simply doesn't respond to
+  // long-tap.
+  final Map<String, SpellAsset> _summonSpellByMinionId = {};
+
   // Cast-time enhancement choice — zone tag ('fire'/'air'/'water'/'earth')
   // or null for neutral (no enhancement). Eligibility is
   // _selectedSpell.supremeTags; see _EnhancementPicker.
@@ -206,6 +235,8 @@ class _BattleScreenState extends State<BattleScreen>
       session: widget.session ?? SoloBattleSession(),
       localPlayerId: widget.localPlayerId,
       isSorcererMode: widget.state.config.sorcererMode,
+      meleeTargetPicker: _pickMeleeTarget,
+      onPhase: _onEnginePhase,
     );
     _pulseController = AnimationController(
       vsync: this,
@@ -278,6 +309,20 @@ class _BattleScreenState extends State<BattleScreen>
   List<WizardAvatar> get _opponents => widget.state.avatars
       .where((a) => a.playerId != widget.localPlayerId)
       .toList();
+
+  /// This turn's movement budget for the local player, including a
+  /// committed Dash's doubling -- mirrors TurnLoop.runTurn's own speeds-map
+  /// computation (see turn_loop.dart's header comment on why the flag rides
+  /// the movement commit-reveal). Used everywhere the movement-phase UI
+  /// needs to know how far the player can actually walk: the tap-to-path
+  /// budget check in _onTapBattlefield and the predicted-path preview in
+  /// build().
+  int get _localMoveBudget {
+    final local = _local;
+    if (local == null) return 0;
+    final base = local.effectiveMoveSpeed;
+    return _pendingAction is DashAction ? base * 2 : base;
+  }
 
   /// Every committed-but-unresolved cast to render as a held, pulsing orb:
   /// this client's own same-turn cast (phase A, before the turn resolves)
@@ -358,6 +403,58 @@ class _BattleScreenState extends State<BattleScreen>
     _pendingCastOrigin   = null;
     _pendingCastAffinity = null;
     _scryRevealedTile    = null;
+    _submittingPhase     = null;
+  }
+
+  // ── Phase banner / engine phase notifications ─────────────────────────────────
+
+  /// TurnLoop.onPhase: fired for the two internal phases (Summons,
+  /// Resolution) that happen inside the opaque `await runTurn(...)` call --
+  /// see _phaseLabel for how this combines with the pre-submission
+  /// _InputPhase to drive the phase banner.
+  void _onEnginePhase(TurnPhase phase) {
+    if (!mounted) return;
+    setState(() => _submittingPhase = phase);
+  }
+
+  /// TurnLoop.meleeTargetPicker: invoked once per turn, after movement has
+  /// resolved, only when the local avatar actually has an adjacent hostile
+  /// target. Highlights [candidates] on the battlefield and waits for the
+  /// player to tap one (see _onTapBattlefield's _pickingMelee branch) or the
+  /// melee bar's PASS button.
+  Future<HexCoord?> _pickMeleeTarget(List<HexCoord> candidates) async {
+    if (!mounted) return null;
+    final completer = Completer<HexCoord?>();
+    setState(() {
+      _pickingMelee = true;
+      _meleeCandidates = candidates;
+      _meleePickCompleter = completer;
+    });
+    final result = await completer.future;
+    if (mounted) {
+      setState(() {
+        _pickingMelee = false;
+        _meleeCandidates = const [];
+        _meleePickCompleter = null;
+      });
+    }
+    return result;
+  }
+
+  /// Phase banner text — "Summons" / "Main" / "Move" / "Resolution".
+  /// Pre-submission phases come straight from [_phase] (this UI already
+  /// knows which one it's in); the two mid-submission phases come from
+  /// [_submittingPhase], set by [_onEnginePhase].
+  String get _phaseLabel {
+    if (_pickingMelee) return 'Resolution';
+    if (_isBusy) {
+      return _submittingPhase == TurnPhase.actionResolve ? 'Resolution' : 'Summons';
+    }
+    return switch (_phase) {
+      _InputPhase.action => 'Main',
+      _InputPhase.movement => 'Move',
+      _InputPhase.pickingDirection => 'Main',
+    };
   }
 
   // ── Action phase ─────────────────────────────────────────────────────────────
@@ -421,7 +518,8 @@ class _BattleScreenState extends State<BattleScreen>
     setState(() => _scryRevealedTile = revealed);
   }
 
-  void _onPass() => _commitAction(PassAction());
+  void _onDash() => _commitAction(DashAction());
+  void _onMeditateMain() => _commitAction(MeditateAction());
 
   Future<void> _onCast() async {
     final spell  = _selectedSpell;
@@ -612,12 +710,13 @@ class _BattleScreenState extends State<BattleScreen>
 
   // ── Movement phase ────────────────────────────────────────────────────────────
 
-  void _onStay() => _submitTurn(_pendingAction!, movePath: const []);
+  /// Confirms the move phase with whatever path is currently staged --
+  /// possibly empty, which is how a player voluntarily stays put for free
+  /// (as opposed to [_onMeditateMove], which stays put for +25 mana).
+  void _onConfirmMove() => _submitTurn(_pendingAction!, movePath: _movePath);
 
-  void _onConfirmMove() {
-    if (_movePath.isEmpty) return;
-    _submitTurn(_pendingAction!, movePath: _movePath);
-  }
+  void _onMeditateMove() =>
+      _submitTurn(_pendingAction!, movePath: const [], meditateInMove: true);
 
   // ── Status-effect inspection ──────────────────────────────────────────────────
 
@@ -651,8 +750,19 @@ class _BattleScreenState extends State<BattleScreen>
   // ── Battlefield tap ───────────────────────────────────────────────────────────
 
   void _onTapBattlefield(Offset localPos) {
-    if (_isBusy) return;
     final hex = pixelToHex(localPos, _fieldCenter, _hexSize);
+
+    // Checked before the _isBusy guard on purpose: the melee prompt fires
+    // from inside _submitTurn's in-flight runTurn() call, so _isBusy is
+    // already true by the time it's shown — see _pickMeleeTarget.
+    if (_pickingMelee) {
+      if (_meleeCandidates.contains(hex)) {
+        _meleePickCompleter?.complete(hex);
+      }
+      return;
+    }
+
+    if (_isBusy) return;
 
     if (_phase == _InputPhase.pickingDirection) {
       // Candidate direction hexes are relative to the pick origin, not
@@ -689,7 +799,7 @@ class _BattleScreenState extends State<BattleScreen>
         state: widget.state,
         origin: origin,
         declaredPath: _movePath,
-        budget: local.effectiveMoveSpeed,
+        budget: _localMoveBudget,
       );
       final tip = prediction.path.last;
 
@@ -726,9 +836,19 @@ class _BattleScreenState extends State<BattleScreen>
 
   // ── Turn submission ───────────────────────────────────────────────────────────
 
-  Future<void> _submitTurn(TurnAction action, {List<HexCoord> movePath = const []}) async {
+  Future<void> _submitTurn(
+    TurnAction action, {
+    List<HexCoord> movePath = const [],
+    bool meditateInMove = false,
+  }) async {
     if (_isBusy) return;
-    setState(() => _isBusy = true);
+    setState(() {
+      _isBusy = true;
+      // Summons is the first internal phase runTurn will actually reach;
+      // _onEnginePhase corrects this to actionResolve once melee/resolution
+      // begins. See _phaseLabel.
+      _submittingPhase = TurnPhase.summons;
+    });
 
     // Reveal any of our own pending Mystery casts whose fireTurn is the turn
     // this call is about to produce (state.turnNumber increments as the
@@ -745,7 +865,12 @@ class _BattleScreenState extends State<BattleScreen>
             ))
         .toList();
 
-    final input = TurnInput(action: action, movePath: movePath, delayedSpellReveals: reveals);
+    final input = TurnInput(
+      action: action,
+      movePath: movePath,
+      meditateInMove: meditateInMove,
+      delayedSpellReveals: reveals,
+    );
     final staged = _stagedMysterySecret;
 
     try {
@@ -764,12 +889,14 @@ class _BattleScreenState extends State<BattleScreen>
       final chains = _loop.lastConveyorChainEvents
           .map((e) => ConveyorChainAnimation(path: e.path, killed: e.killed))
           .toList();
+      final resolved = List<ResolvedSpellEvent>.from(_loop.lastResolvedSpells);
       setState(() {
         _resetTurn();
         _castAnimations = casts;
         _conveyorChainAnimations = chains;
       });
       if (casts.isNotEmpty || chains.isNotEmpty) _castAnimController.forward(from: 0);
+      if (resolved.isNotEmpty) unawaited(_playResolvedSpellSequence(resolved));
     } catch (e) {
       if (!mounted) return;
       // Turn never committed — discard the not-yet-real staged secret rather
@@ -781,6 +908,57 @@ class _BattleScreenState extends State<BattleScreen>
         SnackBar(content: Text('Turn error: $e')),
       );
     }
+  }
+
+  // ── Resolution-phase card reveal ────────────────────────────────────────────
+
+  /// Plays the MtG-style card reveal for each spell resolved this turn, in
+  /// resolution order (design: "fewest step count first, ties by hash" --
+  /// already the order TurnLoop.lastResolvedSpells is in): the full card for
+  /// 2 seconds, then either a neutral-tray thumbnail (incantation) or an
+  /// on-grid thumbnail (summon — drawn straight from state.minions once
+  /// _summonSpellByMinionId records which spell created it; no separate
+  /// on-grid list needed). Clears the previous turn's tray first ("at the
+  /// end of turn clear away those thumbnails").
+  Future<void> _playResolvedSpellSequence(List<ResolvedSpellEvent> events) async {
+    if (!mounted) return;
+    setState(() => _incantationTray = []);
+    for (final ev in events) {
+      if (!mounted) return;
+      await showSpellCardFullscreen(
+        context,
+        ev.spell,
+        autoDismissAfter: const Duration(seconds: 2),
+      );
+      if (!mounted) return;
+      setState(() {
+        final minionId = ev.summonMinionId;
+        if (ev.isSummon && minionId != null) {
+          _summonSpellByMinionId[minionId] = ev.spell;
+        } else if (!ev.isSummon) {
+          _incantationTray = [
+            ..._incantationTray,
+            _ResolvedThumbnail(spell: ev.spell, casterId: ev.casterId),
+          ];
+        }
+      });
+    }
+  }
+
+  /// Long-press on the battlefield: re-opens a live summon's card (with
+  /// current/max HP) if the tapped hex holds one this client has a recorded
+  /// SpellAsset for. No-op everywhere else (empty tile, opponent's
+  /// mirror-summoned creature with no recorded cast — see
+  /// _summonSpellByMinionId's doc comment).
+  void _onLongPressBattlefield(Offset localPos) {
+    final hex = pixelToHex(localPos, _fieldCenter, _hexSize);
+    final minion = widget.state.minions
+        .where((m) => m.isAlive && m.occupiedTiles.contains(hex))
+        .firstOrNull;
+    if (minion == null) return;
+    final spell = _summonSpellByMinionId[minion.id];
+    if (spell == null) return;
+    showSpellCardFullscreen(context, spell, liveHp: minion.hp);
   }
 
   // ── Build ───────────────────────────────────────────────────────────────────
@@ -809,6 +987,11 @@ class _BattleScreenState extends State<BattleScreen>
       ),
       body: Column(
         children: [
+          // Phase banner — always visible, so it's never ambiguous whether
+          // the battle is waiting on the local player's Main/Move decision
+          // or playing out Summons/Resolution.
+          _PhaseBanner(label: _phaseLabel),
+
           // Opponent strip
           if (foes.isNotEmpty)
             _OpponentHudRow(avatars: foes, maxHp: config.playerHp),
@@ -827,6 +1010,7 @@ class _BattleScreenState extends State<BattleScreen>
                 return GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onTapUp: (d) => _onTapBattlefield(d.localPosition),
+                  onLongPressStart: (d) => _onLongPressBattlefield(d.localPosition),
                   child: CustomPaint(
                     painter: BattlefieldPainter(
                       radius:           config.gridRadius,
@@ -843,7 +1027,7 @@ class _BattleScreenState extends State<BattleScreen>
                               state: widget.state,
                               origin: _local!.position,
                               declaredPath: _movePath,
-                              budget: _local!.effectiveMoveSpeed,
+                              budget: _localMoveBudget,
                             ).path.skip(1).toList()
                           : _movePath,
                       spellRangeRadius: _selectedSpell != null && _local != null
@@ -867,6 +1051,7 @@ class _BattleScreenState extends State<BattleScreen>
                       conveyorChainAnimations: _conveyorChainAnimations,
                       pendingCastOrbs:  _pendingCastOrbs,
                       scryRevealHex:    _scryRevealedTile,
+                      meleePickHexes:   _pickingMelee ? _meleeCandidates : const [],
                     ),
                     child: const SizedBox.expand(),
                   ),
@@ -911,7 +1096,9 @@ class _BattleScreenState extends State<BattleScreen>
             hasTarget:      _targetHex != null,
             movePathLength: _movePath.length,
             isBusy:         _isBusy || _isCapturingVoice,
-            onPass:         _onPass,
+            pickingMelee:   _pickingMelee,
+            onDash:         _onDash,
+            onMeditateMain: _onMeditateMain,
             onCast:         _onCast,
             onCancel:       () => setState(() {
               _selectedSpell = null;
@@ -919,11 +1106,16 @@ class _BattleScreenState extends State<BattleScreen>
               _selectedEnhancement = null;
               _mysteryDelay  = 0;
             }),
-            onStay:        _onStay,
+            onMeditateMove: _onMeditateMove,
             onConfirmMove: _onConfirmMove,
             onCancelMove:  () => setState(() => _movePath = const []),
             onCancelDirectionPick: () => _conveyorPickCompleter?.complete(null),
+            onDeclineMelee: () => _meleePickCompleter?.complete(null),
           ),
+
+          // Incantation thumbnail tray — neutral space outside the grid for
+          // spells resolved this turn; long-tap re-opens the full card.
+          if (_incantationTray.isNotEmpty) _IncantationTray(thumbnails: _incantationTray),
 
           // Player HP / MP bars
           if (local != null)
@@ -949,6 +1141,16 @@ class _BattleScreenState extends State<BattleScreen>
       ),
     );
   }
+}
+
+/// An incantation resolved this turn, parked in the neutral tray outside the
+/// grid once its 2s full-card reveal finishes — see
+/// _BattleScreenState._playResolvedSpellSequence.
+class _ResolvedThumbnail {
+  const _ResolvedThumbnail({required this.spell, required this.casterId});
+
+  final SpellAsset spell;
+  final String casterId;
 }
 
 /// A local Mystery cast's hidden target/delay/nonce, tracked client-side
@@ -981,13 +1183,16 @@ class _ActionBar extends StatelessWidget {
     required this.hasTarget,
     required this.movePathLength,
     required this.isBusy,
-    required this.onPass,
+    required this.pickingMelee,
+    required this.onDash,
+    required this.onMeditateMain,
     required this.onCast,
     required this.onCancel,
-    required this.onStay,
+    required this.onMeditateMove,
     required this.onConfirmMove,
     required this.onCancelMove,
     required this.onCancelDirectionPick,
+    required this.onDeclineMelee,
   });
 
   final _InputPhase phase;
@@ -995,16 +1200,53 @@ class _ActionBar extends StatelessWidget {
   final bool hasTarget;
   final int movePathLength;
   final bool isBusy;
-  final VoidCallback onPass;
+
+  /// Resolution-phase melee prompt (see _BattleScreenState._pickMeleeTarget)
+  /// overrides whatever [phase] happens to be — the turn is already mid
+  /// -submission by the time this fires.
+  final bool pickingMelee;
+
+  final VoidCallback onDash;
+  final VoidCallback onMeditateMain;
   final VoidCallback onCast;
   final VoidCallback onCancel;
-  final VoidCallback onStay;
+  final VoidCallback onMeditateMove;
   final VoidCallback onConfirmMove;
   final VoidCallback onCancelMove;
   final VoidCallback onCancelDirectionPick;
+  final VoidCallback onDeclineMelee;
 
   @override
   Widget build(BuildContext context) {
+    if (pickingMelee) {
+      return Container(
+        color: const Color(0xFF0F0804),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: Row(
+          children: [
+            _ActionButton(
+              label: 'PASS',
+              color: kInkMutedColor,
+              enabled: true,
+              onTap: onDeclineMelee,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Make a melee attack? Tap a highlighted foe, or pass',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontFamily: 'serif',
+                  fontSize: 13,
+                  color: kParchmentColor.withValues(alpha: 0.90),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     if (phase == _InputPhase.pickingDirection) {
       return Container(
         color: const Color(0xFF0F0804),
@@ -1041,10 +1283,10 @@ class _ActionBar extends StatelessWidget {
         child: Row(
           children: [
             _ActionButton(
-              label: 'STAY',
-              color: kInkMutedColor,
+              label: 'MEDITATE',
+              color: const Color(0xFF2090E0),
               enabled: !isBusy,
-              onTap: onStay,
+              onTap: onMeditateMove,
             ),
             const SizedBox(width: 8),
             Expanded(
@@ -1052,7 +1294,7 @@ class _ActionBar extends StatelessWidget {
                 movePathLength > 0
                     ? '$movePathLength step${movePathLength == 1 ? '' : 's'}'
                         ' — tap last to undo'
-                    : 'Tap an adjacent tile to step',
+                    : 'Tap an adjacent tile to step, or stand fast',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontFamily: 'serif',
@@ -1069,7 +1311,9 @@ class _ActionBar extends StatelessWidget {
             _ActionButton(
               label: 'MOVE',
               color: const Color(0xFF3A7FCC),
-              enabled: movePathLength > 0 && !isBusy,
+              // Always available -- an empty path submits as a free stay
+              // (as opposed to MEDITATE, which stays put for +25 mana).
+              enabled: !isBusy,
               onTap: onConfirmMove,
             ),
           ],
@@ -1084,14 +1328,21 @@ class _ActionBar extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       child: Row(
         children: [
-          if (!selecting)
+          if (!selecting) ...[
             _ActionButton(
-              label: 'PASS',
-              color: kInkMutedColor,
+              label: 'DASH',
+              color: const Color(0xFFD8C840),
               enabled: !isBusy,
-              onTap: onPass,
-            )
-          else
+              onTap: onDash,
+            ),
+            const SizedBox(width: 6),
+            _ActionButton(
+              label: 'MEDITATE',
+              color: const Color(0xFF2090E0),
+              enabled: !isBusy,
+              onTap: onMeditateMain,
+            ),
+          ] else
             _ActionButton(
               label: 'CANCEL',
               color: kInkMutedColor,
@@ -1106,7 +1357,7 @@ class _ActionBar extends StatelessWidget {
                 Text(
                   selecting
                       ? (hasTarget ? selectedSpell!.name : 'Tap a tile to target')
-                      : 'Choose a spell or pass',
+                      : 'Choose a spell, Dash, or Meditate',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontFamily: 'serif',
@@ -1143,6 +1394,76 @@ class _ActionBar extends StatelessWidget {
             onTap: onCast,
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ── Phase banner ─────────────────────────────────────────────────────────────
+
+/// A thin, always-visible banner naming the current turn phase (Summons /
+/// Main / Move / Resolution) — see _BattleScreenState._phaseLabel.
+class _PhaseBanner extends StatelessWidget {
+  const _PhaseBanner({required this.label});
+
+  final String label;
+
+  static const Map<String, Color> _kPhaseColor = {
+    'Summons':    Color(0xFF8B6228),
+    'Main':       Color(0xFFB8860B),
+    'Move':       Color(0xFF3A7FCC),
+    'Resolution': Color(0xFF7A1F1F),
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _kPhaseColor[label] ?? kIlluminationGold;
+    return Container(
+      width: double.infinity,
+      color: kInkColor,
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Text(
+        label.toUpperCase(),
+        textAlign: TextAlign.center,
+        style: TextStyle(
+          fontFamily: 'serif',
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 2,
+          color: color,
+        ),
+      ),
+    );
+  }
+}
+
+// ── Incantation thumbnail tray ────────────────────────────────────────────────
+
+/// Neutral-space thumbnails for incantations resolved this turn — see
+/// _BattleScreenState._playResolvedSpellSequence. Long-tap re-opens the card;
+/// cleared at the start of the next turn's reveal sequence.
+class _IncantationTray extends StatelessWidget {
+  const _IncantationTray({required this.thumbnails});
+
+  final List<_ResolvedThumbnail> thumbnails;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: const Color(0xFF120C06),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      height: 60,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: thumbnails.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (context, i) {
+          final t = thumbnails[i];
+          return GestureDetector(
+            onLongPress: () => showSpellCardFullscreen(context, t.spell),
+            child: SpellCardWidget(spell: t.spell, size: 48, interactive: false),
+          );
+        },
       ),
     );
   }

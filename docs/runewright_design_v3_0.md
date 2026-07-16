@@ -749,6 +749,17 @@ Four togglable options moving casting between traditional-fantasy ritual and tac
 | Somatic Components | Waived (target by choosing a hex) | Two accelerometer gestures (distance + direction), performed **simultaneously with the final formula's vocalization**; optional haptic feedback. **Requires standing still — see Casting Stillness below.** |
 | Movement | Select tiles on the battle grid | Physical movement via **step-count + compass-bearing** (leaning; see note); separated in time from casting |
 
+### Vocal Components
+Vocal components consist of the player reading out the latin words that make up all the elements in their spell followed by a finishing word "Finitus". The clarity, loudness, and fluidity of the pronunciation will apply a mana discount or penalty.
+
+### Somatic Components
+
+There are 5 types of somatic components that will determine what spell enhancement the spell will be cast with.
+Neutral -
+Potency - An upheld hand twitching back and forth, as if struggling to contain the power.
+Velocity -
+Efficiency - Moving in a vertical circle in front of the caster, like Doctor Strange making portals.
+Mystery - 
 > **Casting Stillness (`[APPLIED — confirm]`) — a constraint turned into a mechanic.** A pedometer and a somatic-gesture recognizer both read the accelerometer, so walking while gesturing would corrupt both. Rather than engineer around this, **casting requires the player to stand still** (the two somatic gestures are performed stationary). This:
 > - **resolves the conflict for free** by temporally separating movement from casting (you never walk and gesture at once), which is what makes **step-count + compass-bearing movement viable** (the earlier hesitation);
 > - leans into the strong trope of the **wizard rooted and relatively defenseless mid-incantation** — committing to a cast is a real positional exposure, which feeds directly into the tile-targeting cornering/prediction pillar (a stationary caster is a predictable presence during the channel);

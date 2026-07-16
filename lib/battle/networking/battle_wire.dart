@@ -42,6 +42,9 @@ enum BattleMsgType {
   // Divination (Air-Water) scrying pattern — MESH_ARCHITECTURE.md §13b.
   scryKey(0x38),
   scryOpen(0x39),
+  // Resolution-phase melee commit-reveal (post-movement, independent of casting).
+  meleeCommit(0x3A),
+  meleeReveal(0x3B),
 
   // Match control (§2)
   forfeit(0x40),

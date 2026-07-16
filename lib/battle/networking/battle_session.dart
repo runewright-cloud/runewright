@@ -43,6 +43,14 @@ abstract class BattleTurnSession {
   Future<Uint8List> exchangeDelayedSpellReveals(Uint8List ourReveals);
   Future<Uint8List> exchangeStateHash(Uint8List ourHash);
 
+  /// Resolution-phase melee commit-reveal: after movement has resolved (so
+  /// both final positions are known), each player secretly commits an
+  /// optional adjacent melee target, then both reveal simultaneously. Mirrors
+  /// [exchangeMoveCommit]/[exchangeMoveReveal] exactly. Independent of the
+  /// main-phase action — a player may cast a spell AND melee the same turn.
+  Future<Uint8List> exchangeMeleeCommit(Uint8List ourCommit);
+  Future<Uint8List> exchangeMeleeReveal(Uint8List ourReveal);
+
   /// Divination (Air-Water) scrying pattern (MESH_ARCHITECTURE.md §13b).
   ///
   /// Always called once per turn regardless of whether either side has an
@@ -233,6 +241,22 @@ class BattleSession implements BattleTurnSession {
   Future<Uint8List> exchangeMoveReveal(Uint8List ourReveal) async {
     send(BattleMsgType.moveReveal, ourReveal);
     final frame = await framesOfType(BattleMsgType.moveReveal).first;
+    return frame.payload;
+  }
+
+  // ── Resolution-phase melee commit-reveal ────────────────────────────────────
+
+  @override
+  Future<Uint8List> exchangeMeleeCommit(Uint8List ourCommit) async {
+    send(BattleMsgType.meleeCommit, ourCommit);
+    final frame = await framesOfType(BattleMsgType.meleeCommit).first;
+    return frame.payload;
+  }
+
+  @override
+  Future<Uint8List> exchangeMeleeReveal(Uint8List ourReveal) async {
+    send(BattleMsgType.meleeReveal, ourReveal);
+    final frame = await framesOfType(BattleMsgType.meleeReveal).first;
     return frame.payload;
   }
 

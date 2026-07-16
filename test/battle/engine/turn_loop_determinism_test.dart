@@ -144,10 +144,97 @@ void main() {
         reason: 'Turn 2: canonical state diverged.',
       );
     });
+
+    test(
+        'Dash + Meditate + Melee stay in lockstep across two independent loops',
+        () async {
+      final state1 = _makeAdjacentState();
+      final state2 = _makeAdjacentState();
+
+      final pair = _TurnSessionPair();
+      final loop1 = TurnLoop(
+        state: state1,
+        session: pair.sessionA,
+        localPlayerId: 'player_a',
+        meleeTargetPicker: (candidates) async => candidates.first,
+      );
+      final loop2 = TurnLoop(
+        state: state2,
+        session: pair.sessionB,
+        localPlayerId: 'player_b',
+        meleeTargetPicker: (candidates) async => candidates.first,
+      );
+
+      // player_a dashes; player_b meditates. Both melee their adjacent foe
+      // — exercising the new isDashing/meditateInMove move-payload bits and
+      // the melee commit-reveal round together, on two independently-driven
+      // clients, the same way a real duel would.
+      await Future.wait([
+        loop1.runTurn(TurnInput(action: DashAction())),
+        loop2.runTurn(TurnInput(action: MeditateAction())),
+      ]);
+
+      expect(
+        state1.toCanonicalBytes(),
+        equals(state2.toCanonicalBytes()),
+        reason: 'Dash/Meditate/Melee turn diverged between the two loops. '
+            'Check the move-payload isDashing/meditateInMove bits and the '
+            'melee commit-reveal wiring.',
+      );
+
+      // Sanity: the melee round actually fired on both sides.
+      final a = state1.avatars.firstWhere((av) => av.playerId == 'player_a');
+      final b = state1.avatars.firstWhere((av) => av.playerId == 'player_b');
+      expect(a.hp, 23);
+      expect(b.hp, 23);
+      expect(b.mana, 75); // player_b: Meditate (main), starting 50 + 25.
+    });
   });
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Like [_makeState] but with adjacent avatars (so both have a melee target)
+/// and headroom below maxMana (so a Meditate gain is observable rather than
+/// clamped away).
+BattleState _makeAdjacentState() {
+  final battlefield = Battlefield();
+  const posA = HexCoord(0, 0);
+  const posB = HexCoord(1, 0);
+  battlefield.occupancy['player_a'] = posA;
+  battlefield.occupancy['player_b'] = posB;
+
+  return BattleState(
+    config: const MatchConfig(),
+    avatars: [
+      WizardAvatar(
+        playerId: 'player_a',
+        ownerPubkeyHex: '0x${'00' * 32}',
+        hp: 24,
+        mana: 50,
+        maxMana: 100,
+        position: posA,
+        teamId: 'team_a',
+        baseSpellRange: 3,
+      ),
+      WizardAvatar(
+        playerId: 'player_b',
+        ownerPubkeyHex: '0x${'00' * 32}',
+        hp: 24,
+        mana: 50,
+        maxMana: 100,
+        position: posB,
+        teamId: 'team_b',
+        baseSpellRange: 3,
+      ),
+    ],
+    teams: [
+      const Team(id: 'team_a', playerIds: ['player_a']),
+      const Team(id: 'team_b', playerIds: ['player_b']),
+    ],
+    battlefield: battlefield,
+  );
+}
 
 BattleState _makeState() {
   final battlefield = Battlefield();
@@ -219,6 +306,10 @@ class _TurnSessionPair {
   var _bMoveCommit = Completer<Uint8List>();
   var _aMoveReveal = Completer<Uint8List>();
   var _bMoveReveal = Completer<Uint8List>();
+  var _aMeleeCommit = Completer<Uint8List>();
+  var _bMeleeCommit = Completer<Uint8List>();
+  var _aMeleeReveal = Completer<Uint8List>();
+  var _bMeleeReveal = Completer<Uint8List>();
   var _aDelayed = Completer<Uint8List>();
   var _bDelayed = Completer<Uint8List>();
   var _aStateHash = Completer<Uint8List>();
@@ -237,6 +328,10 @@ class _TurnSessionPair {
     _bMoveCommit = Completer();
     _aMoveReveal = Completer();
     _bMoveReveal = Completer();
+    _aMeleeCommit = Completer();
+    _bMeleeCommit = Completer();
+    _aMeleeReveal = Completer();
+    _bMeleeReveal = Completer();
     _aDelayed = Completer();
     _bDelayed = Completer();
     _aStateHash = Completer();
@@ -341,6 +436,30 @@ class _PairedSession implements BattleTurnSession {
     } else {
       _pair._bMoveReveal.complete(ourReveal);
       return _pair._aMoveReveal.future;
+    }
+  }
+
+  // ── Resolution-phase melee commit-reveal ──────────────────────────────────
+
+  @override
+  Future<Uint8List> exchangeMeleeCommit(Uint8List ourCommit) {
+    if (isA) {
+      _pair._aMeleeCommit.complete(ourCommit);
+      return _pair._bMeleeCommit.future;
+    } else {
+      _pair._bMeleeCommit.complete(ourCommit);
+      return _pair._aMeleeCommit.future;
+    }
+  }
+
+  @override
+  Future<Uint8List> exchangeMeleeReveal(Uint8List ourReveal) {
+    if (isA) {
+      _pair._aMeleeReveal.complete(ourReveal);
+      return _pair._bMeleeReveal.future;
+    } else {
+      _pair._bMeleeReveal.complete(ourReveal);
+      return _pair._aMeleeReveal.future;
     }
   }
 

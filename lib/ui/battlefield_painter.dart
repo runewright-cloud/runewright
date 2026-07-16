@@ -134,6 +134,7 @@ class BattlefieldPainter extends CustomPainter {
     this.conveyorChainAnimations = const [],
     this.pendingCastOrbs = const [],
     this.scryRevealHex,
+    this.meleePickHexes = const [],
   }) : super(repaint: Listenable.merge([pulseAnimation, castAnimation]));
 
   final int radius;
@@ -215,7 +216,13 @@ class BattlefieldPainter extends CustomPainter {
   /// from [highlightHex] (the local player's own selected target).
   final HexCoord? scryRevealHex;
 
+  /// Adjacent hostile tiles offered during the resolution-phase melee prompt
+  /// (battle_screen.dart's [_pickingMelee] state) — highlighted so the
+  /// player can see which tiles are valid melee targets.
+  final List<HexCoord> meleePickHexes;
+
   static const _kScryReveal = Color(0xFF9B5FC0); // violet — third-eye glimpse
+  static const _kMeleePick  = Color(0xFF7A1F1F); // rubric red — melee prompt
 
   static const _kTileLight  = Color(0xFFD5CCB2); // stone tile fill
   static const _kTileDark   = Color(0xFFC2B89A); // alternate tile (checkerboard)
@@ -307,6 +314,10 @@ class BattlefieldPainter extends CustomPainter {
     // else in this pass so they're unambiguous during the prompt).
     for (final hex in directionPickHexes) {
       _drawHighlight(canvas, hex, center, _kElementColor[SpellAffinity.air]!);
+    }
+    // Resolution-phase melee prompt candidates.
+    for (final hex in meleePickHexes) {
+      _drawHighlight(canvas, hex, center, _kMeleePick);
     }
 
     // Pass 3 — minion tokens (Big/EEEE creatures draw one token per
@@ -943,5 +954,6 @@ class BattlefieldPainter extends CustomPainter {
       old.tileEffects.length != tileEffects.length ||
       old.clouds.length != clouds.length ||
       old.directionPickHexes.length != directionPickHexes.length ||
+      old.meleePickHexes.length != meleePickHexes.length ||
       old.conveyorChainAnimations.length != conveyorChainAnimations.length;
 }

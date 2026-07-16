@@ -9,17 +9,17 @@
 // from the exact same render used for the trainer clip (see that script's
 // header and latin_phonemes.dart's file header for the derivation trail).
 //
+// Also shipped (2026-07-16): PerUserEnrolledTemplateSource — the player's
+// own recorded voice as the reference template, falling back to the Piper
+// voice per-word until enrolled. Built because offline measurement showed
+// the DTW metric's contrastive ranking is reliable same-voice (5/5) but
+// not cross-voice (2/5) — see docs/M4_findings.md 2026-07-16 and
+// vocal_enrollment.dart.
+//
 // Deliberately NOT built yet (fast-follow, pending playtest data):
 //   - MultiVoiceTemplateSource — same phoneme input through several Piper
-//     voice models, to average out single-voice speaker bias (MFCC encodes
-//     timbre/vocal-tract length, which DTW doesn't correct for; one voice is
-//     an *impartial* bias, not one tuned to any player, which is enough for
-//     a first playtest — see docs/M4_findings.md).
-//   - PerUserEnrolledTemplateSource — record the player's own voice as the
-//     reference template. Would remove speaker bias entirely but needs an
-//     enrollment flow this pass doesn't build.
-// Both would implement [VocalTemplateSource] and slot in without touching
-// [StreamingPhonemeScorer].
+//     voice models, to average out single-voice speaker bias for players
+//     who haven't enrolled.
 
 import 'dart:convert';
 
@@ -27,6 +27,7 @@ import 'package:flutter/services.dart' show rootBundle;
 
 import '../sorcerer/vocal_score.dart';
 import 'latin_phonemes.dart';
+import 'vocal_enrollment.dart';
 
 /// Reference data for scoring one [VocalWord]: the target MFCC frame
 /// sequence and the frame indices where each checkpoint ends.
@@ -100,6 +101,46 @@ class SingleVoiceTemplateSource implements VocalTemplateSource {
     final frames = (json['frames'] as List)
         .map((row) => (row as List).map((v) => (v as num).toDouble()).toList())
         .toList();
+
+    final template = VocalTemplate(
+      word: word,
+      mfccFrames: frames,
+      checkpointFrameIndices: [frames.length - 1],
+      checkpointLabels: [word.name],
+    );
+    _cache[word] = template;
+    return template;
+  }
+}
+
+/// [VocalTemplateSource] backed by the player's own enrolled recordings
+/// (see vocal_enrollment.dart for why same-voice templates are load-bearing
+/// for word discrimination), falling back to [fallback] (the Piper voice)
+/// per-word until that word is enrolled.
+///
+/// Not cached across enrollments: call [invalidate] after saving or
+/// clearing an enrollment so the next beginFormula picks up the new
+/// template.
+class PerUserEnrolledTemplateSource implements VocalTemplateSource {
+  PerUserEnrolledTemplateSource({
+    required this.enrollment,
+    VocalTemplateSource? fallback,
+  }) : fallback = fallback ?? SingleVoiceTemplateSource();
+
+  final VocalEnrollment enrollment;
+  final VocalTemplateSource fallback;
+
+  final Map<VocalWord, VocalTemplate> _cache = {};
+
+  void invalidate() => _cache.clear();
+
+  @override
+  Future<VocalTemplate> templateFor(VocalWord word) async {
+    final cached = _cache[word];
+    if (cached != null) return cached;
+
+    final frames = await enrollment.loadFrames(word);
+    if (frames == null) return fallback.templateFor(word);
 
     final template = VocalTemplate(
       word: word,

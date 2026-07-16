@@ -1,5 +1,135 @@
 # M4 — Findings Log (live, updated per milestone)
 
+## Practice Mode — scoring redesign: enrollment + contrastive crossing (2026-07-16)
+
+Follow-up to the 2026-07-10 entries, triggered by Soren's on-device report
+that "words tend to keep skipping forward" and a prior session's conclusion
+that MFCC+DTW+CMN "can't tell right word from wrong word, only attempt from
+silence." Reproduced everything offline before changing anything; the
+offline numbers say that conclusion was half right — and its reassuring
+half was wrong.
+
+### The smoking gun: pure digital silence crossed the real word templates
+
+Simulating the exact shipped pipeline (c0-drop, CMN, 2x sliding window,
+cost/steps, floor 7.0, debounce 4) against the real
+`assets/practice_templates/*.json`: 1s of all-zero PCM crossed aqua/terra/
+aer at frame 4 — the debounce minimum, i.e. 40ms into capture — and
+ignis/finitus within ~1s. Same for ambient and loud noise. The reassuring
+"noise settles at ~10.6, floor 7.0 has margin" figure from 07-09/07-10 came
+from the unit tests' toy sine-sweep reference, not real templates. Two
+structural causes, neither fixable by any floor value:
+
+1. **Short CMN'd windows are degenerate.** The scorer evaluated from the
+   first frame; a 4-frame mean-centered window carries almost no shape,
+   and its corner-anchored DTW cost collapses toward the reference's own
+   mean frame magnitude.
+2. **After c0-drop + CMN, silence is the metric's best imposter.** A
+   silence frame is (near-)zero; its distance to a CMN'd reference frame
+   is just that frame's magnitude — which measures BELOW a correct word
+   spoken by a different voice (silence ~2.7-4.7 vs cross-voice correct
+   ~5.3-6.3, full-utterance). Loudness has to gate silence out before the
+   metric votes; that complements dropping c0, it isn't redundant with it.
+
+### Word discrimination: absolute cost can't, contrastive ranking can — same-voice only
+
+Rendered the 5 words with a second Piper voice (`it_IT-riccardo-x_low`,
+natively 16 kHz) and with the template voice at altered prosody (paola +
+`--length_scale 1.12 --noise_scale 0.85 --noise_w 0.9` — same voice,
+different utterance: the enrolled-player proxy). Full-utterance cost/steps
+against the real templates:
+
+- **Cross-voice (riccardo):** correct diagonal 5.31-6.26 vs wrong-word
+  off-diagonal 5.08-7.95 — complete overlap, no absolute floor exists.
+  Argmin over the closed 5-word vocabulary: only 2/5 correct (aer, the
+  shortest template at 34 frames, wins rows it shouldn't — short
+  references get a systematic cost/steps advantage).
+- **Same-voice (paola-variant):** diagonal 2.83-3.55, argmin 5/5 correct,
+  margins 1.03-1.71. Speaker match is what unlocks the metric — which is
+  why per-user enrollment was promoted from deferred fast-follow to built.
+
+### What shipped
+
+Crossing a word now requires ALL of (streaming_phoneme_scorer.dart's
+header is the canonical description):
+1. *Minimum-audio guard* (`kMinSegmentAudioFraction` 0.6 x ref frames of
+   fresh audio) — kills the degenerate-short-window crossings.
+2. *Energy gate* (`kMinVoicedFraction` 0.35 voiced; voiced = RMS ≥
+   max(`kSpeechRmsEpsilon` 0.004, 2.5x rolling ambient)). The ambient
+   follower starts at 0, attacks down instantly, rises slowly — seeding
+   it from the first frame would lock the threshold above speech if
+   capture opens mid-utterance.
+2b. *Spectral-structure gate* (`kMinSpectralNorm` 3.0): mean L2 norm of
+   the voiced frames' CMN'd MFCCs. Broadband noise passes RMS at any
+   volume but is nearly featureless after CMN — measured speech 4.1-8.0,
+   uniform noise ~1.96 amplitude-independent, silence 0. Must be computed
+   over voiced frames centered on their own mean: the window can carry a
+   leading-silence stub (attempt-gap reset lags onset by up to 29
+   frames), and CMN over a bimodal silence+sound window inflates every
+   deviation — silence-vs-sound contrast masquerading as structure. This
+   bimodality was exactly how "noise -> aer" kept crossing at every
+   floor/margin combination until the gate went voiced-only.
+3. *Absolute cap* (the old "floor", demoted) — anti-babble only.
+4. *Contrastive margin* (the actual discriminator): the target template
+   must beat every other vocabulary word on the same audio by
+   `kDefaultContrastiveMargin`. Competitors are evaluated lazily (when
+   1-3 pass, plus every `kHintEvalIntervalFrames` for the stall hint), so
+   steady-state cost stays ~1 DTW/frame.
+- *Attempt segmentation*: `kAttemptGapFrames` (30, ~300ms) consecutive
+  unvoiced frames reset the segment window — a failed attempt's stale
+  audio otherwise inflates a clean retry's corner-anchored cost forever
+  (found via the wrong-then-right unit test: quality pinned at 5.5 on
+  continuous no-pause retries). Consequence worth knowing: **a retry
+  chanted with no pause stays stalled** — accepted strict-side behaviour;
+  a breath is what marks a new attempt (the capture UI says so).
+
+**Enrollment** (vocal_enrollment.dart + PerUserEnrolledTemplateSource in
+vocal_template_source.dart + the enrollment card in practice_screen.dart):
+player records each word once — the Piper clip plays first as the
+pronunciation model to imitate; Piper stays the *trainer*, the player's
+voice becomes the *reference*. Stored at
+`<docs>/practice_enrollment/<word>.json`, same schema as the bundled
+templates; per-word fallback to Piper until enrolled; recording trimmed to
+its voiced span and rejected under ~20 voiced frames. Stall hint
+("Hearing something closer to 'terra'…") after 2.5s dwell, fed by the
+scorer's `currentBestGuess`.
+
+**Per Soren's decisions this session:** enrollment + contrastive is the
+direction (over Sherpa-ONNX and over reframing as an honest
+attempt-detector); miss feedback = stall + subtle hint; tuning bias =
+strict (never false-advance — a stalled correct attempt costs a retry, a
+false advance corrupts the training loop invisibly).
+
+### The e2e harness is what actually caught things
+
+`test/practice/real_template_e2e_test.dart` runs the real scorer against
+the real bundled templates with committed Piper renders
+(`test/practice/fixtures/voices/`, README has provenance): same-voice
+correct must complete, all 40 wrong-word pairs (both voices) must stall,
+silence/noise must stall. Its first run caught 5 false advances the
+synthetic-chirp unit tests sailed past (4 with aer as target). Constants
+were then chosen by grid search through this harness:
+(floor 6.25, margin 0.9, debounce 8) — one of three zero-false-advance /
+5-of-5-correct operating points (also clean: 5.75/0.85/6, 6.0/0.85/6);
+picked for maximum floor headroom since a real human enrollment matches
+itself more loosely than the Piper same-voice proxy. At the old
+0.75 margin / debounce 4 there were 4 wrong-word false advances.
+
+### Still open — the next real-device pass
+
+- Constants are calibrated against Piper-render proxies; a real human
+  enrollment + real mic is the actual test. Use the live quality readout,
+  and re-run the e2e harness after ANY constant/template change — it is
+  the practice-mode equivalent of the golden corpus.
+- aer (34 frames, template norm 3.43 — lowest in the vocabulary) is
+  structurally the weakest target. A slower re-render (length_scale 1.7)
+  was tried and REJECTED: it fixed 2 of 3 aer false advances but made
+  correct same-voice aer stall — don't retry that without new evidence.
+- Unenrolled fallback (cross-voice) correct-word completion is NOT
+  guaranteed and deliberately not asserted — accepted cost of strict
+  tuning; the enrollment card explains it. Only cross-voice aqua
+  completed at the shipped constants.
+
 ## Summons UI vertical slice — Rune Craft toggle, personality picker, battle display (2026-07-14, follow-up)
 
 Closed the gap the previous entry flagged: the Summons engine had no way to

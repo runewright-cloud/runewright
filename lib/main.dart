@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/material.dart' hide Element;
 import 'package:flutter/services.dart' show rootBundle;
 import 'engine/border_zone.dart';
@@ -115,6 +116,11 @@ class _GameScreenState extends State<GameScreen>
   late Animation<double> _growth;
   Set<HexCoord> _activatedCells = {};
 
+  // Tracks the previous touch point during a drag-to-draw gesture on the
+  // grid, so onPanUpdate can interpolate between samples and activate every
+  // cell the finger crossed rather than just the ones landed on exactly.
+  Offset? _lastDragPosition;
+
   @override
   void initState() {
     super.initState();
@@ -174,16 +180,20 @@ class _GameScreenState extends State<GameScreen>
       [coord.q.abs(), coord.r.abs(), (coord.q + coord.r).abs()].reduce(max) >
       _innerRadius;
 
-  void _onTap(TapUpDetails details) {
-    final box = _paintKey.currentContext?.findRenderObject() as RenderBox?;
-    if (box == null) return;
-    final size = box.size;
+  // activeZone not needed for hit-testing.
+  HexCoord? _hitTest(Offset localPosition, Size size) {
     final painter = HexGridPainter(
       grid: _grid,
       hexSize: _hexSize(size),
       innerRadius: _innerRadius,
     );
-    final coord = painter.pixelToHex(details.localPosition, size); // activeZone not needed for hit-testing
+    return painter.pixelToHex(localPosition, size);
+  }
+
+  void _onTap(TapUpDetails details) {
+    final box = _paintKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null) return;
+    final coord = _hitTest(details.localPosition, box.size);
     if (coord == null) return;
     if (_isOuter(coord)) return;
     if (_grid.stepCount != 0) return;
@@ -191,6 +201,48 @@ class _GameScreenState extends State<GameScreen>
       _grid.cells[coord] = _grid.cells[coord] == Element.dead
           ? Element.alive
           : Element.dead;
+    });
+  }
+
+  void _onPanStart(DragStartDetails details) {
+    _lastDragPosition = details.localPosition;
+    _activateAlongPath(details.localPosition, details.localPosition);
+  }
+
+  void _onPanUpdate(DragUpdateDetails details) {
+    final start = _lastDragPosition ?? details.localPosition;
+    _activateAlongPath(start, details.localPosition);
+    _lastDragPosition = details.localPosition;
+  }
+
+  void _onPanEnd(DragEndDetails details) {
+    _lastDragPosition = null;
+  }
+
+  // Draw-to-activate: unlike a single tap (which toggles), dragging always
+  // switches touched cells to alive, and samples along the segment between
+  // the last and current touch point so a fast swipe doesn't leave gaps
+  // between the hexes it visibly crossed.
+  void _activateAlongPath(Offset start, Offset end) {
+    if (_grid.stepCount != 0) return;
+    final box = _paintKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null) return;
+    final size = box.size;
+    final hexSize = _hexSize(size);
+    final distance = (end - start).distance;
+    final steps = max(1, (distance / (hexSize / 3)).ceil());
+    final touched = <HexCoord>{};
+    for (var i = 0; i <= steps; i++) {
+      final point = Offset.lerp(start, end, i / steps)!;
+      final coord = _hitTest(point, size);
+      if (coord != null && !_isOuter(coord)) touched.add(coord);
+    }
+    final toActivate = touched.where((c) => _grid.cells[c] != Element.alive);
+    if (toActivate.isEmpty) return;
+    setState(() {
+      for (final coord in toActivate) {
+        _grid.cells[coord] = Element.alive;
+      }
     });
   }
 
@@ -481,6 +533,15 @@ class _GameScreenState extends State<GameScreen>
           Expanded(
             child: GestureDetector(
               onTapUp: _onTap,
+              onPanStart: _onPanStart,
+              onPanUpdate: _onPanUpdate,
+              onPanEnd: _onPanEnd,
+              // Default (DragStartBehavior.start) silently swallows the
+              // pointer movement consumed while recognizing the gesture, so
+              // the initial cell(s) under a fast swipe's first few pixels
+              // never reach onPanStart/onPanUpdate. `.down` reports the true
+              // touch-down position instead, closing that gap.
+              dragStartBehavior: DragStartBehavior.down,
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   final size = Size(constraints.maxWidth, constraints.maxHeight);
@@ -743,7 +804,12 @@ class _SpellNameDialogState extends State<_SpellNameDialog> {
             Wrap(
               spacing: 6,
               runSpacing: 6,
-              children: SummonPersonality.values.map((p) {
+              // obedient is excluded here: it's a seam only this pass (no
+              // manual-control UI exists yet) — see SummonPersonality.obedient's
+              // doc comment. Don't let it be picked until that's built.
+              children: SummonPersonality.values
+                  .where((p) => p != SummonPersonality.obedient)
+                  .map((p) {
                 return ChoiceChip(
                   label: Text(kSummonPersonalityLabel[p]!),
                   selected: _personality == p,

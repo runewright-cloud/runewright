@@ -14,6 +14,7 @@ import 'package:record/record.dart';
 import '../practice/formula_generator.dart';
 import '../practice/practice_feedback.dart';
 import '../practice/streaming_phoneme_scorer.dart';
+import '../practice/vocal_enrollment.dart';
 import '../practice/vocal_template_source.dart';
 import '../sorcerer/mfcc.dart';
 import '../sorcerer/vocal_score.dart';
@@ -28,9 +29,17 @@ class PracticeScreen extends StatefulWidget {
 class _PracticeScreenState extends State<PracticeScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tabController;
-  final _templateSource = SingleVoiceTemplateSource();
   final _generator = PracticeFormulaGenerator();
   final _player = AudioPlayer();
+
+  // Enrollment-backed template source (player's own voice per word, Piper
+  // fallback until enrolled) — see vocal_enrollment.dart for why same-voice
+  // templates are load-bearing for word discrimination. Null until the
+  // documents directory resolves in initState.
+  VocalEnrollment? _enrollment;
+  PerUserEnrolledTemplateSource? _templateSource;
+  Set<VocalWord> _enrolledWords = const {};
+  VocalWord? _enrollingWord;
 
   AudioRecorder? _recorder;
   StreamSubscription<Uint8List>? _micSub;
@@ -47,6 +56,17 @@ class _PracticeScreenState extends State<PracticeScreen>
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    unawaited(_initEnrollment());
+  }
+
+  Future<void> _initEnrollment() async {
+    final enrollment = await VocalEnrollment.open();
+    if (!mounted) return;
+    setState(() {
+      _enrollment = enrollment;
+      _templateSource = PerUserEnrolledTemplateSource(enrollment: enrollment);
+      _enrolledWords = enrollment.enrolledWords();
+    });
   }
 
   @override
@@ -60,9 +80,11 @@ class _PracticeScreenState extends State<PracticeScreen>
   }
 
   Future<void> _newFormula() async {
+    final templateSource = _templateSource;
+    if (templateSource == null) return; // enrollment dir still resolving
     await _stopCapture();
     final formula = _generator.generate(formulaCount: _formulaCount);
-    final scorer = StreamingPhonemeScorer(templateSource: _templateSource);
+    final scorer = StreamingPhonemeScorer(templateSource: templateSource);
     await scorer.beginFormula(formula);
     await _completeSub?.cancel();
     _completeSub = scorer.onComplete.listen(_onFormulaComplete);
@@ -77,6 +99,72 @@ class _PracticeScreenState extends State<PracticeScreen>
 
   Future<void> _playWord(VocalWord word) =>
       _player.play(AssetSource('audio/practice/${word.name}.wav'));
+
+  /// Records ~2.5s of the player saying [word] and stores it as that
+  /// word's scoring template (trimmed + validated by VocalEnrollment).
+  /// The Piper clip is played first as the pronunciation model to imitate.
+  Future<void> _enrollWord(VocalWord word) async {
+    final enrollment = _enrollment;
+    if (enrollment == null || _isCapturing || _enrollingWord != null) return;
+
+    final recorder = AudioRecorder();
+    try {
+      if (!await recorder.hasPermission()) {
+        recorder.dispose();
+        _showSnack('Microphone permission is needed to enroll your voice.');
+        return;
+      }
+
+      // Pronunciation model first, then a beat before the mic opens.
+      await _playWord(word);
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+
+      setState(() => _enrollingWord = word);
+      final pcm = BytesBuilder();
+      final stream = await recorder.startStream(const RecordConfig(
+        encoder: AudioEncoder.pcm16bits,
+        numChannels: 1,
+        sampleRate: MfccExtractor.sampleRate,
+      ));
+      final sub = stream.listen(pcm.add);
+      await Future<void>.delayed(const Duration(milliseconds: 2500));
+      await sub.cancel();
+      await recorder.stop();
+
+      final frameCount = await enrollment.saveFromRecording(word, pcm.toBytes());
+      _templateSource?.invalidate();
+      if (mounted) {
+        setState(() => _enrolledWords = enrollment.enrolledWords());
+      }
+      _showSnack('Enrolled "${word.name}" ($frameCount frames). '
+          'Takes effect on the next formula.');
+    } on EnrollmentException catch (e) {
+      _showSnack(e.message);
+    } catch (e, st) {
+      debugPrint('Practice Mode: enrollment failed: $e\n$st');
+      _showSnack('Could not record enrollment: $e');
+    } finally {
+      recorder.dispose();
+      if (mounted) setState(() => _enrollingWord = null);
+    }
+  }
+
+  Future<void> _clearEnrollment() async {
+    final enrollment = _enrollment;
+    if (enrollment == null) return;
+    await enrollment.clearAll();
+    _templateSource?.invalidate();
+    if (mounted) {
+      setState(() => _enrolledWords = enrollment.enrolledWords());
+    }
+    _showSnack('Cleared all voice enrollments — scoring falls back to the '
+        'default voice.');
+  }
+
+  void _showSnack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
 
   Future<void> _playFormula() async {
     final formula = _formula;
@@ -179,6 +267,8 @@ class _PracticeScreenState extends State<PracticeScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          _buildEnrollmentCard(),
+          const SizedBox(height: 16),
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -231,6 +321,12 @@ class _PracticeScreenState extends State<PracticeScreen>
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontStyle: FontStyle.italic),
               ),
+              const Text(
+                'If a word doesn\'t register, take a breath and say it '
+                'again — a short pause is what starts a fresh attempt.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 11, color: Colors.grey),
+              ),
               const SizedBox(height: 4),
               Text(
                 _scorer?.currentNormalizedQuality != null
@@ -240,6 +336,25 @@ class _PracticeScreenState extends State<PracticeScreen>
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
               ),
+              // Stall hint: after a couple of seconds without a crossing,
+              // if another vocabulary word explains the audio better than
+              // the target, say so gently. Informational only — the
+              // pointer still only ever advances on the real conditions.
+              if (_scorer != null &&
+                  _scorer!.currentSegmentDwellMs > 2500 &&
+                  _scorer!.currentBestGuess != null) ...[
+                const SizedBox(height: 6),
+                Text(
+                  'Hearing something closer to '
+                  '"${_scorer!.currentBestGuess!.label}"…',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontStyle: FontStyle.italic,
+                    color: Colors.orange.shade800,
+                  ),
+                ),
+              ],
             ],
           ],
           if (_feedback != null) ...[
@@ -248,6 +363,87 @@ class _PracticeScreenState extends State<PracticeScreen>
             _buildFeedback(_feedback!),
           ],
         ],
+      ),
+    );
+  }
+
+  /// Voice-enrollment status + per-word enroll buttons. Enrolled templates
+  /// (your own voice) are what make right-vs-wrong-word discrimination
+  /// work — the Piper fallback can only reliably detect "a real attempt."
+  Widget _buildEnrollmentCard() {
+    final ready = _templateSource != null;
+    final enrolledCount = _enrolledWords.length;
+    final total = VocalWord.values.length;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Voice enrollment: $enrolledCount / $total',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
+                if (enrolledCount > 0)
+                  TextButton(
+                    onPressed: _clearEnrollment,
+                    child: const Text('Clear all'),
+                  ),
+              ],
+            ),
+            Text(
+              enrolledCount == total
+                  ? 'Scoring against your own voice.'
+                  : 'Record each word once in your own voice — tap a word, '
+                      'listen, then repeat it after the clip finishes. '
+                      'Unenrolled words are scored against the default voice, '
+                      'which is much weaker at telling words apart.',
+              style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final word in VocalWord.values)
+                  InputChip(
+                    label: Text(word.name),
+                    avatar: _enrollingWord == word
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : Icon(
+                            _enrolledWords.contains(word)
+                                ? Icons.check_circle
+                                : Icons.mic_none,
+                            size: 18,
+                            color: _enrolledWords.contains(word)
+                                ? Colors.green
+                                : null,
+                          ),
+                    onPressed:
+                        ready && _enrollingWord == null && !_isCapturing
+                            ? () => _enrollWord(word)
+                            : null,
+                  ),
+              ],
+            ),
+            if (_enrollingWord != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  'Recording "${_enrollingWord!.name}" — speak now…',
+                  style: const TextStyle(fontStyle: FontStyle.italic),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

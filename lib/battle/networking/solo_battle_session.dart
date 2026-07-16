@@ -49,7 +49,10 @@ class SoloBattleSession implements BattleTurnSession {
   Uint8List _peerActionSaltB = Uint8List(16);
   Uint8List _peerActionBytes = Uint8List.fromList([0x00]);
   Uint8List _peerMoveNonce = Uint8List(16);
-  Uint8List _peerMoveBytes = Uint8List.fromList([0x00]); // empty path: count=0
+  Uint8List _peerMoveBytes =
+      Uint8List.fromList([0x00, 0x00, 0x00]); // not dashing, not meditating, count=0
+  Uint8List _peerMeleeNonce = Uint8List(16);
+  Uint8List _peerMeleeBytes = Uint8List.fromList([0x00]); // no melee target
 
   // ── Entropy ─────────────────────────────────────────────────────────────────
 
@@ -161,9 +164,11 @@ class SoloBattleSession implements BattleTurnSession {
 
   @override
   Future<Uint8List> exchangeMoveCommit(Uint8List ourCommit) async {
-    // Peer stays put: empty path (count=0).
+    // Peer stays put: not dashing, not meditating, empty path (count=0).
+    // Matches TurnLoop._encodeMovePayload's [isDashing:1][meditateInMove:1]
+    // [count:1] shape — keep in sync if that format ever changes.
     _peerMoveNonce = Uint8List(16);
-    _peerMoveBytes = Uint8List.fromList([0x00]);
+    _peerMoveBytes = Uint8List.fromList([0x00, 0x00, 0x00]);
     final hash = await Sha256().hash(
       Uint8List.fromList([..._peerMoveBytes, ..._peerMoveNonce]),
     );
@@ -173,6 +178,25 @@ class SoloBattleSession implements BattleTurnSession {
   @override
   Future<Uint8List> exchangeMoveReveal(Uint8List ourReveal) async {
     return Uint8List.fromList([..._peerMoveNonce, ..._peerMoveBytes]);
+  }
+
+  // ── Resolution-phase melee commit-reveal ────────────────────────────────────
+  //
+  // The dummy never melees.
+
+  @override
+  Future<Uint8List> exchangeMeleeCommit(Uint8List ourCommit) async {
+    _peerMeleeNonce = Uint8List(16);
+    _peerMeleeBytes = Uint8List.fromList([0x00]);
+    final hash = await Sha256().hash(
+      Uint8List.fromList([..._peerMeleeBytes, ..._peerMeleeNonce]),
+    );
+    return Uint8List.fromList(hash.bytes);
+  }
+
+  @override
+  Future<Uint8List> exchangeMeleeReveal(Uint8List ourReveal) async {
+    return Uint8List.fromList([..._peerMeleeNonce, ..._peerMeleeBytes]);
   }
 
   // ── Delayed spells ───────────────────────────────────────────────────────────
