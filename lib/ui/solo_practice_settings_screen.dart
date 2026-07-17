@@ -339,6 +339,7 @@ class _SoloPracticeSettingsScreenState
           localPlayerId: localId,
           chapter: chapter,
           session: SoloBattleSession(
+            state: setup.state,
             dummyAutoCast: true,
             dummyCastTarget: target,
           ),

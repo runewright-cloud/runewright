@@ -1,4 +1,6 @@
 import 'dart:math';
+import 'dart:ui' show ImageFilter;
+import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart' hide Element;
 import '../engine/border_zone.dart';
 import '../engine/border_zones.dart';
@@ -35,6 +37,36 @@ class HexGridPainter extends CustomPainter {
         _growth = growth,
         super(repaint: Listenable.merge([flicker, growth]));
 
+  // Topology of `grid`/`previousGrid` is fixed for the life of this painter
+  // instance — the animation's repeated paint() calls (driven by the
+  // `repaint` listenable above, not widget rebuilds) reuse the same
+  // instance, so computing these once as `late final` turns ~45 recomputes
+  // per step (90Hz over the 500ms growth window) into one.
+  late final Set<(HexCoord, HexCoord)> _currentEdges = _liveEdges(grid);
+  late final Set<(HexCoord, HexCoord)> _prevEdges =
+      previousGrid == null ? const {} : _liveEdges(previousGrid!);
+  late final Set<(HexCoord, HexCoord, HexCoord)> _currentTriangles = _liveTriangles(grid);
+  late final Set<(HexCoord, HexCoord, HexCoord)> _prevTriangles =
+      previousGrid == null ? const {} : _liveTriangles(previousGrid!);
+  late final Set<HexCoord> _currentAlive = _aliveCoords(grid);
+  late final Set<HexCoord> _prevAlive =
+      previousGrid == null ? const {} : _aliveCoords(previousGrid!);
+
+  static Set<HexCoord> _aliveCoords(HexGrid g) => g.cells.entries
+      .where((e) => e.value == Element.alive)
+      .map((e) => e.key)
+      .toSet();
+
+  // Three-way growth factor: ink present in both the previous and current
+  // grid is *stable* and holds at full size — only ink that appeared
+  // (`t`, growing in) or vanished (`1-t`, shrinking out) this step animates.
+  static double _grownFactor(double t, bool inCurrent, bool inPrev) {
+    if (t >= 1.0) return 1.0;
+    if (inCurrent && inPrev) return 1.0;
+    if (inCurrent) return t;
+    return 1.0 - t;
+  }
+
   // Two-beat flicker: rapid flash → dip → bounce → fade.
   // Not a Curve subclass — Flutter's CurveTween asserts transform(1.0)==1.0,
   // which this intentionally violates (it returns 0.0 at t=1 to fade out).
@@ -47,9 +79,6 @@ class HexGridPainter extends CustomPainter {
   }
 
   double get _activationPulse => _flickerCurve(_flicker?.value ?? 0.0);
-
-  static const _gridLineColor  = Color(0xFF9A9488); // warm gray
-  static const _outerFillColor = Color(0xFFE0DBCF); // uninscribable — 5% darker than base parchment
 
   // "Metaball" filter: blurring shapes together and then snapping alpha
   // back to sharp with a steep threshold melts whatever junction they form —
@@ -65,33 +94,77 @@ class HexGridPainter extends CustomPainter {
 
   double get _gooBlurSigma => hexSize * 0.16;
 
-  Paint _gooPaint(Color color) =>
-      Paint()..color = color..maskFilter = MaskFilter.blur(BlurStyle.normal, _gooBlurSigma);
+  double get _edgeStrokeWidth => hexSize * 0.36;
+
+  // Bounding box of everything drawn into the goo layer (triangle fills, edge
+  // strokes except air's, connected dots), inflated to hold the blur's spread
+  // and clamped to the canvas — sizes the goo saveLayer so the single blur
+  // pass only touches inked pixels. Null when nothing goes in the layer.
+  Rect? _inkBounds(
+    List<(Offset, Offset, Offset, Color)> triangles,
+    List<(Offset, Offset, Color, BorderZone?, int)> edges,
+    List<(Offset, double, Color, bool)> dots,
+    Size size,
+  ) {
+    var minX = double.infinity, minY = double.infinity;
+    var maxX = double.negativeInfinity, maxY = double.negativeInfinity;
+    var any = false;
+    void include(double x, double y) {
+      any = true;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+
+    for (final (a, b, c, _) in triangles) {
+      include(a.dx, a.dy);
+      include(b.dx, b.dy);
+      include(c.dx, c.dy);
+    }
+    for (final (s, e, _, zone, _) in edges) {
+      if (zone == BorderZone.air) continue; // air stroke is drawn outside the layer
+      include(s.dx, s.dy);
+      include(e.dx, e.dy);
+    }
+    for (final (pos, radius, _, connected) in dots) {
+      if (!connected) continue;
+      include(pos.dx - radius, pos.dy - radius);
+      include(pos.dx + radius, pos.dy + radius);
+    }
+    if (!any) return null;
+
+    // Inflate by half the max stroke width plus ~3σ of blur spread.
+    final pad = _edgeStrokeWidth / 2 + _gooBlurSigma * 3;
+    return Rect.fromLTRB(minX - pad, minY - pad, maxX + pad, maxY + pad)
+        .intersect(Offset.zero & size);
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
 
-    // Pass 1: backgrounds and grid lines
-    for (final entry in grid.cells.entries) {
-      _drawCellBackground(canvas, entry.key, entry.value, center);
-    }
+    // Cell backgrounds + grid lines are drawn by HexGridBackgroundPainter,
+    // stacked underneath this one — they're static across a step's growth
+    // animation (don't depend on which cells are alive), so a separate
+    // painter with its own shouldRepaint lets them skip the ~45 frame
+    // repaints this painter's animation drives. See main.dart's Stack.
 
     // t=1 (no previous state to animate from) draws exactly like the old
     // snap-to-state code; t<1 lerps edges/dots/triangles that appeared or
     // vanished since `previousGrid` in from/out of their shared midpoint
-    // (edges/dots) or centroid (triangles).
+    // (edges/dots) or centroid (triangles). Ink present in both grids is
+    // stable and holds at full size — it does not animate.
     final prev = previousGrid;
     final t = prev == null ? 1.0 : (_growth?.value ?? 1.0);
 
     // Solid fill for the small triangular gap between any three
     // mutually-adjacent alive cells.
-    final currentTriangles = _liveTriangles(grid);
-    final triangles = t >= 1.0 ? currentTriangles : currentTriangles.union(_liveTriangles(prev!));
+    final triangles = t >= 1.0 ? _currentTriangles : _currentTriangles.union(_prevTriangles);
     final triangleRenders = <(Offset, Offset, Offset, Color)>[];
     for (final tri in triangles) {
       final (a, b, c) = tri;
-      final grown = t >= 1.0 ? 1.0 : currentTriangles.contains(tri) ? t : 1.0 - t;
+      final grown = _grownFactor(t, _currentTriangles.contains(tri), _prevTriangles.contains(tri));
       if (grown <= 0.0) continue;
       final posA = _hexToPixel(a, center);
       final posB = _hexToPixel(b, center);
@@ -109,12 +182,11 @@ class HexGridPainter extends CustomPainter {
     }
 
     // Connecting lines between alive neighbors.
-    final currentEdges = _liveEdges(grid);
-    final edges = t >= 1.0 ? currentEdges : currentEdges.union(_liveEdges(prev!));
+    final edges = t >= 1.0 ? _currentEdges : _currentEdges.union(_prevEdges);
     final edgeRenders = <(Offset, Offset, Color, BorderZone?, int)>[];
     for (final edge in edges) {
       final (a, b) = edge;
-      final grown = t >= 1.0 ? 1.0 : currentEdges.contains(edge) ? t : 1.0 - t;
+      final grown = _grownFactor(t, _currentEdges.contains(edge), _prevEdges.contains(edge));
       if (grown <= 0.0) continue;
       final posA = _hexToPixel(a, center);
       final posB = _hexToPixel(b, center);
@@ -139,19 +211,10 @@ class HexGridPainter extends CustomPainter {
       connectedCoords.add(a);
       connectedCoords.add(b);
     }
-    final currentAlive = grid.cells.entries
-        .where((e) => e.value == Element.alive)
-        .map((e) => e.key)
-        .toSet();
-    final aliveCoords = t >= 1.0
-        ? currentAlive
-        : currentAlive.union(prev!.cells.entries
-            .where((e) => e.value == Element.alive)
-            .map((e) => e.key)
-            .toSet());
+    final aliveCoords = t >= 1.0 ? _currentAlive : _currentAlive.union(_prevAlive);
     final dotRenders = <(Offset, double, Color, bool)>[];
     for (final coord in aliveCoords) {
-      final grown = t >= 1.0 ? 1.0 : currentAlive.contains(coord) ? t : 1.0 - t;
+      final grown = _grownFactor(t, _currentAlive.contains(coord), _prevAlive.contains(coord));
       if (grown <= 0.0) continue;
       dotRenders.add((
         _hexToPixel(coord, center),
@@ -161,33 +224,58 @@ class HexGridPainter extends CustomPainter {
       ));
     }
 
-    // Goo layer: triangle fills, base line strokes, and dots are all drawn
-    // blurred into this offscreen layer, then composited back with a steep
-    // alpha threshold (a "metaball" filter) — every junction between them,
-    // convex points and concave notches around gaps alike, melts into one
-    // smooth rounded ink blob instead of sharp seams. Air's dashed stroke
-    // and every zone's small decorative texture marks are drawn afterward,
-    // outside the layer, so the blur doesn't wash them out.
-    canvas.saveLayer(Offset.zero & size, Paint()..colorFilter = _gooFilter);
-    for (final (pa, pb, pc, color) in triangleRenders) {
-      canvas.drawPath(_roundedTrianglePath(pa, pb, pc), _gooPaint(color));
-    }
-    for (final (start, end, color, zone, seed) in edgeRenders) {
-      final path = _edgeBasePath(start, end, zone, seed);
-      if (path == null) continue; // air's stroke is drawn outside the layer
-      canvas.drawPath(
-        path,
-        _gooPaint(color)
-          ..strokeWidth = hexSize * 0.36
-          ..strokeCap = StrokeCap.round
-          ..style = PaintingStyle.stroke,
+    // Goo layer (metaball merge): triangle fills, base line strokes, and
+    // connected dots are drawn SHARP into one offscreen layer, then the whole
+    // layer is blurred once and its alpha snapped back with a steep threshold
+    // — every junction between them, convex points and concave notches around
+    // gaps alike, melts into one smooth rounded ink blob instead of sharp
+    // seams. Air's dashed stroke and every zone's small decorative texture
+    // marks are drawn afterward, outside the layer, so the blur doesn't wash
+    // them out.
+    //
+    // The blur is a SINGLE pass over the layer via ImageFilter.compose
+    // (blur inner, then _gooFilter threshold outer), replacing the old
+    // per-primitive MaskFilter.blur that cost one Gaussian convolution *per
+    // shape* — hundreds of them on a busy grid. Drawing sharp (rather than
+    // pre-blurred) also keeps thin strokes'/dots' interiors at full alpha, so
+    // they survive the threshold cleanly instead of being eaten into. The
+    // layer is sized to the inked region (+ blur spread), not the whole
+    // screen, so the blur only touches pixels that need it.
+    final gooBounds = _inkBounds(triangleRenders, edgeRenders, dotRenders, size);
+    if (gooBounds != null) {
+      canvas.saveLayer(
+        gooBounds,
+        Paint()
+          ..imageFilter = ImageFilter.compose(
+            outer: _gooFilter,
+            inner: ImageFilter.blur(
+              sigmaX: _gooBlurSigma,
+              sigmaY: _gooBlurSigma,
+              tileMode: TileMode.decal,
+            ),
+          ),
       );
+      for (final (pa, pb, pc, color) in triangleRenders) {
+        canvas.drawPath(_roundedTrianglePath(pa, pb, pc), Paint()..color = color);
+      }
+      for (final (start, end, color, zone, seed) in edgeRenders) {
+        final path = _edgeBasePath(start, end, zone, seed);
+        if (path == null) continue; // air's stroke is drawn outside the layer
+        canvas.drawPath(
+          path,
+          Paint()
+            ..color = color
+            ..strokeWidth = _edgeStrokeWidth
+            ..strokeCap = StrokeCap.round
+            ..style = PaintingStyle.stroke,
+        );
+      }
+      for (final (pos, radius, color, connected) in dotRenders) {
+        if (!connected) continue;
+        canvas.drawCircle(pos, radius, Paint()..color = color);
+      }
+      canvas.restore();
     }
-    for (final (pos, radius, color, connected) in dotRenders) {
-      if (!connected) continue;
-      canvas.drawCircle(pos, radius, _gooPaint(color));
-    }
-    canvas.restore();
 
     // Zone texture overlays, crisp and on top of the goo result.
     for (final (start, end, color, zone, seed) in edgeRenders) {
@@ -242,10 +330,6 @@ class HexGridPainter extends CustomPainter {
       }
     }
   }
-
-  bool _isOuter(HexCoord coord) =>
-      [coord.q.abs(), coord.r.abs(), (coord.q + coord.r).abs()].reduce(max) >
-      innerRadius;
 
   bool _isBorder(HexCoord coord) =>
       [coord.q.abs(), coord.r.abs(), (coord.q + coord.r).abs()].reduce(max) ==
@@ -503,35 +587,6 @@ class HexGridPainter extends CustomPainter {
     }
   }
 
-  void _drawCellBackground(
-    Canvas canvas,
-    HexCoord coord,
-    Element element,
-    Offset center,
-  ) {
-    final pos = _hexToPixel(coord, center);
-    final path = _hexPath(pos);
-
-    Color fill;
-    if (_isBorder(coord)) {
-      final zone = BorderZones.forRadius(grid.radius)[coord];
-      // Border cells always show their dead zone tint as background
-      fill = zone != null ? _zoneColor(zone, false) : Element.dead.color;
-    } else if (_isOuter(coord)) {
-      fill = _outerFillColor;
-    } else {
-      fill = Element.dead.color;
-    }
-    canvas.drawPath(path, Paint()..color = fill);
-    canvas.drawPath(
-      path,
-      Paint()
-        ..color = _gridLineColor
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.0,
-    );
-  }
-
   Path _hexPath(Offset center) {
     final path = Path();
     for (int i = 0; i < 6; i++) {
@@ -587,5 +642,100 @@ class HexGridPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(HexGridPainter oldDelegate) => true;
+  bool shouldRepaint(HexGridPainter oldDelegate) =>
+      !identical(grid, oldDelegate.grid) ||
+      !identical(previousGrid, oldDelegate.previousGrid) ||
+      hexSize != oldDelegate.hexSize ||
+      innerRadius != oldDelegate.innerRadius ||
+      activeZone != oldDelegate.activeZone ||
+      !setEquals(activatedBorderCells, oldDelegate.activatedBorderCells);
+}
+
+// Cell backgrounds + grid lines, stacked underneath HexGridPainter (see
+// main.dart). This layer never depends on which cells are alive — only on
+// the grid's radius (border-zone layout) and hexSize/innerRadius — so it's
+// static across a step's growth animation and can skip the ~45 frame
+// repaints that drive the ink layer above it.
+class HexGridBackgroundPainter extends CustomPainter {
+  final HexGrid grid;
+  final double hexSize;
+  final int innerRadius;
+
+  const HexGridBackgroundPainter({
+    required this.grid,
+    required this.hexSize,
+    required this.innerRadius,
+  });
+
+  static const _gridLineColor  = Color(0xFF9A9488); // warm gray
+  static const _outerFillColor = Color(0xFFE0DBCF); // uninscribable — 5% darker than base parchment
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    for (final coord in grid.cells.keys) {
+      _drawCellBackground(canvas, coord, center);
+    }
+  }
+
+  void _drawCellBackground(Canvas canvas, HexCoord coord, Offset center) {
+    final pos = _hexToPixel(coord, center);
+    final path = _hexPath(pos);
+
+    Color fill;
+    if (_isBorder(coord)) {
+      final zone = BorderZones.forRadius(grid.radius)[coord];
+      // Border cells always show their dead zone tint as background
+      fill = zone != null ? HexGridPainter._zoneColor(zone, false) : Element.dead.color;
+    } else if (_isOuter(coord)) {
+      fill = _outerFillColor;
+    } else {
+      fill = Element.dead.color;
+    }
+    canvas.drawPath(path, Paint()..color = fill);
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = _gridLineColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0,
+    );
+  }
+
+  bool _isOuter(HexCoord coord) =>
+      [coord.q.abs(), coord.r.abs(), (coord.q + coord.r).abs()].reduce(max) >
+      innerRadius;
+
+  bool _isBorder(HexCoord coord) =>
+      [coord.q.abs(), coord.r.abs(), (coord.q + coord.r).abs()].reduce(max) ==
+      grid.radius;
+
+  Path _hexPath(Offset center) {
+    final path = Path();
+    for (int i = 0; i < 6; i++) {
+      final angle = pi / 3 * i;
+      final x = center.dx + hexSize * cos(angle);
+      final y = center.dy + hexSize * sin(angle);
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+    path.close();
+    return path;
+  }
+
+  Offset _hexToPixel(HexCoord coord, Offset center) {
+    return Offset(
+      center.dx + hexSize * (3 / 2 * coord.q),
+      center.dy + hexSize * (sqrt(3) / 2 * coord.q + sqrt(3) * coord.r),
+    );
+  }
+
+  @override
+  bool shouldRepaint(HexGridBackgroundPainter oldDelegate) =>
+      grid.radius != oldDelegate.grid.radius ||
+      hexSize != oldDelegate.hexSize ||
+      innerRadius != oldDelegate.innerRadius;
 }

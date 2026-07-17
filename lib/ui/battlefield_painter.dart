@@ -31,6 +31,15 @@ HexCoord pixelToHex(Offset pixel, Offset center, double hexSize) {
   return _hexRound(qF, rF);
 }
 
+/// Convert a hex coordinate to its pixel center — the inverse of [pixelToHex].
+/// [center] is the pixel center of the (0,0) hex. Public so the UI layer can
+/// anchor overlays (e.g. the resolution-phase card growth) to a battlefield
+/// tile; must stay in lockstep with the painter's private `_hexToPixel`.
+Offset hexToPixel(HexCoord coord, Offset center, double hexSize) => Offset(
+  center.dx + hexSize * (3 / 2 * coord.q),
+  center.dy + hexSize * (sqrt(3) / 2 * coord.q + sqrt(3) * coord.r),
+);
+
 HexCoord _hexRound(double q, double r) {
   final s = -q - r;
   var rq = q.round();
@@ -72,6 +81,12 @@ class CastAnimation {
 // turns of a Mystery cast's wait.)
 const double _kCastTravelEnd = 0.72;
 
+/// Fraction of the cast-animation playback at which the orb reaches its target
+/// and begins to burst — i.e. the moment of impact. The resolution-phase card
+/// reveal grows out of the tile at this point so the burst blooms into the
+/// card. Kept equal to [_kCastTravelEnd] so the two stay in sync.
+const double kCastOrbImpactFraction = _kCastTravelEnd;
+
 /// A spell cast that has been committed but not yet resolved: a glowing orb
 /// held at [origin], pulsing, coloured by elemental affinity. Covers both a
 /// same-turn normal cast (while its owner is picking movement) and a
@@ -110,6 +125,25 @@ class ConveyorChainAnimation {
   final bool killed;
 }
 
+/// The battlefield effects one just-resolved spell created, being revealed by
+/// the resolution sequence: they scale up out of [origin] (the tile the spell
+/// hit) as [BattlefieldPainter.effectBloomAnimation] runs 0→1. Handles are
+/// matched by id (clouds/minions) or hex (terrain); anything not in these sets
+/// draws at full size as usual. See battle_screen.dart's reveal sequence.
+class EffectBloom {
+  const EffectBloom({
+    required this.origin,
+    this.cloudIds = const {},
+    this.tileHexes = const {},
+    this.minionIds = const {},
+  });
+
+  final HexCoord origin;
+  final Set<String> cloudIds;
+  final Set<HexCoord> tileHexes;
+  final Set<String> minionIds;
+}
+
 // ── Painter ───────────────────────────────────────────────────────────────────
 
 class BattlefieldPainter extends CustomPainter {
@@ -135,7 +169,18 @@ class BattlefieldPainter extends CustomPainter {
     this.pendingCastOrbs = const [],
     this.scryRevealHex,
     this.meleePickHexes = const [],
-  }) : super(repaint: Listenable.merge([pulseAnimation, castAnimation]));
+    this.hiddenCloudIds = const {},
+    this.hiddenTileHexes = const {},
+    this.hiddenMinionIds = const {},
+    this.effectBloom,
+    this.effectBloomAnimation,
+  }) : super(
+         repaint: Listenable.merge([
+           pulseAnimation,
+           castAnimation,
+           effectBloomAnimation,
+         ]),
+       );
 
   final int radius;
   final double hexSize;
@@ -192,6 +237,22 @@ class BattlefieldPainter extends CustomPainter {
   /// overlay above tokens (radius from [CloudObject.position]).
   final List<CloudObject> clouds;
 
+  /// Resolution-reveal hold-back: effects newly created this turn that haven't
+  /// had their spell's card resolve yet are skipped entirely (matched by cloud
+  /// id / terrain hex / minion id) so they pop in only when their card does.
+  final Set<String> hiddenCloudIds;
+  final Set<HexCoord> hiddenTileHexes;
+  final Set<String> hiddenMinionIds;
+
+  /// The effect group currently blooming into view (one spell's freshly
+  /// revealed creations), scaled up out of [EffectBloom.origin] by
+  /// [effectBloomAnimation]. Null when nothing is blooming.
+  final EffectBloom? effectBloom;
+
+  /// Drives [effectBloom]'s 0→1 grow-in. Merged into the repaint listenable so
+  /// the bloom animates without a widget rebuild.
+  final Animation<double>? effectBloomAnimation;
+
   /// The 6 neighbor hexes of a ConveyorTile about to be created, highlighted
   /// (air-colored) while the caster is choosing a push direction. See
   /// battle_screen.dart's pickingDirection phase.
@@ -222,22 +283,22 @@ class BattlefieldPainter extends CustomPainter {
   final List<HexCoord> meleePickHexes;
 
   static const _kScryReveal = Color(0xFF9B5FC0); // violet — third-eye glimpse
-  static const _kMeleePick  = Color(0xFF7A1F1F); // rubric red — melee prompt
+  static const _kMeleePick = Color(0xFF7A1F1F); // rubric red — melee prompt
 
-  static const _kTileLight  = Color(0xFFD5CCB2); // stone tile fill
-  static const _kTileDark   = Color(0xFFC2B89A); // alternate tile (checkerboard)
-  static const _kEdge       = Color(0xFF4A3018); // tile border
+  static const _kTileLight = Color(0xFFD5CCB2); // stone tile fill
+  static const _kTileDark = Color(0xFFC2B89A); // alternate tile (checkerboard)
+  static const _kEdge = Color(0xFF4A3018); // tile border
   static const _kLocalToken = Color(0xFFB8860B); // illumination gold
-  static const _kFoeToken   = Color(0xFF7A1F1F); // rubric red
+  static const _kFoeToken = Color(0xFF7A1F1F); // rubric red
 
   // Elemental colors — minion label tint, barrier ring glow, and the cast
   // animation orb. [colorForAffinity] is the public accessor for callers
   // (e.g. battle_screen.dart) building a [CastAnimation].
   static const Map<SpellAffinity, Color> _kElementColor = {
-    SpellAffinity.fire:  Color(0xFFE05020),
+    SpellAffinity.fire: Color(0xFFE05020),
     SpellAffinity.earth: Color(0xFF8B6033),
     SpellAffinity.water: Color(0xFF2090E0),
-    SpellAffinity.air:   Color(0xFFD8C840),
+    SpellAffinity.air: Color(0xFFD8C840),
   };
 
   /// The cast-animation orb color for a spell's primary elemental affinity.
@@ -247,18 +308,18 @@ class BattlefieldPainter extends CustomPainter {
   // Terrain/cloud color follows the elemental flavor that creates it (same
   // palette as minion labels / barrier rings / cast orbs).
   Color _colorForTileEffect(TileEffect effect) => switch (effect) {
-        FloorIsLava() => _kElementColor[SpellAffinity.fire]!,
-        ImpassableTile() => _kElementColor[SpellAffinity.earth]!,
-        SlowTile() => _kElementColor[SpellAffinity.water]!,
-        ConveyorTile() => _kElementColor[SpellAffinity.air]!,
-      };
+    FloorIsLava() => _kElementColor[SpellAffinity.fire]!,
+    ImpassableTile() => _kElementColor[SpellAffinity.earth]!,
+    SlowTile() => _kElementColor[SpellAffinity.water]!,
+    ConveyorTile() => _kElementColor[SpellAffinity.air]!,
+  };
 
   Color _colorForCloudKind(CloudKind kind) => switch (kind) {
-        ToxicCloud() => _kElementColor[SpellAffinity.fire]!,
-        DustCloud() => _kElementColor[SpellAffinity.earth]!,
-        WaterCloud() => _kElementColor[SpellAffinity.water]!,
-        MobileCloud() => _kElementColor[SpellAffinity.air]!,
-      };
+    ToxicCloud() => _kElementColor[SpellAffinity.fire]!,
+    DustCloud() => _kElementColor[SpellAffinity.earth]!,
+    WaterCloud() => _kElementColor[SpellAffinity.water]!,
+    MobileCloud() => _kElementColor[SpellAffinity.air]!,
+  };
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -279,8 +340,16 @@ class BattlefieldPainter extends CustomPainter {
     final pulse = pulseAnimation?.value ?? 0.5;
 
     // Pass 1.5 — permanent terrain effects (over tiles, under highlights).
+    // Held-back terrain (not yet revealed by its spell's card) is skipped;
+    // terrain currently blooming in scales up out of the cast tile.
     for (final entry in tileEffects.entries) {
-      _drawTileEffect(canvas, entry.key, center, entry.value, pulse);
+      if (hiddenTileHexes.contains(entry.key)) continue;
+      _bloomWrap(
+        canvas,
+        center,
+        () => _drawTileEffect(canvas, entry.key, center, entry.value, pulse),
+        tileHex: entry.key,
+      );
     }
 
     // Pass 2 — highlights
@@ -321,14 +390,23 @@ class BattlefieldPainter extends CustomPainter {
     }
 
     // Pass 3 — minion tokens (Big/EEEE creatures draw one token per
-    // occupied tile, label on the anchor tile only).
+    // occupied tile, label on the anchor tile only). A just-summoned creature
+    // is held back until its card resolves, then blooms out of the cast tile.
     for (final m in minions) {
       if (!m.isAlive) continue;
+      if (hiddenMinionIds.contains(m.id)) continue;
       final friendly = m.teamId == localTeamId;
-      for (final tile in m.occupiedTiles) {
-        _drawMinionToken(canvas, _hexToPixel(tile, center), m, friendly,
-            showLabel: tile == m.position);
-      }
+      _bloomWrap(canvas, center, () {
+        for (final tile in m.occupiedTiles) {
+          _drawMinionToken(
+            canvas,
+            _hexToPixel(tile, center),
+            m,
+            friendly,
+            showLabel: tile == m.position,
+          );
+        }
+      }, minionId: m.id);
     }
 
     // Pass 4 — wizard tokens (on top of minions)
@@ -338,15 +416,27 @@ class BattlefieldPainter extends CustomPainter {
     }
 
     // Pass 4.5 — clouds (over tokens so entities read through the haze;
-    // under barrier rings/cast animations so those stay fully legible).
+    // under barrier rings/cast animations so those stay fully legible). A
+    // freshly conjured cloud is held back until its card resolves, then
+    // blooms out of the cast tile.
     for (final cloud in clouds) {
-      _drawCloud(canvas, center, cloud, pulse);
+      if (hiddenCloudIds.contains(cloud.id)) continue;
+      _bloomWrap(
+        canvas,
+        center,
+        () => _drawCloud(canvas, center, cloud, pulse),
+        cloudId: cloud.id,
+      );
     }
 
     // Pass 5 — barrier rings (pulsing glow over all shielded entities)
     for (final entry in barrierRings.entries) {
-      _drawBarrierRing(canvas, _hexToPixel(entry.key, center),
-          _blendBarrierColors(entry.value), pulse);
+      _drawBarrierRing(
+        canvas,
+        _hexToPixel(entry.key, center),
+        _blendBarrierColors(entry.value),
+        pulse,
+      );
     }
 
     // Pass 5.5 — pending cast orbs (committed, not yet resolved): a range
@@ -364,8 +454,13 @@ class BattlefieldPainter extends CustomPainter {
           }
         }
       }
-      _drawCastOrb(canvas, _hexToPixel(orb.origin, center), orb.color,
-          radiusScale: 0.85 + pulse * 0.15, alpha: 0.7 + pulse * 0.3);
+      _drawCastOrb(
+        canvas,
+        _hexToPixel(orb.origin, center),
+        orb.color,
+        radiusScale: 0.85 + pulse * 0.15,
+        alpha: 0.7 + pulse * 0.3,
+      );
     }
 
     // Pass 6 — cast animations (glow → fly → burst), on top of everything.
@@ -385,8 +480,40 @@ class BattlefieldPainter extends CustomPainter {
     }
   }
 
+  /// Runs [draw] normally, unless the effect it renders (identified by exactly
+  /// one of [cloudId]/[tileHex]/[minionId]) is in [effectBloom]'s reveal set —
+  /// in which case the canvas is scaled about [EffectBloom.origin] by the
+  /// current bloom progress, so the effect grows out of the cast tile.
+  void _bloomWrap(
+    Canvas canvas,
+    Offset center,
+    void Function() draw, {
+    String? cloudId,
+    HexCoord? tileHex,
+    String? minionId,
+  }) {
+    final bloom = effectBloom;
+    final inBloom =
+        bloom != null &&
+        ((cloudId != null && bloom.cloudIds.contains(cloudId)) ||
+            (tileHex != null && bloom.tileHexes.contains(tileHex)) ||
+            (minionId != null && bloom.minionIds.contains(minionId)));
+    if (!inBloom) {
+      draw();
+      return;
+    }
+    final p = (effectBloomAnimation?.value ?? 1.0).clamp(0.02, 1.0);
+    final origin = _hexToPixel(bloom.origin, center);
+    canvas.save();
+    canvas.translate(origin.dx, origin.dy);
+    canvas.scale(p);
+    canvas.translate(-origin.dx, -origin.dy);
+    draw();
+    canvas.restore();
+  }
+
   void _drawTile(Canvas canvas, HexCoord coord, Offset center) {
-    final pos  = _hexToPixel(coord, center);
+    final pos = _hexToPixel(coord, center);
     final path = _hexPath(pos);
 
     // Subtle checkerboard tint so tiles are distinguishable.
@@ -410,8 +537,13 @@ class BattlefieldPainter extends CustomPainter {
     );
   }
 
-  void _drawHighlight(Canvas canvas, HexCoord coord, Offset center, Color color) {
-    final pos  = _hexToPixel(coord, center);
+  void _drawHighlight(
+    Canvas canvas,
+    HexCoord coord,
+    Offset center,
+    Color color,
+  ) {
+    final pos = _hexToPixel(coord, center);
     final path = _hexPath(pos);
     canvas.drawPath(
       path,
@@ -429,7 +561,7 @@ class BattlefieldPainter extends CustomPainter {
   }
 
   void _drawToken(Canvas canvas, Offset pos, bool isLocal, String playerId) {
-    final r     = hexSize * 0.36;
+    final r = hexSize * 0.36;
     final color = isLocal ? _kLocalToken : _kFoeToken;
 
     // Drop shadow
@@ -453,7 +585,9 @@ class BattlefieldPainter extends CustomPainter {
     );
 
     // Label: ★ for local player, first letter of playerId for opponents
-    final label = isLocal ? '★' : (playerId.isNotEmpty ? playerId[0].toUpperCase() : '?');
+    final label = isLocal
+        ? '★'
+        : (playerId.isNotEmpty ? playerId[0].toUpperCase() : '?');
     final tp = TextPainter(
       text: TextSpan(
         text: label,
@@ -468,10 +602,15 @@ class BattlefieldPainter extends CustomPainter {
     tp.paint(canvas, pos - Offset(tp.width / 2, tp.height / 2));
   }
 
-  void _drawMinionToken(Canvas canvas, Offset pos, Minion m, bool friendly,
-      {bool showLabel = true}) {
-    final r          = hexSize * 0.24;
-    final fillColor  = friendly ? _kLocalToken : _kFoeToken;
+  void _drawMinionToken(
+    Canvas canvas,
+    Offset pos,
+    Minion m,
+    bool friendly, {
+    bool showLabel = true,
+  }) {
+    final r = hexSize * 0.24;
+    final fillColor = friendly ? _kLocalToken : _kFoeToken;
     final labelColor = _kElementColor[m.affinity] ?? Colors.white;
 
     canvas.drawCircle(
@@ -479,7 +618,11 @@ class BattlefieldPainter extends CustomPainter {
       r,
       Paint()..color = Colors.black.withValues(alpha: 0.28),
     );
-    canvas.drawCircle(pos, r, Paint()..color = fillColor.withValues(alpha: 0.85));
+    canvas.drawCircle(
+      pos,
+      r,
+      Paint()..color = fillColor.withValues(alpha: 0.85),
+    );
     canvas.drawCircle(
       pos,
       r,
@@ -516,14 +659,22 @@ class BattlefieldPainter extends CustomPainter {
   // ── Terrain effects (tileModification spells) ─────────────────────────────
 
   void _drawTileEffect(
-      Canvas canvas, HexCoord coord, Offset center, TileEffect effect, double pulse) {
-    final pos   = _hexToPixel(coord, center);
-    final path  = _hexPath(pos);
+    Canvas canvas,
+    HexCoord coord,
+    Offset center,
+    TileEffect effect,
+    double pulse,
+  ) {
+    final pos = _hexToPixel(coord, center);
+    final path = _hexPath(pos);
     final color = _colorForTileEffect(effect);
 
     // Dark base first so the colored fill reads as saturated rather than
     // washing out against the off-white/tan tile fill underneath it.
-    canvas.drawPath(path, Paint()..color = Colors.black.withValues(alpha: 0.14));
+    canvas.drawPath(
+      path,
+      Paint()..color = Colors.black.withValues(alpha: 0.14),
+    );
     canvas.drawPath(path, Paint()..color = color.withValues(alpha: 0.48));
 
     canvas.save();
@@ -557,7 +708,8 @@ class BattlefieldPainter extends CustomPainter {
     const emberColor = Color(0xFFFFD060);
     for (int i = 0; i < 3; i++) {
       final jx = (_pseudoRandom(coord.q, coord.r, i * 2) - 0.5) * hexSize * 1.1;
-      final jy = (_pseudoRandom(coord.q, coord.r, i * 2 + 1) - 0.5) * hexSize * 1.1;
+      final jy =
+          (_pseudoRandom(coord.q, coord.r, i * 2 + 1) - 0.5) * hexSize * 1.1;
       canvas.drawCircle(
         pos + Offset(jx, jy),
         hexSize * 0.05,
@@ -588,9 +740,15 @@ class BattlefieldPainter extends CustomPainter {
     final s = hexSize * 0.9;
     for (double d = -s; d <= s; d += hexSize * 0.35) {
       canvas.drawLine(
-          Offset(pos.dx + d - s, pos.dy - s), Offset(pos.dx + d + s, pos.dy + s), paint);
+        Offset(pos.dx + d - s, pos.dy - s),
+        Offset(pos.dx + d + s, pos.dy + s),
+        paint,
+      );
       canvas.drawLine(
-          Offset(pos.dx + d - s, pos.dy + s), Offset(pos.dx + d + s, pos.dy - s), paint);
+        Offset(pos.dx + d - s, pos.dy + s),
+        Offset(pos.dx + d + s, pos.dy - s),
+        paint,
+      );
     }
   }
 
@@ -602,8 +760,18 @@ class BattlefieldPainter extends CustomPainter {
     for (int i = -1; i <= 1; i++) {
       final y = pos.dy + i * hexSize * 0.28;
       final path = Path()..moveTo(pos.dx - hexSize * 0.6, y);
-      path.quadraticBezierTo(pos.dx - hexSize * 0.2, y - hexSize * 0.15, pos.dx, y);
-      path.quadraticBezierTo(pos.dx + hexSize * 0.2, y + hexSize * 0.15, pos.dx + hexSize * 0.6, y);
+      path.quadraticBezierTo(
+        pos.dx - hexSize * 0.2,
+        y - hexSize * 0.15,
+        pos.dx,
+        y,
+      );
+      path.quadraticBezierTo(
+        pos.dx + hexSize * 0.2,
+        y + hexSize * 0.15,
+        pos.dx + hexSize * 0.6,
+        y,
+      );
       canvas.drawPath(path, paint);
     }
   }
@@ -613,7 +781,12 @@ class BattlefieldPainter extends CustomPainter {
   /// upstream to downstream edge, looping via [pulse] (the free-running
   /// _pulseController already used for barrier rings/cloud puffs).
   void _drawConveyorArrows(
-      Canvas canvas, Offset pos, Color color, HexCoord direction, double pulse) {
+    Canvas canvas,
+    Offset pos,
+    Color color,
+    HexCoord direction,
+    double pulse,
+  ) {
     final angle = _directionAngle(direction);
     canvas.save();
     canvas.translate(pos.dx, pos.dy);
@@ -662,12 +835,22 @@ class BattlefieldPainter extends CustomPainter {
     final r = hexSize * 0.5;
     for (int i = 0; i < dashCount; i++) {
       final a0 = (i / dashCount) * 2 * pi;
-      canvas.drawArc(Rect.fromCircle(center: pos, radius: r), a0, (pi / dashCount) * 0.6, false, paint);
+      canvas.drawArc(
+        Rect.fromCircle(center: pos, radius: r),
+        a0,
+        (pi / dashCount) * 0.6,
+        false,
+        paint,
+      );
     }
     final tp = TextPainter(
       text: TextSpan(
         text: '?',
-        style: TextStyle(fontSize: hexSize * 0.32, fontWeight: FontWeight.bold, color: color),
+        style: TextStyle(
+          fontSize: hexSize * 0.32,
+          fontWeight: FontWeight.bold,
+          color: color,
+        ),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
@@ -684,15 +867,26 @@ class BattlefieldPainter extends CustomPainter {
 
   // ── Clouds ──────────────────────────────────────────────────────────────────
 
-  void _drawCloud(Canvas canvas, Offset center, CloudObject cloud, double pulse) {
+  void _drawCloud(
+    Canvas canvas,
+    Offset center,
+    CloudObject cloud,
+    double pulse,
+  ) {
     final color = _colorForCloudKind(cloud.kind);
     for (final coord in _hexesInRadius(cloud.position, cloud.radius)) {
-      final pos  = _hexToPixel(coord, center);
+      final pos = _hexToPixel(coord, center);
       final path = _hexPath(pos);
       // Dark base first so the colored fill reads as saturated rather than
       // washing out against the off-white/tan tile fill underneath it.
-      canvas.drawPath(path, Paint()..color = Colors.black.withValues(alpha: 0.10));
-      canvas.drawPath(path, Paint()..color = color.withValues(alpha: 0.34 + pulse * 0.10));
+      canvas.drawPath(
+        path,
+        Paint()..color = Colors.black.withValues(alpha: 0.10),
+      );
+      canvas.drawPath(
+        path,
+        Paint()..color = color.withValues(alpha: 0.34 + pulse * 0.10),
+      );
       canvas.drawPath(
         path,
         Paint()
@@ -702,9 +896,12 @@ class BattlefieldPainter extends CustomPainter {
       );
 
       for (int i = 0; i < 3; i++) {
-        final jx = (_pseudoRandom(coord.q, coord.r, i * 2) - 0.5) * hexSize * 0.7;
-        final jy = (_pseudoRandom(coord.q, coord.r, i * 2 + 1) - 0.5) * hexSize * 0.7;
-        final puffR = hexSize * (0.16 + 0.05 * _pseudoRandom(coord.q, coord.r, i + 10));
+        final jx =
+            (_pseudoRandom(coord.q, coord.r, i * 2) - 0.5) * hexSize * 0.7;
+        final jy =
+            (_pseudoRandom(coord.q, coord.r, i * 2 + 1) - 0.5) * hexSize * 0.7;
+        final puffR =
+            hexSize * (0.16 + 0.05 * _pseudoRandom(coord.q, coord.r, i + 10));
         canvas.drawCircle(
           pos + Offset(jx, jy),
           puffR + pulse * hexSize * 0.02,
@@ -714,12 +911,26 @@ class BattlefieldPainter extends CustomPainter {
         );
       }
     }
-    _drawCloudBadge(canvas, _hexToPixel(cloud.position, center), cloud.remainingTurns, color);
+    _drawCloudBadge(
+      canvas,
+      _hexToPixel(cloud.position, center),
+      cloud.remainingTurns,
+      color,
+    );
   }
 
-  void _drawCloudBadge(Canvas canvas, Offset pos, int remainingTurns, Color color) {
+  void _drawCloudBadge(
+    Canvas canvas,
+    Offset pos,
+    int remainingTurns,
+    Color color,
+  ) {
     final badgePos = pos + Offset(0, -hexSize * 0.5);
-    canvas.drawCircle(badgePos, hexSize * 0.16, Paint()..color = Colors.black.withValues(alpha: 0.55));
+    canvas.drawCircle(
+      badgePos,
+      hexSize * 0.16,
+      Paint()..color = Colors.black.withValues(alpha: 0.55),
+    );
     canvas.drawCircle(
       badgePos,
       hexSize * 0.16,
@@ -731,7 +942,11 @@ class BattlefieldPainter extends CustomPainter {
     final tp = TextPainter(
       text: TextSpan(
         text: '$remainingTurns',
-        style: TextStyle(fontSize: hexSize * 0.20, fontWeight: FontWeight.bold, color: Colors.white),
+        style: TextStyle(
+          fontSize: hexSize * 0.20,
+          fontWeight: FontWeight.bold,
+          color: Colors.white,
+        ),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
@@ -790,13 +1005,22 @@ class BattlefieldPainter extends CustomPainter {
 
   /// Renders one [CastAnimation] at overall playback fraction [t] (0..1):
   /// fly from the held pending-cast position to the target, then burst.
-  void _drawCastAnimation(Canvas canvas, Offset center, CastAnimation anim, double t) {
+  void _drawCastAnimation(
+    Canvas canvas,
+    Offset center,
+    CastAnimation anim,
+    double t,
+  ) {
     final from = _hexToPixel(anim.fromHex, center);
-    final to   = _hexToPixel(anim.toHex, center);
+    final to = _hexToPixel(anim.toHex, center);
 
     if (t < _kCastTravelEnd) {
       final p = t / _kCastTravelEnd;
-      final pos = Offset.lerp(from, to, Curves.easeInOut.transform(p.clamp(0.0, 1.0)))!;
+      final pos = Offset.lerp(
+        from,
+        to,
+        Curves.easeInOut.transform(p.clamp(0.0, 1.0)),
+      )!;
       _drawCastOrb(canvas, pos, anim.color, radiusScale: 1.0, alpha: 1.0);
     } else {
       final p = (t - _kCastTravelEnd) / (1 - _kCastTravelEnd);
@@ -804,8 +1028,13 @@ class BattlefieldPainter extends CustomPainter {
     }
   }
 
-  void _drawCastOrb(Canvas canvas, Offset pos, Color color,
-      {required double radiusScale, required double alpha}) {
+  void _drawCastOrb(
+    Canvas canvas,
+    Offset pos,
+    Color color, {
+    required double radiusScale,
+    required double alpha,
+  }) {
     final r = hexSize * 0.22 * radiusScale;
     if (r <= 0) return;
     // Outer glow halo.
@@ -859,16 +1088,20 @@ class BattlefieldPainter extends CustomPainter {
   /// [ConveyorChainAnimation.killed], a red burst plays near the very end
   /// instead of the usual air-colored glow.)
   void _drawConveyorChainAnimation(
-      Canvas canvas, Offset center, ConveyorChainAnimation anim, double t) {
+    Canvas canvas,
+    Offset center,
+    ConveyorChainAnimation anim,
+    double t,
+  ) {
     if (anim.path.length < 2) return;
     final segments = anim.path.length - 1;
     final travelT = (t / _kChainTravelEnd).clamp(0.0, 1.0);
-    final travel  = travelT * segments;
-    final idx     = travel.floor().clamp(0, segments - 1);
-    final frac    = (travel - idx).clamp(0.0, 1.0);
+    final travel = travelT * segments;
+    final idx = travel.floor().clamp(0, segments - 1);
+    final frac = (travel - idx).clamp(0.0, 1.0);
     final from = _hexToPixel(anim.path[idx], center);
-    final to   = _hexToPixel(anim.path[idx + 1], center);
-    final pos  = Offset.lerp(from, to, frac)!;
+    final to = _hexToPixel(anim.path[idx + 1], center);
+    final pos = Offset.lerp(from, to, frac)!;
 
     const deathColor = Color(0xFF7A1F1F);
     final airColor = _kElementColor[SpellAffinity.air]!;
@@ -887,7 +1120,10 @@ class BattlefieldPainter extends CustomPainter {
         canvas.drawCircle(
           _hexToPixel(anim.path[i], center),
           hexSize * 0.14,
-          Paint()..color = color.withValues(alpha: (0.22 * (1 - age) * fade).clamp(0.0, 0.22)),
+          Paint()
+            ..color = color.withValues(
+              alpha: (0.22 * (1 - age) * fade).clamp(0.0, 0.22),
+            ),
         );
       }
       _drawCastOrb(canvas, pos, color, radiusScale: 1.0, alpha: fade);
@@ -912,7 +1148,11 @@ class BattlefieldPainter extends CustomPainter {
       b += (c.b * 255.0).round().clamp(0, 255);
     }
     return Color.fromARGB(
-        255, r ~/ affinities.length, g ~/ affinities.length, b ~/ affinities.length);
+      255,
+      r ~/ affinities.length,
+      g ~/ affinities.length,
+      b ~/ affinities.length,
+    );
   }
 
   Path _hexPath(Offset center) {
@@ -932,10 +1172,8 @@ class BattlefieldPainter extends CustomPainter {
   }
 
   // Flat-top axial → pixel (matches HexGridPainter exactly).
-  Offset _hexToPixel(HexCoord coord, Offset center) => Offset(
-        center.dx + hexSize * (3 / 2 * coord.q),
-        center.dy + hexSize * (sqrt(3) / 2 * coord.q + sqrt(3) * coord.r),
-      );
+  Offset _hexToPixel(HexCoord coord, Offset center) =>
+      hexToPixel(coord, center, hexSize);
 
   @override
   bool shouldRepaint(BattlefieldPainter old) =>
@@ -955,5 +1193,9 @@ class BattlefieldPainter extends CustomPainter {
       old.clouds.length != clouds.length ||
       old.directionPickHexes.length != directionPickHexes.length ||
       old.meleePickHexes.length != meleePickHexes.length ||
-      old.conveyorChainAnimations.length != conveyorChainAnimations.length;
+      old.conveyorChainAnimations.length != conveyorChainAnimations.length ||
+      old.hiddenCloudIds.length != hiddenCloudIds.length ||
+      old.hiddenTileHexes.length != hiddenTileHexes.length ||
+      old.hiddenMinionIds.length != hiddenMinionIds.length ||
+      !identical(old.effectBloom, effectBloom);
 }

@@ -69,7 +69,7 @@ import 'package:rune_duel/spells/spell_asset.dart';
 
   final loop = TurnLoop(
     state: state,
-    session: SoloBattleSession(),
+    session: SoloBattleSession(state: state),
     localPlayerId: localId,
     meleeTargetPicker: meleePicker ?? (candidates) async => null,
   );
@@ -250,7 +250,7 @@ void main() {
       final loop = TurnLoop(
         state: state,
         session:
-            SoloBattleSession(dummyAutoCast: true, dummyCastTarget: localPos),
+            SoloBattleSession(state: state, dummyAutoCast: true, dummyCastTarget: localPos),
         localPlayerId: localId,
       );
 

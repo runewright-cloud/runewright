@@ -1339,68 +1339,74 @@ class _ChapterSpellTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final name = spell?.name.isNotEmpty == true ? spell!.name : 'Unnamed Spell';
     final meta = spell != null ? 'Gen ${spell!.t}  ·  ♦ ${spell!.manaCost}' : '';
+    final spellForCard = spell;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
-      child: Container(
-        decoration: BoxDecoration(
-          color: kParchmentPanelColor,
-          border: Border.all(color: kInkColor.withValues(alpha: 0.15)),
-          borderRadius: BorderRadius.circular(4),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 10, 4, 10),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            spell == null ? 'Deleted Spell' : name,
-                            style: TextStyle(
-                              fontFamily: 'serif',
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
-                              color: spell == null
-                                  ? kInkMutedColor
-                                  : kInkColor,
-                              letterSpacing: 0.4,
+      child: GestureDetector(
+        onLongPress: spellForCard == null
+            ? null
+            : () => showSpellCardFullscreen(context, spellForCard),
+        child: Container(
+          decoration: BoxDecoration(
+            color: kParchmentPanelColor,
+            border: Border.all(color: kInkColor.withValues(alpha: 0.15)),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 10, 4, 10),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              spell == null ? 'Deleted Spell' : name,
+                              style: TextStyle(
+                                fontFamily: 'serif',
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                                color: spell == null
+                                    ? kInkMutedColor
+                                    : kInkColor,
+                                letterSpacing: 0.4,
+                              ),
                             ),
                           ),
+                        ],
+                      ),
+                      if (meta.isNotEmpty) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          meta,
+                          style: manuscriptCaptionStyle(
+                                  color: kInkColor.withValues(alpha: 0.6))
+                              .copyWith(fontStyle: FontStyle.normal),
                         ),
                       ],
-                    ),
-                    if (meta.isNotEmpty) ...[
-                      const SizedBox(height: 2),
-                      Text(
-                        meta,
-                        style: manuscriptCaptionStyle(
-                                color: kInkColor.withValues(alpha: 0.6))
-                            .copyWith(fontStyle: FontStyle.normal),
-                      ),
                     ],
+                  ),
+                ),
+                PopupMenuButton<String>(
+                  icon: Icon(
+                    Icons.more_vert,
+                    size: 18,
+                    color: kInkColor.withValues(alpha: 0.45),
+                  ),
+                  onSelected: (_) => onRemove(),
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(
+                      value: 'remove',
+                      child: Text('Remove from Chapter'),
+                    ),
                   ],
                 ),
-              ),
-              PopupMenuButton<String>(
-                icon: Icon(
-                  Icons.more_vert,
-                  size: 18,
-                  color: kInkColor.withValues(alpha: 0.45),
-                ),
-                onSelected: (_) => onRemove(),
-                itemBuilder: (_) => const [
-                  PopupMenuItem(
-                    value: 'remove',
-                    child: Text('Remove from Chapter'),
-                  ),
-                ],
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

@@ -286,6 +286,7 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
           localPlayerId: localId,
           chapter: chapter,
           session: SoloBattleSession(
+            state: setup.state,
             dummyAutoCast: true,
             dummyCastTarget: target,
           ),

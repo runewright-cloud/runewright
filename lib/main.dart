@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/foundation.dart' show ValueListenable;
-import 'package:flutter/gestures.dart' show DragStartBehavior;
+import 'package:flutter/gestures.dart' show DragStartBehavior, PointerDeviceKind;
 import 'package:flutter/material.dart' hide Element;
 import 'package:flutter/services.dart' show rootBundle;
 import 'engine/border_zone.dart';
@@ -33,6 +33,20 @@ Future<void> main() async {
   runApp(const RuneDuelApp());
 }
 
+// Desktop dev builds (`flutter run -d linux`) otherwise can't drag-scroll
+// horizontal lists like the battle spell tray -- MaterialScrollBehavior's
+// default dragDevices excludes mouse/trackpad, touch-only.
+class _AppScrollBehavior extends MaterialScrollBehavior {
+  @override
+  Set<PointerDeviceKind> get dragDevices => {
+        PointerDeviceKind.touch,
+        PointerDeviceKind.mouse,
+        PointerDeviceKind.trackpad,
+        PointerDeviceKind.stylus,
+        PointerDeviceKind.unknown,
+      };
+}
+
 class RuneDuelApp extends StatelessWidget {
   const RuneDuelApp({super.key});
 
@@ -41,6 +55,7 @@ class RuneDuelApp extends StatelessWidget {
     return MaterialApp(
       title: 'Rune Wright',
       debugShowCheckedModeBanner: false,
+      scrollBehavior: _AppScrollBehavior(),
       theme: ThemeData.light().copyWith(
         scaffoldBackgroundColor: const Color(0xFFF5F0E8),
         colorScheme: const ColorScheme.light(
@@ -197,10 +212,16 @@ class _GameScreenState extends State<GameScreen>
     if (coord == null) return;
     if (_isOuter(coord)) return;
     if (_grid.stepCount != 0) return;
+    // Mutating a fresh copy (rather than `_grid.cells` in place) gives this
+    // edit new HexGrid identity, matching every other grid mutation in this
+    // file (step/reset/revert) — HexGridPainter.shouldRepaint relies on that
+    // identity change to know the grid actually changed.
     setState(() {
-      _grid.cells[coord] = _grid.cells[coord] == Element.dead
+      final next = _grid.copy();
+      next.cells[coord] = next.cells[coord] == Element.dead
           ? Element.alive
           : Element.dead;
+      _grid = next;
     });
   }
 
@@ -239,10 +260,13 @@ class _GameScreenState extends State<GameScreen>
     }
     final toActivate = touched.where((c) => _grid.cells[c] != Element.alive);
     if (toActivate.isEmpty) return;
+    // See _onTap: mutate a fresh copy so the grid gets new identity.
     setState(() {
+      final next = _grid.copy();
       for (final coord in toActivate) {
-        _grid.cells[coord] = Element.alive;
+        next.cells[coord] = Element.alive;
       }
+      _grid = next;
     });
   }
 
@@ -545,19 +569,44 @@ class _GameScreenState extends State<GameScreen>
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   final size = Size(constraints.maxWidth, constraints.maxHeight);
-                  return CustomPaint(
-                    key: _paintKey,
-                    painter: HexGridPainter(
-                      grid: _grid,
-                      hexSize: _hexSize(size),
-                      innerRadius: _innerRadius,
-                      activeZone: activeZoneFor(_rules),
-                      activatedBorderCells: _activatedCells,
-                      previousGrid: _previousGrid,
-                      flicker: _flickerCtrl,
-                      growth: _growth,
-                    ),
-                    child: const SizedBox.expand(),
+                  final hexSize = _hexSize(size);
+                  // The background (cell fills + grid lines) is static
+                  // across a step's growth animation, so it's a separate
+                  // painter/RepaintBoundary from the animated ink layer on
+                  // top — it skips the ~45 frame repaints the ink layer's
+                  // animation drives instead of being redrawn every frame.
+                  return Stack(
+                    children: [
+                      Positioned.fill(
+                        child: RepaintBoundary(
+                          child: CustomPaint(
+                            painter: HexGridBackgroundPainter(
+                              grid: _grid,
+                              hexSize: hexSize,
+                              innerRadius: _innerRadius,
+                            ),
+                          ),
+                        ),
+                      ),
+                      Positioned.fill(
+                        child: RepaintBoundary(
+                          child: CustomPaint(
+                            key: _paintKey,
+                            painter: HexGridPainter(
+                              grid: _grid,
+                              hexSize: hexSize,
+                              innerRadius: _innerRadius,
+                              activeZone: activeZoneFor(_rules),
+                              activatedBorderCells: _activatedCells,
+                              previousGrid: _previousGrid,
+                              flicker: _flickerCtrl,
+                              growth: _growth,
+                            ),
+                            child: const SizedBox.expand(),
+                          ),
+                        ),
+                      ),
+                    ],
                   );
                 },
               ),

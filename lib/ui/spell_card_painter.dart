@@ -37,12 +37,12 @@ const _kWaterColor = Color(0xFF2B4D8C); // ultramarine
 const _kEarthColor = Color(0xFF8B6228); // raw umber
 
 Color _elementColor(String element) => switch (element) {
-      'fire' => _kFireColor,
-      'air' => _kAirColor,
-      'water' => _kWaterColor,
-      'earth' => _kEarthColor,
-      _ => kIlluminationGold,
-    };
+  'fire' => _kFireColor,
+  'air' => _kAirColor,
+  'water' => _kWaterColor,
+  'earth' => _kEarthColor,
+  _ => kIlluminationGold,
+};
 
 /// Canonical element order (matches BorderZone) — used as a deterministic
 /// tiebreak when distributing symbols and ordering them around the ring.
@@ -84,13 +84,15 @@ Map<String, int> _formulaAffinityCounts(List<String> formula) {
 /// [formula]'s zone-name entries, parsed into [BorderZone]s (unrecognised
 /// entries dropped) — used to derive a summon's [CreatureSpec].
 List<BorderZone> _borderZoneSequence(List<String> formula) => formula
-    .map((n) => switch (n.toLowerCase()) {
-          'fire' => BorderZone.fire,
-          'earth' => BorderZone.earth,
-          'water' => BorderZone.water,
-          'air' => BorderZone.air,
-          _ => null,
-        })
+    .map(
+      (n) => switch (n.toLowerCase()) {
+        'fire' => BorderZone.fire,
+        'earth' => BorderZone.earth,
+        'water' => BorderZone.water,
+        'air' => BorderZone.air,
+        _ => null,
+      },
+    )
     .whereType<BorderZone>()
     .toList();
 
@@ -143,11 +145,11 @@ Gradient frameGradient(List<String> formula) {
 }
 
 Color _colorForAffinity(SpellAffinity a) => switch (a) {
-      SpellAffinity.fire => _kFireColor,
-      SpellAffinity.air => _kAirColor,
-      SpellAffinity.water => _kWaterColor,
-      SpellAffinity.earth => _kEarthColor,
-    };
+  SpellAffinity.fire => _kFireColor,
+  SpellAffinity.air => _kAirColor,
+  SpellAffinity.water => _kWaterColor,
+  SpellAffinity.earth => _kEarthColor,
+};
 
 /// The fullscreen card's frame gradient: for incantations, the ratio-weighted
 /// blend from [frameGradient]; for summons, a SOLID color from the
@@ -158,7 +160,9 @@ Color _colorForAffinity(SpellAffinity a) => switch (a) {
 Gradient cardFrameGradient(SpellAsset spell) {
   if (!spell.isSummon) return frameGradient(spell.formula);
   final spec = CreatureSpec.fromElements(_borderZoneSequence(spell.formula));
-  final color = spec == null ? kIlluminationGold : _colorForAffinity(spec.affinity);
+  final color = spec == null
+      ? kIlluminationGold
+      : _colorForAffinity(spec.affinity);
   return LinearGradient(colors: [color, color]);
 }
 
@@ -174,7 +178,8 @@ String cardTypeLine(SpellAsset spell) {
   final counts = _formulaAffinityCounts(spell.formula);
   if (counts.isEmpty) return 'Incantation';
   final names = [
-    for (final e in _elementOrder.where(counts.containsKey)) _kElementDisplayName[e]!,
+    for (final e in _elementOrder.where(counts.containsKey))
+      _kElementDisplayName[e]!,
   ];
   return 'Incantation — ${names.join(', ')}';
 }
@@ -220,7 +225,8 @@ List<List<String>> elementSymbolsFor(List<String> formula, int steps) {
   // Leftover units go to the largest fractional remainders; ties become splits.
   final extraFull = <String>[];
   final splits = <List<String>>[];
-  final byFrac = [...elems]..sort((a, b) {
+  final byFrac = [...elems]
+    ..sort((a, b) {
       final c = frac[b]!.compareTo(frac[a]!);
       if (c != 0) return c;
       return _elementOrder.indexOf(a).compareTo(_elementOrder.indexOf(b));
@@ -321,11 +327,14 @@ class SpellCardPainter extends CustomPainter {
     final shieldW = 0.50 * s;
     final shieldH = 0.55 * s;
     final shieldRect = Rect.fromCenter(
-        center: Offset(c.dx, c.dy + shieldH * 0.08),
-        width: shieldW,
-        height: shieldH);
-    SigilPainter(shieldBytes, saturation: saturation)
-        .paintShield(canvas, shieldRect);
+      center: Offset(c.dx, c.dy + shieldH * 0.08),
+      width: shieldW,
+      height: shieldH,
+    );
+    SigilPainter(
+      shieldBytes,
+      saturation: saturation,
+    ).paintShield(canvas, shieldRect);
 
     // Ring of elemental symbols, starting at 12 o'clock and going clockwise.
     for (var i = 0; i < n; i++) {
@@ -353,7 +362,10 @@ class SpellCardPainter extends CustomPainter {
     final c = Offset(size.width / 2, size.height / 2);
     final inset = s * 0.03;
     final rect = Rect.fromCenter(
-        center: c, width: s - inset * 2, height: s - inset * 2);
+      center: c,
+      width: s - inset * 2,
+      height: s - inset * 2,
+    );
     canvas.drawRect(
       rect,
       Paint()
@@ -380,11 +392,15 @@ class SpellCardPainter extends CustomPainter {
     // Split symbol: left half of element A, right half of element B.
     final bounds = Rect.fromCircle(center: center, radius: r * 1.2);
     canvas.save();
-    canvas.clipRect(Rect.fromLTRB(bounds.left, bounds.top, center.dx, bounds.bottom));
+    canvas.clipRect(
+      Rect.fromLTRB(bounds.left, bounds.top, center.dx, bounds.bottom),
+    );
     _drawElementIcon(canvas, center, r, parts[0]);
     canvas.restore();
     canvas.save();
-    canvas.clipRect(Rect.fromLTRB(center.dx, bounds.top, bounds.right, bounds.bottom));
+    canvas.clipRect(
+      Rect.fromLTRB(center.dx, bounds.top, bounds.right, bounds.bottom),
+    );
     _drawElementIcon(canvas, center, r, parts[1]);
     canvas.restore();
     // Dividing line.
@@ -397,18 +413,24 @@ class SpellCardPainter extends CustomPainter {
     );
   }
 
-  void _drawElementIcon(Canvas canvas, Offset center, double r, String element) {
+  void _drawElementIcon(
+    Canvas canvas,
+    Offset center,
+    double r,
+    String element,
+  ) {
     final path = _elementIconPath(element, r);
     canvas.save();
     canvas.translate(center.dx, center.dy);
     canvas.drawPath(path, Paint()..color = _elementColor(element));
     canvas.drawPath(
-        path,
-        Paint()
-          ..color = kInkColor
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = math.max(0.5, r * 0.11)
-          ..strokeJoin = StrokeJoin.round);
+      path,
+      Paint()
+        ..color = kInkColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(0.5, r * 0.11)
+        ..strokeJoin = StrokeJoin.round,
+    );
     canvas.restore();
   }
 
@@ -425,7 +447,8 @@ class SpellCardPainter extends CustomPainter {
       case 'earth':
         return _rock(u);
       default:
-        return Path()..addOval(Rect.fromCircle(center: Offset.zero, radius: u * 0.7));
+        return Path()
+          ..addOval(Rect.fromCircle(center: Offset.zero, radius: u * 0.7));
     }
   }
 
@@ -524,9 +547,9 @@ Uint8List _hexToBytes(String hex) {
 }
 
 SpellCardPainter _painterFor(SpellAsset spell) => SpellCardPainter(
-      shieldBytes: _hexToBytes(spell.commitmentHex),
-      symbols: elementSymbolsFor(spell.formula, spell.t),
-    );
+  shieldBytes: _hexToBytes(spell.commitmentHex),
+  symbols: elementSymbolsFor(spell.formula, spell.t),
+);
 
 /// True iff [spell] has custom art to look up in [SpellArtStore]. Both the
 /// hash pointer and a non-empty key must be present -- the latter guards
@@ -555,16 +578,26 @@ Future<void> showSpellCardFullscreen(
   SpellAsset spell, {
   Duration? autoDismissAfter,
   int? liveHp,
+  Offset? growFrom,
+  Offset? shrinkTo,
 }) {
   return showDialog<void>(
     context: context,
-    barrierColor: Colors.black.withValues(alpha: 0.92),
+    // The resolution-phase reveal ([growFrom] set) grows the card out of the
+    // tile it hit and keeps the battlefield visible behind it — a black-out
+    // there would hide the very thing the card is pointing at. A manually
+    // viewed card still dims the UI so the art reads on its own.
+    barrierColor: growFrom != null
+        ? Colors.transparent
+        : Colors.black.withValues(alpha: 0.92),
     barrierDismissible: true,
     builder: (ctx) => _FullscreenSpellCard(
       spell: spell,
       emblemPainter: _painterFor(spell),
       autoDismissAfter: autoDismissAfter,
       liveHp: liveHp,
+      growFrom: growFrom,
+      shrinkTo: shrinkTo,
     ),
   );
 }
@@ -582,6 +615,8 @@ class _FullscreenSpellCard extends StatefulWidget {
     required this.emblemPainter,
     this.autoDismissAfter,
     this.liveHp,
+    this.growFrom,
+    this.shrinkTo,
   });
 
   final SpellAsset spell;
@@ -589,16 +624,31 @@ class _FullscreenSpellCard extends StatefulWidget {
   final Duration? autoDismissAfter;
   final int? liveHp;
 
+  /// Global-screen point the card should grow out of on entry (the tile a
+  /// resolution-phase spell just hit). Null → the card fades in centered, the
+  /// unchanged behavior for manually-viewed cards.
+  final Offset? growFrom;
+
+  /// Global-screen point the card should reverse-bloom into on exit — where
+  /// its thumbnail lands (the incantation tray, or a summon's grid tile).
+  /// Only used when [growFrom] is set (the resolution reveal); falls back to
+  /// [growFrom] if null there.
+  final Offset? shrinkTo;
+
   @override
   State<_FullscreenSpellCard> createState() => _FullscreenSpellCardState();
 }
 
-class _FullscreenSpellCardState extends State<_FullscreenSpellCard> {
+class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
+    with SingleTickerProviderStateMixin {
   bool _showEmblem = false;
   Future<Uint8List?>? _fullArtFuture;
   Timer? _autoDismissTimer;
+  late final AnimationController _intro;
+  bool _exiting = false;
 
   bool get _hasArt => _hasCustomArt(widget.spell);
+  bool get _animated => widget.growFrom != null;
 
   @override
   void initState() {
@@ -606,67 +656,135 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard> {
     if (_hasArt) {
       _fullArtFuture = SpellArtStore.loadFull(widget.spell.spellHashHex);
     }
+    _intro = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1020),
+    );
+    // Grow out of the hit point when we have one; otherwise present instantly
+    // (manual card views keep their original, un-animated appearance).
+    if (widget.growFrom != null) {
+      _intro.forward();
+    } else {
+      _intro.value = 1.0;
+    }
     final delay = widget.autoDismissAfter;
     if (delay != null) {
-      _autoDismissTimer = Timer(delay, () {
-        if (mounted) Navigator.of(context).pop();
-      });
+      _autoDismissTimer = Timer(delay, _dismiss);
     }
   }
 
   @override
   void dispose() {
     _autoDismissTimer?.cancel();
+    _intro.dispose();
     super.dispose();
+  }
+
+  /// Dismisses the card. For a resolution-reveal card (animated), it first
+  /// reverse-blooms into [widget.shrinkTo] (where its thumbnail lands) at the
+  /// same speed it grew in; a manually-viewed card just pops.
+  Future<void> _dismiss() async {
+    if (_exiting || !mounted) return;
+    if (!_animated) {
+      Navigator.of(context).pop();
+      return;
+    }
+    setState(() => _exiting = true);
+    await _intro.reverse();
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  /// The card content, transformed so it blooms out of [widget.growFrom] on
+  /// entry and reverse-blooms into [widget.shrinkTo] on exit (scale + fade,
+  /// anchored at the relevant tile). [_intro] runs 0→1 in, 1→0 out.
+  Widget _grown(BuildContext context, Widget child) {
+    final growFrom = widget.growFrom;
+    if (growFrom == null) return child;
+    final screen = MediaQuery.of(context).size;
+    Alignment anchorFor(Offset p) => Alignment(
+      (p.dx / screen.width * 2 - 1).clamp(-1.0, 1.0),
+      (p.dy / screen.height * 2 - 1).clamp(-1.0, 1.0),
+    );
+    return AnimatedBuilder(
+      animation: _intro,
+      builder: (ctx, inner) {
+        // Grow from the hit tile; shrink toward the thumbnail's resting spot.
+        final anchor = anchorFor(
+          _exiting ? (widget.shrinkTo ?? growFrom) : growFrom,
+        );
+        final scale = Curves.easeOutCubic.transform(_intro.value);
+        // Fade in on entry, but stay fully opaque on exit — the card shrinks
+        // straight into its (opaque) thumbnail rather than dissolving first.
+        return Opacity(
+          opacity: _exiting ? 1.0 : _intro.value.clamp(0.0, 1.0),
+          child: Transform.scale(
+            scale: 0.04 + 0.96 * scale,
+            alignment: anchor,
+            child: inner,
+          ),
+        );
+      },
+      child: child,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: () => Navigator.of(context).pop(),
-      onHorizontalDragEnd: _hasArt ? (_) => setState(() => _showEmblem = !_showEmblem) : null,
+      onTap: _dismiss,
+      onHorizontalDragEnd: _hasArt
+          ? (_) => setState(() => _showEmblem = !_showEmblem)
+          : null,
       behavior: HitTestBehavior.opaque,
       child: Dialog.fullscreen(
         backgroundColor: Colors.transparent,
-        child: Center(
-          child: Builder(
-            builder: (innerCtx) {
-              final screen = MediaQuery.of(innerCtx).size;
-              final maxW = screen.width * 0.86;
-              final maxH = screen.height * 0.82;
-              // Trading-card portrait aspect (~2.5:3.5), clamped to the screen.
-              const cardAspect = 0.68;
-              var w = maxW;
-              var h = w / cardAspect;
-              if (h > maxH) {
-                h = maxH;
-                w = h * cardAspect;
-              }
-              return Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  SizedBox(
-                    width: w,
-                    height: h,
-                    child: _CardFrame(
-                      spell: widget.spell,
-                      emblemPainter: widget.emblemPainter,
-                      showEmblem: _showEmblem,
-                      hasArt: _hasArt,
-                      fullArtFuture: _fullArtFuture,
-                      liveHp: widget.liveHp,
+        child: _grown(
+          context,
+          Center(
+            child: Builder(
+              builder: (innerCtx) {
+                final screen = MediaQuery.of(innerCtx).size;
+                final maxW = screen.width * 0.86;
+                final maxH = screen.height * 0.82;
+                // Trading-card portrait aspect (~2.5:3.5), clamped to the screen.
+                const cardAspect = 0.68;
+                var w = maxW;
+                var h = w / cardAspect;
+                if (h > maxH) {
+                  h = maxH;
+                  w = h * cardAspect;
+                }
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      width: w,
+                      height: h,
+                      child: _CardFrame(
+                        spell: widget.spell,
+                        emblemPainter: widget.emblemPainter,
+                        showEmblem: _showEmblem,
+                        hasArt: _hasArt,
+                        fullArtFuture: _fullArtFuture,
+                        liveHp: widget.liveHp,
+                      ),
                     ),
-                  ),
-                  if (_hasArt) ...[
-                    const SizedBox(height: 16),
-                    Text(
-                      _showEmblem ? 'Swipe to see the custom art' : 'Swipe to see the true sigil',
-                      style: const TextStyle(color: Colors.white54, fontSize: 13),
-                    ),
+                    if (_hasArt) ...[
+                      const SizedBox(height: 16),
+                      Text(
+                        _showEmblem
+                            ? 'Swipe to see the custom art'
+                            : 'Swipe to see the true sigil',
+                        style: const TextStyle(
+                          color: Colors.white54,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
                   ],
-                ],
-              );
-            },
+                );
+              },
+            ),
           ),
         ),
       ),
@@ -706,11 +824,18 @@ class _CardFrame extends StatelessWidget {
         gradient: cardFrameGradient(spell),
         borderRadius: BorderRadius.circular(14),
         boxShadow: [
-          BoxShadow(color: Colors.black.withValues(alpha: 0.5), blurRadius: 16, offset: const Offset(0, 6)),
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.5),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
+          ),
         ],
       ),
       child: Container(
-        decoration: BoxDecoration(color: kParchmentColor, borderRadius: BorderRadius.circular(9)),
+        decoration: BoxDecoration(
+          color: kParchmentColor,
+          borderRadius: BorderRadius.circular(9),
+        ),
         clipBehavior: Clip.antiAlias,
         child: Column(
           children: [
@@ -725,36 +850,36 @@ class _CardFrame extends StatelessWidget {
   }
 
   Widget _titleBar() => Container(
-        color: kInkColor,
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        child: Row(
-          children: [
-            Expanded(
-              child: Text(
-                spell.name.isEmpty ? 'Unnamed Spell' : spell.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Color(0xFFF5F0E8),
-                  fontFamily: 'serif',
-                  fontWeight: FontWeight.w700,
-                  fontSize: 16,
-                ),
-              ),
+    color: kInkColor,
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+    child: Row(
+      children: [
+        Expanded(
+          child: Text(
+            spell.name.isEmpty ? 'Unnamed Spell' : spell.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Color(0xFFF5F0E8),
+              fontFamily: 'serif',
+              fontWeight: FontWeight.w700,
+              fontSize: 16,
             ),
-            const SizedBox(width: 8),
-            Text(
-              '♦ ${spell.manaCost}',
-              style: const TextStyle(
-                color: kIlluminationGold,
-                fontFamily: 'serif',
-                fontWeight: FontWeight.w700,
-                fontSize: 15,
-              ),
-            ),
-          ],
+          ),
         ),
-      );
+        const SizedBox(width: 8),
+        Text(
+          '♦ ${spell.manaCost}',
+          style: const TextStyle(
+            color: kIlluminationGold,
+            fontFamily: 'serif',
+            fontWeight: FontWeight.w700,
+            fontSize: 15,
+          ),
+        ),
+      ],
+    ),
+  );
 
   Widget _artWindow() {
     if (!hasArt || showEmblem) return CustomPaint(painter: emblemPainter);
@@ -769,43 +894,51 @@ class _CardFrame extends StatelessWidget {
   }
 
   Widget _typeLineBar() => Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-          color: kParchmentPanelColor,
-          border: Border(
-            top: BorderSide(color: kInkColor.withValues(alpha: 0.4)),
-            bottom: BorderSide(color: kInkColor.withValues(alpha: 0.4)),
-          ),
-        ),
-        child: Text(
-          cardTypeLine(spell),
-          style: manuscriptBodyStyle(fontSize: 13).copyWith(fontWeight: FontWeight.w600),
-        ),
-      );
+    width: double.infinity,
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+    decoration: BoxDecoration(
+      color: kParchmentPanelColor,
+      border: Border(
+        top: BorderSide(color: kInkColor.withValues(alpha: 0.4)),
+        bottom: BorderSide(color: kInkColor.withValues(alpha: 0.4)),
+      ),
+    ),
+    child: Text(
+      cardTypeLine(spell),
+      style: manuscriptBodyStyle(
+        fontSize: 13,
+      ).copyWith(fontWeight: FontWeight.w600),
+    ),
+  );
 
   Widget _rulesBox() => Padding(
-        padding: const EdgeInsets.all(10),
-        child: spell.isSummon ? _summonRulesBody() : _incantationRulesBody(),
-      );
+    padding: const EdgeInsets.all(10),
+    child: spell.isSummon ? _summonRulesBody() : _incantationRulesBody(),
+  );
 
   Widget _incantationRulesBody() {
     final effects = formulaEffects(spell.formula);
     if (effects.isEmpty) {
-      return Text('No recorded effects.', style: manuscriptBodyStyle(fontSize: 13, color: kInkMutedColor));
+      return Text(
+        'No recorded effects.',
+        style: manuscriptBodyStyle(fontSize: 13, color: kInkMutedColor),
+      );
     }
     return ListView.separated(
       itemCount: effects.length,
       separatorBuilder: (_, _) => const SizedBox(height: 8),
-      itemBuilder: (context, i) => _ruleLine(effects[i].name, effects[i].description),
+      itemBuilder: (context, i) =>
+          _ruleLine(effects[i].name, effects[i].description),
     );
   }
 
   Widget _summonRulesBody() {
     final spec = CreatureSpec.fromElements(_borderZoneSequence(spell.formula));
     if (spec == null) {
-      return Text('Void Summon — no recorded elements.',
-          style: manuscriptBodyStyle(fontSize: 13, color: kInkMutedColor));
+      return Text(
+        'Void Summon — no recorded elements.',
+        style: manuscriptBodyStyle(fontSize: 13, color: kInkMutedColor),
+      );
     }
     final abilities = spec.abilities.toList();
     return Column(
@@ -826,12 +959,20 @@ class _CardFrame extends StatelessWidget {
         const SizedBox(height: 8),
         Expanded(
           child: abilities.isEmpty
-              ? Text('No abilities.', style: manuscriptBodyStyle(fontSize: 13, color: kInkMutedColor))
+              ? Text(
+                  'No abilities.',
+                  style: manuscriptBodyStyle(
+                    fontSize: 13,
+                    color: kInkMutedColor,
+                  ),
+                )
               : ListView.separated(
                   itemCount: abilities.length,
                   separatorBuilder: (_, _) => const SizedBox(height: 8),
                   itemBuilder: (context, i) => _ruleLine(
-                      kSummonAbilityLabel[abilities[i]]!, kSummonAbilityDescription[abilities[i]]!),
+                    kSummonAbilityLabel[abilities[i]]!,
+                    kSummonAbilityDescription[abilities[i]]!,
+                  ),
                 ),
         ),
       ],
@@ -841,19 +982,24 @@ class _CardFrame extends StatelessWidget {
   Widget _statChip(String label, int value) => _statChipText(label, '$value');
 
   Widget _statChipText(String label, String value) => Text(
-        '$label $value',
-        style: manuscriptBodyStyle(fontSize: 13).copyWith(fontWeight: FontWeight.w700),
-      );
+    '$label $value',
+    style: manuscriptBodyStyle(
+      fontSize: 13,
+    ).copyWith(fontWeight: FontWeight.w700),
+  );
 
   Widget _ruleLine(String name, String description) => RichText(
-        text: TextSpan(
-          style: manuscriptBodyStyle(fontSize: 13),
-          children: [
-            TextSpan(text: '$name: ', style: const TextStyle(fontWeight: FontWeight.w700)),
-            TextSpan(text: description),
-          ],
+    text: TextSpan(
+      style: manuscriptBodyStyle(fontSize: 13),
+      children: [
+        TextSpan(
+          text: '$name: ',
+          style: const TextStyle(fontWeight: FontWeight.w700),
         ),
-      );
+        TextSpan(text: description),
+      ],
+    ),
+  );
 }
 
 /// Default card art for a [SpellAsset].

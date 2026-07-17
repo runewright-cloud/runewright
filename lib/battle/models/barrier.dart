@@ -8,8 +8,13 @@
 // new maximum (not additive) rather than stacking.
 //
 // Both HP and duration gate expiry: whichever runs out first collapses the
-// barrier. EffectApplicator handles the collapse side-effects (Air free-move,
-// Fire-aura tick) and invokes onCollapse on the avatar after collapse.
+// barrier. Fire's aura tick lives in TurnLoop._endOfTurn. Air's free-move
+// grant has two separate paths: a damage-caused collapse ("burst") sets
+// WizardAvatar.pendingFreeMoveBurst in absorbDamage, consumed once per turn
+// by TurnLoop's post-resolution free-move phase (right after Phase 5, before
+// Phase 6); a duration-expiry collapse is flagged by WizardAvatar.tickBarriers
+// but that signal is not yet wired to anything (see the TODO at its call site
+// in TurnLoop._endOfTurn) — out of scope until playtesting asks for it.
 //
 // Barrier HP is drained in element order (fire → earth → water → air) when
 // multiple elements are simultaneously active. The remainder after all barriers

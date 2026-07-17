@@ -489,8 +489,9 @@ class MultiplierCyclesEffect extends SpellEffect {
 ///   Earth affinity: [slowsTarget]=true — each haymaker also imposes −1 move speed
 ///   Water affinity: [drainTargetStatus]=true — each haymaker strips 1 turn from
 ///                   all of the target's active status effects
-///   Air affinity:   [distanceBonusDamage]=true — bonus damage = tiles moved
-///                   toward the target this turn
+///   Air affinity:   [distanceBonusDamage]=true — bonus damage = half the
+///                   tiles actually traversed this turn (path length,
+///                   including conveyor detours), rounded down
 class HaymakerInteractionEffect extends SpellEffect {
   const HaymakerInteractionEffect({
     required this.affinity,

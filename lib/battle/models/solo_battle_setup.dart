@@ -2,9 +2,10 @@
 //
 // solo_battle_setup.dart — shared BattleState construction for single-player
 // sessions (Solo Practice, Spell Test Lab). Builds the two-avatar battlefield
-// (local at bottom vertex, dummy at top vertex) and converts a chapter's
-// artifact loadout into WizardAvatar accoutrements. Extracted from
-// SoloPracticeSettingsScreen so the Spell Test Lab can reuse it exactly.
+// (local at bottom vertex, dummy one tile south of the top vertex) and
+// converts a chapter's artifact loadout into WizardAvatar accoutrements.
+// Extracted from SoloPracticeSettingsScreen so the Spell Test Lab can reuse
+// it exactly.
 
 import 'package:rune_duel/engine/hex_grid.dart';
 
@@ -24,8 +25,9 @@ class SoloBattleSetup {
 }
 
 /// Builds a two-avatar [BattleState] for a solo session: the local player
-/// (bottom vertex) against a static dummy opponent (top vertex), with the
-/// local player's accoutrements derived from [chapter].artifacts.
+/// (bottom vertex) against a static dummy opponent (one tile south of the
+/// top vertex), with the local player's accoutrements derived from
+/// [chapter].artifacts.
 SoloBattleSetup buildSoloBattleState(
   ChapterAsset chapter,
   MatchConfig config, {
@@ -62,7 +64,11 @@ SoloBattleSetup buildSoloBattleState(
   final battlefield = Battlefield(radius: config.gridRadius);
   final spawns = battlefield.spawnPositions(2); // [local=bottom, dummy=top]
   final spawnPos = spawns[0];
-  final dummyPos = spawns[1];
+  // Dummy sits one tile south of the top vertex (toward the local player's
+  // side) so knockback effects — which push away from the caster, i.e.
+  // further north/away — have room to register instead of being clipped
+  // immediately by the battlefield edge.
+  final dummyPos = HexCoord(spawns[1].q, spawns[1].r + 1);
 
   final avatar = WizardAvatar(
     playerId: localId,

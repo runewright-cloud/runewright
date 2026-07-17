@@ -26,8 +26,13 @@ import '../battle/models/barrier.dart';
 import '../battle/models/casting_enhancements.dart';
 import '../battle/models/creature_spec.dart' show summonSummaryFromFormula;
 import '../battle/models/effect_kind.dart'
-    show SpellAffinity, EffectKind, formulaEffects, formulaEffectLabels,
-        kAffinityLabel, primaryFormulaAffinity;
+    show
+        SpellAffinity,
+        EffectKind,
+        formulaEffects,
+        formulaEffectLabels,
+        kAffinityLabel,
+        primaryFormulaAffinity;
 import '../battle/models/hex_battlefield.dart' show hexDistance;
 import '../battle/models/pending_delayed_spell.dart' show PendingDelayedSpell;
 import '../battle/models/terrain.dart' show ImpassableTile, SlowTile;
@@ -52,37 +57,47 @@ enum _InputPhase { action, movement, pickingDirection }
 // ── Artifact display table ────────────────────────────────────────────────────
 
 const _kArtifacts = [
-  (AccoutrementKind.manaGem,       Icons.diamond_outlined,  Color(0xFF2B4D8C), 'Gems'),
-  (AccoutrementKind.bookmark,      Icons.bookmark_outlined, Color(0xFF5588BB), 'Marks'),
-  (AccoutrementKind.absorptionRod, Icons.shield_outlined,   Color(0xFF7A6040), 'Rods'),
-  (AccoutrementKind.counterCharm,  Icons.block,             Color(0xFFB84040), 'Charms'),
+  (AccoutrementKind.manaGem, Icons.diamond_outlined, Color(0xFF2B4D8C), 'Gems'),
+  (
+    AccoutrementKind.bookmark,
+    Icons.bookmark_outlined,
+    Color(0xFF5588BB),
+    'Marks',
+  ),
+  (
+    AccoutrementKind.absorptionRod,
+    Icons.shield_outlined,
+    Color(0xFF7A6040),
+    'Rods',
+  ),
+  (AccoutrementKind.counterCharm, Icons.block, Color(0xFFB84040), 'Charms'),
 ];
 
 // ── Status effect display tables ─────────────────────────────────────────────
 
 const Map<String, String> _kStatusLabel = {
-  StatusEffectId.speedUp:               'Speed+',
-  StatusEffectId.speedDown:             'Speed−',
-  StatusEffectId.highMobility:          'High Mob.',
-  StatusEffectId.highLiquidity:         'High Liq.',
-  StatusEffectId.rangeUp:               'Range+',
-  StatusEffectId.rangeDown:             'Range−',
-  StatusEffectId.penetrating:           'Piercing',
-  StatusEffectId.turbulent:             'Turbulent',
-  StatusEffectId.sluggish:              'Sluggish',
-  StatusEffectId.quick:                 'Quick',
-  StatusEffectId.nextSpellCostDouble:   '2× Cost',
-  StatusEffectId.blind:                 'Blind',
-  StatusEffectId.chainFast:             'Chain+',
-  StatusEffectId.chainSlow:             'Chain−',
-  StatusEffectId.statusDormant:         'Dormant',
-  StatusEffectId.haymakerDot:           'Burning',
-  StatusEffectId.haymakerSlow:          'Slowed',
-  StatusEffectId.haymakerStatusDrain:   'Drained',
+  StatusEffectId.speedUp: 'Speed+',
+  StatusEffectId.speedDown: 'Speed−',
+  StatusEffectId.highMobility: 'High Mob.',
+  StatusEffectId.highLiquidity: 'High Liq.',
+  StatusEffectId.rangeUp: 'Range+',
+  StatusEffectId.rangeDown: 'Range−',
+  StatusEffectId.penetrating: 'Piercing',
+  StatusEffectId.turbulent: 'Turbulent',
+  StatusEffectId.sluggish: 'Sluggish',
+  StatusEffectId.quick: 'Quick',
+  StatusEffectId.nextSpellCostDouble: '2× Cost',
+  StatusEffectId.blind: 'Blind',
+  StatusEffectId.chainFast: 'Chain+',
+  StatusEffectId.chainSlow: 'Chain−',
+  StatusEffectId.statusDormant: 'Dormant',
+  StatusEffectId.haymakerDot: 'Burning',
+  StatusEffectId.haymakerSlow: 'Slowed',
+  StatusEffectId.haymakerStatusDrain: 'Drained',
   StatusEffectId.haymakerDistanceBonus: 'Charging',
-  StatusEffectId.revealCounterCharms:   'See Charms',
-  StatusEffectId.revealSpells:          'See Spells',
-  StatusEffectId.revealTargetTile:      'See Target',
+  StatusEffectId.revealCounterCharms: 'See Charms',
+  StatusEffectId.revealSpells: 'See Spells',
+  StatusEffectId.revealTargetTile: 'See Target',
 };
 
 // Buff IDs render in green; everything else renders in red.
@@ -140,16 +155,16 @@ class _BattleScreenState extends State<BattleScreen>
   // cleared once the turn resolves and _castAnimations takes over for the
   // travel+burst leg (phase B). Null whenever no cast is pending -- see
   // _commitAction / _submitTurn / _pendingCastOrbs.
-  HexCoord?      _pendingCastOrigin;
+  HexCoord? _pendingCastOrigin;
   SpellAffinity? _pendingCastAffinity;
 
   // Turn interaction state — two phases: action then movement.
-  _InputPhase      _phase         = _InputPhase.action;
-  SpellAsset?      _selectedSpell;
-  HexCoord?        _targetHex;    // spell target (action phase)
-  TurnAction?      _pendingAction;
-  List<HexCoord>   _movePath      = const []; // movement path (movement phase)
-  bool             _isBusy        = false;
+  _InputPhase _phase = _InputPhase.action;
+  SpellAsset? _selectedSpell;
+  HexCoord? _targetHex; // spell target (action phase)
+  TurnAction? _pendingAction;
+  List<HexCoord> _movePath = const []; // movement path (movement phase)
+  bool _isBusy = false;
 
   // Airy Scrying Pool reveal (MESH_ARCHITECTURE.md §13b): the opponent's
   // committed spell-target tile for this turn, if an active DivinationLink
@@ -157,7 +172,7 @@ class _BattleScreenState extends State<BattleScreen>
   // _commitAction's TurnLoop.beginTurn() call returns; null otherwise. Shown
   // on the battlefield during the movement phase so the scrying player can
   // make an informed move before submitting the turn.
-  HexCoord?        _scryRevealedTile;
+  HexCoord? _scryRevealedTile;
 
   // Conveyor push-direction prompt (pickingDirection phase): the tile the
   // ConveyorTile is about to be created on, and the completer _onTapBattlefield
@@ -211,17 +226,46 @@ class _BattleScreenState extends State<BattleScreen>
   final List<_PendingMysterySecret> _myPendingMysterySecrets = [];
 
   // Status-effect inspection: null = show local player; non-null = show opponent.
-  WizardAvatar?    _inspectedAvatar;
+  WizardAvatar? _inspectedAvatar;
 
   // Battlefield geometry — tracked from LayoutBuilder so tap handler can convert
-  double _hexSize   = 20;
+  double _hexSize = 20;
   Offset _fieldCenter = Offset.zero;
 
+  // RenderBox key on the battlefield paint area, so a tile's local pixel
+  // (in _fieldCenter/_hexSize space) can be mapped to a global screen point —
+  // used to grow a resolution-phase spell card out of the tile it just hit.
+  final GlobalKey _battlefieldKey = GlobalKey();
+
+  // RenderBox key on the incantation tray, so a resolving card can reverse-
+  // bloom toward where its thumbnail lands (see _thumbnailTarget).
+  final GlobalKey _incantationTrayKey = GlobalKey();
+
+  // Resolution-reveal hold-back: battlefield effects created this turn that
+  // haven't had their spell's card resolve yet. Passed to the painter, which
+  // skips drawing them until _playResolvedSpellSequence reveals each spell's
+  // set. Populated from the resolved events' created* handles at turn end.
+  Set<String> _hiddenCloudIds = const {};
+  Set<HexCoord> _hiddenTileHexes = const {};
+  Set<String> _hiddenMinionIds = const {};
+
+  // The one effect group currently blooming into view (0.5s), scaled up out
+  // of the tile its spell hit. Driven by _effectBloomController; null when no
+  // reveal is in flight.
+  EffectBloom? _effectBloom;
+  late AnimationController _effectBloomController;
+
+  // True while a resolution reveal that will produce at least one incantation
+  // thumbnail is running. Keeps the (possibly still-empty) tray mounted so a
+  // resolving card can measure it and reverse-bloom into the exact slot its
+  // thumbnail will land in — even for the turn's first incantation.
+  bool _revealReservesTray = false;
+
   // ── Sorcerer mode ──────────────────────────────────────────────────────────
-  VocalScorer?  _vocalScorer;
-  double        _ambientFloorRms = 0.0;
-  bool          _isCapturingVoice = false;
-  VocalWord?    _capturingWord;
+  VocalScorer? _vocalScorer;
+  double _ambientFloorRms = 0.0;
+  bool _isCapturingVoice = false;
+  VocalWord? _capturingWord;
 
   /// Capture window for one incantation. Fixed for this pass — see
   /// VocalScorer's lifecycle doc (vocal_scorer.dart) for the begin/end contract.
@@ -232,7 +276,7 @@ class _BattleScreenState extends State<BattleScreen>
     super.initState();
     _loop = TurnLoop(
       state: widget.state,
-      session: widget.session ?? SoloBattleSession(),
+      session: widget.session ?? SoloBattleSession(state: widget.state),
       localPlayerId: widget.localPlayerId,
       isSorcererMode: widget.state.config.sorcererMode,
       meleeTargetPicker: _pickMeleeTarget,
@@ -245,6 +289,10 @@ class _BattleScreenState extends State<BattleScreen>
     _castAnimController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1000),
+    );
+    _effectBloomController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 500),
     );
     _loadSpells();
     if (widget.state.config.sorcererMode) {
@@ -268,6 +316,7 @@ class _BattleScreenState extends State<BattleScreen>
   void dispose() {
     _pulseController.dispose();
     _castAnimController.dispose();
+    _effectBloomController.dispose();
     _vocalScorer?.dispose();
     super.dispose();
   }
@@ -284,7 +333,9 @@ class _BattleScreenState extends State<BattleScreen>
     // library_screen.dart's _addToChapter backfill.
     final resolved = <SpellAsset?>[];
     for (final spell in loaded) {
-      if (spell != null && spell.supremeTags.isEmpty && spell.initialGrid.isNotEmpty) {
+      if (spell != null &&
+          spell.supremeTags.isEmpty &&
+          spell.initialGrid.isNotEmpty) {
         final derived = deriveSupremeTags(spell);
         if (derived.isNotEmpty) {
           final updated = spell.withSupremeTags(derived.toList());
@@ -299,9 +350,8 @@ class _BattleScreenState extends State<BattleScreen>
     setState(() => _spells = resolved);
   }
 
-  WizardAvatar? get _local => widget.state.avatars
-      .cast<WizardAvatar?>()
-      .firstWhere(
+  WizardAvatar? get _local =>
+      widget.state.avatars.cast<WizardAvatar?>().firstWhere(
         (a) => a?.playerId == widget.localPlayerId,
         orElse: () => null,
       );
@@ -334,10 +384,12 @@ class _BattleScreenState extends State<BattleScreen>
     final origin = _pendingCastOrigin;
     final affinity = _pendingCastAffinity;
     if (origin != null && affinity != null) {
-      orbs.add(PendingCastOrb(
-        origin: origin,
-        color: BattlefieldPainter.colorForAffinity(affinity),
-      ));
+      orbs.add(
+        PendingCastOrb(
+          origin: origin,
+          color: BattlefieldPainter.colorForAffinity(affinity),
+        ),
+      );
     }
     for (final pending in widget.state.pendingDelayedSpells) {
       final pendingAffinity = primaryFormulaAffinity(pending.spell.formula);
@@ -345,11 +397,15 @@ class _BattleScreenState extends State<BattleScreen>
       final caster = widget.state.avatars
           .where((a) => a.playerId == pending.ownerId)
           .firstOrNull;
-      orbs.add(PendingCastOrb(
-        origin: pending.origin,
-        color: BattlefieldPainter.colorForAffinity(pendingAffinity),
-        rangeRadius: caster != null ? _maxCastRange(caster, pending.origin) : 0,
-      ));
+      orbs.add(
+        PendingCastOrb(
+          origin: pending.origin,
+          color: BattlefieldPainter.colorForAffinity(pendingAffinity),
+          rangeRadius: caster != null
+              ? _maxCastRange(caster, pending.origin)
+              : 0,
+        ),
+      );
     }
     return orbs;
   }
@@ -376,7 +432,7 @@ class _BattleScreenState extends State<BattleScreen>
   }
 
   static double _hexSizeFromConstraints(Size available, int radius) {
-    final byWidth  = available.width  / (3 * radius + 2);
+    final byWidth = available.width / (3 * radius + 2);
     final byHeight = available.height / (sqrt(3) * (2 * radius + 1));
     return min(byWidth, byHeight).clamp(6.0, 36.0);
   }
@@ -389,21 +445,21 @@ class _BattleScreenState extends State<BattleScreen>
   }
 
   void _resetTurn() {
-    _phase          = _InputPhase.action;
-    _selectedSpell  = null;
-    _targetHex      = null;
-    _pendingAction  = null;
-    _movePath       = const [];
-    _isBusy         = false;
+    _phase = _InputPhase.action;
+    _selectedSpell = null;
+    _targetHex = null;
+    _pendingAction = null;
+    _movePath = const [];
+    _isBusy = false;
     _selectedEnhancement = null;
-    _mysteryDelay   = 0;
+    _mysteryDelay = 0;
     // Phase A of the held cast orb ends here -- on success, _submitTurn's
     // caller populates _castAnimations right after this for phase B; on
     // failure (turn never committed), there's nothing left to hold.
-    _pendingCastOrigin   = null;
+    _pendingCastOrigin = null;
     _pendingCastAffinity = null;
-    _scryRevealedTile    = null;
-    _submittingPhase     = null;
+    _scryRevealedTile = null;
+    _submittingPhase = null;
   }
 
   // ── Phase banner / engine phase notifications ─────────────────────────────────
@@ -448,7 +504,9 @@ class _BattleScreenState extends State<BattleScreen>
   String get _phaseLabel {
     if (_pickingMelee) return 'Resolution';
     if (_isBusy) {
-      return _submittingPhase == TurnPhase.actionResolve ? 'Resolution' : 'Summons';
+      return _submittingPhase == TurnPhase.actionResolve
+          ? 'Resolution'
+          : 'Summons';
     }
     return switch (_phase) {
       _InputPhase.action => 'Main',
@@ -473,8 +531,8 @@ class _BattleScreenState extends State<BattleScreen>
   void _commitAction(TurnAction action) {
     setState(() {
       _pendingAction = action;
-      _phase         = _InputPhase.movement;
-      _movePath      = const [];
+      _phase = _InputPhase.movement;
+      _movePath = const [];
       _scryRevealedTile = null;
       // Same-turn cast, phase A: hold a pulsing orb at the cast tile from
       // the moment the cast is confirmed (before movement/resolution) until
@@ -484,7 +542,7 @@ class _BattleScreenState extends State<BattleScreen>
       // _pendingCastOrbs), since it must persist across turns and be visible
       // to the opponent too.
       if (action case SpellCastAction(:final spell) when _local != null) {
-        _pendingCastOrigin   = _local!.position;
+        _pendingCastOrigin = _local!.position;
         _pendingCastAffinity = primaryFormulaAffinity(spell.formula);
       }
     });
@@ -509,9 +567,9 @@ class _BattleScreenState extends State<BattleScreen>
       _loop.cancelPendingTurn();
       if (!mounted) return;
       setState(_resetTurn);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Turn error: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Turn error: $e')));
       return;
     }
     if (!mounted || _phase != _InputPhase.movement) return;
@@ -522,7 +580,7 @@ class _BattleScreenState extends State<BattleScreen>
   void _onMeditateMain() => _commitAction(MeditateAction());
 
   Future<void> _onCast() async {
-    final spell  = _selectedSpell;
+    final spell = _selectedSpell;
     final target = _targetHex;
     if (spell == null || target == null) return;
 
@@ -542,8 +600,8 @@ class _BattleScreenState extends State<BattleScreen>
       if (!mounted) return;
     }
 
-    final isPotent     = _selectedEnhancement == 'fire';
-    final isVelocity   = _selectedEnhancement == 'air';
+    final isPotent = _selectedEnhancement == 'fire';
+    final isVelocity = _selectedEnhancement == 'air';
     final isEfficiency = _selectedEnhancement == 'water';
 
     final scorer = _vocalScorer;
@@ -554,28 +612,32 @@ class _BattleScreenState extends State<BattleScreen>
       // Wizard mode, or sorcerer mode before calibration finishes, or a
       // formula with no recognised primary affinity (e.g. wild magic) — cast
       // with no vocal component rather than block the player.
-      _commitAction(SpellCastAction(
-        spell: spell,
-        targetHex: target,
-        isPotent: isPotent,
-        isVelocity: isVelocity,
-        isEfficiency: isEfficiency,
-        conveyorDirection: conveyorDirection,
-      ));
+      _commitAction(
+        SpellCastAction(
+          spell: spell,
+          targetHex: target,
+          isPotent: isPotent,
+          isVelocity: isVelocity,
+          isEfficiency: isEfficiency,
+          conveyorDirection: conveyorDirection,
+        ),
+      );
       return;
     }
 
     setState(() {
       _isCapturingVoice = true;
-      _capturingWord    = word;
+      _capturingWord = word;
     });
     await scorer.beginCapture(word);
     await Future<void>.delayed(_voiceCaptureWindow);
-    final vocalScore = await scorer.endCapture(ambientFloorRms: _ambientFloorRms);
+    final vocalScore = await scorer.endCapture(
+      ambientFloorRms: _ambientFloorRms,
+    );
     if (!mounted) return;
     setState(() {
       _isCapturingVoice = false;
-      _capturingWord    = null;
+      _capturingWord = null;
     });
 
     // Somatic/gesture seam (lib/sorcerer/gesture.dart) — stubbed off, since
@@ -598,7 +660,8 @@ class _BattleScreenState extends State<BattleScreen>
         hasVelocityLoadout: isVelocity,
         hasEfficiencyLoadout: isEfficiency,
       );
-      final q = (vocalScore.pronunciationU8 + vocalScore.volumeU8) / (2 * 254.0);
+      final q =
+          (vocalScore.pronunciationU8 + vocalScore.volumeU8) / (2 * 254.0);
       debugPrint(
         '[sorcerer] word=${word.name} '
         'rawPronunciation=${vocalScore.pronunciation.toStringAsFixed(4)} '
@@ -611,22 +674,28 @@ class _BattleScreenState extends State<BattleScreen>
       );
     }
 
-    _commitAction(SpellCastAction(
-      spell: spell,
-      targetHex: target,
-      isPotent: isPotent,
-      isVelocity: isVelocity,
-      isEfficiency: isEfficiency,
-      vocalScore: vocalScore,
-      conveyorDirection: conveyorDirection,
-    ));
+    _commitAction(
+      SpellCastAction(
+        spell: spell,
+        targetHex: target,
+        isPotent: isPotent,
+        isVelocity: isVelocity,
+        isEfficiency: isEfficiency,
+        vocalScore: vocalScore,
+        conveyorDirection: conveyorDirection,
+      ),
+    );
   }
 
   /// Whether casting [spell] will resolve to an Air-flavor tileModification
   /// effect (always a ConveyorTile for that pairing) -- pure/cheap, needs
   /// only the spell's own formula (see effect_kind.dart formulaEffects).
-  bool _spellNeedsConveyorDirection(SpellAsset spell) => formulaEffects(spell.formula).any(
-      (e) => e.kind == EffectKind.tileModification && e.affinity == SpellAffinity.air);
+  bool _spellNeedsConveyorDirection(SpellAsset spell) =>
+      formulaEffects(spell.formula).any(
+        (e) =>
+            e.kind == EffectKind.tileModification &&
+            e.affinity == SpellAffinity.air,
+      );
 
   /// Prompts the caster to choose a push direction for the ConveyorTile
   /// about to be created at [origin], by tapping one of its 6 highlighted
@@ -656,9 +725,13 @@ class _BattleScreenState extends State<BattleScreen>
   /// that _submitTurn reveals automatically once its fireTurn arrives.
   Future<void> _onCastMystery(SpellAsset spell, HexCoord target) async {
     final rng = Random.secure();
-    final nonce = Uint8List.fromList(List<int>.generate(16, (_) => rng.nextInt(256)));
+    final nonce = Uint8List.fromList(
+      List<int>.generate(16, (_) => rng.nextInt(256)),
+    );
     final commitment = await PendingDelayedSpell.commitmentHash(
-      target: target, delay: _mysteryDelay, nonce: nonce,
+      target: target,
+      delay: _mysteryDelay,
+      nonce: nonce,
     );
     final isImmediate = _mysteryDelay == 0;
 
@@ -677,35 +750,41 @@ class _BattleScreenState extends State<BattleScreen>
         ? VocalWord.fromAffinityZone(spell.formula.first)
         : null;
     if (!widget.state.config.sorcererMode || scorer == null || word == null) {
-      _commitAction(MysterySpellCastAction(
-        spell: spell,
-        mysteryCommitment: commitment,
-        immediateTarget: isImmediate ? target : null,
-        immediateNonce: isImmediate ? nonce : null,
-      ));
+      _commitAction(
+        MysterySpellCastAction(
+          spell: spell,
+          mysteryCommitment: commitment,
+          immediateTarget: isImmediate ? target : null,
+          immediateNonce: isImmediate ? nonce : null,
+        ),
+      );
       return;
     }
 
     setState(() {
       _isCapturingVoice = true;
-      _capturingWord    = word;
+      _capturingWord = word;
     });
     await scorer.beginCapture(word);
     await Future<void>.delayed(_voiceCaptureWindow);
-    final vocalScore = await scorer.endCapture(ambientFloorRms: _ambientFloorRms);
+    final vocalScore = await scorer.endCapture(
+      ambientFloorRms: _ambientFloorRms,
+    );
     if (!mounted) return;
     setState(() {
       _isCapturingVoice = false;
-      _capturingWord    = null;
+      _capturingWord = null;
     });
 
-    _commitAction(MysterySpellCastAction(
-      spell: spell,
-      mysteryCommitment: commitment,
-      immediateTarget: isImmediate ? target : null,
-      immediateNonce: isImmediate ? nonce : null,
-      vocalScore: vocalScore,
-    ));
+    _commitAction(
+      MysterySpellCastAction(
+        spell: spell,
+        mysteryCommitment: commitment,
+        immediateTarget: isImmediate ? target : null,
+        immediateNonce: isImmediate ? nonce : null,
+        vocalScore: vocalScore,
+      ),
+    );
   }
 
   // ── Movement phase ────────────────────────────────────────────────────────────
@@ -731,7 +810,8 @@ class _BattleScreenState extends State<BattleScreen>
       }
     }
     // Only hold an override for non-local avatars.
-    final isOpponent = occupant != null && occupant.playerId != widget.localPlayerId;
+    final isOpponent =
+        occupant != null && occupant.playerId != widget.localPlayerId;
     setState(() => _inspectedAvatar = isOpponent ? occupant : null);
   }
 
@@ -740,10 +820,16 @@ class _BattleScreenState extends State<BattleScreen>
   /// any cloud (or carries the lingering Earth-flavor restriction status), or
   /// if [hex] is inside any cloud; otherwise [caster]'s normal spell range.
   int _maxCastRange(WizardAvatar caster, HexCoord hex) {
-    final casterBound = caster.activeStatusEffects
-            .any((fx) => fx.effectTypeId == StatusEffectId.cloudBoundTargeting) ||
-        widget.state.clouds.any((c) => hexDistance(caster.position, c.position) <= c.radius);
-    final hexBound = widget.state.clouds.any((c) => hexDistance(hex, c.position) <= c.radius);
+    final casterBound =
+        caster.activeStatusEffects.any(
+          (fx) => fx.effectTypeId == StatusEffectId.cloudBoundTargeting,
+        ) ||
+        widget.state.clouds.any(
+          (c) => hexDistance(caster.position, c.position) <= c.radius,
+        );
+    final hexBound = widget.state.clouds.any(
+      (c) => hexDistance(hex, c.position) <= c.radius,
+    );
     return (casterBound || hexBound) ? 1 : caster.effectiveSpellRange;
   }
 
@@ -824,7 +910,8 @@ class _BattleScreenState extends State<BattleScreen>
       if (tileEffect is ImpassableTile) return;
       // Must fit within remaining move budget (pushes are free, already
       // reflected in prediction.budgetRemaining).
-      final stepCost = 1 + (tileEffect is SlowTile ? tileEffect.extraMoveCost : 0);
+      final stepCost =
+          1 + (tileEffect is SlowTile ? tileEffect.extraMoveCost : 0);
       if (stepCost > prediction.budgetRemaining) return;
 
       setState(() => _movePath = [..._movePath, hex]);
@@ -854,15 +941,18 @@ class _BattleScreenState extends State<BattleScreen>
     // this call is about to produce (state.turnNumber increments as the
     // very first step of TurnLoop.runTurn — see its doc comment).
     final upcomingTurn = widget.state.turnNumber + 1;
-    final dueSecrets =
-        _myPendingMysterySecrets.where((s) => s.fireTurn == upcomingTurn).toList();
+    final dueSecrets = _myPendingMysterySecrets
+        .where((s) => s.fireTurn == upcomingTurn)
+        .toList();
     final reveals = dueSecrets
-        .map((s) => DelayedSpellReveal(
-              pendingSpellId: s.id,
-              targetTile: s.target,
-              delay: s.delay,
-              nonce: s.nonce,
-            ))
+        .map(
+          (s) => DelayedSpellReveal(
+            pendingSpellId: s.id,
+            targetTile: s.target,
+            delay: s.delay,
+            nonce: s.nonce,
+          ),
+        )
         .toList();
 
     final input = TurnInput(
@@ -879,24 +969,39 @@ class _BattleScreenState extends State<BattleScreen>
       _myPendingMysterySecrets.removeWhere(dueSecrets.contains);
       if (staged != null) _myPendingMysterySecrets.add(staged);
       _stagedMysterySecret = null;
-      final casts = _loop.lastCastEvents
-          .map((e) => CastAnimation(
-                fromHex: e.fromHex,
-                toHex:   e.toHex,
-                color:   BattlefieldPainter.colorForAffinity(e.affinity),
-              ))
-          .toList();
+      // Snapshot both event streams; the staggered reveal below plays one
+      // spell's orb + card at a time, so it needs the raw cast events (with
+      // casterId, to correlate each orb with its resolved spell) — not a
+      // pre-flattened orb list. Conveyor chains have no card, so they still
+      // play together up front.
+      final castEvents = List<SpellCastEvent>.from(_loop.lastCastEvents);
       final chains = _loop.lastConveyorChainEvents
           .map((e) => ConveyorChainAnimation(path: e.path, killed: e.killed))
           .toList();
       final resolved = List<ResolvedSpellEvent>.from(_loop.lastResolvedSpells);
+      // Hold every effect created this turn off the field; the reveal sequence
+      // un-hides each spell's set (and blooms it) only once that spell's card
+      // has finished. See _playResolvedSpellSequence / _bloomSpellEffects.
+      final hiddenClouds = <String>{};
+      final hiddenTiles = <HexCoord>{};
+      final hiddenMinions = <String>{};
+      for (final ev in resolved) {
+        hiddenClouds.addAll(ev.createdCloudIds);
+        hiddenTiles.addAll(ev.createdTileHexes);
+        hiddenMinions.addAll(ev.createdMinionIds);
+      }
       setState(() {
         _resetTurn();
-        _castAnimations = casts;
+        _castAnimations = const [];
         _conveyorChainAnimations = chains;
+        _hiddenCloudIds = hiddenClouds;
+        _hiddenTileHexes = hiddenTiles;
+        _hiddenMinionIds = hiddenMinions;
+        _effectBloom = null;
       });
-      if (casts.isNotEmpty || chains.isNotEmpty) _castAnimController.forward(from: 0);
-      if (resolved.isNotEmpty) unawaited(_playResolvedSpellSequence(resolved));
+      if (resolved.isNotEmpty || chains.isNotEmpty) {
+        unawaited(_playResolvedSpellSequence(resolved, castEvents, chains));
+      }
     } catch (e) {
       if (!mounted) return;
       // Turn never committed — discard the not-yet-real staged secret rather
@@ -904,9 +1009,9 @@ class _BattleScreenState extends State<BattleScreen>
       // for (dueSecrets are left in place; they'll be retried next submit).
       _stagedMysterySecret = null;
       setState(_resetTurn);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Turn error: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Turn error: $e')));
     }
   }
 
@@ -914,21 +1019,81 @@ class _BattleScreenState extends State<BattleScreen>
 
   /// Plays the MtG-style card reveal for each spell resolved this turn, in
   /// resolution order (design: "fewest step count first, ties by hash" --
-  /// already the order TurnLoop.lastResolvedSpells is in): the full card for
-  /// 2 seconds, then either a neutral-tray thumbnail (incantation) or an
-  /// on-grid thumbnail (summon — drawn straight from state.minions once
-  /// _summonSpellByMinionId records which spell created it; no separate
-  /// on-grid list needed). Clears the previous turn's tray first ("at the
-  /// end of turn clear away those thumbnails").
-  Future<void> _playResolvedSpellSequence(List<ResolvedSpellEvent> events) async {
+  /// already the order TurnLoop.lastResolvedSpells is in). Each spell resolves
+  /// one at a time and in full: its cast orb flies out and hits, its card
+  /// grows out of the hit tile and holds for 2 seconds, then the next spell's
+  /// orb goes off. Afterwards the card becomes a neutral-tray thumbnail
+  /// (incantation) or is recorded for its on-grid summon. Conveyor chains have
+  /// no card, so they play together up front. Clears the previous turn's tray
+  /// first ("at the end of turn clear away those thumbnails").
+  ///
+  /// [castEvents] is the raw cast-event stream. It's a subsequence of [events]
+  /// in the same resolution order (a resolved spell has an orb only when its
+  /// formula has an elemental affinity), so a single advancing cursor matches
+  /// each spell to its orb — see the (casterId, targetHex) guard below.
+  Future<void> _playResolvedSpellSequence(
+    List<ResolvedSpellEvent> events,
+    List<SpellCastEvent> castEvents,
+    List<ConveyorChainAnimation> chains,
+  ) async {
     if (!mounted) return;
-    setState(() => _incantationTray = []);
+    // Reserve the tray for the whole reveal if any incantation will land in it,
+    // so even the first one's card can measure the tray and shrink into its
+    // real slot (rather than falling back to a bottom-of-screen guess).
+    setState(() {
+      _incantationTray = [];
+      _revealReservesTray = events.any((e) => !e.isSummon);
+    });
+
+    final castMs = _castAnimController.duration?.inMilliseconds ?? 1000;
+    final impact = Duration(
+      milliseconds: (castMs * kCastOrbImpactFraction).round(),
+    );
+
+    // Conveyor pushes have no card to reveal — play them together first, then
+    // clear them so they don't replay under each staggered spell orb (both
+    // ride the shared _castAnimController).
+    if (chains.isNotEmpty) {
+      await _castAnimController.forward(from: 0);
+      if (!mounted) return;
+      setState(() => _conveyorChainAnimations = const []);
+    }
+
+    var castCursor = 0;
     for (final ev in events) {
       if (!mounted) return;
+
+      // This spell's orb, if it has one (see the [castEvents] doc note).
+      final cast =
+          castCursor < castEvents.length &&
+              castEvents[castCursor].casterId == ev.casterId &&
+              castEvents[castCursor].toHex == ev.targetHex
+          ? castEvents[castCursor++]
+          : null;
+
+      // Fly the orb out and let it reach its target before the card grows out
+      // of the burst (the burst's tail plays behind the card's barrier).
+      if (cast != null) {
+        setState(
+          () => _castAnimations = [
+            CastAnimation(
+              fromHex: cast.fromHex,
+              toHex: cast.toHex,
+              color: BattlefieldPainter.colorForAffinity(cast.affinity),
+            ),
+          ],
+        );
+        _castAnimController.forward(from: 0);
+        await Future<void>.delayed(impact);
+        if (!mounted) return;
+      }
+
       await showSpellCardFullscreen(
         context,
         ev.spell,
         autoDismissAfter: const Duration(seconds: 2),
+        growFrom: _tileGlobalCenter(ev.targetHex),
+        shrinkTo: _thumbnailTarget(ev),
       );
       if (!mounted) return;
       setState(() {
@@ -942,7 +1107,90 @@ class _BattleScreenState extends State<BattleScreen>
           ];
         }
       });
+
+      // Now that the card has finished, let this spell's created effects
+      // (clouds/terrain/summons) bloom out of the cast tile before the next
+      // orb launches.
+      await _bloomSpellEffects(ev);
+      if (!mounted) return;
     }
+
+    // Clear the last spell's orb and reveal anything still held back (defensive
+    // — every created handle should already have bloomed via its event).
+    if (mounted) {
+      setState(() {
+        _castAnimations = const [];
+        _hiddenCloudIds = const {};
+        _hiddenTileHexes = const {};
+        _hiddenMinionIds = const {};
+        _effectBloom = null;
+        _revealReservesTray = false;
+      });
+    }
+  }
+
+  /// Un-hides the battlefield effects [ev] created and scales them up out of
+  /// its cast tile over [_effectBloomController]'s 0.5s. No-op for a spell that
+  /// created nothing (a pure damage/status incantation).
+  Future<void> _bloomSpellEffects(ResolvedSpellEvent ev) async {
+    final cloudIds = ev.createdCloudIds.toSet();
+    final tileHexes = ev.createdTileHexes.toSet();
+    final minionIds = ev.createdMinionIds.toSet();
+    if (cloudIds.isEmpty && tileHexes.isEmpty && minionIds.isEmpty) return;
+    if (!mounted) return;
+    setState(() {
+      _hiddenCloudIds = _hiddenCloudIds.difference(cloudIds);
+      _hiddenTileHexes = _hiddenTileHexes.difference(tileHexes);
+      _hiddenMinionIds = _hiddenMinionIds.difference(minionIds);
+      _effectBloom = EffectBloom(
+        origin: ev.targetHex,
+        cloudIds: cloudIds,
+        tileHexes: tileHexes,
+        minionIds: minionIds,
+      );
+    });
+    await _effectBloomController.forward(from: 0);
+    if (!mounted) return;
+    setState(() => _effectBloom = null);
+  }
+
+  /// Global-screen pixel center of [hex] on the battlefield, or null if the
+  /// battlefield hasn't been laid out yet. Uses the same hex→pixel mapping the
+  /// painter does (in _fieldCenter/_hexSize space) then lifts it to global
+  /// coordinates via the battlefield's RenderBox — so a resolution card can
+  /// grow out of the exact tile the spell hit.
+  Offset? _tileGlobalCenter(HexCoord hex) {
+    final box =
+        _battlefieldKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return null;
+    return box.localToGlobal(hexToPixel(hex, _fieldCenter, _hexSize));
+  }
+
+  /// Where [ev]'s card should reverse-bloom to as it resolves — the spot its
+  /// thumbnail comes to rest. A summon lives on the grid, so its own tile; an
+  /// incantation drops into the next open slot of the left-aligned tray, which
+  /// we compute from the tray box + the slot index (the thumbnail isn't added
+  /// until after the card, so the current tray length *is* its index).
+  Offset? _thumbnailTarget(ResolvedSpellEvent ev) {
+    final summonPos = ev.summonPosition;
+    if (ev.isSummon && summonPos != null) return _tileGlobalCenter(summonPos);
+
+    final box =
+        _incantationTrayKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box != null && box.hasSize) {
+      // _IncantationTray geometry: 8px horizontal padding, 48px thumbnails,
+      // 8px separators, laid out left→right in resolution order.
+      const pad = 8.0, thumb = 48.0, sep = 8.0;
+      final index = _incantationTray.length;
+      final topLeft = box.localToGlobal(Offset.zero);
+      final x = topLeft.dx + pad + index * (thumb + sep) + thumb / 2;
+      final y = topLeft.dy + box.size.height / 2;
+      return Offset(x, y);
+    }
+
+    // Tray not laid out yet (shouldn't happen while reserved) — aim bottom-left.
+    final size = MediaQuery.of(context).size;
+    return Offset(40, size.height - 40);
   }
 
   /// Long-press on the battlefield: re-opens a live summon's card (with
@@ -965,9 +1213,9 @@ class _BattleScreenState extends State<BattleScreen>
 
   @override
   Widget build(BuildContext context) {
-    final local  = _local;
+    final local = _local;
     final config = widget.state.config;
-    final foes   = _opponents;
+    final foes = _opponents;
 
     return Scaffold(
       backgroundColor: const Color(0xFF1A1008),
@@ -981,7 +1229,9 @@ class _BattleScreenState extends State<BattleScreen>
           onPressed: () => Navigator.of(context).pop(),
         ),
         title: Text(
-          widget.state.turnNumber == 0 ? 'BATTLE' : 'TURN ${widget.state.turnNumber}',
+          widget.state.turnNumber == 0
+              ? 'BATTLE'
+              : 'TURN ${widget.state.turnNumber}',
           style: manuscriptHeaderStyle(fontSize: 18, color: kParchmentColor),
         ),
       ),
@@ -1000,29 +1250,31 @@ class _BattleScreenState extends State<BattleScreen>
           Expanded(
             child: LayoutBuilder(
               builder: (ctx, constraints) {
-                final size  = Size(constraints.maxWidth, constraints.maxHeight);
+                final size = Size(constraints.maxWidth, constraints.maxHeight);
                 final hSize = _hexSizeFromConstraints(size, config.gridRadius);
                 final center = Offset(size.width / 2, size.height / 2);
                 // Store for tap handler (accessed on next frame — safe because
                 // the values only change on resize, not during a turn).
-                _hexSize    = hSize;
+                _hexSize = hSize;
                 _fieldCenter = center;
                 return GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onTapUp: (d) => _onTapBattlefield(d.localPosition),
-                  onLongPressStart: (d) => _onLongPressBattlefield(d.localPosition),
+                  onLongPressStart: (d) =>
+                      _onLongPressBattlefield(d.localPosition),
                   child: CustomPaint(
+                    key: _battlefieldKey,
                     painter: BattlefieldPainter(
-                      radius:           config.gridRadius,
-                      hexSize:          hSize,
-                      occupancy:        widget.state.battlefield.occupancy,
-                      localPlayerId:    widget.localPlayerId,
-                      highlightHex:     _targetHex,
+                      radius: config.gridRadius,
+                      hexSize: hSize,
+                      occupancy: widget.state.battlefield.occupancy,
+                      localPlayerId: widget.localPlayerId,
+                      highlightHex: _targetHex,
                       // Renders the *simulated* path (including any free
                       // conveyor push-throughs), not just the raw tiles
                       // tapped, so the player sees where they'll actually
                       // end up -- see predictAvatarMove.
-                      movePath:         _local != null
+                      movePath: _local != null
                           ? predictAvatarMove(
                               state: widget.state,
                               origin: _local!.position,
@@ -1031,27 +1283,42 @@ class _BattleScreenState extends State<BattleScreen>
                             ).path.skip(1).toList()
                           : _movePath,
                       spellRangeRadius: _selectedSpell != null && _local != null
-                          ? _maxCastRange(_local!, _local!.position) : 0,
-                      casterPos:        _local?.position,
-                      minions:          widget.state.minions.where((m) => m.isAlive).toList(),
-                      localTeamId:      _local?.teamId,
-                      barrierRings:     _barrierRings(),
-                      pulseAnimation:   _pulseController,
-                      castAnimations:   _castAnimations,
-                      castAnimation:    _castAnimController,
-                      tileEffects:      widget.state.tileEffects,
-                      clouds:           widget.state.clouds,
-                      directionPickHexes: _phase == _InputPhase.pickingDirection &&
+                          ? _maxCastRange(_local!, _local!.position)
+                          : 0,
+                      casterPos: _local?.position,
+                      minions: widget.state.minions
+                          .where((m) => m.isAlive)
+                          .toList(),
+                      localTeamId: _local?.teamId,
+                      barrierRings: _barrierRings(),
+                      pulseAnimation: _pulseController,
+                      castAnimations: _castAnimations,
+                      castAnimation: _castAnimController,
+                      tileEffects: widget.state.tileEffects,
+                      clouds: widget.state.clouds,
+                      directionPickHexes:
+                          _phase == _InputPhase.pickingDirection &&
                               _conveyorPickOrigin != null
                           ? HexGrid.directions
-                              .map((d) => HexCoord(
-                                  _conveyorPickOrigin!.q + d.q, _conveyorPickOrigin!.r + d.r))
-                              .toList()
+                                .map(
+                                  (d) => HexCoord(
+                                    _conveyorPickOrigin!.q + d.q,
+                                    _conveyorPickOrigin!.r + d.r,
+                                  ),
+                                )
+                                .toList()
                           : const [],
                       conveyorChainAnimations: _conveyorChainAnimations,
-                      pendingCastOrbs:  _pendingCastOrbs,
-                      scryRevealHex:    _scryRevealedTile,
-                      meleePickHexes:   _pickingMelee ? _meleeCandidates : const [],
+                      pendingCastOrbs: _pendingCastOrbs,
+                      scryRevealHex: _scryRevealedTile,
+                      meleePickHexes: _pickingMelee
+                          ? _meleeCandidates
+                          : const [],
+                      hiddenCloudIds: _hiddenCloudIds,
+                      hiddenTileHexes: _hiddenTileHexes,
+                      hiddenMinionIds: _hiddenMinionIds,
+                      effectBloom: _effectBloom,
+                      effectBloomAnimation: _effectBloomController,
                     ),
                     child: const SizedBox.expand(),
                   ),
@@ -1070,7 +1337,9 @@ class _BattleScreenState extends State<BattleScreen>
               selected: _selectedEnhancement,
               mysteryDelay: _mysteryDelay,
               onSelect: (zone) => setState(() {
-                _selectedEnhancement = _selectedEnhancement == zone ? null : zone;
+                _selectedEnhancement = _selectedEnhancement == zone
+                    ? null
+                    : zone;
                 if (_selectedEnhancement != 'earth') _mysteryDelay = 0;
               }),
               onDelayChanged: (d) => setState(() => _mysteryDelay = d),
@@ -1085,46 +1354,52 @@ class _BattleScreenState extends State<BattleScreen>
               child: Text(
                 'SPEAK NOW: ${_capturingWord!.name.toUpperCase()}',
                 textAlign: TextAlign.center,
-                style: manuscriptHeaderStyle(fontSize: 16, color: kParchmentColor),
+                style: manuscriptHeaderStyle(
+                  fontSize: 16,
+                  color: kParchmentColor,
+                ),
               ),
             ),
 
           // Action bar
           _ActionBar(
-            phase:          _phase,
-            selectedSpell:  _selectedSpell,
-            hasTarget:      _targetHex != null,
+            phase: _phase,
+            selectedSpell: _selectedSpell,
+            hasTarget: _targetHex != null,
             movePathLength: _movePath.length,
-            isBusy:         _isBusy || _isCapturingVoice,
-            pickingMelee:   _pickingMelee,
-            onDash:         _onDash,
+            isBusy: _isBusy || _isCapturingVoice,
+            pickingMelee: _pickingMelee,
+            onDash: _onDash,
             onMeditateMain: _onMeditateMain,
-            onCast:         _onCast,
-            onCancel:       () => setState(() {
+            onCast: _onCast,
+            onCancel: () => setState(() {
               _selectedSpell = null;
-              _targetHex     = null;
+              _targetHex = null;
               _selectedEnhancement = null;
-              _mysteryDelay  = 0;
+              _mysteryDelay = 0;
             }),
             onMeditateMove: _onMeditateMove,
             onConfirmMove: _onConfirmMove,
-            onCancelMove:  () => setState(() => _movePath = const []),
+            onCancelMove: () => setState(() => _movePath = const []),
             onCancelDirectionPick: () => _conveyorPickCompleter?.complete(null),
             onDeclineMelee: () => _meleePickCompleter?.complete(null),
           ),
 
           // Incantation thumbnail tray — neutral space outside the grid for
           // spells resolved this turn; long-tap re-opens the full card.
-          if (_incantationTray.isNotEmpty) _IncantationTray(thumbnails: _incantationTray),
+          if (_incantationTray.isNotEmpty || _revealReservesTray)
+            _IncantationTray(
+              key: _incantationTrayKey,
+              thumbnails: _incantationTray,
+            ),
 
           // Player HP / MP bars
-          if (local != null)
-            _PlayerHud(avatar: local, maxHp: config.playerHp),
+          if (local != null) _PlayerHud(avatar: local, maxHp: config.playerHp),
 
           // Status effects — local player by default; opponent when inspecting
           _StatusEffectPanel(
-            avatar:     _inspectedAvatar ?? local,
-            isLocal:    _inspectedAvatar == null,
+            avatar: _inspectedAvatar ?? local,
+            isLocal: _inspectedAvatar == null,
           ),
 
           // Artifact counts
@@ -1132,10 +1407,10 @@ class _BattleScreenState extends State<BattleScreen>
 
           // Spell hand
           _SpellBook(
-            spells:    _spells,
+            spells: _spells,
             selectedId: _selectedSpell?.id,
-            onSelect:  _selectSpell,
-            onView:    (spell) => showSpellCardFullscreen(context, spell),
+            onSelect: _selectSpell,
+            onView: (spell) => showSpellCardFullscreen(context, spell),
           ),
         ],
       ),
@@ -1293,7 +1568,7 @@ class _ActionBar extends StatelessWidget {
               child: Text(
                 movePathLength > 0
                     ? '$movePathLength step${movePathLength == 1 ? '' : 's'}'
-                        ' — tap last to undo'
+                          ' — tap last to undo'
                     : 'Tap an adjacent tile to step, or stand fast',
                 textAlign: TextAlign.center,
                 style: TextStyle(
@@ -1302,8 +1577,9 @@ class _ActionBar extends StatelessWidget {
                   color: movePathLength > 0
                       ? kParchmentColor.withValues(alpha: 0.90)
                       : kInkMutedColor,
-                  fontStyle:
-                      movePathLength > 0 ? FontStyle.normal : FontStyle.italic,
+                  fontStyle: movePathLength > 0
+                      ? FontStyle.normal
+                      : FontStyle.italic,
                 ),
               ),
             ),
@@ -1330,17 +1606,17 @@ class _ActionBar extends StatelessWidget {
         children: [
           if (!selecting) ...[
             _ActionButton(
-              label: 'DASH',
-              color: const Color(0xFFD8C840),
-              enabled: !isBusy,
-              onTap: onDash,
-            ),
-            const SizedBox(width: 6),
-            _ActionButton(
               label: 'MEDITATE',
               color: const Color(0xFF2090E0),
               enabled: !isBusy,
               onTap: onMeditateMain,
+            ),
+            const SizedBox(width: 6),
+            _ActionButton(
+              label: 'DASH',
+              color: const Color(0xFFD8C840),
+              enabled: !isBusy,
+              onTap: onDash,
             ),
           ] else
             _ActionButton(
@@ -1356,7 +1632,9 @@ class _ActionBar extends StatelessWidget {
               children: [
                 Text(
                   selecting
-                      ? (hasTarget ? selectedSpell!.name : 'Tap a tile to target')
+                      ? (hasTarget
+                            ? selectedSpell!.name
+                            : 'Tap a tile to target')
                       : 'Choose a spell, Dash, or Meditate',
                   textAlign: TextAlign.center,
                   style: TextStyle(
@@ -1365,15 +1643,20 @@ class _ActionBar extends StatelessWidget {
                     color: selecting
                         ? kParchmentColor.withValues(alpha: 0.90)
                         : kInkMutedColor,
-                    fontStyle: selecting && !hasTarget ? FontStyle.italic : FontStyle.normal,
+                    fontStyle: selecting && !hasTarget
+                        ? FontStyle.italic
+                        : FontStyle.normal,
                   ),
                 ),
                 if (selecting) ...[
                   const SizedBox(height: 2),
                   Text(
                     selectedSpell!.isSummon
-                        ? (summonSummaryFromFormula(selectedSpell!.formula) ?? 'Void Summon')
-                        : formulaEffectLabels(selectedSpell!.formula).join('  ·  '),
+                        ? (summonSummaryFromFormula(selectedSpell!.formula) ??
+                              'Void Summon')
+                        : formulaEffectLabels(
+                            selectedSpell!.formula,
+                          ).join('  ·  '),
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontFamily: 'serif',
@@ -1409,9 +1692,9 @@ class _PhaseBanner extends StatelessWidget {
   final String label;
 
   static const Map<String, Color> _kPhaseColor = {
-    'Summons':    Color(0xFF8B6228),
-    'Main':       Color(0xFFB8860B),
-    'Move':       Color(0xFF3A7FCC),
+    'Summons': Color(0xFF8B6228),
+    'Main': Color(0xFFB8860B),
+    'Move': Color(0xFF3A7FCC),
     'Resolution': Color(0xFF7A1F1F),
   };
 
@@ -1443,7 +1726,7 @@ class _PhaseBanner extends StatelessWidget {
 /// _BattleScreenState._playResolvedSpellSequence. Long-tap re-opens the card;
 /// cleared at the start of the next turn's reveal sequence.
 class _IncantationTray extends StatelessWidget {
-  const _IncantationTray({required this.thumbnails});
+  const _IncantationTray({super.key, required this.thumbnails});
 
   final List<_ResolvedThumbnail> thumbnails;
 
@@ -1461,7 +1744,11 @@ class _IncantationTray extends StatelessWidget {
           final t = thumbnails[i];
           return GestureDetector(
             onLongPress: () => showSpellCardFullscreen(context, t.spell),
-            child: SpellCardWidget(spell: t.spell, size: 48, interactive: false),
+            child: SpellCardWidget(
+              spell: t.spell,
+              size: 48,
+              interactive: false,
+            ),
           );
         },
       ),
@@ -1531,7 +1818,11 @@ class _EnhancementPicker extends StatelessWidget {
                 ),
                 const SizedBox(width: 8),
                 for (var d = 0; d <= 3; d++) ...[
-                  _DelayChip(value: d, selected: mysteryDelay == d, onTap: () => onDelayChanged(d)),
+                  _DelayChip(
+                    value: d,
+                    selected: mysteryDelay == d,
+                    onTap: () => onDelayChanged(d),
+                  ),
                   const SizedBox(width: 4),
                 ],
                 const SizedBox(width: 8),
@@ -1602,7 +1893,11 @@ class _EnhancementChip extends StatelessWidget {
 }
 
 class _DelayChip extends StatelessWidget {
-  const _DelayChip({required this.value, required this.selected, required this.onTap});
+  const _DelayChip({
+    required this.value,
+    required this.selected,
+    required this.onTap,
+  });
 
   final int value;
   final bool selected;
@@ -1693,7 +1988,9 @@ class _OpponentHudRow extends StatelessWidget {
         children: [
           for (int i = 0; i < avatars.length; i++) ...[
             if (i > 0) const SizedBox(width: 12),
-            Expanded(child: _OpponentChip(avatar: avatars[i], maxHp: maxHp)),
+            Expanded(
+              child: _OpponentChip(avatar: avatars[i], maxHp: maxHp),
+            ),
           ],
         ],
       ),
@@ -1709,7 +2006,7 @@ class _OpponentChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final hpFrac   = maxHp > 0 ? (avatar.hp / maxHp).clamp(0.0, 1.0) : 0.0;
+    final hpFrac = maxHp > 0 ? (avatar.hp / maxHp).clamp(0.0, 1.0) : 0.0;
     final manaFrac = avatar.maxMana > 0
         ? (avatar.mana / avatar.maxMana).clamp(0.0, 1.0)
         : 0.0;
@@ -1731,9 +2028,17 @@ class _OpponentChip extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 3),
-        _ThinBar(fraction: hpFrac,   color: const Color(0xFF8B1E1E), label: '${avatar.hp}'),
+        _ThinBar(
+          fraction: hpFrac,
+          color: const Color(0xFF8B1E1E),
+          label: '${avatar.hp}',
+        ),
         const SizedBox(height: 2),
-        _ThinBar(fraction: manaFrac, color: const Color(0xFF2B4D8C), label: '${avatar.mana}'),
+        _ThinBar(
+          fraction: manaFrac,
+          color: const Color(0xFF2B4D8C),
+          label: '${avatar.mana}',
+        ),
       ],
     );
   }
@@ -1789,7 +2094,7 @@ class _PlayerHud extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final hpFrac   = maxHp > 0 ? (avatar.hp / maxHp).clamp(0.0, 1.0) : 0.0;
+    final hpFrac = maxHp > 0 ? (avatar.hp / maxHp).clamp(0.0, 1.0) : 0.0;
     final manaFrac = avatar.maxMana > 0
         ? (avatar.mana / avatar.maxMana).clamp(0.0, 1.0)
         : 0.0;
@@ -1902,7 +2207,7 @@ class _ArtifactRow extends StatelessWidget {
         children: [
           for (final entry in _kArtifacts)
             _ArtifactChip(
-              icon:  entry.$2,
+              icon: entry.$2,
               color: entry.$3,
               count: _count(entry.$1),
               label: entry.$4,
@@ -1929,7 +2234,7 @@ class _ArtifactChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final active = count > 0;
-    final fg     = active ? color : kInkMutedColor.withValues(alpha: 0.35);
+    final fg = active ? color : kInkMutedColor.withValues(alpha: 0.35);
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -2072,9 +2377,16 @@ class _SummonBadge extends StatelessWidget {
       decoration: BoxDecoration(
         color: const Color(0xFF130C04),
         borderRadius: BorderRadius.circular(3),
-        border: Border.all(color: kIlluminationGold.withValues(alpha: 0.6), width: 0.5),
+        border: Border.all(
+          color: kIlluminationGold.withValues(alpha: 0.6),
+          width: 0.5,
+        ),
       ),
-      child: Icon(Icons.pets, size: 10, color: kIlluminationGold.withValues(alpha: 0.85)),
+      child: Icon(
+        Icons.pets,
+        size: 10,
+        color: kIlluminationGold.withValues(alpha: 0.85),
+      ),
     );
   }
 }
@@ -2137,8 +2449,9 @@ class _StatusEffectPanel extends StatelessWidget {
                         for (int i = 0; i < barriers.length; i++) ...[
                           if (i > 0) const SizedBox(width: 4),
                           _BarrierChip(
-                              affinity: barriers[i].key,
-                              barrier: barriers[i].value),
+                            affinity: barriers[i].key,
+                            barrier: barriers[i].value,
+                          ),
                         ],
                         for (int i = 0; i < effects.length; i++) ...[
                           if (barriers.isNotEmpty || i > 0)
@@ -2162,12 +2475,12 @@ class _StatusChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final name   = _kStatusLabel[fx.effectTypeId] ?? fx.effectTypeId;
+    final name = _kStatusLabel[fx.effectTypeId] ?? fx.effectTypeId;
     final isBuff = _kBuffIds.contains(fx.effectTypeId);
-    final base   = fx.isDormant
+    final base = fx.isDormant
         ? kInkMutedColor
         : (isBuff ? const Color(0xFF3A7A3A) : const Color(0xFF8A3030));
-    final alpha  = fx.isDormant ? 0.45 : 0.90;
+    final alpha = fx.isDormant ? 0.45 : 0.90;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),

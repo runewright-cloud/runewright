@@ -372,6 +372,13 @@ class WizardAvatar {
     return freeMove;
   }
 
+  /// Set by [absorbDamage] when a barrier with [BarrierState.freeMoveOnCollapse]
+  /// is destroyed by damage this turn ("burst" — as distinct from expiring
+  /// from old age via [tickBarriers], which is a separate, still-unwired
+  /// path). Consumed and cleared once per turn by TurnLoop's post-resolution
+  /// free-move phase, after every spell for the turn has fully resolved.
+  bool pendingFreeMoveBurst = false;
+
   /// Absorb [damage] through active barriers in element order
   /// (fire → earth → water → air), then into real [hp].
   /// Returns the final HP damage dealt to real [hp] for state-hash tracking.
@@ -381,7 +388,10 @@ class WizardAvatar {
       final b = barriers[element];
       if (b == null || !b.isAlive || remaining <= 0) continue;
       remaining = b.absorb(remaining);
-      if (!b.isAlive) barriers.remove(element);
+      if (!b.isAlive) {
+        if (b.freeMoveOnCollapse) pendingFreeMoveBurst = true;
+        barriers.remove(element);
+      }
     }
     if (remaining > 0) {
       hp = (hp - remaining).clamp(0, 999999);

@@ -310,6 +310,10 @@ class _TurnSessionPair {
   var _bMeleeCommit = Completer<Uint8List>();
   var _aMeleeReveal = Completer<Uint8List>();
   var _bMeleeReveal = Completer<Uint8List>();
+  var _aFreeMoveCommit = Completer<Uint8List>();
+  var _bFreeMoveCommit = Completer<Uint8List>();
+  var _aFreeMoveReveal = Completer<Uint8List>();
+  var _bFreeMoveReveal = Completer<Uint8List>();
   var _aDelayed = Completer<Uint8List>();
   var _bDelayed = Completer<Uint8List>();
   var _aStateHash = Completer<Uint8List>();
@@ -332,6 +336,10 @@ class _TurnSessionPair {
     _bMeleeCommit = Completer();
     _aMeleeReveal = Completer();
     _bMeleeReveal = Completer();
+    _aFreeMoveCommit = Completer();
+    _bFreeMoveCommit = Completer();
+    _aFreeMoveReveal = Completer();
+    _bFreeMoveReveal = Completer();
     _aDelayed = Completer();
     _bDelayed = Completer();
     _aStateHash = Completer();
@@ -460,6 +468,30 @@ class _PairedSession implements BattleTurnSession {
     } else {
       _pair._bMeleeReveal.complete(ourReveal);
       return _pair._aMeleeReveal.future;
+    }
+  }
+
+  // ── Post-resolution free-move commit-reveal ───────────────────────────────
+
+  @override
+  Future<Uint8List> exchangeFreeMoveCommit(Uint8List ourCommit) {
+    if (isA) {
+      _pair._aFreeMoveCommit.complete(ourCommit);
+      return _pair._bFreeMoveCommit.future;
+    } else {
+      _pair._bFreeMoveCommit.complete(ourCommit);
+      return _pair._aFreeMoveCommit.future;
+    }
+  }
+
+  @override
+  Future<Uint8List> exchangeFreeMoveReveal(Uint8List ourReveal) {
+    if (isA) {
+      _pair._aFreeMoveReveal.complete(ourReveal);
+      return _pair._bFreeMoveReveal.future;
+    } else {
+      _pair._bFreeMoveReveal.complete(ourReveal);
+      return _pair._aFreeMoveReveal.future;
     }
   }
 

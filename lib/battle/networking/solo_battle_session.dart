@@ -6,15 +6,23 @@
 // the "peer" always passes, stays put, and echoes back the state hash so the
 // TurnLoop's verification steps pass without network I/O.
 //
-// Test-lab exception: when [dummyAutoCast] is set (Spell Test Lab only —
-// regular Solo Practice never sets it, so the dummy there is unaffected), the
-// "peer" (target dummy) casts [dummyCastFormula] at [dummyCastTarget] every
-// turn instead of passing. This hand-encodes TurnLoop's [0x01] spell-action
-// wire format (see the wire spec comment atop turn_loop.dart) because
-// TurnLoop._encodeAction is private to that file — keep the two in sync if
-// the wire format ever changes. No proof tail or sorcerer suffix is emitted:
-// solo mode's TurnLoop never verifies peer proofs (verifyProof is null) and
-// the Test Lab never enables sorcerer mode.
+// dummyAutoCast exception: when [dummyAutoCast] is set (both Solo Practice
+// and the Spell Test Lab do), the "peer" (target dummy) casts
+// [dummyCastFormula] at [dummyCastTarget] every turn instead of passing.
+// This hand-encodes TurnLoop's [0x01] spell-action wire format (see the wire
+// spec comment atop turn_loop.dart) because TurnLoop._encodeAction is
+// private to that file — keep the two in sync if the wire format ever
+// changes. No proof tail or sorcerer suffix is emitted: solo mode's TurnLoop
+// never verifies peer proofs (verifyProof is null) and neither solo surface
+// enables sorcerer mode.
+//
+// The scrying pattern (§13b) is the one exchange where the dummy's fictional
+// answer must be a *real* cryptographic opening, not a constant stub: if the
+// local player casts Airy Scrying Pool on the dummy, TurnLoop expects
+// exchangeScryOpen to hand back an AEAD-encrypted opening of the dummy's
+// actual committed target, addressed to the ephemeral key TurnLoop sent via
+// exchangeScryKey — see exchangeScryOpen below. Everything else about the
+// dummy (it never scries the local player) stays a constant [0x00].
 
 import 'dart:convert' show utf8;
 import 'dart:typed_data';
@@ -23,18 +31,27 @@ import 'package:cryptography/cryptography.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
 
 import '../engine/commit_reveal.dart';
+import '../models/battle_state.dart';
 import 'battle_session.dart';
 
 class SoloBattleSession implements BattleTurnSession {
   SoloBattleSession({
+    required this.state,
     this.dummyAutoCast = false,
     this.dummyCastTarget,
     this.dummyCastFormula = const ['fire', 'fire', 'fire'],
   });
 
-  /// Spell Test Lab only: when true and [dummyCastTarget] is non-null, the
-  /// dummy casts [dummyCastFormula] at that tile every turn instead of
-  /// passing.
+  /// Shared reference to the same [BattleState] the owning [TurnLoop] reads
+  /// from — needed so [exchangeScryOpen] can derive the same per-turn HKDF
+  /// info tag ([TurnLoop._scryHkdfInfo]) the loop will independently
+  /// recompute when decrypting our reply. Solo sessions never set a
+  /// [TurnLoop.matchId] (see that field's doc comment), so the tag here
+  /// omits it to match.
+  final BattleState state;
+
+  /// When true and [dummyCastTarget] is non-null, the dummy casts
+  /// [dummyCastFormula] at that tile every turn instead of passing.
   final bool dummyAutoCast;
   final HexCoord? dummyCastTarget;
   final List<String> dummyCastFormula;
@@ -53,6 +70,8 @@ class SoloBattleSession implements BattleTurnSession {
       Uint8List.fromList([0x00, 0x00, 0x00]); // not dashing, not meditating, count=0
   Uint8List _peerMeleeNonce = Uint8List(16);
   Uint8List _peerMeleeBytes = Uint8List.fromList([0x00]); // no melee target
+  Uint8List _peerFreeMoveNonce = Uint8List(16);
+  Uint8List _peerFreeMoveBytes = Uint8List.fromList([0x00]); // no free move
 
   // ── Entropy ─────────────────────────────────────────────────────────────────
 
@@ -94,17 +113,87 @@ class SoloBattleSession implements BattleTurnSession {
 
   // ── Divination scrying pattern (§13b) ────────────────────────────────────
   //
-  // The dummy never casts a Divination spell and never commits one to scry,
-  // so both halves of the exchange are always "no active scry this turn."
+  // The dummy never casts a Divination spell, so the "dummy scries us"
+  // direction is always "no active scry this turn." The "we scry the dummy"
+  // direction is real: if the local player has an active outgoing
+  // DivinationLink on the dummy, TurnLoop sends its ephemeral X25519 pubkey
+  // via exchangeScryKey, then expects exchangeScryOpen to answer with an
+  // AEAD-encrypted opening of the dummy's actually-committed target —
+  // mirroring TurnLoop._exchangeScryOpenings' "incomingLink != null" branch,
+  // but keyed off the dummy's real action/salts tracked above instead of a
+  // second player's.
+
+  Uint8List _ourScryKeyFrame = Uint8List.fromList([0x00]);
 
   @override
   Future<Uint8List> exchangeScryKey(Uint8List ourFrame) async {
+    _ourScryKeyFrame = ourFrame; // remembered for exchangeScryOpen, below
     return Uint8List.fromList([0x00]);
   }
 
   @override
   Future<Uint8List> exchangeScryOpen(Uint8List ourFrame) async {
-    return Uint8List.fromList([0x00]);
+    final keyFrame = _ourScryKeyFrame;
+    if (keyFrame.length != 33 || keyFrame[0] != 0x01) {
+      return Uint8List.fromList([0x00]); // not scrying the dummy this turn
+    }
+    final x25519 = X25519();
+    final peerEkPub = SimplePublicKey(keyFrame.sublist(1), type: KeyPairType.x25519);
+    final vk = await x25519.newKeyPair();
+    final vkPub = await vk.extractPublicKey();
+    final shared = await x25519.sharedSecretKey(keyPair: vk, remotePublicKey: peerEkPub);
+    final derived = await Hkdf(hmac: Hmac.sha256(), outputLength: 32)
+        .deriveKey(secretKey: shared, info: _scryHkdfInfo());
+
+    final (targetBytes, remainder) = _splitActionTarget(_peerActionBytes);
+    final leafA = await _leafHash(remainder, _peerActionSaltA);
+    final opening =
+        Uint8List.fromList([...targetBytes, ..._peerActionSaltB, ...leafA]);
+    final cipher = Xchacha20.poly1305Aead();
+    final nonce = cipher.newNonce();
+    final box = await cipher.encrypt(opening, secretKey: derived, nonce: nonce);
+    return Uint8List.fromList([0x01, ...vkPub.bytes, ...box.concatenation()]);
+  }
+
+  /// Duplicates TurnLoop._scryHkdfInfo (private to that file, and matchId is
+  /// always null for solo sessions — see [state]'s doc comment) — keep in
+  /// sync if that derivation ever changes.
+  Uint8List _scryHkdfInfo() => Uint8List.fromList([
+        ...utf8.encode('RWSCRY1'),
+        ..._be4(state.turnNumber),
+      ]);
+
+  static Uint8List _be4(int v) => Uint8List(4)
+    ..[0] = (v >> 24) & 0xFF
+    ..[1] = (v >> 16) & 0xFF
+    ..[2] = (v >> 8) & 0xFF
+    ..[3] = v & 0xFF;
+
+  /// Duplicates TurnLoop._leafHash (private to that file) — keep in sync.
+  static Future<Uint8List> _leafHash(Uint8List data, Uint8List salt) async {
+    final h = await Sha256().hash(Uint8List.fromList([...data, ...salt]));
+    return Uint8List.fromList(h.bytes);
+  }
+
+  /// Duplicates TurnLoop._splitActionTarget (private to that file) — keep in
+  /// sync if the split-leaf scheme ever changes. [_splitActionCommit] below
+  /// reimplements this inline for historical reasons; both must agree.
+  static (Uint8List target, Uint8List remainder) _splitActionTarget(
+      Uint8List actionBytes) {
+    if (actionBytes.isEmpty) return (Uint8List(0), actionBytes);
+    int? targetOffset;
+    switch (actionBytes[0]) {
+      case 0x01: targetOffset = 1 + 32 + 2;
+    }
+    if (targetOffset == null || actionBytes.length < targetOffset + 4) {
+      return (Uint8List(0), actionBytes);
+    }
+    final target = actionBytes.sublist(targetOffset, targetOffset + 4);
+    final remainder = Uint8List.fromList([
+      ...actionBytes.sublist(0, targetOffset),
+      ...actionBytes.sublist(targetOffset + 4),
+    ]);
+    return (Uint8List.fromList(target), remainder);
   }
 
   /// Encodes TurnLoop's [0x01] spell-cast wire format for the scripted dummy
@@ -197,6 +286,25 @@ class SoloBattleSession implements BattleTurnSession {
   @override
   Future<Uint8List> exchangeMeleeReveal(Uint8List ourReveal) async {
     return Uint8List.fromList([..._peerMeleeNonce, ..._peerMeleeBytes]);
+  }
+
+  // ── Post-resolution free-move commit-reveal ─────────────────────────────────
+  //
+  // The dummy never holds an Air barrier, so it never earns a free move.
+
+  @override
+  Future<Uint8List> exchangeFreeMoveCommit(Uint8List ourCommit) async {
+    _peerFreeMoveNonce = Uint8List(16);
+    _peerFreeMoveBytes = Uint8List.fromList([0x00]);
+    final hash = await Sha256().hash(
+      Uint8List.fromList([..._peerFreeMoveBytes, ..._peerFreeMoveNonce]),
+    );
+    return Uint8List.fromList(hash.bytes);
+  }
+
+  @override
+  Future<Uint8List> exchangeFreeMoveReveal(Uint8List ourReveal) async {
+    return Uint8List.fromList([..._peerFreeMoveNonce, ..._peerFreeMoveBytes]);
   }
 
   // ── Delayed spells ───────────────────────────────────────────────────────────

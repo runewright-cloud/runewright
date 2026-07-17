@@ -14,7 +14,7 @@ import 'package:test/test.dart';
 import 'package:rune_duel/battle/engine/turn_loop.dart';
 import 'package:rune_duel/battle/models/battle_state.dart';
 import 'package:rune_duel/battle/models/effect_kind.dart' show SpellAffinity;
-import 'package:rune_duel/battle/models/hex_battlefield.dart' show Battlefield;
+import 'package:rune_duel/battle/models/hex_battlefield.dart' show Battlefield, hexDistance;
 import 'package:rune_duel/battle/models/match_config.dart';
 import 'package:rune_duel/battle/models/minion.dart';
 import 'package:rune_duel/battle/models/status_effect_ids.dart';
@@ -95,7 +95,7 @@ SpellAsset _summonSpell({
 
   final loop = TurnLoop(
     state: state,
-    session: SoloBattleSession(),
+    session: SoloBattleSession(state: state),
     localPlayerId: localId,
   );
 
@@ -169,17 +169,16 @@ void main() {
   });
 
   group('Potency governs the immediate-turn rule', () {
-    test('a Potent summon acts (moves toward the enemy) the turn it is cast', () async {
+    test('a Potent summon acts twice (immediate + Phase 5b) the turn it is cast', () async {
       final ctx = _setup();
-      // 2 air -> AAAA not reached (only 2 air), but move speed floor(2*0.5)=1
-      // is enough to observe movement without needing the Flying ability.
-      // 2 earth gives the creature nonzero HP (no minimum stat floor) so it
-      // survives to be inspected below. Target an empty tile (not the
-      // caster's own) so the spawn tile is exact and deterministic --
-      // _findCreatureSpawnTile bumps to a neighbor when the target tile is
-      // occupied.
+      // 4 air -> AAAA (Flying), so a single move step covers more ground and
+      // two actions are easy to tell apart from one. 2 earth gives the
+      // creature nonzero HP (no minimum stat floor) so it survives to be
+      // inspected below. Target an empty tile (not the caster's own) so the
+      // spawn tile is exact and deterministic -- _findCreatureSpawnTile
+      // bumps to a neighbor when the target tile is occupied.
       final spell = _summonSpell(
-        formula: ['fire', 'air', 'air', 'earth', 'earth'],
+        formula: ['fire', 'air', 'air', 'air', 'air', 'earth', 'earth'],
         supremeTags: const ['fire'], // Potency = fire-flavor enhancement
       );
       final emptyTarget = HexCoord(ctx.local.position.q + 1, ctx.local.position.r);
@@ -193,17 +192,14 @@ void main() {
       ));
 
       final creature = ctx.state.minions.single;
-      // Bonus immediate action doesn't consume the creature's normal next-
-      // Summons-phase turn -- actedThisTurn stays false either way (see
-      // TurnLoop._castSummon).
+      // Both this turn's actions (the Phase 5 immediate bonus and the
+      // Phase 5b sweep) have already run and reset actedThisTurn back to
+      // false by the time runTurn returns -- see TurnLoop._resolveSummons.
       expect(creature.actedThisTurn, isFalse);
-      // It should have moved off the exact spawn tile toward the dummy,
-      // since the dummy started several tiles away and the creature has
-      // nonzero move speed.
       expect(creature.position, isNot(equals(emptyTarget)));
     });
 
-    test('a non-Potent summon does not act the turn it is cast', () async {
+    test('a non-Potent summon still acts the turn it is cast (Phase 5b only)', () async {
       final ctx = _setup();
       final spell = _summonSpell(formula: ['fire', 'air', 'air', 'earth', 'earth']);
       final emptyTarget = HexCoord(ctx.local.position.q + 1, ctx.local.position.r);
@@ -214,22 +210,41 @@ void main() {
 
       final creature = ctx.state.minions.single;
       expect(creature.actedThisTurn, isFalse);
-      expect(creature.position, equals(emptyTarget));
+      // One action (Phase 5b), not zero: it should have moved off the exact
+      // spawn tile toward the dummy.
+      expect(creature.position, isNot(equals(emptyTarget)));
     });
 
-    test('a non-Potent summon acts on the following turn\'s Summons phase', () async {
-      final ctx = _setup();
-      final spell = _summonSpell(formula: ['fire', 'air', 'air', 'earth', 'earth']);
-      final emptyTarget = HexCoord(ctx.local.position.q + 1, ctx.local.position.r);
+    test('a Potent summon moves further than a non-Potent one on its cast turn', () async {
+      final formula = ['fire', 'air', 'air', 'air', 'air', 'earth', 'earth'];
+      final emptyTarget = HexCoord(3, -3);
 
-      await ctx.loop.runTurn(TurnInput(
-        action: SpellCastAction(spell: spell, targetHex: emptyTarget),
+      final potentCtx = _setup();
+      await potentCtx.loop.runTurn(TurnInput(
+        action: SpellCastAction(
+          spell: _summonSpell(formula: formula, supremeTags: const ['fire']),
+          targetHex: emptyTarget,
+          isPotent: true,
+        ),
       ));
-      final spawnPos = ctx.state.minions.single.position;
+      final potentDist =
+          hexDistance(emptyTarget, potentCtx.state.minions.single.position);
 
-      await ctx.loop.runTurn(TurnInput(action: PassAction()));
+      final normalCtx = _setup();
+      await normalCtx.loop.runTurn(TurnInput(
+        action: SpellCastAction(
+          spell: _summonSpell(formula: formula),
+          targetHex: emptyTarget,
+        ),
+      ));
+      final normalDist =
+          hexDistance(emptyTarget, normalCtx.state.minions.single.position);
 
-      expect(ctx.state.minions.single.position, isNot(equals(spawnPos)));
+      expect(normalDist, greaterThan(0),
+          reason: 'non-Potent summon still gets its one Phase 5b action this turn');
+      expect(potentDist, greaterThan(normalDist),
+          reason: 'Potent summon gets a second action (Phase 5 immediate + Phase 5b) '
+              'this same turn');
     });
   });
 

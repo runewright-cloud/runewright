@@ -73,7 +73,7 @@ import 'package:rune_duel/engine/hex_grid.dart';
   );
   state.minions.add(minion);
 
-  final loop = TurnLoop(state: state, session: SoloBattleSession(), localPlayerId: localId);
+  final loop = TurnLoop(state: state, session: SoloBattleSession(state: state), localPlayerId: localId);
   return (state: state, loop: loop, minion: minion);
 }
 

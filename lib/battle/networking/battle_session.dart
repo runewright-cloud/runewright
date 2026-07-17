@@ -51,6 +51,15 @@ abstract class BattleTurnSession {
   Future<Uint8List> exchangeMeleeCommit(Uint8List ourCommit);
   Future<Uint8List> exchangeMeleeReveal(Uint8List ourReveal);
 
+  /// Post-resolution free-move commit-reveal: after every spell for the turn
+  /// has resolved, each avatar whose barrier burst from damage this turn
+  /// (see [WizardAvatar.pendingFreeMoveBurst]) may commit an optional
+  /// single-tile reactive step to an adjacent free tile. Shape mirrors
+  /// [exchangeMeleeCommit]/[exchangeMeleeReveal] exactly; sent uniformly by
+  /// both sides regardless of whether either avatar actually earned one.
+  Future<Uint8List> exchangeFreeMoveCommit(Uint8List ourCommit);
+  Future<Uint8List> exchangeFreeMoveReveal(Uint8List ourReveal);
+
   /// Divination (Air-Water) scrying pattern (MESH_ARCHITECTURE.md §13b).
   ///
   /// Always called once per turn regardless of whether either side has an
@@ -257,6 +266,22 @@ class BattleSession implements BattleTurnSession {
   Future<Uint8List> exchangeMeleeReveal(Uint8List ourReveal) async {
     send(BattleMsgType.meleeReveal, ourReveal);
     final frame = await framesOfType(BattleMsgType.meleeReveal).first;
+    return frame.payload;
+  }
+
+  // ── Post-resolution free-move commit-reveal ─────────────────────────────────
+
+  @override
+  Future<Uint8List> exchangeFreeMoveCommit(Uint8List ourCommit) async {
+    send(BattleMsgType.freeMoveCommit, ourCommit);
+    final frame = await framesOfType(BattleMsgType.freeMoveCommit).first;
+    return frame.payload;
+  }
+
+  @override
+  Future<Uint8List> exchangeFreeMoveReveal(Uint8List ourReveal) async {
+    send(BattleMsgType.freeMoveReveal, ourReveal);
+    final frame = await framesOfType(BattleMsgType.freeMoveReveal).first;
     return frame.payload;
   }
 

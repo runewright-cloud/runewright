@@ -18,16 +18,40 @@
 //      identically without waiting for the later action reveal.
 //   3. Entropy reveal — joint commit-reveal entropy derived once all
 //      decisions are locked in. Seeds all resolution RNG in phases 4–6.
-//   4. Summons act — deterministic AI for all living minions, creation order.
-//      ("obedient" summons are a stubbed seam — see SummonPersonality.obedient
-//      in minion.dart — no live manual control yet.)
+//   4. Cloud movement — Air-flavor Clouds auto-seek 1 tile toward the
+//      nearest enemy (TurnLoop._moveClouds). Deliberately kept here, ahead
+//      of Action resolution, so a cloud's position for the rest of the turn
+//      (including the adjacent-only targeting restriction checked during
+//      Phase 5) reflects this turn's move, not last turn's.
 //   4b. Melee commit-reveal — after movement has resolved, each player with
 //      an adjacent hostile target may commit an optional melee choice;
 //      resolved at the start of phase 5, independent of the main action (a
-//      player may cast AND melee the same turn).
+//      player may cast AND melee the same turn). Candidates reflect
+//      post-movement, post-cloud-move positions — NOT post-Summons (5b runs
+//      later in the turn now; see below), so a minion that hasn't taken its
+//      turn yet this round won't appear in the melee prompt.
 //   5. Action resolution — reveal main-phase actions, sort spells
 //      (quick→haymaker-tier→normal→sluggish, then by step count T ascending,
-//      then commitmentHex), apply each in order.
+//      then commitmentHex), apply each in order. A Potent summon-mode cast
+//      spawns its creature and lets it act immediately as part of this same
+//      step (TurnLoop._castSummon) — a one-time bonus, on top of (not
+//      instead of) the normal action it gets in 5b below.
+//   5b. Summons act — deterministic AI for all living minions (creation
+//      order), run once, here, after every spell for the turn has resolved
+//      (not before, as this used to run — moving it here means it can't
+//      influence either player's Phase 1 action commit, so there's no
+//      look-ahead concern; see B-5 below). This includes creatures summoned
+//      by a spell that just resolved this same turn — a fresh summon's
+//      first action is always this step, the same turn it's cast, whether
+//      or not it was Potent. A creature that also got the Phase 5 immediate
+//      bonus (Potent summon only) acts a *second* time here, giving it two
+//      actions in a row on the turn it's cast; a non-Potent summon just gets
+//      its one, same as it always has. ("obedient" summons are a stubbed
+//      seam — see SummonPersonality.obedient in minion.dart — no live
+//      manual control yet; that still needs Summons ahead of the B-5
+//      entropy reveal, which 5b deliberately does not attempt.)
+//   5c. Post-resolution free-move (barrier burst) — see the dedicated
+//      comment at its call site.
 //   6. End-of-turn — tile effects, clouds, barrier auras, mana regen, status
 //      tick, state-hash exchange.
 //
@@ -80,7 +104,8 @@ import 'package:rune_duel/spells/spell_asset.dart';
 
 import '../models/battle_state.dart';
 import '../models/casting_enhancements.dart';
-import '../models/creature_spec.dart' show CreatureSpec, ResistanceTier, resistanceTierOf;
+import '../models/creature_spec.dart'
+    show CreatureSpec, ResistanceTier, resistanceTierOf;
 import '../models/pending_delayed_spell.dart';
 import '../models/reflection_link.dart';
 import '../models/divination_link.dart';
@@ -89,7 +114,14 @@ import '../models/hex_battlefield.dart' show hexDistance, hexNeighbors;
 import '../models/minion.dart';
 import '../models/status_effect_ids.dart';
 import '../models/terrain.dart'
-    show ImpassableTile, ToxicCloud, DustCloud, WaterCloud, FloorIsLava, MobileCloud, SlowTile,
+    show
+        ImpassableTile,
+        ToxicCloud,
+        DustCloud,
+        WaterCloud,
+        FloorIsLava,
+        MobileCloud,
+        SlowTile,
         ConveyorTile;
 import '../models/wizard_avatar.dart';
 import '../networking/battle_session.dart';
@@ -240,6 +272,9 @@ class ResolvedSpellEvent {
     required this.isSummon,
     this.summonMinionId,
     this.summonPosition,
+    this.createdCloudIds = const [],
+    this.createdTileHexes = const [],
+    this.createdMinionIds = const [],
   });
 
   final SpellAsset spell;
@@ -248,6 +283,15 @@ class ResolvedSpellEvent {
   final bool isSummon;
   final String? summonMinionId;
   final HexCoord? summonPosition;
+
+  /// Battlefield effects this spell brought into being — purely for the UI's
+  /// resolution reveal, which holds them off the field until the spell's card
+  /// finishes, then blooms them out of [targetHex]. Computed by a before/after
+  /// diff around the spell's application (see TurnLoop._resolveActions); not
+  /// serialized, not gameplay-authoritative.
+  final List<String> createdCloudIds;
+  final List<HexCoord> createdTileHexes;
+  final List<String> createdMinionIds;
 }
 
 /// A mystery-enhanced spell. Target tile and delay are hidden in
@@ -287,7 +331,14 @@ class MysterySpellCastAction extends TurnAction {
 
 // ── Turn phase enum ───────────────────────────────────────────────────────────
 
-enum TurnPhase { summons, actionCommit, movement, actionResolve, endOfTurn, winCheck }
+enum TurnPhase {
+  summons,
+  actionCommit,
+  movement,
+  actionResolve,
+  endOfTurn,
+  winCheck,
+}
 
 // ── Resolution group (step 4 ordering) ───────────────────────────────────────
 
@@ -328,9 +379,20 @@ const _kMeditateManaGain = 25;
 /// invokes it for a player who actually has a valid target (design: "pass
 /// and make no melee attack" is the implicit choice for everyone else, with
 /// no prompt shown at all). Return null to decline.
-typedef MeleeTargetPicker = Future<HexCoord?> Function(List<HexCoord> candidates);
+typedef MeleeTargetPicker =
+    Future<HexCoord?> Function(List<HexCoord> candidates);
 
 Future<HexCoord?> _defaultNoMelee(List<HexCoord> candidates) async => null;
+
+/// Asks the local UI which adjacent free tile (if any) to step onto for a
+/// post-resolution free-move burst (see [WizardAvatar.pendingFreeMoveBurst]).
+/// [candidates] is always non-empty when this is called — [TurnLoop] only
+/// invokes it for a player whose barrier actually burst this turn AND who
+/// has at least one legal tile to step to. Return null to decline.
+typedef FreeMoveDirectionPicker =
+    Future<HexCoord?> Function(List<HexCoord> candidates);
+
+Future<HexCoord?> _defaultNoFreeMove(List<HexCoord> candidates) async => null;
 
 class TurnLoop {
   TurnLoop({
@@ -344,6 +406,7 @@ class TurnLoop {
     this.tier = 24,
     this.isSorcererMode = false,
     this.meleeTargetPicker = _defaultNoMelee,
+    this.freeMoveDirectionPicker = _defaultNoFreeMove,
     this.onPhase,
   });
 
@@ -356,6 +419,18 @@ class TurnLoop {
   /// declining (headless callers — tests, solo mode's scripted dummy — never
   /// melee unless they override this).
   final MeleeTargetPicker meleeTargetPicker;
+
+  /// Called once per turn, after all of phase 5's spells have resolved, only
+  /// when the local avatar's barrier burst from damage this turn (see
+  /// [WizardAvatar.pendingFreeMoveBurst]) AND has at least one adjacent free
+  /// tile to step to. Defaults to always declining (headless callers — tests,
+  /// solo mode's scripted dummy — never move unless they override this).
+  ///
+  /// Sorcerer seam: in a future real-time mode this should instead grant a
+  /// temporary movement-speed boost rather than a discrete extra step —
+  /// TODO(sorcerer): wire a speed-boost status effect for [GameMode.sorcerer]
+  /// instead of prompting this picker.
+  final FreeMoveDirectionPicker freeMoveDirectionPicker;
 
   /// Optional UI notification hook: fired at the two phase boundaries a
   /// caller can't otherwise observe from outside [runTurn] — [TurnPhase
@@ -481,8 +556,14 @@ class TurnLoop {
   }
 
   Future<HexCoord?> _beginTurnImpl(TurnAction action) async {
-    final saltA = CommitRevealEntropy.generateNonce().sublist(0, _kRevealNonceBytes);
-    final saltB = CommitRevealEntropy.generateNonce().sublist(0, _kRevealNonceBytes);
+    final saltA = CommitRevealEntropy.generateNonce().sublist(
+      0,
+      _kRevealNonceBytes,
+    );
+    final saltB = CommitRevealEntropy.generateNonce().sublist(
+      0,
+      _kRevealNonceBytes,
+    );
     final actionBytes = _encodeAction(action);
     final actionCommit = await _splitActionCommit(actionBytes, saltA, saltB);
     final peerActionCommit = await session.exchangeActionCommit(actionCommit);
@@ -545,7 +626,11 @@ class TurnLoop {
                 isVelocity: isVelocity,
                 isEfficiency: isEfficiency,
               ),
-      MysterySpellCastAction(:final vocalScore, :final isPotent, :final isVelocity) =>
+      MysterySpellCastAction(
+        :final vocalScore,
+        :final isPotent,
+        :final isVelocity,
+      ) =>
         isSorcererMode && vocalScore != null
             ? CastingEnhancements.fromSorcererQuality(
                 vocalScore: vocalScore,
@@ -556,9 +641,14 @@ class TurnLoop {
             : CastingEnhancements(isPotent: isPotent, isVelocity: isVelocity),
       _ => null,
     };
-    av.mana = (av.mana -
-            _spellManaCost(committedSpell, av, enhancements: castingEnhancements))
-        .clamp(0, _kMaxMana);
+    av.mana =
+        (av.mana -
+                _spellManaCost(
+                  committedSpell,
+                  av,
+                  enhancements: castingEnhancements,
+                ))
+            .clamp(0, _kMaxMana);
   }
 
   /// Run one full turn, returning a non-null [WinCheckResult] if the match is over.
@@ -598,8 +688,10 @@ class TurnLoop {
     // link can inform their move) or starts it fresh (tests, solo mode,
     // anything that calls runTurn() directly).
     await beginTurn(input.action);
-    assert(identical(_pendingAction, input.action),
-        'runTurn(input) must be called with the same action passed to beginTurn()');
+    assert(
+      identical(_pendingAction, input.action),
+      'runTurn(input) must be called with the same action passed to beginTurn()',
+    );
     final actionBytes = _pendingActionBytes!;
     final actionSaltA = _pendingSaltA!;
     final actionSaltB = _pendingSaltB!;
@@ -626,10 +718,18 @@ class TurnLoop {
     // resolves, so Dash's same-turn speed boost has to travel some other
     // way to be known before _resolveAvatarMovement runs.
     final iAmDashing = input.action is DashAction;
-    final localPath = input.meditateInMove ? const <HexCoord>[] : input.movePath;
-    final moveNonce = CommitRevealEntropy.generateNonce().sublist(0, _kRevealNonceBytes);
+    final localPath = input.meditateInMove
+        ? const <HexCoord>[]
+        : input.movePath;
+    final moveNonce = CommitRevealEntropy.generateNonce().sublist(
+      0,
+      _kRevealNonceBytes,
+    );
     final moveBytes = _encodeMovePayload(
-        isDashing: iAmDashing, meditateInMove: input.meditateInMove, path: localPath);
+      isDashing: iAmDashing,
+      meditateInMove: input.meditateInMove,
+      path: localPath,
+    );
     final moveCommit = await Sha256()
         .hash(Uint8List.fromList([...moveBytes, ...moveNonce]))
         .then((h) => Uint8List.fromList(h.bytes));
@@ -640,26 +740,34 @@ class TurnLoop {
     final peerMoveReveal = await session.exchangeMoveReveal(myMoveReveal);
     await _verifyReveal(peerMoveReveal, peerMoveCommit, 'movement');
 
-    final peerMovePayload = _decodeMovePayload(peerMoveReveal, _kRevealNonceBytes);
+    final peerMovePayload = _decodeMovePayload(
+      peerMoveReveal,
+      _kRevealNonceBytes,
+    );
     final peerPath = peerMovePayload.path;
-    final peerId   = _peerId();
+    final peerId = _peerId();
 
     // ignore: use_null_aware_elements
-    final movePaths = {localPlayerId: localPath, if (peerId != null) peerId: peerPath};
+    final movePaths = {
+      localPlayerId: localPath,
+      if (peerId != null) peerId: peerPath,
+    };
     final speeds = {
       for (final av in state.avatars)
-        av.playerId: av.effectiveMoveSpeed *
+        av.playerId:
+            av.effectiveMoveSpeed *
             (((av.playerId == localPlayerId && iAmDashing) ||
                     (peerId != null &&
                         av.playerId == peerId &&
                         peerMovePayload.isDashing))
                 ? 2
-                : 1)
+                : 1),
     };
 
     // Move-phase Meditate: forgo movement (path already forced empty above/
     // in the decoder) for +25 mana, independent of a main-phase Meditate.
-    if (input.meditateInMove) _applyManaGain(_localAvatar(), _kMeditateManaGain);
+    if (input.meditateInMove)
+      _applyManaGain(_localAvatar(), _kMeditateManaGain);
     if (peerId != null && peerMovePayload.meditateInMove) {
       final peerAvatarForMeditate = _avatarById(peerId);
       if (peerAvatarForMeditate != null) {
@@ -679,27 +787,36 @@ class TurnLoop {
     // ConveyorTile loop-exit randomness (tile_entry_resolver.dart) -- so it
     // waits for entropy like every other RNG-driven phase.
     final walked = _resolveAvatarMovement(
-        movePaths, speeds, HashRng(_phaseSeed(entropy, matchId, state.turnNumber, 0x02)));
+      movePaths,
+      speeds,
+      HashRng(_phaseSeed(entropy, matchId, state.turnNumber, 0x02)),
+    );
 
-    // ── Phase 4: Summons act ──────────────────────────────────────────────
+    // ── Phase 4: Cloud movement ─────────────────────────────────────────────
+    // Air-flavor Clouds only; creature Summons AI (this used to run here
+    // too) now runs as Phase 5b, after Action resolution — see this file's
+    // header comment for why.
     onPhase?.call(TurnPhase.summons);
-    final summonsRng = HashRng(_phaseSeed(entropy, matchId, state.turnNumber, 0x01));
-    _resolveSummons(summonsRng);
     _moveClouds();
 
     // ── Phase 4b: Melee commit-reveal ──────────────────────────────────────
-    // Post-movement, post-summons: final positions are known, so this can
-    // ask the local player which adjacent hostile tile (if any) to melee.
-    // Independent of the main-phase action — a player may cast a spell AND
-    // melee the same turn. Only prompted when a target actually exists;
-    // everyone else implicitly passes. No look-ahead concern (unlike
-    // Phase 1/2): entropy is already public by this point.
+    // Post-movement, post-cloud-move: final positions are known for
+    // everything except this turn's creature Summons AI (Phase 5b runs
+    // later now), so this can ask the local player which adjacent hostile
+    // tile (if any) to melee. Independent of the main-phase action — a
+    // player may cast a spell AND melee the same turn. Only prompted when a
+    // target actually exists; everyone else implicitly passes. No
+    // look-ahead concern (unlike Phase 1/2): entropy is already public by
+    // this point.
     final localMeleeCandidates = _meleeCandidates(_localAvatar());
     final localMeleeTarget = localMeleeCandidates.isEmpty
         ? null
         : await meleeTargetPicker(localMeleeCandidates);
-    final meleeNonce = CommitRevealEntropy.generateNonce().sublist(0, _kRevealNonceBytes);
-    final meleeBytes = _encodeMeleeChoice(localMeleeTarget);
+    final meleeNonce = CommitRevealEntropy.generateNonce().sublist(
+      0,
+      _kRevealNonceBytes,
+    );
+    final meleeBytes = _encodeOptionalTarget(localMeleeTarget);
     final meleeCommit = await Sha256()
         .hash(Uint8List.fromList([...meleeBytes, ...meleeNonce]))
         .then((h) => Uint8List.fromList(h.bytes));
@@ -708,18 +825,23 @@ class TurnLoop {
     final myMeleeReveal = Uint8List.fromList([...meleeNonce, ...meleeBytes]);
     final peerMeleeReveal = await session.exchangeMeleeReveal(myMeleeReveal);
     await _verifyReveal(peerMeleeReveal, peerMeleeCommit, 'melee');
-    final peerMeleeTarget = _decodeMeleeChoice(peerMeleeReveal, _kRevealNonceBytes);
+    final peerMeleeTarget = _decodeOptionalTarget(
+      peerMeleeReveal,
+      _kRevealNonceBytes,
+    );
 
     // Resolved at the very start of the resolution phase, before any spell
     // — see this file's header comment.
-    final meleeRng = HashRng(_phaseSeed(entropy, matchId, state.turnNumber, 0x04));
+    final meleeRng = HashRng(
+      _phaseSeed(entropy, matchId, state.turnNumber, 0x04),
+    );
     if (localMeleeTarget != null) {
-      _applyHaymaker(_localAvatar(), localMeleeTarget, preMovPos, meleeRng);
+      _applyHaymaker(_localAvatar(), localMeleeTarget, walked, meleeRng);
     }
     if (peerId != null && peerMeleeTarget != null) {
       final peerAvatarForMelee = _avatarById(peerId);
       if (peerAvatarForMelee != null) {
-        _applyHaymaker(peerAvatarForMelee, peerMeleeTarget, preMovPos, meleeRng);
+        _applyHaymaker(peerAvatarForMelee, peerMeleeTarget, walked, meleeRng);
       }
     }
 
@@ -728,11 +850,18 @@ class TurnLoop {
     // ── Phase 5: Delayed spell reveals + Action reveal + resolution ───────
     // Both players simultaneously announce any pending delayed spells firing
     // this turn (independent of, and before, the current-turn action reveal).
-    final localDelayedPayload = _buildDelayedRevealPayload(input.delayedSpellReveals);
-    final peerDelayedPayload = await session.exchangeDelayedSpellReveals(localDelayedPayload);
+    final localDelayedPayload = _buildDelayedRevealPayload(
+      input.delayedSpellReveals,
+    );
+    final peerDelayedPayload = await session.exchangeDelayedSpellReveals(
+      localDelayedPayload,
+    );
 
-    final myActionReveal =
-        Uint8List.fromList([...actionSaltA, ...actionSaltB, ...actionBytes]);
+    final myActionReveal = Uint8List.fromList([
+      ...actionSaltA,
+      ...actionSaltB,
+      ...actionBytes,
+    ]);
     final peerActionReveal = await session.exchangeActionReveal(myActionReveal);
     await _verifyActionReveal(peerActionReveal, peerActionCommit);
 
@@ -747,7 +876,11 @@ class TurnLoop {
     // with the trajectory-derived formulas for use in _resolveActions.
     if (action is SpellCastAction || action is MysterySpellCastAction) {
       await _verifyPeerSpellCast(
-          action, merkleProof, certifiedPeerFormulas, certifiedPeerElementSequences);
+        action,
+        merkleProof,
+        certifiedPeerFormulas,
+        certifiedPeerElementSequences,
+      );
     }
 
     // For immediate mystery spells (delay=0), verify the commitment and
@@ -758,24 +891,118 @@ class TurnLoop {
     // Verify and collect delayed spell fires; removes matched entries from
     // state.pendingDelayedSpells so the state hash reflects the firings.
     final localFires = await _verifyAndCollectDelayedFires(
-        localDelayedPayload, localPlayerId);
+      localDelayedPayload,
+      localPlayerId,
+    );
     final peerFires = await _verifyAndCollectDelayedFires(
-        peerDelayedPayload, peerId ?? '');
+      peerDelayedPayload,
+      peerId ?? '',
+    );
 
     // Action phase seed folds in both action commits (XOR is order-independent
     // so both clients derive the same seed). Defence-in-depth: the seed is
     // bound to exactly the actions taken this turn even if entropy were somehow
     // exposed before the commit.
-    final actionRng = HashRng(_actionPhaseSeed(
-        entropy, matchId, actionCommit, peerActionCommit, state.turnNumber));
-    _resolveActions(myAction, peerAction, preMovPos, actionRng,
-        traversedPaths: walked,
-        delayedFires: [...localFires, ...peerFires],
-        certifiedPeerFormulas: certifiedPeerFormulas,
-        certifiedPeerElementSequences: certifiedPeerElementSequences);
+    final actionRng = HashRng(
+      _actionPhaseSeed(
+        entropy,
+        matchId,
+        actionCommit,
+        peerActionCommit,
+        state.turnNumber,
+      ),
+    );
+    _resolveActions(
+      myAction,
+      peerAction,
+      preMovPos,
+      actionRng,
+      traversedPaths: walked,
+      delayedFires: [...localFires, ...peerFires],
+      certifiedPeerFormulas: certifiedPeerFormulas,
+      certifiedPeerElementSequences: certifiedPeerElementSequences,
+    );
+
+    // ── Phase 5b: Summons act ───────────────────────────────────────────────
+    // Every spell for the turn (including any Potent summon's immediate
+    // bonus action, above) has now resolved. Both clients run the same
+    // deterministic AI for all living minions here, in creation order —
+    // this turn's entropy is already public by this point (Phase 3), so
+    // unlike the old pre-resolution placement there's nothing left for
+    // either player's Phase 1 action commit to look ahead to.
+    final summonsRng = HashRng(
+      _phaseSeed(entropy, matchId, state.turnNumber, 0x01),
+    );
+    _resolveSummons(summonsRng);
+
+    // ── Phase 5.5: Post-resolution free-move (barrier burst) ──────────────
+    // A barrier destroyed by damage this turn (a "burst" — not one that
+    // merely expired from old age; see WizardAvatar.tickBarriers for that
+    // separate, still-unwired path) with freeMoveOnCollapse grants its
+    // bearer a single reactive step, once, after every spell for the turn
+    // has fully resolved. This is deliberately *not* interleaved mid-
+    // resolution: an interactive version that could let the bearer dodge a
+    // second spell landing on the same tile later in the same turn would
+    // need a new mid-loop suspension point (and, for real duels, a fresh
+    // network round trip per burst rather than one fixed one) for a niche
+    // payoff — not worth it unless playtesting shows Airy Barrier is
+    // underpowered without it. This version still lets the bearer step off
+    // hazardous terrain (FloorIsLava, clouds, fire-barrier aura) before
+    // Phase 6's position-dependent damage applies.
+    //
+    // Shape mirrors the Phase 4b melee commit-reveal exactly. Only prompted
+    // when the local avatar actually earned a burst and has a legal tile to
+    // step to; everyone else implicitly declines with no prompt shown.
+    final localFreeMoveCandidates = _localAvatar().pendingFreeMoveBurst
+        ? _freeMoveCandidates(_localAvatar())
+        : const <HexCoord>[];
+    final localFreeMoveTarget = localFreeMoveCandidates.isEmpty
+        ? null
+        : await freeMoveDirectionPicker(localFreeMoveCandidates);
+    final freeMoveNonce = CommitRevealEntropy.generateNonce().sublist(
+      0,
+      _kRevealNonceBytes,
+    );
+    final freeMoveBytes = _encodeOptionalTarget(localFreeMoveTarget);
+    final freeMoveCommit = await Sha256()
+        .hash(Uint8List.fromList([...freeMoveBytes, ...freeMoveNonce]))
+        .then((h) => Uint8List.fromList(h.bytes));
+    final peerFreeMoveCommit = await session.exchangeFreeMoveCommit(
+      freeMoveCommit,
+    );
+
+    final myFreeMoveReveal = Uint8List.fromList([
+      ...freeMoveNonce,
+      ...freeMoveBytes,
+    ]);
+    final peerFreeMoveReveal = await session.exchangeFreeMoveReveal(
+      myFreeMoveReveal,
+    );
+    await _verifyReveal(peerFreeMoveReveal, peerFreeMoveCommit, 'freeMove');
+    final peerFreeMoveTarget = _decodeOptionalTarget(
+      peerFreeMoveReveal,
+      _kRevealNonceBytes,
+    );
+
+    if (localFreeMoveTarget != null) {
+      _applyFreeMove(_localAvatar(), localFreeMoveTarget);
+    }
+    if (peerId != null && peerFreeMoveTarget != null) {
+      final peerAvatarForFreeMove = _avatarById(peerId);
+      if (peerAvatarForFreeMove != null) {
+        _applyFreeMove(peerAvatarForFreeMove, peerFreeMoveTarget);
+      }
+    }
+    // One-shot opportunity: clear regardless of whether it was used, so it
+    // never rolls over to a later turn.
+    for (final av in state.avatars) {
+      av.pendingFreeMoveBurst = false;
+    }
 
     // ── Phase 6: End of turn ──────────────────────────────────────────────
-    final eotRng = HashRng(_phaseSeed(entropy, matchId, state.turnNumber, 0x03));
+    final eotRng = HashRng(
+      _phaseSeed(entropy, matchId, state.turnNumber, 0x03),
+    );
     _endOfTurn(preMovPos, eotRng);
 
     await _exchangeStateHash();
@@ -791,7 +1018,11 @@ class TurnLoop {
   /// matchId is included when non-null so identical entropy+turn+phase in two
   /// different matches can't produce the same HashRng stream.
   static Uint8List _phaseSeed(
-      Uint8List entropy, Uint8List? matchId, int turnNumber, int tag) {
+    Uint8List entropy,
+    Uint8List? matchId,
+    int turnNumber,
+    int tag,
+  ) {
     final buf = BytesBuilder(copy: false);
     buf.add(entropy);
     if (matchId != null) buf.add(matchId);
@@ -809,8 +1040,12 @@ class TurnLoop {
   /// which is local vs peer.
   /// SHA-256(entropy[32] ‖ matchId[N]? ‖ (myCommit XOR peerCommit)[32] ‖ uint32BE(turn)[4] ‖ 0x02[1])
   static Uint8List _actionPhaseSeed(
-      Uint8List entropy, Uint8List? matchId,
-      Uint8List myCommit, Uint8List peerCommit, int turnNumber) {
+    Uint8List entropy,
+    Uint8List? matchId,
+    Uint8List myCommit,
+    Uint8List peerCommit,
+    int turnNumber,
+  ) {
     final xor = Uint8List(32);
     for (var i = 0; i < 32; i++) {
       xor[i] = myCommit[i] ^ peerCommit[i];
@@ -828,13 +1063,18 @@ class TurnLoop {
     return Uint8List.fromList(sha256.convert(buf.toBytes()).bytes);
   }
 
-  // ── Phase 4: Summons act ──────────────────────────────────────────────────
+  // ── Phase 5b: Summons act ─────────────────────────────────────────────────
 
   void _resolveSummons(HashRng rng) {
-    // Both clients run the same deterministic AI for all minions (creation order
-    // maintained by state.minions list). Minions summoned this turn with
-    // mayActImmediately=false have actedThisTurn=true already — they skip.
-    final living = state.minions.where((m) => m.isAlive && !m.actedThisTurn).toList();
+    // Both clients run the same deterministic AI for all minions (creation
+    // order maintained by state.minions list). A summon cast this very turn
+    // (Potent or not) starts with actedThisTurn=false, so it's included in
+    // this sweep — its first action is always this same turn, here. A
+    // Potent summon additionally got an immediate bonus action during Phase
+    // 5 (see _castSummon), so it acts a second time right here.
+    final living = state.minions
+        .where((m) => m.isAlive && !m.actedThisTurn)
+        .toList();
     for (final creature in living) {
       _creatureTurn(creature, rng);
       creature.actedThisTurn = true;
@@ -867,7 +1107,8 @@ class TurnLoop {
     // protocol change (Summons phase can't move ahead of the B-5 entropy
     // reveal without reopening the look-ahead hole) and is deliberately
     // deferred.
-    final personality = (creature.forceCloseToAttack ||
+    final personality =
+        (creature.forceCloseToAttack ||
             creature.personality == SummonPersonality.obedient)
         ? SummonPersonality.aggressive
         : creature.personality;
@@ -875,16 +1116,21 @@ class TurnLoop {
     final target = switch (personality) {
       SummonPersonality.tactical => _tacticalTarget(creature),
       SummonPersonality.protective => () {
-          final owner = _avatarById(creature.ownerId);
-          final from = (owner != null && owner.isAlive) ? owner.position : creature.position;
-          return _nearestEnemyEntity(from, creature.teamId, rng);
-        }(),
+        final owner = _avatarById(creature.ownerId);
+        final from = (owner != null && owner.isAlive)
+            ? owner.position
+            : creature.position;
+        return _nearestEnemyEntity(from, creature.teamId, rng);
+      }(),
       SummonPersonality.aggressive ||
       SummonPersonality.evasive ||
       // Unreachable: reassigned to aggressive above. Listed only to keep
       // this switch exhaustive over the full enum.
-      SummonPersonality.obedient =>
-        _nearestEnemyEntity(creature.position, creature.teamId, rng),
+      SummonPersonality.obedient => _nearestEnemyEntity(
+        creature.position,
+        creature.teamId,
+        rng,
+      ),
     };
     if (target == null) return;
 
@@ -921,7 +1167,9 @@ class TurnLoop {
   /// is already within 1 tile. Ties broken by [rng] (design doc: "Targets
   /// that are both equally close and equal priority chosen at random").
   _AiTarget? _nearestEnemyEntity(HexCoord from, String teamId, HashRng rng) {
-    final avatars = state.avatars.where((av) => av.isAlive && av.teamId != teamId).toList();
+    final avatars = state.avatars
+        .where((av) => av.isAlive && av.teamId != teamId)
+        .toList();
     if (avatars.isNotEmpty) {
       final dists = [for (final av in avatars) hexDistance(av.position, from)];
       final bestDist = dists.reduce(min);
@@ -933,10 +1181,13 @@ class TurnLoop {
       return _AiTarget(position: chosen.position, avatar: chosen);
     }
     final minions = state.minions
-        .where((m) =>
-            m.isAlive &&
-            m.teamId != teamId &&
-            (!m.abilities.contains(SummonAbility.stealthy) || m.distanceTo(from) <= 1))
+        .where(
+          (m) =>
+              m.isAlive &&
+              m.teamId != teamId &&
+              (!m.abilities.contains(SummonAbility.stealthy) ||
+                  m.distanceTo(from) <= 1),
+        )
         .toList();
     if (minions.isEmpty) return null;
     final dists = [for (final m in minions) m.distanceTo(from)];
@@ -957,17 +1208,21 @@ class TurnLoop {
   _AiTarget? _tacticalTarget(Minion creature) {
     _AiTarget? best;
     var bestHp = double.infinity;
-    for (final av in state.avatars.where((a) => a.isAlive && a.teamId != creature.teamId)) {
+    for (final av in state.avatars.where(
+      (a) => a.isAlive && a.teamId != creature.teamId,
+    )) {
       if (av.hp < bestHp) {
         bestHp = av.hp.toDouble();
         best = _AiTarget(position: av.position, avatar: av);
       }
     }
-    final minions = state.minions.where((m) =>
-        m.isAlive &&
-        m.teamId != creature.teamId &&
-        (!m.abilities.contains(SummonAbility.stealthy) ||
-            m.distanceTo(creature.position) <= 1));
+    final minions = state.minions.where(
+      (m) =>
+          m.isAlive &&
+          m.teamId != creature.teamId &&
+          (!m.abilities.contains(SummonAbility.stealthy) ||
+              m.distanceTo(creature.position) <= 1),
+    );
     for (final m in minions) {
       final factor = switch (resistanceTierOf(creature.affinity, m.affinity)) {
         ResistanceTier.resistant => 2.0,
@@ -1056,26 +1311,33 @@ class TurnLoop {
     creature.position = outcome.finalPosition;
     if (outcome.totalDamage > 0) creature.takeDamage(outcome.totalDamage);
     if (outcome.animationPath.length > 1) {
-      lastConveyorChainEvents.add(ConveyorChainEvent(
-        entityId: creature.id,
-        path: outcome.animationPath,
-        damage: outcome.totalDamage,
-        killed: outcome.killed,
-      ));
+      lastConveyorChainEvents.add(
+        ConveyorChainEvent(
+          entityId: creature.id,
+          path: outcome.animationPath,
+          damage: outcome.totalDamage,
+          killed: outcome.killed,
+        ),
+      );
     }
   }
 
   /// One greedy step of [creature]'s own footprint toward (or, if [away],
   /// away from) [toward]. Flying (AAAA) ignores ImpassableTile; Big (EEEE)
   /// requires the whole footprint to be valid at the candidate center.
-  HexCoord? _creatureGreedyStep(Minion creature, HexCoord toward, {bool away = false}) {
+  HexCoord? _creatureGreedyStep(
+    Minion creature,
+    HexCoord toward, {
+    bool away = false,
+  }) {
     HexCoord? best;
     var bestDist = creature.distanceTo(toward);
     for (final n in _neighbors(creature.position)) {
       if (!_footprintValid(n, creature)) continue;
-      final candidateDist = footprintFor(n, creature.abilities)
-          .map((t) => hexDistance(t, toward))
-          .reduce(min);
+      final candidateDist = footprintFor(
+        n,
+        creature.abilities,
+      ).map((t) => hexDistance(t, toward)).reduce(min);
       final better = away ? candidateDist > bestDist : candidateDist < bestDist;
       if (better) {
         bestDist = candidateDist;
@@ -1098,8 +1360,12 @@ class TurnLoop {
   /// toward [to]. Null if [from] == [to].
   HexCoord? _directionTowards(HexCoord from, HexCoord to) {
     const dirs = [
-      HexCoord(1, 0), HexCoord(1, -1), HexCoord(0, -1),
-      HexCoord(-1, 0), HexCoord(-1, 1), HexCoord(0, 1),
+      HexCoord(1, 0),
+      HexCoord(1, -1),
+      HexCoord(0, -1),
+      HexCoord(-1, 0),
+      HexCoord(-1, 1),
+      HexCoord(0, 1),
     ];
     final dq = to.q - from.q;
     final dr = to.r - from.r;
@@ -1118,7 +1384,12 @@ class TurnLoop {
 
   // ── Attack resolution + abilities ─────────────────────────────────────────
 
-  void _creatureAttack(Minion attacker, _AiTarget target, HashRng rng, {int movedTiles = 0}) {
+  void _creatureAttack(
+    Minion attacker,
+    _AiTarget target,
+    HashRng rng, {
+    int movedTiles = 0,
+  }) {
     var damage = attacker.stats.damage;
     // Charger (FAFA): bonus damage = half the distance moved before
     // attacking, rounded up.
@@ -1130,7 +1401,8 @@ class TurnLoop {
     if (target.avatar != null) {
       final av = target.avatar!;
       av.absorbDamage(damage);
-      if (muddy) _addStatus(av, StatusEffectId.speedDown, {'speedDelta': -1}, 1);
+      if (muddy)
+        _addStatus(av, StatusEffectId.speedDown, {'speedDelta': -1}, 1);
     } else if (target.minion != null) {
       final m = target.minion!;
       m.takeDamage(damage, attackType: attacker.affinity);
@@ -1141,12 +1413,16 @@ class TurnLoop {
         attacker.takeDamage(1, attackType: SpellAffinity.fire);
       }
       if (muddy) {
-        m.activeStatusEffects.removeWhere((fx) => fx.effectTypeId == StatusEffectId.speedDown);
-        m.activeStatusEffects.add(StatusEffect(
-          effectTypeId: StatusEffectId.speedDown,
-          remainingTurns: 1,
-          modifiers: const {'speedDelta': -1},
-        ));
+        m.activeStatusEffects.removeWhere(
+          (fx) => fx.effectTypeId == StatusEffectId.speedDown,
+        );
+        m.activeStatusEffects.add(
+          StatusEffect(
+            effectTypeId: StatusEffectId.speedDown,
+            remainingTurns: 1,
+            modifiers: const {'speedDelta': -1},
+          ),
+        );
       }
     }
 
@@ -1164,16 +1440,19 @@ class TurnLoop {
 
   _AiTarget? _cleaveTarget(Minion attacker, _AiTarget primary) {
     bool adjacentToBoth(HexCoord pos) =>
-        hexDistance(pos, primary.position) == 1 && attacker.distanceTo(pos) == 1;
+        hexDistance(pos, primary.position) == 1 &&
+        attacker.distanceTo(pos) == 1;
     for (final av in state.avatars) {
       if (!av.isAlive || av.teamId == attacker.teamId) continue;
       if (av == primary.avatar) continue;
-      if (adjacentToBoth(av.position)) return _AiTarget(position: av.position, avatar: av);
+      if (adjacentToBoth(av.position))
+        return _AiTarget(position: av.position, avatar: av);
     }
     for (final m in state.minions) {
       if (!m.isAlive || m.teamId == attacker.teamId) continue;
       if (m == primary.minion) continue;
-      if (adjacentToBoth(m.position)) return _AiTarget(position: m.position, minion: m);
+      if (adjacentToBoth(m.position))
+        return _AiTarget(position: m.position, minion: m);
     }
     return null;
   }
@@ -1203,9 +1482,13 @@ class TurnLoop {
   /// speed-tiebreak rule). Returns each avatar's actually-walked path
   /// (bounced: just [origin]), for knockback's move-path bounce reference.
   Map<String, List<HexCoord>> _resolveAvatarMovement(
-      Map<String, List<HexCoord>> movePaths, Map<String, int> speeds, HashRng rng) {
+    Map<String, List<HexCoord>> movePaths,
+    Map<String, int> speeds,
+    HashRng rng,
+  ) {
     final preview = state.battlefield.resolveMovement(
-      movePaths, speeds,
+      movePaths,
+      speeds,
       tileEffects: state.tileEffects,
     );
     final walked = <String, List<HexCoord>>{};
@@ -1216,7 +1499,13 @@ class TurnLoop {
         continue;
       }
       final budget = max(0, speeds[av.playerId] ?? av.effectiveMoveSpeed);
-      final path = _walkAvatar(av, origin, movePaths[av.playerId] ?? const [], budget, rng);
+      final path = _walkAvatar(
+        av,
+        origin,
+        movePaths[av.playerId] ?? const [],
+        budget,
+        rng,
+      );
       av.position = path.last;
       state.battlefield.occupancy[av.playerId] = path.last;
       walked[av.playerId] = path;
@@ -1233,8 +1522,13 @@ class TurnLoop {
   /// wherever the push left it, using whatever budget remains (a push
   /// itself is free -- it doesn't consume budget). Returns every tile
   /// actually visited, in order, starting with [origin].
-  List<HexCoord> _walkAvatar(WizardAvatar av, HexCoord origin,
-      List<HexCoord> declaredPath, int budget, HashRng rng) {
+  List<HexCoord> _walkAvatar(
+    WizardAvatar av,
+    HexCoord origin,
+    List<HexCoord> declaredPath,
+    int budget,
+    HashRng rng,
+  ) {
     var current = origin;
     var remaining = budget;
     final path = <HexCoord>[origin];
@@ -1270,12 +1564,14 @@ class TurnLoop {
         path.addAll(outcome.animationPath.skip(1));
         if (outcome.totalDamage > 0) av.absorbDamage(outcome.totalDamage);
         if (outcome.animationPath.length > 1) {
-          lastConveyorChainEvents.add(ConveyorChainEvent(
-            entityId: av.playerId,
-            path: outcome.animationPath,
-            damage: outcome.totalDamage,
-            killed: outcome.killed,
-          ));
+          lastConveyorChainEvents.add(
+            ConveyorChainEvent(
+              entityId: av.playerId,
+              path: outcome.animationPath,
+              damage: outcome.totalDamage,
+              killed: outcome.killed,
+            ),
+          );
         }
       }
     }
@@ -1307,22 +1603,25 @@ class TurnLoop {
 
     // Extract the spell from any spell-like action for sort comparisons.
     SpellAsset? extractSpell(TurnAction a) => switch (a) {
-          SpellCastAction(:final spell) => spell,
-          MysterySpellCastAction(:final spell) => spell,
-          _ => null,
-        };
+      SpellCastAction(:final spell) => spell,
+      MysterySpellCastAction(:final spell) => spell,
+      _ => null,
+    };
 
     // Assign resolution group per action.
     _ResolutionGroup group((WizardAvatar, TurnAction) pair) {
       final av = pair.$1;
       final action = pair.$2;
       return switch (action) {
-        PassAction() || DashAction() || MeditateAction() => _ResolutionGroup.normalSpell,
-        SpellCastAction() || MysterySpellCastAction() => av.isQuick
-            ? _ResolutionGroup.quickSpell
-            : av.isSluggish
-                ? _ResolutionGroup.sluggishSpell
-                : _ResolutionGroup.normalSpell,
+        PassAction() ||
+        DashAction() ||
+        MeditateAction() => _ResolutionGroup.normalSpell,
+        SpellCastAction() || MysterySpellCastAction() =>
+          av.isQuick
+              ? _ResolutionGroup.quickSpell
+              : av.isSluggish
+              ? _ResolutionGroup.sluggishSpell
+              : _ResolutionGroup.normalSpell,
       };
     }
 
@@ -1341,8 +1640,6 @@ class TurnLoop {
         return 0;
       });
 
-
-
     for (final (actor, action) in sorted) {
       if (!actor.isAlive) continue;
       switch (action) {
@@ -1360,9 +1657,15 @@ class TurnLoop {
           _applyManaGain(actor, _kMeditateManaGain);
           _regressChain(actor);
 
-        case SpellCastAction(:final spell, :final targetHex, :final isPotent,
-            :final isVelocity, :final isEfficiency, :final vocalScore,
-            :final conveyorDirection):
+        case SpellCastAction(
+          :final spell,
+          :final targetHex,
+          :final isPotent,
+          :final isVelocity,
+          :final isEfficiency,
+          :final vocalScore,
+          :final conveyorDirection,
+        ):
           // isSorcererMode + non-null vocalScore is checked at both ends of
           // the wire (commit-time mana deduction above, here at resolution),
           // so the two are always in lockstep — see CastingEnhancements
@@ -1379,50 +1682,98 @@ class TurnLoop {
                   isVelocity: isVelocity,
                   isEfficiency: isEfficiency,
                 );
-          if (enhancements.fizzle) {
-            // Botched incantation: spell fails entirely. Mana was already
-            // spent at commit time. Treated like a Pass for chain purposes.
+          // Clouds (Water-Fire) base effect: an entity standing in a cloud's
+          // radius (or carrying the lingering Earth-flavor restriction) may
+          // only target adjacent tiles, and a target tile inside a cloud's
+          // radius is likewise only reachable from an adjacent tile. Cloud
+          // position here reflects this turn's Summons-phase move (already
+          // resolved by the time Action resolution runs), so the check uses
+          // where the cloud actually is for the rest of the turn, not last
+          // turn's stale position.
+          final ignoredCloudRestriction =
+              _cloudBoundToAdjacent(actor, targetHex) &&
+              hexDistance(actor.position, targetHex) > 1;
+          if (enhancements.fizzle || ignoredCloudRestriction) {
+            // Botched incantation, or an illegal cast that ignored the
+            // cloud's adjacent-only targeting restriction: spell fails
+            // entirely. Mana was already spent at commit time. Treated like
+            // a Pass for chain purposes.
             _regressChain(actor);
           } else {
             final affinity = primaryFormulaAffinity(spell.formula);
             if (affinity != null) {
-              lastCastEvents.add(SpellCastEvent(
-                casterId: actor.playerId,
-                fromHex: action.delayedOriginHex ?? actor.position,
-                toHex: targetHex,
-                affinity: affinity,
-              ));
+              lastCastEvents.add(
+                SpellCastEvent(
+                  casterId: actor.playerId,
+                  fromHex: action.delayedOriginHex ?? actor.position,
+                  toHex: targetHex,
+                  affinity: affinity,
+                ),
+              );
             }
-            final summoned = _applySpell(actor, spell, targetHex, enhancements, rng,
-                traversedPaths: traversedPaths,
-                certFormulas: certifiedPeerFormulas[spell.commitmentHex],
-                certElementSequence: certifiedPeerElementSequences[spell.commitmentHex],
-                conveyorDirection: conveyorDirection);
-            lastResolvedSpells.add(ResolvedSpellEvent(
-              spell: spell,
-              casterId: actor.playerId,
-              targetHex: targetHex,
-              isSummon: spell.isSummon,
-              summonMinionId: summoned?.id,
-              summonPosition: summoned?.position,
-            ));
+            // Snapshot the field so the UI's resolution reveal can tell which
+            // clouds/terrain/minions THIS spell brought into being (diffed
+            // right around its application), and animate them in per-card.
+            final cloudsBefore = state.clouds.map((c) => c.id).toSet();
+            final tilesBefore = state.tileEffects.keys.toSet();
+            final minionsBefore = state.minions.map((m) => m.id).toSet();
+            final summoned = _applySpell(
+              actor,
+              spell,
+              targetHex,
+              enhancements,
+              rng,
+              traversedPaths: traversedPaths,
+              certFormulas: certifiedPeerFormulas[spell.commitmentHex],
+              certElementSequence:
+                  certifiedPeerElementSequences[spell.commitmentHex],
+              conveyorDirection: conveyorDirection,
+            );
+            lastResolvedSpells.add(
+              ResolvedSpellEvent(
+                spell: spell,
+                casterId: actor.playerId,
+                targetHex: targetHex,
+                isSummon: spell.isSummon,
+                summonMinionId: summoned?.id,
+                summonPosition: summoned?.position,
+                createdCloudIds: [
+                  for (final c in state.clouds)
+                    if (!cloudsBefore.contains(c.id)) c.id,
+                ],
+                createdTileHexes: [
+                  for (final k in state.tileEffects.keys)
+                    if (!tilesBefore.contains(k)) k,
+                ],
+                createdMinionIds: [
+                  for (final m in state.minions)
+                    if (!minionsBefore.contains(m.id)) m.id,
+                ],
+              ),
+            );
           }
 
-        case MysterySpellCastAction(:final spell, :final mysteryCommitment,
-            :final isPotent, :final isVelocity):
+        case MysterySpellCastAction(
+          :final spell,
+          :final mysteryCommitment,
+          :final isPotent,
+          :final isVelocity,
+        ):
           // Immediate mystery spells were converted to SpellCastAction by
           // _verifyMysteryAction before reaching here. A MysterySpellCastAction
           // at this point is always the non-immediate (delayed) variant.
-          state.pendingDelayedSpells.add(PendingDelayedSpell(
-            id: PendingDelayedSpell.idFromCommitment(mysteryCommitment),
-            ownerId: actor.playerId,
-            spell: spell,
-            commitment: mysteryCommitment,
-            castTurn: state.turnNumber,
-            origin: actor.position,
-            isPotent: isPotent,
-            isVelocity: isVelocity,
-          ));
+          state.pendingDelayedSpells.add(
+            PendingDelayedSpell(
+              id: PendingDelayedSpell.idFromCommitment(mysteryCommitment),
+              ownerId: actor.playerId,
+              spell: spell,
+              commitment: mysteryCommitment,
+              castTurn: state.turnNumber,
+              origin: actor.position,
+              isPotent: isPotent,
+              isVelocity: isVelocity,
+            ),
+          );
       }
     }
 
@@ -1457,13 +1808,16 @@ class TurnLoop {
   /// and returns the validated fires as (actor, SpellCastAction) pairs.
   /// Matching [PendingDelayedSpell]s are removed from state.
   Future<List<(WizardAvatar, SpellCastAction)>> _verifyAndCollectDelayedFires(
-      Uint8List payload, String ownerId) async {
+    Uint8List payload,
+    String ownerId,
+  ) async {
     if (payload.isEmpty) return [];
     final count = payload[0];
     final fires = <(WizardAvatar, SpellCastAction)>[];
     var pos = 1;
     for (var i = 0; i < count; i++) {
-      if (pos + 37 > payload.length) break; // 16 id + 4 coord + 1 delay + 16 nonce
+      if (pos + 37 > payload.length)
+        break; // 16 id + 4 coord + 1 delay + 16 nonce
       final idBytes = payload.sublist(pos, pos + 16);
       pos += 16;
       final targetTile = _decodeCoord(payload, pos);
@@ -1483,7 +1837,9 @@ class TurnLoop {
 
       // Commitment verification.
       final hash = await PendingDelayedSpell.commitmentHash(
-        target: targetTile, delay: delay, nonce: nonce,
+        target: targetTile,
+        delay: delay,
+        nonce: nonce,
       );
       if (!_bytesEqual(hash, pending.commitment)) continue;
 
@@ -1491,13 +1847,16 @@ class TurnLoop {
       if (actor == null || !actor.isAlive) continue;
 
       state.pendingDelayedSpells.remove(pending);
-      fires.add((actor, SpellCastAction(
-        spell: pending.spell,
-        targetHex: targetTile,
-        isPotent: pending.isPotent,
-        isVelocity: pending.isVelocity,
-        delayedOriginHex: pending.origin,
-      )));
+      fires.add((
+        actor,
+        SpellCastAction(
+          spell: pending.spell,
+          targetHex: targetTile,
+          isPotent: pending.isPotent,
+          isVelocity: pending.isVelocity,
+          delayedOriginHex: pending.origin,
+        ),
+      ));
     }
     return fires;
   }
@@ -1521,14 +1880,16 @@ class TurnLoop {
     }
   }
 
-  static Uint8List _buildDelayedRevealPayload(List<DelayedSpellReveal> reveals) {
+  static Uint8List _buildDelayedRevealPayload(
+    List<DelayedSpellReveal> reveals,
+  ) {
     final buf = BytesBuilder();
     buf.addByte(reveals.length.clamp(0, 255));
     for (final r in reveals) {
       buf.add(_hexToBytes(r.pendingSpellId)); // 32 hex chars → 16 bytes
-      buf.add(_encodeCoord(r.targetTile));    // 4 bytes
-      buf.addByte(r.delay & 0xFF);            // 1 byte
-      buf.add(r.nonce);                       // 16 bytes
+      buf.add(_encodeCoord(r.targetTile)); // 4 bytes
+      buf.addByte(r.delay & 0xFF); // 1 byte
+      buf.add(r.nonce); // 16 bytes
     }
     return buf.toBytes();
   }
@@ -1536,23 +1897,27 @@ class TurnLoop {
   void _applyHaymaker(
     WizardAvatar actor,
     HexCoord targetTile,
-    Map<String, HexCoord> preMovPos,
+    Map<String, List<HexCoord>> walked,
     HashRng rng,
   ) {
     if (!_isAdjacent(actor.position, targetTile)) return;
 
     var damage = 1;
 
-    // Air haymaker: bonus damage = tiles moved toward target this turn.
+    // Air haymaker: bonus damage = half the tiles actually traversed this
+    // turn (path length, not net displacement), rounded down. Uses the
+    // walked path from _resolveAvatarMovement so conveyor detours and
+    // winding routes count same as their tile length — rewards a longer
+    // path (e.g. riding conveyors) over a straight-line approach.
     if (actor.hasHaymakerDistanceBonus) {
-      final preDist = hexDistance(preMovPos[actor.playerId] ?? actor.position, targetTile);
-      final postDist = hexDistance(actor.position, targetTile);
-      damage += max(0, preDist - postDist);
+      final tilesMoved = (walked[actor.playerId]?.length ?? 1) - 1;
+      damage += tilesMoved ~/ 2;
     }
 
     // Apply damage to entities on target tile.
     for (final av in _avatarsAt(targetTile)) {
-      if (av.playerId != actor.playerId && _redirectIfIllusion(av, rng)) continue;
+      if (av.playerId != actor.playerId && _redirectIfIllusion(av, rng))
+        continue;
       av.absorbDamage(damage);
 
       // Earth haymaker: slow target.
@@ -1607,7 +1972,14 @@ class TurnLoop {
     // incantations", not a 17th effect kind.
     if (spell.isSummon) {
       final sequence = certElementSequence ?? _elementSequence(spell);
-      return _castSummon(actor, targetHex, sequence, spell.summonPersonality, enhancements, rng);
+      return _castSummon(
+        actor,
+        targetHex,
+        sequence,
+        spell.summonPersonality,
+        enhancements,
+        rng,
+      );
     }
 
     // TODO(B-1): null certFormulas means either a local spell (trusted wire
@@ -1640,17 +2012,19 @@ class TurnLoop {
 
     for (final formula in formulas) {
       final descriptor = EffectResolver.resolve(formula, enhancements);
-      EffectApplicator.apply(ApplyContext(
-        descriptor: descriptor,
-        targetTile: targetHex,
-        caster: actor,
-        state: state,
-        rng: rng,
-        rodConsumedFor: rodConsumedFor,
-        movePaths: traversedPaths,
-        chosenConveyorDirection: conveyorDirection,
-        conveyorChainEvents: conveyorEvents,
-      ));
+      EffectApplicator.apply(
+        ApplyContext(
+          descriptor: descriptor,
+          targetTile: targetHex,
+          caster: actor,
+          state: state,
+          rng: rng,
+          rodConsumedFor: rodConsumedFor,
+          movePaths: traversedPaths,
+          chosenConveyorDirection: conveyorDirection,
+          conveyorChainEvents: conveyorEvents,
+        ),
+      );
     }
     lastConveyorChainEvents.addAll(conveyorEvents);
 
@@ -1662,10 +2036,13 @@ class TurnLoop {
   // ── Summoning (design doc "Summons") ──────────────────────────────────────
 
   /// Derives a creature from [sequence] (CreatureSpec.fromElements) and
-  /// spawns it near [targetHex] under [actor]'s control. A Potent cast lets
-  /// the creature act immediately this generation (design doc: "Summons may
-  /// take an immediate turn the generation they are summoned if spell is
-  /// made potent"); otherwise it first acts in the next Summons phase.
+  /// spawns it near [targetHex] under [actor]'s control. Every summon —
+  /// Potent or not — acts for the first time in Phase 5b, later this same
+  /// turn (see this file's header comment). A Potent cast additionally lets
+  /// the creature act immediately right here (design doc: "Summons may take
+  /// an immediate turn the generation they are summoned if spell is made
+  /// potent"), so it ends up acting twice in a row this turn: once here,
+  /// once again in Phase 5b.
   Minion? _castSummon(
     WizardAvatar actor,
     HexCoord targetHex,
@@ -1682,12 +2059,6 @@ class TurnLoop {
       orElse: () => SummonPersonality.aggressive,
     );
     final spawn = _findCreatureSpawnTile(targetHex, spec.abilities);
-    // actedThisTurn starts false regardless of Potency: this turn's Summons
-    // phase (phase 4) has already run by the time a spell resolves (phase 5),
-    // so a fresh creature's first *normal* turn is always the next Summons
-    // phase. Potency doesn't change that -- it grants an *additional*, bonus
-    // action right now (design doc: "may take an immediate turn... if made
-    // potent"), on top of that normal cadence, not instead of it.
     final creature = Minion(
       id: '${actor.playerId}_sm_${rng.nextInt(1 << 30).toRadixString(36)}',
       ownerId: actor.playerId,
@@ -1713,33 +2084,44 @@ class TurnLoop {
   void _fireSummonMirror(WizardAvatar summoner, Minion summoned, HashRng rng) {
     for (final link in state.reflectionLinks) {
       if (link.targetId != summoner.playerId) continue;
-      if (!link.activeTriggers.contains(ReflectionTrigger.summonMirror)) continue;
+      if (!link.activeTriggers.contains(ReflectionTrigger.summonMirror))
+        continue;
       final mirrorOwner = _avatarById(link.casterId);
       if (mirrorOwner == null || !mirrorOwner.isAlive) continue;
-      final spawn = _findCreatureSpawnTile(mirrorOwner.position, summoned.abilities);
-      state.minions.add(Minion(
-        id: '${link.casterId}_ms_${rng.nextInt(1 << 30).toRadixString(36)}',
-        ownerId: link.casterId,
-        teamId: mirrorOwner.teamId,
-        position: spawn,
-        affinity: summoned.affinity,
-        stats: summoned.stats,
-        elementSequence: summoned.elementSequence,
-        abilities: summoned.abilities,
-        personality: summoned.personality,
-      ));
+      final spawn = _findCreatureSpawnTile(
+        mirrorOwner.position,
+        summoned.abilities,
+      );
+      state.minions.add(
+        Minion(
+          id: '${link.casterId}_ms_${rng.nextInt(1 << 30).toRadixString(36)}',
+          ownerId: link.casterId,
+          teamId: mirrorOwner.teamId,
+          position: spawn,
+          affinity: summoned.affinity,
+          stats: summoned.stats,
+          elementSequence: summoned.elementSequence,
+          abilities: summoned.abilities,
+          personality: summoned.personality,
+        ),
+      );
     }
   }
 
   /// Finds the nearest tile to [preferred] whose full footprint (see
   /// [footprintFor]) is in bounds, passable, and unoccupied.
-  HexCoord _findCreatureSpawnTile(HexCoord preferred, Set<SummonAbility> abilities) {
+  HexCoord _findCreatureSpawnTile(
+    HexCoord preferred,
+    Set<SummonAbility> abilities,
+  ) {
     bool footprintOpen(HexCoord center) {
       for (final t in footprintFor(center, abilities)) {
         if (!state.battlefield.isInBounds(t)) return false;
         if (state.tileEffects[t] is ImpassableTile) return false;
-        if (state.avatars.any((av) => av.isAlive && av.position == t)) return false;
-        if (state.minions.any((m) => m.isAlive && m.occupiedTiles.contains(t))) return false;
+        if (state.avatars.any((av) => av.isAlive && av.position == t))
+          return false;
+        if (state.minions.any((m) => m.isAlive && m.occupiedTiles.contains(t)))
+          return false;
       }
       return true;
     }
@@ -1751,8 +2133,11 @@ class TurnLoop {
     return preferred; // fallback: stack anyway
   }
 
-  void _updateChainState(WizardAvatar actor, SpellAsset spell,
-      {List<ParsedFormula>? certFormulas}) {
+  void _updateChainState(
+    WizardAvatar actor,
+    SpellAsset spell, {
+    List<ParsedFormula>? certFormulas,
+  }) {
     final formulas = certFormulas ?? _parsedFormulas(spell);
     if (formulas.isEmpty) return;
 
@@ -1803,11 +2188,14 @@ class TurnLoop {
       if (entry.value is! FloorIsLava) continue;
       final lava = entry.value as FloorIsLava;
       final tile = entry.key;
-      for (final av in state.avatars.where((a) => a.isAlive && a.position == tile)) {
+      for (final av in state.avatars.where(
+        (a) => a.isAlive && a.position == tile,
+      )) {
         av.absorbDamage(lava.damage);
       }
-      for (final m
-          in state.minions.where((m) => m.isAlive && m.occupiedTiles.contains(tile))) {
+      for (final m in state.minions.where(
+        (m) => m.isAlive && m.occupiedTiles.contains(tile),
+      )) {
         if (m.abilities.contains(SummonAbility.flying)) continue;
         m.takeDamage(lava.damage);
       }
@@ -1834,12 +2222,14 @@ class TurnLoop {
       state.battlefield.occupancy[av.playerId] = outcome.finalPosition;
       if (outcome.totalDamage > 0) av.absorbDamage(outcome.totalDamage);
       if (outcome.animationPath.length > 1) {
-        lastConveyorChainEvents.add(ConveyorChainEvent(
-          entityId: av.playerId,
-          path: outcome.animationPath,
-          damage: outcome.totalDamage,
-          killed: outcome.killed,
-        ));
+        lastConveyorChainEvents.add(
+          ConveyorChainEvent(
+            entityId: av.playerId,
+            path: outcome.animationPath,
+            damage: outcome.totalDamage,
+            killed: outcome.killed,
+          ),
+        );
       }
     }
     for (final m in state.minions) {
@@ -1858,12 +2248,14 @@ class TurnLoop {
       m.position = outcome.finalPosition;
       if (outcome.totalDamage > 0) m.takeDamage(outcome.totalDamage);
       if (outcome.animationPath.length > 1) {
-        lastConveyorChainEvents.add(ConveyorChainEvent(
-          entityId: m.id,
-          path: outcome.animationPath,
-          damage: outcome.totalDamage,
-          killed: outcome.killed,
-        ));
+        lastConveyorChainEvents.add(
+          ConveyorChainEvent(
+            entityId: m.id,
+            path: outcome.animationPath,
+            damage: outcome.totalDamage,
+            killed: outcome.killed,
+          ),
+        );
       }
     }
 
@@ -1873,10 +2265,18 @@ class TurnLoop {
     for (final cloud in state.clouds) {
       switch (cloud.kind) {
         case ToxicCloud(:final damagePerTurn):
-          for (final av in state.avatars.where((a) => a.isAlive && hexDistance(a.position, cloud.position) <= cloud.radius)) {
+          for (final av in state.avatars.where(
+            (a) =>
+                a.isAlive &&
+                hexDistance(a.position, cloud.position) <= cloud.radius,
+          )) {
             av.absorbDamage(damagePerTurn);
           }
-          for (final m in state.minions.where((m) => m.isAlive && hexDistance(m.position, cloud.position) <= cloud.radius)) {
+          for (final m in state.minions.where(
+            (m) =>
+                m.isAlive &&
+                hexDistance(m.position, cloud.position) <= cloud.radius,
+          )) {
             m.takeDamage(damagePerTurn);
           }
 
@@ -1884,10 +2284,21 @@ class TurnLoop {
           // The adjacent-only targeting restriction lingers on avatars who
           // LEFT this cloud's radius this turn.
           for (final av in state.avatars) {
-            final wasIn = hexDistance(preMovPos[av.playerId] ?? av.position, cloud.position) <= cloud.radius;
-            final isOut = hexDistance(av.position, cloud.position) > cloud.radius;
+            final wasIn =
+                hexDistance(
+                  preMovPos[av.playerId] ?? av.position,
+                  cloud.position,
+                ) <=
+                cloud.radius;
+            final isOut =
+                hexDistance(av.position, cloud.position) > cloud.radius;
             if (wasIn && isOut) {
-              _addStatus(av, StatusEffectId.cloudBoundTargeting, {}, restrictionTurnsAfterLeaving);
+              _addStatus(
+                av,
+                StatusEffectId.cloudBoundTargeting,
+                {},
+                restrictionTurnsAfterLeaving,
+              );
             }
           }
 
@@ -1931,23 +2342,35 @@ class TurnLoop {
 
     // Expire mystery spells whose reveal window has passed (castTurn + 3).
     // Mana is already spent; caster chose not to reveal.
-    state.pendingDelayedSpells
-        .removeWhere((p) => p.maxTurn <= state.turnNumber);
+    state.pendingDelayedSpells.removeWhere(
+      (p) => p.maxTurn <= state.turnNumber,
+    );
 
     // Tick Reflections links; remove expired or dead-participant links.
-    final alive = state.avatars.where((a) => a.isAlive).map((a) => a.playerId).toSet();
-    for (final l in state.reflectionLinks) { l.remainingTurns--; }
-    state.reflectionLinks.removeWhere((l) =>
-        l.remainingTurns <= 0 ||
-        !alive.contains(l.casterId) ||
-        !alive.contains(l.targetId));
+    final alive = state.avatars
+        .where((a) => a.isAlive)
+        .map((a) => a.playerId)
+        .toSet();
+    for (final l in state.reflectionLinks) {
+      l.remainingTurns--;
+    }
+    state.reflectionLinks.removeWhere(
+      (l) =>
+          l.remainingTurns <= 0 ||
+          !alive.contains(l.casterId) ||
+          !alive.contains(l.targetId),
+    );
 
     // Tick Divination links (Air-Water); same expiry rule as Reflections.
-    for (final l in state.divinationLinks) { l.remainingTurns--; }
-    state.divinationLinks.removeWhere((l) =>
-        l.remainingTurns <= 0 ||
-        !alive.contains(l.casterId) ||
-        !alive.contains(l.targetId));
+    for (final l in state.divinationLinks) {
+      l.remainingTurns--;
+    }
+    state.divinationLinks.removeWhere(
+      (l) =>
+          l.remainingTurns <= 0 ||
+          !alive.contains(l.casterId) ||
+          !alive.contains(l.targetId),
+    );
   }
 
   // ── Entropy + state hash ──────────────────────────────────────────────────
@@ -1994,7 +2417,11 @@ class TurnLoop {
   // ── Commit-reveal verification ────────────────────────────────────────────
 
   /// Verify that `data[0..15]` is the nonce and `SHA-256(data[16..] ‖ data[0..15]) == commit`.
-  Future<void> _verifyReveal(Uint8List reveal, Uint8List commit, String label) async {
+  Future<void> _verifyReveal(
+    Uint8List reveal,
+    Uint8List commit,
+    String label,
+  ) async {
     if (reveal.length < _kRevealNonceBytes) {
       session.sendForfeit('malformed_reveal:$label');
       throw StateError('peer sent malformed $label reveal (too short)');
@@ -2006,7 +2433,9 @@ class TurnLoop {
         .then((h) => Uint8List.fromList(h.bytes));
     if (!_bytesEqual(expected, commit)) {
       session.sendForfeit('withheld_reveal:$label');
-      throw StateError('peer $label reveal did not match commit — match forfeit');
+      throw StateError(
+        'peer $label reveal did not match commit — match forfeit',
+      );
     }
   }
 
@@ -2025,7 +2454,9 @@ class TurnLoop {
     final expected = await _splitActionCommit(actionBytes, saltA, saltB);
     if (!_bytesEqual(expected, commit)) {
       session.sendForfeit('withheld_reveal:action');
-      throw StateError('peer action reveal did not match commit — match forfeit');
+      throw StateError(
+        'peer action reveal did not match commit — match forfeit',
+      );
     }
   }
 
@@ -2041,11 +2472,14 @@ class TurnLoop {
   /// early; remainderBytes is everything else. Pass and delayed (non-
   /// immediate) Mystery casts have no plaintext target yet — targetBytes is
   /// empty for those.
-  static (Uint8List target, Uint8List remainder) _splitActionTarget(Uint8List actionBytes) {
+  static (Uint8List target, Uint8List remainder) _splitActionTarget(
+    Uint8List actionBytes,
+  ) {
     if (actionBytes.isEmpty) return (Uint8List(0), actionBytes);
     int? targetOffset;
     switch (actionBytes[0]) {
-      case 0x01: targetOffset = 1 + 32 + 2; // SpellCastAction: after type+commit+t.
+      case 0x01:
+        targetOffset = 1 + 32 + 2; // SpellCastAction: after type+commit+t.
     }
     if (targetOffset == null || actionBytes.length < targetOffset + 4) {
       return (Uint8List(0), actionBytes);
@@ -2064,7 +2498,10 @@ class TurnLoop {
   }
 
   static Future<Uint8List> _splitActionCommit(
-      Uint8List actionBytes, Uint8List saltA, Uint8List saltB) async {
+    Uint8List actionBytes,
+    Uint8List saltA,
+    Uint8List saltB,
+  ) async {
     final (target, remainder) = _splitActionTarget(actionBytes);
     final leafA = await _leafHash(remainder, saltA);
     final leafB = await _leafHash(target, saltB);
@@ -2093,15 +2530,23 @@ class TurnLoop {
     final outgoingLink = peerId == null
         ? null
         : state.divinationLinks
-            .where((l) =>
-                l.casterId == localPlayerId && l.targetId == peerId && l.remainingTurns > 0)
-            .firstOrNull;
+              .where(
+                (l) =>
+                    l.casterId == localPlayerId &&
+                    l.targetId == peerId &&
+                    l.remainingTurns > 0,
+              )
+              .firstOrNull;
     final incomingLink = peerId == null
         ? null
         : state.divinationLinks
-            .where((l) =>
-                l.casterId == peerId && l.targetId == localPlayerId && l.remainingTurns > 0)
-            .firstOrNull;
+              .where(
+                (l) =>
+                    l.casterId == peerId &&
+                    l.targetId == localPlayerId &&
+                    l.remainingTurns > 0,
+              )
+              .firstOrNull;
 
     final x25519 = X25519();
 
@@ -2123,12 +2568,20 @@ class TurnLoop {
     if (incomingLink != null &&
         peerKeyFrame.length == 33 &&
         peerKeyFrame[0] == 0x01) {
-      final peerEkPub = SimplePublicKey(peerKeyFrame.sublist(1), type: KeyPairType.x25519);
+      final peerEkPub = SimplePublicKey(
+        peerKeyFrame.sublist(1),
+        type: KeyPairType.x25519,
+      );
       final vk = await x25519.newKeyPair();
       final vkPub = await vk.extractPublicKey();
-      final shared = await x25519.sharedSecretKey(keyPair: vk, remotePublicKey: peerEkPub);
-      final derived = await Hkdf(hmac: Hmac.sha256(), outputLength: 32)
-          .deriveKey(secretKey: shared, info: _scryHkdfInfo());
+      final shared = await x25519.sharedSecretKey(
+        keyPair: vk,
+        remotePublicKey: peerEkPub,
+      );
+      final derived = await Hkdf(
+        hmac: Hmac.sha256(),
+        outputLength: 32,
+      ).deriveKey(secretKey: shared, info: _scryHkdfInfo());
 
       final (targetBytes, remainder) = _splitActionTarget(actionBytes);
       final leafA = await _leafHash(remainder, saltA);
@@ -2137,26 +2590,47 @@ class TurnLoop {
       final opening = Uint8List.fromList([...targetBytes, ...saltB, ...leafA]);
       final cipher = Xchacha20.poly1305Aead();
       final nonce = cipher.newNonce();
-      final box = await cipher.encrypt(opening, secretKey: derived, nonce: nonce);
-      myOpenFrame = Uint8List.fromList([0x01, ...vkPub.bytes, ...box.concatenation()]);
+      final box = await cipher.encrypt(
+        opening,
+        secretKey: derived,
+        nonce: nonce,
+      );
+      myOpenFrame = Uint8List.fromList([
+        0x01,
+        ...vkPub.bytes,
+        ...box.concatenation(),
+      ]);
     }
     final peerOpenFrame = await session.exchangeScryOpen(myOpenFrame);
 
     // ── Decrypt the peer's opening, if we're the scryer and they answered. ──
-    if (myEphemeral == null || peerOpenFrame.isEmpty || peerOpenFrame[0] != 0x01) {
+    if (myEphemeral == null ||
+        peerOpenFrame.isEmpty ||
+        peerOpenFrame[0] != 0x01) {
       return null;
     }
     if (peerOpenFrame.length < 1 + 32) return null;
-    final vkPub = SimplePublicKey(peerOpenFrame.sublist(1, 33), type: KeyPairType.x25519);
-    final shared =
-        await x25519.sharedSecretKey(keyPair: myEphemeral, remotePublicKey: vkPub);
-    final derived = await Hkdf(hmac: Hmac.sha256(), outputLength: 32)
-        .deriveKey(secretKey: shared, info: _scryHkdfInfo());
+    final vkPub = SimplePublicKey(
+      peerOpenFrame.sublist(1, 33),
+      type: KeyPairType.x25519,
+    );
+    final shared = await x25519.sharedSecretKey(
+      keyPair: myEphemeral,
+      remotePublicKey: vkPub,
+    );
+    final derived = await Hkdf(
+      hmac: Hmac.sha256(),
+      outputLength: 32,
+    ).deriveKey(secretKey: shared, info: _scryHkdfInfo());
 
     const nonceLen = 24, macLen = 16;
     final boxBytes = peerOpenFrame.sublist(33);
     if (boxBytes.length < nonceLen + macLen) return null;
-    final box = SecretBox.fromConcatenation(boxBytes, nonceLength: nonceLen, macLength: macLen);
+    final box = SecretBox.fromConcatenation(
+      boxBytes,
+      nonceLength: nonceLen,
+      macLength: macLen,
+    );
 
     List<int> opening;
     try {
@@ -2174,17 +2648,22 @@ class TurnLoop {
         ? Uint8List.fromList(opening.sublist(0, 4))
         : Uint8List(0);
     final saltOffset = hasTarget ? 4 : 0;
-    final openedSaltB =
-        Uint8List.fromList(opening.sublist(saltOffset, saltOffset + 16));
-    final leafA =
-        Uint8List.fromList(opening.sublist(saltOffset + 16, saltOffset + 48));
+    final openedSaltB = Uint8List.fromList(
+      opening.sublist(saltOffset, saltOffset + 16),
+    );
+    final leafA = Uint8List.fromList(
+      opening.sublist(saltOffset + 16, saltOffset + 48),
+    );
 
     final leafB = await _leafHash(openedTarget, openedSaltB);
-    final recombined =
-        await Sha256().hash(Uint8List.fromList([...leafA, ...leafB]));
+    final recombined = await Sha256().hash(
+      Uint8List.fromList([...leafA, ...leafB]),
+    );
     if (!_bytesEqual(Uint8List.fromList(recombined.bytes), peerActionCommit)) {
       session.sendForfeit('bad_scry_opening');
-      throw StateError('peer scry opening does not match their actionCommit — match forfeit');
+      throw StateError(
+        'peer scry opening does not match their actionCommit — match forfeit',
+      );
     }
 
     return hasTarget ? _decodeCoord(openedTarget, 0) : null;
@@ -2194,10 +2673,10 @@ class TurnLoop {
   /// ephemeral key reused (never should be, but defence-in-depth) across
   /// matches or turns still derives a distinct symmetric key.
   Uint8List _scryHkdfInfo() => Uint8List.fromList([
-        ...utf8.encode('RWSCRY1'),
-        ...(matchId ?? const <int>[]),
-        ..._be4(state.turnNumber),
-      ]);
+    ...utf8.encode('RWSCRY1'),
+    ...(matchId ?? const <int>[]),
+    ..._be4(state.turnNumber),
+  ]);
 
   // ── Action wire encoding / decoding ──────────────────────────────────────
 
@@ -2213,9 +2692,15 @@ class TurnLoop {
       case PassAction():
         buf.addByte(0x00);
 
-      case SpellCastAction(:final spell, :final targetHex, :final isPotent,
-          :final isVelocity, :final isEfficiency, :final vocalScore,
-          :final conveyorDirection):
+      case SpellCastAction(
+        :final spell,
+        :final targetHex,
+        :final isPotent,
+        :final isVelocity,
+        :final isEfficiency,
+        :final vocalScore,
+        :final conveyorDirection,
+      ):
         buf.addByte(0x01);
         buf.add(_hexToBytes(spell.commitmentHex));
         buf.add(_be2(spell.t));
@@ -2239,14 +2724,14 @@ class TurnLoop {
         buf.addByte(0x05);
 
       case MysterySpellCastAction(
-          :final spell,
-          :final mysteryCommitment,
-          :final immediateTarget,
-          :final immediateNonce,
-          :final isPotent,
-          :final isVelocity,
-          :final vocalScore,
-        ):
+        :final spell,
+        :final mysteryCommitment,
+        :final immediateTarget,
+        :final immediateNonce,
+        :final isPotent,
+        :final isVelocity,
+        :final vocalScore,
+      ):
         buf.addByte(0x03);
         buf.add(_hexToBytes(spell.commitmentHex));
         buf.add(_be2(spell.t));
@@ -2276,7 +2761,10 @@ class TurnLoop {
     if (commitments == null || spell.proofBytes.isEmpty) return;
     buf.add(_be4(spell.proofBytes.length));
     buf.add(spell.proofBytes);
-    final proof = BookCommitment.proveMembership(commitments, spell.commitmentHex);
+    final proof = BookCommitment.proveMembership(
+      commitments,
+      spell.commitmentHex,
+    );
     if (proof == null || proof.siblings.isEmpty) {
       buf.addByte(0); // depth 0: leaf is the only node (single-spell chapter)
       return;
@@ -2302,8 +2790,10 @@ class TurnLoop {
   // TODO(sorcerer): replace somatic 0xFF with somatic_u8 = (somaticScore × 254).round()
   //   in the somatic-gesture pass.
   void _appendSorcererBytes(BytesBuilder buf, VocalScore? score) {
-    buf.add((score ?? const VocalScore(pronunciation: 0.0, volume: 0.0))
-        .toWireBytes());
+    buf.add(
+      (score ?? const VocalScore(pronunciation: 0.0, volume: 0.0))
+          .toWireBytes(),
+    );
   }
 
   /// Decode a [TurnAction] from [bytes] and optionally parse the trailing proof
@@ -2318,7 +2808,11 @@ class TurnLoop {
     bool withProof = false,
     bool isSorcererMode = false,
   }) {
-    MembershipProof? parseProofTail(Uint8List b, int pos, String commitmentHex) {
+    MembershipProof? parseProofTail(
+      Uint8List b,
+      int pos,
+      String commitmentHex,
+    ) {
       if (!withProof || pos + 4 > b.length) return null;
       final proofLen = _readBe4(b, pos);
       pos += 4;
@@ -2334,7 +2828,9 @@ class TurnLoop {
         final sib = b.sublist(pos, pos + 32);
         pos += 32;
         directions.add(b[pos++] == 1);
-        siblings.add('0x${sib.map((x) => x.toRadixString(16).padLeft(2, '0')).join()}');
+        siblings.add(
+          '0x${sib.map((x) => x.toRadixString(16).padLeft(2, '0')).join()}',
+        );
       }
       if (siblings.length != depth) return null;
       return MembershipProof(
@@ -2358,12 +2854,17 @@ class TurnLoop {
         int pos = 1;
         final commitBytes = bytes.sublist(pos, pos + 32);
         pos += 32;
-        final t = _readBe2(bytes, pos); pos += 2;
-        final q = _readInt16(bytes, pos); pos += 2;
-        final r = _readInt16(bytes, pos); pos += 2;
-        final formulaLen = _readBe2(bytes, pos); pos += 2;
+        final t = _readBe2(bytes, pos);
+        pos += 2;
+        final q = _readInt16(bytes, pos);
+        pos += 2;
+        final r = _readInt16(bytes, pos);
+        pos += 2;
+        final formulaLen = _readBe2(bytes, pos);
+        pos += 2;
         final formulaStr = pos + formulaLen <= bytes.length
-            ? utf8.decode(bytes.sublist(pos, pos + formulaLen)) : '';
+            ? utf8.decode(bytes.sublist(pos, pos + formulaLen))
+            : '';
         pos += formulaLen;
         final formula = formulaStr.isEmpty ? <String>[] : formulaStr.split(',');
         final commitmentHex =
@@ -2385,7 +2886,8 @@ class TurnLoop {
         // Parse proof bytes from the tail (needed for verification).
         Uint8List decodedProofBytes = Uint8List(0);
         if (withProof && pos + 4 <= bytes.length) {
-          final proofLen = _readBe4(bytes, pos); pos += 4;
+          final proofLen = _readBe4(bytes, pos);
+          pos += 4;
           if (pos + proofLen <= bytes.length) {
             decodedProofBytes = bytes.sublist(pos, pos + proofLen);
           }
@@ -2393,11 +2895,20 @@ class TurnLoop {
         }
 
         final spell = SpellAsset(
-          id: '', createdAt: DateTime.fromMillisecondsSinceEpoch(0),
-          tier: 24, t: t, ownerPubkeyHex: '', manaCost: 0,
-          segmentCount: 0, dotCount: 0,
-          initialGrid: const [], proofBytes: decodedProofBytes, name: '',
-          commitmentHex: commitmentHex, spellHashHex: '', formula: formula,
+          id: '',
+          createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+          tier: 24,
+          t: t,
+          ownerPubkeyHex: '',
+          manaCost: 0,
+          segmentCount: 0,
+          dotCount: 0,
+          initialGrid: const [],
+          proofBytes: decodedProofBytes,
+          name: '',
+          commitmentHex: commitmentHex,
+          spellHashHex: '',
+          formula: formula,
         );
         final merkle = parseProofTail(bytes, pos, commitmentHex);
         // [KEY STRUCTURAL CONSTRAINT — no local recalculation]
@@ -2408,20 +2919,23 @@ class TurnLoop {
         // structurally impossible. Recalculating the opponent's score from local
         // audio would also be impossible (their microphone is unavailable to this
         // device) and would desync lockstep if attempted via any other code path.
-        final vocalScore01 = isSorcererMode &&
-                bytes.length >= VocalScore.wireSizeBytes
+        final vocalScore01 =
+            isSorcererMode && bytes.length >= VocalScore.wireSizeBytes
             ? VocalScore.fromWireBytes(
-                bytes, bytes.length - VocalScore.wireSizeBytes)
+                bytes,
+                bytes.length - VocalScore.wireSizeBytes,
+              )
             : null;
         return (
           action: SpellCastAction(
-              spell: spell,
-              targetHex: HexCoord(q, r),
-              isPotent: isPotent01,
-              isVelocity: isVelocity01,
-              isEfficiency: isEfficiency01,
-              vocalScore: vocalScore01,
-              conveyorDirection: conveyorDirection01),
+            spell: spell,
+            targetHex: HexCoord(q, r),
+            isPotent: isPotent01,
+            isVelocity: isVelocity01,
+            isEfficiency: isEfficiency01,
+            vocalScore: vocalScore01,
+            conveyorDirection: conveyorDirection01,
+          ),
           merkleProof: merkle,
         );
 
@@ -2432,23 +2946,31 @@ class TurnLoop {
         return (action: MeditateAction(), merkleProof: null);
 
       case 0x03:
-        if (bytes.length < 1 + 32 + 2 + 2) return (action: PassAction(), merkleProof: null);
+        if (bytes.length < 1 + 32 + 2 + 2)
+          return (action: PassAction(), merkleProof: null);
         int pos3 = 1;
         final spellCommit = bytes.sublist(pos3, pos3 + 32);
         pos3 += 32;
-        final t3 = _readBe2(bytes, pos3); pos3 += 2;
-        final formulaLen3 = _readBe2(bytes, pos3); pos3 += 2;
+        final t3 = _readBe2(bytes, pos3);
+        pos3 += 2;
+        final formulaLen3 = _readBe2(bytes, pos3);
+        pos3 += 2;
         final formulaStr3 = pos3 + formulaLen3 <= bytes.length
-            ? utf8.decode(bytes.sublist(pos3, pos3 + formulaLen3)) : '';
+            ? utf8.decode(bytes.sublist(pos3, pos3 + formulaLen3))
+            : '';
         pos3 += formulaLen3;
-        if (pos3 + 32 + 1 > bytes.length) return (action: PassAction(), merkleProof: null);
-        final mysteryCommit = bytes.sublist(pos3, pos3 + 32); pos3 += 32;
+        if (pos3 + 32 + 1 > bytes.length)
+          return (action: PassAction(), merkleProof: null);
+        final mysteryCommit = bytes.sublist(pos3, pos3 + 32);
+        pos3 += 32;
         final hasImmediate = bytes[pos3++] == 1;
         HexCoord? immTarget;
         Uint8List? immNonce;
         if (hasImmediate && pos3 + 4 + 16 <= bytes.length) {
-          immTarget = _decodeCoord(bytes, pos3); pos3 += 4;
-          immNonce = bytes.sublist(pos3, pos3 + 16); pos3 += 16;
+          immTarget = _decodeCoord(bytes, pos3);
+          pos3 += 4;
+          immNonce = bytes.sublist(pos3, pos3 + 16);
+          pos3 += 16;
         }
         final isPotent3 = pos3 < bytes.length && bytes[pos3++] == 1;
         final isVelocity3 = pos3 < bytes.length && bytes[pos3++] == 1;
@@ -2457,7 +2979,8 @@ class TurnLoop {
         final commitmentHex3 =
             '0x${spellCommit.map((b) => b.toRadixString(16).padLeft(2, '0')).join()}';
         if (withProof && pos3 + 4 <= bytes.length) {
-          final proofLen = _readBe4(bytes, pos3); pos3 += 4;
+          final proofLen = _readBe4(bytes, pos3);
+          pos3 += 4;
           if (pos3 + proofLen <= bytes.length) {
             decodedProofBytes3 = bytes.sublist(pos3, pos3 + proofLen);
           }
@@ -2465,25 +2988,38 @@ class TurnLoop {
         }
 
         final spell3 = SpellAsset(
-          id: '', createdAt: DateTime.fromMillisecondsSinceEpoch(0),
-          tier: 24, t: t3, ownerPubkeyHex: '', manaCost: 0,
-          segmentCount: 0, dotCount: 0,
-          initialGrid: const [], proofBytes: decodedProofBytes3, name: '',
-          commitmentHex: commitmentHex3, spellHashHex: '',
+          id: '',
+          createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+          tier: 24,
+          t: t3,
+          ownerPubkeyHex: '',
+          manaCost: 0,
+          segmentCount: 0,
+          dotCount: 0,
+          initialGrid: const [],
+          proofBytes: decodedProofBytes3,
+          name: '',
+          commitmentHex: commitmentHex3,
+          spellHashHex: '',
           formula: formulaStr3.isEmpty ? [] : formulaStr3.split(','),
         );
         final merkle3 = parseProofTail(bytes, pos3, commitmentHex3);
         // Same no-local-recalculation constraint as case 0x01 above.
-        final vocalScore03 = isSorcererMode &&
-                bytes.length >= VocalScore.wireSizeBytes
+        final vocalScore03 =
+            isSorcererMode && bytes.length >= VocalScore.wireSizeBytes
             ? VocalScore.fromWireBytes(
-                bytes, bytes.length - VocalScore.wireSizeBytes)
+                bytes,
+                bytes.length - VocalScore.wireSizeBytes,
+              )
             : null;
         return (
           action: MysterySpellCastAction(
-            spell: spell3, mysteryCommitment: mysteryCommit,
-            immediateTarget: immTarget, immediateNonce: immNonce,
-            isPotent: isPotent3, isVelocity: isVelocity3,
+            spell: spell3,
+            mysteryCommitment: mysteryCommit,
+            immediateTarget: immTarget,
+            immediateNonce: immNonce,
+            isPotent: isPotent3,
+            isVelocity: isVelocity3,
             vocalScore: vocalScore03,
           ),
           merkleProof: merkle3,
@@ -2517,7 +3053,8 @@ class TurnLoop {
     final vk = vkBytes;
     final verify = verifyProof;
     final bookRoot = peerBookRoot;
-    if (verify == null || vk == null) return; // solo or verification not wired up
+    if (verify == null || vk == null)
+      return; // solo or verification not wired up
 
     final SpellAsset spell;
     final VocalScore? vocalScore;
@@ -2543,11 +3080,18 @@ class TurnLoop {
     // 2. Proof verification.
     if (spell.proofBytes.isEmpty) {
       session.sendForfeit('missing_spell_proof');
-      throw StateError('peer sent a spell cast with no proof bytes — match forfeit');
+      throw StateError(
+        'peer sent a spell cast with no proof bytes — match forfeit',
+      );
     }
     final VerifiedSpellOutputs outputs;
     try {
-      outputs = await ProofIntake.verifyAndParse(spell.proofBytes, vk, verify, tier);
+      outputs = await ProofIntake.verifyAndParse(
+        spell.proofBytes,
+        vk,
+        verify,
+        tier,
+      );
     } on ProofIntakeException catch (e) {
       session.sendForfeit('invalid_spell_proof');
       throw StateError('peer spell proof rejected: $e');
@@ -2581,7 +3125,9 @@ class TurnLoop {
     final claimsVelocity = action is SpellCastAction
         ? action.isVelocity
         : (action as MysterySpellCastAction).isVelocity;
-    final claimsEfficiency = action is SpellCastAction ? action.isEfficiency : false;
+    final claimsEfficiency = action is SpellCastAction
+        ? action.isEfficiency
+        : false;
     final claimsMystery = action is MysterySpellCastAction;
 
     if ((claimsPotent && !certifiedTags.contains('fire')) ||
@@ -2621,7 +3167,9 @@ class TurnLoop {
     final peerAvatar = peerId != null ? _avatarById(peerId) : null;
     if (peerAvatar != null) {
       final verifiedCost = _certifiedManaCost(
-        outputs, certFormulas, peerAvatar,
+        outputs,
+        certFormulas,
+        peerAvatar,
         vocalScore: vocalScore,
         isEfficiency: claimsEfficiency,
       );
@@ -2671,8 +3219,9 @@ class TurnLoop {
     // 2. Chain discount from certified formulas.
     final chainEl = caster.activeChainElement;
     if (chainEl != null && certFormulas.isNotEmpty) {
-      final matching =
-          certFormulas.where((f) => spellAffinityFromZone(f.affinity) == chainEl).length;
+      final matching = certFormulas
+          .where((f) => spellAffinityFromZone(f.affinity) == chainEl)
+          .length;
       final alignFraction = matching / certFormulas.length;
       final discount = caster.chainDiscountMultiplier(alignFraction);
       cost = (cost * (1.0 - discount)).ceil();
@@ -2803,9 +3352,10 @@ class TurnLoop {
   // ── Game state helpers ────────────────────────────────────────────────────
 
   WizardAvatar _localAvatar() => state.avatars.firstWhere(
-        (av) => av.playerId == localPlayerId,
-        orElse: () => throw StateError('local player $localPlayerId not found in state'),
-      );
+    (av) => av.playerId == localPlayerId,
+    orElse: () =>
+        throw StateError('local player $localPlayerId not found in state'),
+  );
 
   WizardAvatar? _avatarById(String id) =>
       state.avatars.where((av) => av.playerId == id).firstOrNull;
@@ -2834,6 +3384,30 @@ class TurnLoop {
 
   static bool _isAdjacent(HexCoord a, HexCoord b) => hexDistance(a, b) == 1;
 
+  /// True if [caster] casting at [targetHex] is subject to a cloud's
+  /// adjacent-only targeting restriction: either [caster] is standing inside
+  /// any cloud's radius (or still carries the lingering Earth-flavor
+  /// [StatusEffectId.cloudBoundTargeting] status), or [targetHex] itself
+  /// falls inside any cloud's radius. Trusted-engine twin of
+  /// battle_screen.dart's `_maxCastRange`, which only gates what the local
+  /// UI lets a human player tap — this is what actually gets enforced during
+  /// resolution, for every caster (peer casts, and the Solo Practice dummy,
+  /// which encodes its scripted cast straight onto the wire and never goes
+  /// through that UI).
+  bool _cloudBoundToAdjacent(WizardAvatar caster, HexCoord targetHex) {
+    final casterBound =
+        caster.activeStatusEffects.any(
+          (fx) => fx.effectTypeId == StatusEffectId.cloudBoundTargeting,
+        ) ||
+        state.clouds.any(
+          (c) => hexDistance(caster.position, c.position) <= c.radius,
+        );
+    final hexBound = state.clouds.any(
+      (c) => hexDistance(targetHex, c.position) <= c.radius,
+    );
+    return casterBound || hexBound;
+  }
+
   /// Adjacent tiles holding at least one living hostile entity (enemy avatar
   /// or minion) — the melee-round prompt candidates for [actor]. Empty means
   /// no prompt is shown (see [MeleeTargetPicker]).
@@ -2842,7 +3416,9 @@ class TurnLoop {
     final candidates = <HexCoord>[];
     for (final tile in hexNeighbors(actor.position)) {
       final hasHostile =
-          _avatarsAt(tile).any((av) => av.teamId != actor.teamId && av.isAlive) ||
+          _avatarsAt(
+            tile,
+          ).any((av) => av.teamId != actor.teamId && av.isAlive) ||
           _minionsAt(tile).any((m) => m.teamId != actor.teamId && m.isAlive);
       if (hasHostile) candidates.add(tile);
     }
@@ -2857,7 +3433,9 @@ class TurnLoop {
   /// path; duplicated here since the melee punch bypasses EffectApplicator.
   bool _redirectIfIllusion(WizardAvatar target, HashRng rng) {
     final set = state.wizardIllusions
-        .where((s) => s.ownerId == target.playerId && s.decoyPositions.isNotEmpty)
+        .where(
+          (s) => s.ownerId == target.playerId && s.decoyPositions.isNotEmpty,
+        )
         .firstOrNull;
     if (set == null) return false;
     final n = set.decoyPositions.length;
@@ -2870,15 +3448,54 @@ class TurnLoop {
     return true;
   }
 
+  /// Adjacent tiles a post-resolution free-move burst may step onto: in
+  /// bounds, not [ImpassableTile], and unoccupied by any living avatar or
+  /// minion. Mirrors the footprint check in [_findCreatureSpawnTile].
+  List<HexCoord> _freeMoveCandidates(WizardAvatar actor) {
+    if (!actor.isAlive) return const [];
+    final candidates = <HexCoord>[];
+    for (final tile in hexNeighbors(actor.position)) {
+      if (!state.battlefield.isInBounds(tile)) continue;
+      if (state.tileEffects[tile] is ImpassableTile) continue;
+      if (state.avatars.any((av) => av.isAlive && av.position == tile))
+        continue;
+      if (state.minions.any((m) => m.isAlive && m.position == tile)) continue;
+      candidates.add(tile);
+    }
+    return candidates;
+  }
+
+  /// Applies a post-resolution free-move step for [av] to [target].
+  /// Re-validates independently of the wire claim (defense-in-depth,
+  /// matching [_applyHaymaker]'s adjacency check): [av] must actually have
+  /// [WizardAvatar.pendingFreeMoveBurst] set — both clients compute this
+  /// deterministically from this turn's damage resolution, so a peer cannot
+  /// claim a burst it didn't earn — and [target] must be a currently-legal
+  /// [_freeMoveCandidates] tile for [av].
+  void _applyFreeMove(WizardAvatar av, HexCoord target) {
+    if (!av.pendingFreeMoveBurst) return;
+    if (!_isAdjacent(av.position, target)) return;
+    if (!_freeMoveCandidates(av).contains(target)) return;
+    av.position = target;
+    state.battlefield.occupancy[av.playerId] = target;
+  }
+
   List<HexCoord> _neighbors(HexCoord h) => state.battlefield.neighbors(h);
 
-  void _addStatus(WizardAvatar av, String typeId, Map<String, int> mods, int turns) {
+  void _addStatus(
+    WizardAvatar av,
+    String typeId,
+    Map<String, int> mods,
+    int turns,
+  ) {
     av.activeStatusEffects.removeWhere((fx) => fx.effectTypeId == typeId);
-    av.activeStatusEffects.add(StatusEffect(
-      effectTypeId: typeId,
-      remainingTurns: turns,
-      modifiers: mods,
-    ));
+    av.activeStatusEffects.add(
+      StatusEffect(
+        effectTypeId: typeId,
+        remainingTurns: turns,
+        modifiers: mods,
+      ),
+    );
   }
 
   // ── Formula helpers ───────────────────────────────────────────────────────
@@ -2890,22 +3507,24 @@ class TurnLoop {
         .toList();
     final formulas = <ParsedFormula>[];
     for (var i = 0; i + 2 < zones.length; i += 3) {
-      formulas.add(ParsedFormula(
-        affinity: zones[i],
-        effectType1: zones[i + 1],
-        effectType2: zones[i + 2],
-      ));
+      formulas.add(
+        ParsedFormula(
+          affinity: zones[i],
+          effectType1: zones[i + 1],
+          effectType2: zones[i + 2],
+        ),
+      );
     }
     return formulas;
   }
 
   static BorderZone? _zoneFromName(String name) => switch (name.toLowerCase()) {
-        'fire' => BorderZone.fire,
-        'earth' => BorderZone.earth,
-        'water' => BorderZone.water,
-        'air' => BorderZone.air,
-        _ => null,
-      };
+    'fire' => BorderZone.fire,
+    'earth' => BorderZone.earth,
+    'water' => BorderZone.water,
+    'air' => BorderZone.air,
+    _ => null,
+  };
 
   /// The full flat element sequence for a local (trusted-wire) summon-mode
   /// spell -- unlike [_parsedFormulas], residuals are kept (see
@@ -2930,7 +3549,7 @@ class TurnLoop {
   static List<HexCoord> _decodePath(Uint8List data, int offset) {
     if (offset >= data.length) return const [];
     final count = data[offset];
-    final path  = <HexCoord>[];
+    final path = <HexCoord>[];
     var pos = offset + 1;
     for (var i = 0; i < count; i++) {
       if (pos + 4 > data.length) break;
@@ -2959,19 +3578,26 @@ class TurnLoop {
   /// When [meditateInMove] is true, [path] is forced empty regardless of
   /// what was transmitted (defence-in-depth against a modified peer).
   static ({bool isDashing, bool meditateInMove, List<HexCoord> path})
-      _decodeMovePayload(Uint8List data, int offset) {
+  _decodeMovePayload(Uint8List data, int offset) {
     if (offset + 2 > data.length) {
-      return (isDashing: false, meditateInMove: false, path: const <HexCoord>[]);
+      return (
+        isDashing: false,
+        meditateInMove: false,
+        path: const <HexCoord>[],
+      );
     }
     final isDashing = data[offset] == 1;
     final meditateInMove = data[offset + 1] == 1;
-    final path = meditateInMove ? const <HexCoord>[] : _decodePath(data, offset + 2);
+    final path = meditateInMove
+        ? const <HexCoord>[]
+        : _decodePath(data, offset + 2);
     return (isDashing: isDashing, meditateInMove: meditateInMove, path: path);
   }
 
-  /// Encode an optional resolution-phase melee target: [0x00] = no melee,
-  /// [0x01][q:2][r:2] = melee that tile.
-  static Uint8List _encodeMeleeChoice(HexCoord? target) {
+  /// Encode an optional target tile — [0x00] = none, [0x01][q:2][r:2] = that
+  /// tile. Shared shape for the resolution-phase melee choice and the
+  /// post-resolution free-move choice (both are "optional adjacent tile").
+  static Uint8List _encodeOptionalTarget(HexCoord? target) {
     if (target == null) return Uint8List.fromList([0x00]);
     final buf = BytesBuilder();
     buf.addByte(0x01);
@@ -2979,24 +3605,21 @@ class TurnLoop {
     return buf.toBytes();
   }
 
-  /// Decode an optional melee target from [data] starting at [offset].
-  static HexCoord? _decodeMeleeChoice(Uint8List data, int offset) {
+  /// Decode an optional target tile from [data] starting at [offset].
+  static HexCoord? _decodeOptionalTarget(Uint8List data, int offset) {
     if (offset >= data.length || data[offset] != 0x01) return null;
     if (offset + 5 > data.length) return null;
     return _decodeCoord(data, offset + 1);
   }
 
-  static Uint8List _encodeCoord(HexCoord h) =>
-      Uint8List(4)
-        ..[0] = (h.q >> 8) & 0xFF
-        ..[1] = h.q & 0xFF
-        ..[2] = (h.r >> 8) & 0xFF
-        ..[3] = h.r & 0xFF;
+  static Uint8List _encodeCoord(HexCoord h) => Uint8List(4)
+    ..[0] = (h.q >> 8) & 0xFF
+    ..[1] = h.q & 0xFF
+    ..[2] = (h.r >> 8) & 0xFF
+    ..[3] = h.r & 0xFF;
 
-  static HexCoord _decodeCoord(Uint8List data, int offset) => HexCoord(
-        _readInt16(data, offset),
-        _readInt16(data, offset + 2),
-      );
+  static HexCoord _decodeCoord(Uint8List data, int offset) =>
+      HexCoord(_readInt16(data, offset), _readInt16(data, offset + 2));
 
   static int _readInt16(Uint8List data, int offset) {
     final u = (data[offset] << 8) | data[offset + 1];
@@ -3007,20 +3630,20 @@ class TurnLoop {
       (data[offset] << 8) | data[offset + 1];
 
   static int _readBe4(Uint8List data, int offset) =>
-      (data[offset] << 24) | (data[offset + 1] << 16) |
-      (data[offset + 2] << 8) | data[offset + 3];
+      (data[offset] << 24) |
+      (data[offset + 1] << 16) |
+      (data[offset + 2] << 8) |
+      data[offset + 3];
 
-  static Uint8List _be2(int v) =>
-      Uint8List(2)
-        ..[0] = (v >> 8) & 0xFF
-        ..[1] = v & 0xFF;
+  static Uint8List _be2(int v) => Uint8List(2)
+    ..[0] = (v >> 8) & 0xFF
+    ..[1] = v & 0xFF;
 
-  static Uint8List _be4(int v) =>
-      Uint8List(4)
-        ..[0] = (v >> 24) & 0xFF
-        ..[1] = (v >> 16) & 0xFF
-        ..[2] = (v >> 8) & 0xFF
-        ..[3] = v & 0xFF;
+  static Uint8List _be4(int v) => Uint8List(4)
+    ..[0] = (v >> 24) & 0xFF
+    ..[1] = (v >> 16) & 0xFF
+    ..[2] = (v >> 8) & 0xFF
+    ..[3] = v & 0xFF;
 
   static Uint8List _hexToBytes(String hex) {
     final s = hex.startsWith('0x') ? hex.substring(2) : hex;
@@ -3034,7 +3657,9 @@ class TurnLoop {
   static bool _bytesEqual(Uint8List a, Uint8List b) {
     if (a.length != b.length) return false;
     var diff = 0;
-    for (var i = 0; i < a.length; i++) { diff |= a[i] ^ b[i]; }
+    for (var i = 0; i < a.length; i++) {
+      diff |= a[i] ^ b[i];
+    }
     return diff == 0;
   }
 

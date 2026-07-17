@@ -45,6 +45,9 @@ enum BattleMsgType {
   // Resolution-phase melee commit-reveal (post-movement, independent of casting).
   meleeCommit(0x3A),
   meleeReveal(0x3B),
+  // Post-resolution free-move commit-reveal (barrier-burst reactive step).
+  freeMoveCommit(0x3C),
+  freeMoveReveal(0x3D),
 
   // Match control (§2)
   forfeit(0x40),

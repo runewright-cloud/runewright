@@ -190,7 +190,7 @@ void main() {
       );
       expect(prediction.indeterminate, isFalse);
 
-      final loop = TurnLoop(state: state, session: SoloBattleSession(), localPlayerId: localId);
+      final loop = TurnLoop(state: state, session: SoloBattleSession(state: state), localPlayerId: localId);
       await loop.runTurn(TurnInput(action: PassAction(), movePath: declaredPath));
 
       expect(local.position, prediction.path.last);

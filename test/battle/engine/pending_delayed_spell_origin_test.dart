@@ -68,7 +68,7 @@ void main() {
     final state = _makeState(castTile);
     final loop = TurnLoop(
       state: state,
-      session: SoloBattleSession(),
+      session: SoloBattleSession(state: state),
       localPlayerId: 'player_a',
     );
     final spell = _testSpell();
