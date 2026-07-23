@@ -2,54 +2,36 @@
 //
 // spell_draw.dart — SpellDraw: deterministic, auditable spell hand. REAL.
 //
-// Populates a player's available spells from their Chapter via a seeded
-// Fisher-Yates shuffle so both clients compute the same draw order from the
-// same joint commit-reveal entropy — secret in advance, auditable after
-// reveal.
+// Draw-on-demand. SpellDraw never owns a seed: the opening hand is dealt from
+// an injected HashRng (seeded from battle-start joint entropy), and each
+// later refill draw takes its own injected HashRng, which the caller must
+// seed from the entropy of the turn (or tick) that reveals that draw.
+// See docs/SPELL_DRAW_ENTROPY_PLAN.md.
 //
-// Algorithm (BATTLE_PROTOCOL.md §4):
-//   rng      ← _HashRng(joint_entropy)         [hash-counter stream]
-//   shuffled ← Fisher-Yates(chapter, rng)       [Knuth shuffle]
-//   hand     ← shuffled[0 .. bookmarkCount-1]
-//   deck     ← shuffled[bookmarkCount ..]
+// Why not "shuffle the whole chapter once, walk forward" (the prior design):
+// a player always knows their own chapter, so shuffling it all from one seed
+// at construction lets them compute their entire future draw order the
+// instant that seed is revealed. Injecting a fresh RNG per draw bounds
+// foreknowledge to "one draw ahead" — same as a physically shuffled deck —
+// while staying fully replayable/auditable from the recorded sequence of
+// per-draw entropy (every joint-entropy value used is revealed as part of
+// the existing per-turn commit-reveal protocol).
 //
-// _HashRng block i = SHA-256(joint_entropy ‖ BigEndian32(i)).
-// Bytes are consumed sequentially across blocks. nextInt(max) uses power-of-2
-// masking with rejection sampling so there is no modulo bias and the exact
-// output is fully determined by the entropy bytes alone, independent of any
-// Dart SDK or VM internals.
+// [remaining] is held in **canonical order** (sorted by spellId), never
+// pre-shuffled, so both clients agree on which index a given draw value
+// selects. Because draws only ever remove elements (never reorder them), the
+// untouched remainder always stays in that canonical order.
 //
-// On spell use: the vacated hand slot is filled from the front of the
-// remaining deck (the shuffle order is fixed at construction; no new
-// randomness is needed for retargeting). This preserves auditability:
-// given the entropy and the initial chapter list, any observer can replay
-// the full draw sequence.
-//
-// Chapter spells must be in **canonical order** (sorted by spellId) before
-// calling the constructor so both clients compute the same shuffle.
-
-import 'dart:typed_data';
+// Chapter spells must be in canonical order before calling [SpellDraw.opening]
+// so both clients compute the same opening hand.
 
 import 'package:rune_duel/spells/spell_asset.dart';
 
 import 'hash_rng.dart';
 
-// ── Fisher-Yates shuffle ──────────────────────────────────────────────────────
-
-List<T> _fisherYates<T>(List<T> items, HashRng rng) {
-  final result = List<T>.from(items);
-  for (var i = result.length - 1; i > 0; i--) {
-    final j = rng.nextInt(i + 1);
-    final tmp = result[i];
-    result[i] = result[j];
-    result[j] = tmp;
-  }
-  return result;
-}
-
 // ── SpellDraw ─────────────────────────────────────────────────────────────────
 
-/// Immutable snapshot of a player's draw state: current hand + remaining deck.
+/// Immutable snapshot of a player's draw state: current hand + remaining pool.
 ///
 /// All mutations return a new [SpellDraw]; the original is unchanged — safe
 /// to store in [BattleState] and replay for audit.
@@ -60,41 +42,49 @@ class SpellDraw {
   })  : hand = List.unmodifiable(hand),
         remaining = List.unmodifiable(remaining);
 
-  /// Initialise from a chapter (must already be in canonical order) and
-  /// 32-byte joint commit-reveal entropy.
-  factory SpellDraw(
+  /// Deals the opening hand: draws up to [bookmarkCount] spells one at a time
+  /// from [chapter] (must already be in canonical order) using [rng].
+  ///
+  /// The opening hand is dealt once, at battle start, from the initial joint
+  /// entropy — it is legitimately knowable to its owner the moment it's
+  /// dealt. Only *later* refills need fresh, turn/tick-scoped entropy (see
+  /// [useSpell]).
+  factory SpellDraw.opening(
     List<SpellAsset> chapter,
     int bookmarkCount,
-    Uint8List jointEntropy,
+    HashRng rng,
   ) {
     assert(chapter.isNotEmpty, 'chapter must have at least one spell');
-    final rng = HashRng(jointEntropy);
-    final shuffled = _fisherYates(chapter, rng);
-    final handSize = bookmarkCount < shuffled.length ? bookmarkCount : shuffled.length;
-    return SpellDraw._(
-      hand: shuffled.sublist(0, handSize),
-      remaining: shuffled.sublist(handSize),
-    );
+    final pool = List<SpellAsset>.from(chapter);
+    final handSize = bookmarkCount < pool.length ? bookmarkCount : pool.length;
+    final hand = <SpellAsset>[];
+    for (var i = 0; i < handSize; i++) {
+      hand.add(pool.removeAt(rng.nextInt(pool.length)));
+    }
+    return SpellDraw._(hand: hand, remaining: pool);
   }
 
   /// The current hand (at most [bookmarkCount] spells).
   final List<SpellAsset> hand;
 
-  /// Spells not yet drawn, in their shuffled order.
+  /// Spells not yet drawn, in canonical order.
   final List<SpellAsset> remaining;
 
   bool get isDeckEmpty => remaining.isEmpty;
 
   /// Returns a new [SpellDraw] after using the spell at [handIndex].
   ///
-  /// The used slot is refilled from the front of [remaining]. If the deck is
-  /// empty, the hand shrinks by one.
-  SpellDraw useSpell(int handIndex) {
+  /// The used slot is refilled with a fresh draw from [remaining], seeded by
+  /// [drawRng] — the caller must derive this from the entropy of the turn (or
+  /// tick) that reveals this draw, never from a value known in advance of
+  /// that reveal. If the pool is empty, the hand shrinks by one instead.
+  SpellDraw useSpell(int handIndex, HashRng drawRng) {
     assert(handIndex >= 0 && handIndex < hand.length);
     final newHand = List<SpellAsset>.from(hand)..removeAt(handIndex);
     final newRemaining = List<SpellAsset>.from(remaining);
     if (newRemaining.isNotEmpty) {
-      newHand.add(newRemaining.removeAt(0));
+      final j = drawRng.nextInt(newRemaining.length);
+      newHand.add(newRemaining.removeAt(j));
     }
     return SpellDraw._(hand: newHand, remaining: newRemaining);
   }
