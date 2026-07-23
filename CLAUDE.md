@@ -261,10 +261,15 @@ design doc lineage is now `runewright_design_v3_0.md` > `v2_4`; the circuit cont
   truth for peer spell cost** and must stay operation-order-identical to
   `_spellManaCost`. The B-1/B-8 audit closed a real trust-boundary hole here; don't
   reintroduce a second cost path.
-- **tier-12 sits ~90% into its 2^18 UltraHonk padding bucket** (~236k of 262k rows on the
-  count circuit). Any circuit growth: run `bb gates` at tier-12 *first*, before touching
-  tiers 24/48. Crossing into 2^19 doubles proving cost on the tier that most needs to be
-  cheap — it's a go/no-go, not a benchmark.
+- **tier-12 now sits ~75% into its 2^19 UltraHonk padding bucket** (~391k of 524k rows on
+  the count circuit, re-measured 2026-07-23; `circuit_size` 390,726). It **already crossed
+  the 2^18→2^19 line** at some point during circuit growth — the exact change isn't pinned
+  down (likely un-remeasured after the ink-substrate rules pass), but on-device inscribe
+  time remains acceptable, so the crossing is treated as accepted, not a regression to
+  chase. Any circuit growth: still run `bb gates` at tier-12 *first*, before touching tiers
+  24/48. The next boundary is now **2^19→2^20** — crossing it doubles proving cost on the
+  tier that most needs to be cheap, so treat that as the go/no-go, not a benchmark. (For
+  reference, same re-measure: tier-24 ≈ 810k → 2^20, tier-48 ≈ 1.65M → 2^21.)
 - **Toolchain quirks on this machine:** `nargo` lives at `/tmp/nargo` (not on `$PATH` —
   and being in `/tmp`, it can vanish on reboot; re-fetch beta.20 if missing); `bb` is on
   `$PATH` via `~/.bb`. `flutter pub add`/`get` can exit 255 under the snap environment —
