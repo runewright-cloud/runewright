@@ -5,6 +5,7 @@
 // enrolled/fallback split, using an injected temp directory (no
 // path_provider / Flutter binding needed).
 
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -69,20 +70,67 @@ void main() {
     final take = _padded(_chirpPcm(4800, startFreq: 300, endFreq: 900), 8000);
 
     expect(enrollment.hasEnrollment(VocalWord.ignis), isFalse);
-    final frameCount =
+    final result =
         await enrollment.saveFromRecording(VocalWord.ignis, take);
-    expect(frameCount, greaterThanOrEqualTo(VocalEnrollment.minVoicedFrames));
+    expect(result.frameCount,
+        greaterThanOrEqualTo(VocalEnrollment.minVoicedFrames));
+    expect(result.takeCount, 1);
     expect(enrollment.hasEnrollment(VocalWord.ignis), isTrue);
     expect(enrollment.enrolledWords(), {VocalWord.ignis});
 
     final frames = await enrollment.loadFrames(VocalWord.ignis);
     expect(frames, isNotNull);
-    expect(frames!.length, frameCount);
+    expect(frames!.length, result.frameCount);
     expect(frames.first.length, MfccExtractor.numCoeffs);
 
     await enrollment.clearAll();
     expect(enrollment.enrolledWords(), isEmpty);
     expect(await enrollment.loadFrames(VocalWord.ignis), isNull);
+  });
+
+  test('saveFromRecording accumulates multiple takes (FIFO past maxTakes)',
+      () async {
+    final take = _padded(_chirpPcm(4800, startFreq: 300, endFreq: 900), 8000);
+    for (int i = 1; i <= VocalEnrollment.maxTakes; i++) {
+      final r = await enrollment.saveFromRecording(VocalWord.ignis, take);
+      expect(r.takeCount, i);
+    }
+    expect(enrollment.takeCount(VocalWord.ignis), VocalEnrollment.maxTakes);
+    final takes = await enrollment.loadTakes(VocalWord.ignis);
+    expect(takes!.length, VocalEnrollment.maxTakes);
+
+    // One more caps at maxTakes (oldest dropped, not appended past the cap).
+    final r = await enrollment.saveFromRecording(VocalWord.ignis, take);
+    expect(r.takeCount, VocalEnrollment.maxTakes);
+
+    // removeTake drops one; clearing the last deletes the word's enrollment.
+    await enrollment.removeTake(VocalWord.ignis, 0);
+    expect(enrollment.takeCount(VocalWord.ignis), VocalEnrollment.maxTakes - 1);
+  });
+
+  test('an over-long recording throws EnrollmentException', () async {
+    // A voiced span well past maxVoicedFrames (~2s): a long chirp.
+    final tooLong = _padded(
+        _chirpPcm(16000 * 3, startFreq: 300, endFreq: 900), 16000 * 3 + 4000);
+    await expectLater(
+      enrollment.saveFromRecording(VocalWord.aqua, tooLong),
+      throwsA(isA<EnrollmentException>()),
+    );
+    expect(enrollment.hasEnrollment(VocalWord.aqua), isFalse);
+  });
+
+  test('legacy single-frames format loads as a one-take set', () async {
+    // Write the OLD {"frames": [...]} format directly, then read via the new
+    // multi-take API — back-compat migration path.
+    final frames = MfccExtractor.extract(
+        _padded(_chirpPcm(4800, startFreq: 300, endFreq: 900), 8000));
+    enrollment.baseDir.createSync(recursive: true);
+    File('${enrollment.baseDir.path}/terra.json')
+        .writeAsStringSync(jsonEncode({'frames': frames}));
+    final takes = await enrollment.loadTakes(VocalWord.terra);
+    expect(takes, isNotNull);
+    expect(takes!.length, 1);
+    expect(takes.first.length, frames.length);
   });
 
   test('a too-quiet/too-short recording throws EnrollmentException', () async {
@@ -114,14 +162,14 @@ void main() {
 
     // Enroll terra, invalidate, and the enrolled frames replace it.
     final take = _padded(_chirpPcm(4800, startFreq: 300, endFreq: 900), 8000);
-    final frameCount = await enrollment.saveFromRecording(VocalWord.terra, take);
+    final result = await enrollment.saveFromRecording(VocalWord.terra, take);
     source.invalidate();
     final after = await source.templateFor(VocalWord.terra);
-    expect(after.mfccFrames.length, frameCount);
-    expect(after.checkpointFrameIndices, [frameCount - 1]);
+    expect(after.mfccFrames.length, result.frameCount);
+    expect(after.checkpointFrameIndices, [result.frameCount - 1]);
 
     // Other words still fall back.
-    final other = await source.templateFor(VocalWord.aer);
+    final other = await source.templateFor(VocalWord.ventus);
     expect(other.mfccFrames, same(fallbackFrames));
   });
 }
@@ -138,4 +186,8 @@ class _FixedTemplateSource implements VocalTemplateSource {
         checkpointFrameIndices: [frames.length - 1],
         checkpointLabels: [word.name],
       );
+
+  @override
+  Future<List<VocalTemplate>> templatesFor(VocalWord word) async =>
+      [await templateFor(word)];
 }

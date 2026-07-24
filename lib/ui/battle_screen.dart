@@ -5,7 +5,9 @@
 //
 // Layout (portrait):
 //   AppBar   — turn counter + leave button
-//   Opponent strip — compact HP/mana for each non-local avatar (if any)
+//   Opponent strip — compact HP/mana for each non-local avatar (if any);
+//     swaps to a single tapped enemy creature's HP when one is inspected
+//     (see _updateInspection / _inspectedMinion)
 //   Battlefield  — LayoutBuilder → BattlefieldPainter (Expanded, tappable)
 //   Action bar  — PASS / spell name / CAST
 //   Player HP/MP bars
@@ -18,6 +20,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 
 import '../battle/engine/tile_entry_resolver.dart' show predictAvatarMove;
 import '../battle/engine/turn_loop.dart';
@@ -34,6 +37,7 @@ import '../battle/models/effect_kind.dart'
         kAffinityLabel,
         primaryFormulaAffinity;
 import '../battle/models/hex_battlefield.dart' show hexDistance;
+import '../battle/models/minion.dart' show Minion;
 import '../battle/models/pending_delayed_spell.dart' show PendingDelayedSpell;
 import '../battle/models/terrain.dart' show ImpassableTile, SlowTile;
 import '../battle/models/status_effect_ids.dart';
@@ -41,16 +45,106 @@ import '../battle/models/wizard_avatar.dart';
 import '../battle/networking/battle_session.dart';
 import '../battle/networking/solo_battle_session.dart';
 import '../engine/hex_grid.dart';
+import '../ffi/prover.dart' as prover;
+import '../ffi/srs_cache.dart';
+import '../identity/identity.dart';
+import '../protocol/match_session.dart' show ProofVerifier;
 import '../sorcerer/gesture.dart';
 import '../sorcerer/vocal_score.dart';
 import '../sorcerer/vocal_scorer.dart';
 import '../spells/chapter_asset.dart';
 import '../spells/enhancement_zone.dart';
+import '../spells/sighting_asset.dart';
 import '../spells/spell_asset.dart';
+import '../spells/spell_permission.dart';
 import '../spells/supreme_tags.dart' show deriveSupremeTags;
 import 'battlefield_painter.dart';
 import 'manuscript_theme.dart';
 import 'spell_card_painter.dart';
+
+// ── Sightings capture (docs/SIGHTINGS_PLAN.md) ──────────────────────────────
+//
+// LAN duels only (§1.3): SoloBattleSession casts are scripted dummies with a
+// sentinel commitment/pubkey and must never be recorded. Sightings are a
+// read-only, local side effect (§1.2/§9) — never part of lockstep, never
+// affects turn resolution, and a capture failure must never surface to the
+// player. See _BattleScreenState._recordSightings for the disk-writing side
+// of this; the pure part lives here so it's unit-testable without a widget
+// harness.
+
+/// All-zero owner_pubkey sentinel used by solo/practice avatars (see
+/// solo_battle_setup.dart) — belt-and-suspenders guard in case a dummy cast
+/// is ever mis-wired into a "real" session.
+final _kSentinelOwnerPubkeyHex = '0x${'0' * 64}';
+
+/// One opponent cast worth of data to persist as a [SightingAsset].
+class SightingCapture {
+  const SightingCapture({
+    required this.opponentPubkeyHex,
+    required this.commitmentHex,
+    required this.spellName,
+    required this.formula,
+    required this.t,
+    required this.tier,
+    required this.manaCost,
+  });
+
+  final String opponentPubkeyHex;
+  final String commitmentHex;
+  final String spellName;
+  final List<String> formula;
+  final int t;
+  final int tier;
+  final int manaCost;
+}
+
+/// Pure function: derives the [SightingCapture]s to persist from one turn's
+/// [resolved] spells, given [localPlayerId] and the match's [avatars].
+/// [certifiedBaseManaCosts] is `TurnLoop.lastCertifiedBaseManaCosts`, keyed
+/// by commitmentHex — the certified BASE cost (SIGHTINGS_PLAN.md §2), not
+/// the per-cast `spell.manaCost` (always 0 on a reconstructed peer
+/// SpellAsset — turn_loop.dart's decode never populates it).
+///
+/// Excludes: the local player's own casts, casts with no commitmentHex (the
+/// wire couldn't identify the spell), casts whose caster avatar can't be
+/// found in [avatars], and casts from an avatar whose `ownerPubkeyHex` is
+/// empty or the all-zero solo/practice sentinel.
+List<SightingCapture> sightingsFromResolved(
+  List<ResolvedSpellEvent> resolved,
+  String localPlayerId,
+  List<WizardAvatar> avatars,
+  Map<String, int> certifiedBaseManaCosts,
+) {
+  final captures = <SightingCapture>[];
+  for (final ev in resolved) {
+    if (ev.casterId == localPlayerId) continue;
+    if (ev.spell.commitmentHex.isEmpty) continue;
+
+    WizardAvatar? avatar;
+    for (final a in avatars) {
+      if (a.playerId == ev.casterId) {
+        avatar = a;
+        break;
+      }
+    }
+    if (avatar == null) continue;
+    if (avatar.ownerPubkeyHex.isEmpty ||
+        avatar.ownerPubkeyHex == _kSentinelOwnerPubkeyHex) {
+      continue;
+    }
+
+    captures.add(SightingCapture(
+      opponentPubkeyHex: avatar.ownerPubkeyHex,
+      commitmentHex: ev.spell.commitmentHex,
+      spellName: ev.spell.name,
+      formula: ev.spell.formula,
+      t: ev.spell.t,
+      tier: ev.spell.tier,
+      manaCost: certifiedBaseManaCosts[ev.spell.commitmentHex] ?? 0,
+    ));
+  }
+  return captures;
+}
 
 enum _InputPhase { action, movement, pickingDirection }
 
@@ -124,6 +218,12 @@ class BattleScreen extends StatefulWidget {
     required this.localPlayerId,
     required this.chapter,
     this.session,
+    this.matchId,
+    this.peerBookRoot,
+    this.peerBookLeafCount,
+    this.peerOwnerPubkeyHex,
+    this.peerRawPubkey,
+    this.peerPermissions,
   });
 
   final BattleState state;
@@ -132,6 +232,28 @@ class BattleScreen extends StatefulWidget {
 
   /// Supply a [BattleTurnSession] for network play. Defaults to [SoloBattleSession].
   final BattleTurnSession? session;
+
+  /// The real, jointly-derived matchId from `runDuelSetup`
+  /// (LAN_BATTLE_WIREUP_PLAN.md §3.2) — cross-match domain separation for
+  /// TurnLoop's HashRng seeding. Null for solo/test play, matching
+  /// TurnLoop.matchId's own doc comment.
+  final Uint8List? matchId;
+
+  /// Stage 2 (LAN_BATTLE_WIREUP_PLAN.md §4) — all four null together for
+  /// solo/test play (unchanged behavior); all four set together for a real
+  /// LAN duel, straight from `DuelSetupResult`. Turns on proof verification +
+  /// cast authorization (peerBookRoot/peerOwnerPubkeyHex/peerPermissions) and
+  /// Phase D signed state hashes (peerOwnerPubkeyHex's authenticated pair,
+  /// peerRawPubkey — BATTLE_AUTH_PLAN §6).
+  final String? peerBookRoot;
+
+  /// The peer's chapter leaf count (SPELL_DRAW_WIRING_PLAN.md §3), declared
+  /// publicly alongside [peerBookRoot] — set together in a real duel, null
+  /// for solo/test play, matching TurnLoop's own doc comment.
+  final int? peerBookLeafCount;
+  final String? peerOwnerPubkeyHex;
+  final Uint8List? peerRawPubkey;
+  final List<SpellPermission>? peerPermissions;
 
   @override
   State<BattleScreen> createState() => _BattleScreenState();
@@ -142,6 +264,28 @@ class _BattleScreenState extends State<BattleScreen>
   List<SpellAsset?> _spells = [];
   late TurnLoop _loop;
   late AnimationController _pulseController;
+
+  // Stage 2 verifier init (see _initTurnLoop): true once _loop is safe to
+  // read AND the battle-start opening deal has run (TurnLoop.startBattle), so
+  // turn 1 is fully castable. build() gates the interactive battle UI behind
+  // this — nothing above (event handlers, callbacks) runs before a player can
+  // interact with a rendered widget, so this is the only guard needed against
+  // reading `_loop` before it's assigned.
+  bool _loopReady = false;
+
+  // Init sequencing: _loop is constructed and _spells resolved on two
+  // concurrent async paths (_initTurnLoop, _loadSpells). Once BOTH are done
+  // (tracked by these flags), _maybeSetLocalChapterCommitments fires the
+  // battle-start deal exactly once (_battleStarting guards re-entry) before
+  // flipping _loopReady. See _startBattleIfNeeded.
+  bool _loopConstructed = false;
+  bool _spellsLoaded = false;
+  bool _battleStarting = false;
+
+  // Fail-closed (CLAUDE.md quality bar): set if VK/SRS/identity init for a
+  // real duel throws. When non-null, build() shows a blocking error instead
+  // of ever falling back to trusting peer casts unverified.
+  String? _verifierInitError;
 
   // Cast animation — glowing orb(s) for the spell(s) resolved on the most
   // recent turn. Fixed for one playback of _castAnimController; replaced
@@ -228,6 +372,12 @@ class _BattleScreenState extends State<BattleScreen>
   // Status-effect inspection: null = show local player; non-null = show opponent.
   WizardAvatar? _inspectedAvatar;
 
+  // Opponent-strip inspection: null = default strip (all opposing wizards);
+  // non-null = the last-tapped enemy creature, shown in its place (HP only —
+  // minions have no mana). Mutually exclusive with _inspectedAvatar being
+  // set for the same tap; see _updateInspection.
+  Minion? _inspectedMinion;
+
   // Battlefield geometry — tracked from LayoutBuilder so tap handler can convert
   double _hexSize = 20;
   Offset _fieldCenter = Offset.zero;
@@ -274,14 +424,6 @@ class _BattleScreenState extends State<BattleScreen>
   @override
   void initState() {
     super.initState();
-    _loop = TurnLoop(
-      state: widget.state,
-      session: widget.session ?? SoloBattleSession(state: widget.state),
-      localPlayerId: widget.localPlayerId,
-      isSorcererMode: widget.state.config.sorcererMode,
-      meleeTargetPicker: _pickMeleeTarget,
-      onPhase: _onEnginePhase,
-    );
     _pulseController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1800),
@@ -298,6 +440,112 @@ class _BattleScreenState extends State<BattleScreen>
     if (widget.state.config.sorcererMode) {
       _initSorcererMode();
     }
+    _initTurnLoop();
+  }
+
+  /// Constructs [_loop]. For solo/test play (no session, or a
+  /// [SoloBattleSession]) this resolves immediately with `verifyProof`/
+  /// `vkBytes`/`signMessage` all null, exactly as before Stage 2 existed.
+  ///
+  /// For a real LAN duel, this loads the agreed tier's bundled VK asset,
+  /// extracts the circuit bytecode, and initializes the SRS/CRS cache
+  /// (`initSrsCached`) — required before `verify_ultra_honk`'s first call
+  /// even though this device never proves in the match (CLAUDE.md Bug-
+  /// Avoidance #4: a pure verifier that never proves in that session never
+  /// initializes the global CRS otherwise). Also reloads the local
+  /// [Identity] to bind `TurnLoop.signMessage` for Phase D's signed state
+  /// hash (BATTLE_AUTH_PLAN §6) — cheap and side-effect-free
+  /// (`Identity.loadOrCreate` just re-reads secure storage).
+  ///
+  /// Fail-closed: any failure here (network down on first SRS download,
+  /// missing asset, etc.) sets [_verifierInitError] and the match never
+  /// starts, rather than silently falling back to trusting peer casts
+  /// unverified (CLAUDE.md quality bar — "a check that fails open is worse
+  /// than no check").
+  Future<void> _initTurnLoop() async {
+    final session = widget.session;
+    final isRealDuel = session != null && session is! SoloBattleSession;
+
+    ProofVerifier? verifyProof;
+    Uint8List? vkBytes;
+    Future<List<int>> Function(List<int>)? signMessage;
+
+    if (isRealDuel) {
+      try {
+        final tier = widget.state.config.tier;
+        final vkData = await rootBundle.load('assets/circuits/ca_v2_4_tier$tier.vk');
+        vkBytes = vkData.buffer.asUint8List();
+        final circuitJson = await rootBundle.loadString('assets/circuits/ca_v2_4_tier$tier.json');
+        final bytecode = await prover.extractBytecode(circuitJson);
+        await prover.initSrsCached(bytecode, cachePath: await srsCachePath());
+        verifyProof = prover.verifyProof;
+
+        final identity = await Identity.loadOrCreate();
+        signMessage = (message) => identity.sign(message);
+      } catch (e) {
+        if (!mounted) return;
+        setState(() => _verifierInitError = '$e');
+        return;
+      }
+    }
+
+    if (!mounted) return;
+    _loop = TurnLoop(
+      state: widget.state,
+      session: session ?? SoloBattleSession(state: widget.state),
+      localPlayerId: widget.localPlayerId,
+      matchId: widget.matchId,
+      tier: widget.state.config.tier,
+      verifyProof: verifyProof,
+      vkBytes: vkBytes,
+      peerBookRoot: widget.peerBookRoot,
+      peerBookLeafCount: widget.peerBookLeafCount,
+      peerOwnerPubkeyHex: widget.peerOwnerPubkeyHex,
+      peerPermissions: widget.peerPermissions ?? const [],
+      signMessage: signMessage,
+      peerRawPubkey: widget.peerRawPubkey,
+      isSorcererMode: widget.state.config.sorcererMode,
+      meleeTargetPicker: _pickMeleeTarget,
+      onPhase: _onEnginePhase,
+    );
+    _loopConstructed = true;
+    _maybeSetLocalChapterCommitments();
+    setState(() {});
+  }
+
+  /// Sets [TurnLoop.localChapterCommitments] once both [_loop] exists and
+  /// [_spells] has resolved — called from both [_initTurnLoop] and
+  /// [_loadSpells], since they run concurrently and either can finish
+  /// first. Safe to call speculatively before either is ready (no-ops). Once
+  /// both prerequisites are met it fires the battle-start deal
+  /// ([_startBattleIfNeeded]), which is what flips [_loopReady].
+  void _maybeSetLocalChapterCommitments() {
+    if (!_loopConstructed || !_spellsLoaded) return;
+    final resolved = _spells.whereType<SpellAsset>().toList();
+    final commitments = resolved.map((s) => s.commitmentHex).toList()..sort();
+    _loop.localChapterCommitments = commitments;
+    _loop.localChapterSpells = resolved;
+    _startBattleIfNeeded();
+  }
+
+  /// Runs the battle-start entropy exchange + opening deal
+  /// ([TurnLoop.startBattle]) once, then flips [_loopReady] so build() drops
+  /// its spinner and turn 1 is playable with a full hand. Fail-closed like
+  /// [_initTurnLoop]: a withheld/failed exchange surfaces as a blocking error
+  /// rather than starting a match with no hand. A withheld reveal here also
+  /// forfeits the match on the engine side (TurnLoop._resolveEntropy).
+  Future<void> _startBattleIfNeeded() async {
+    if (_battleStarting) return;
+    _battleStarting = true;
+    try {
+      await _loop.startBattle();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _verifierInitError = '$e');
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _loopReady = true);
   }
 
   /// Builds the active VocalScorer and runs the once-per-match ambient
@@ -347,7 +595,9 @@ class _BattleScreenState extends State<BattleScreen>
       resolved.add(spell);
     }
     if (!mounted) return;
+    _spellsLoaded = true;
     setState(() => _spells = resolved);
+    _maybeSetLocalChapterCommitments();
   }
 
   WizardAvatar? get _local =>
@@ -519,6 +769,7 @@ class _BattleScreenState extends State<BattleScreen>
 
   void _selectSpell(SpellAsset spell) {
     if (_isBusy || _phase != _InputPhase.action) return;
+    if (_loop.isHandSpellWithered(spell)) return; // §9: withered, not castable
     setState(() {
       _selectedSpell = _selectedSpell?.id == spell.id ? null : spell;
       if (_selectedSpell == null) _targetHex = null;
@@ -526,6 +777,11 @@ class _BattleScreenState extends State<BattleScreen>
       _mysteryDelay = 0;
     });
   }
+
+  /// The local player's current hand (SPELL_DRAW_WIRING_PLAN.md §5) — what
+  /// [_SpellBook] renders. Empty until the opening deal has run (TurnLoop
+  /// dealing races the chapter-load, same as [_spells] itself).
+  List<SpellAsset?> get _handSpells => _loop.localSpellDraw?.hand ?? const [];
 
   /// Confirm the action and advance to the movement phase.
   void _commitAction(TurnAction action) {
@@ -640,12 +896,24 @@ class _BattleScreenState extends State<BattleScreen>
       _capturingWord = null;
     });
 
-    // Somatic/gesture seam (lib/sorcerer/gesture.dart) — stubbed off, since
-    // no gesture-capture pipeline exists yet. When one does, this is where a
-    // captured Gesture would be read and its .enhancementZone folded into
-    // the enhancement choice above, exactly parallel to how vocalScore feeds
+    // Somatic/gesture seam (lib/sorcerer/gesture.dart) — stubbed off.
+    // GestureCapture/GestureClassifier/GestureEnrollment now exist
+    // (docs/SOMATIC_GESTURE_PLAN.md) and are exercised from
+    // practice_screen.dart's Gesture tab, but kSomaticCaptureEnabled stays
+    // false until a real-device confusion-matrix pass (test/sorcerer/)
+    // clears — a fixture harness calibrates, it doesn't validate hardware.
+    // When it flips: capture here with the same HoldToRecordButton window
+    // used by enrollment (SOMATIC_GESTURE_PLAN.md §7 — segmentation must
+    // match), classify, and IF the resolved gesture's zone is not in
+    // spell.supremeTags (the same certified-eligibility check the wizard-
+    // mode enhancement picker already gates on, §1651 above), downgrade to
+    // neutral client-side before folding .enhancementZone into the
+    // enhancement choice above — exactly parallel to how vocalScore feeds
     // CastingEnhancements.fromSorcererQuality via hasPotentLoadout/
-    // hasVelocityLoadout/hasEfficiencyLoadout below.
+    // hasVelocityLoadout/hasEfficiencyLoadout below. The peer-side forfeit
+    // gate for an unbacked claim (turn_loop.dart's
+    // TrajectoryParser.certifiedSupremeTags check) stays as the backstop —
+    // do not weaken it to a silent downgrade.
     if (kSomaticCaptureEnabled) {
       // TODO(somatic): capture a Gesture, map via .enhancementZone, fold in.
     }
@@ -799,20 +1067,38 @@ class _BattleScreenState extends State<BattleScreen>
 
   // ── Status-effect inspection ──────────────────────────────────────────────────
 
-  /// After any battlefield tap, update which avatar's status effects are shown.
-  /// Tapping an occupied hex shows that avatar; tapping empty hex reverts to local.
+  /// After any battlefield tap, update which avatar's status effects are
+  /// shown and which entity's HP/mana the opponent strip displays. Tapping
+  /// an occupied hex shows that entity; tapping empty ground (or the local
+  /// player's own avatar/minion) reverts both to their defaults.
   void _updateInspection(HexCoord hex) {
-    WizardAvatar? occupant;
+    WizardAvatar? occupantAvatar;
     for (final av in widget.state.avatars) {
       if (widget.state.battlefield.occupancy[av.playerId] == hex) {
-        occupant = av;
+        occupantAvatar = av;
         break;
       }
     }
-    // Only hold an override for non-local avatars.
-    final isOpponent =
-        occupant != null && occupant.playerId != widget.localPlayerId;
-    setState(() => _inspectedAvatar = isOpponent ? occupant : null);
+    if (occupantAvatar != null) {
+      // Only hold an override for non-local avatars.
+      final isOpponent = occupantAvatar.playerId != widget.localPlayerId;
+      setState(() {
+        _inspectedAvatar = isOpponent ? occupantAvatar : null;
+        _inspectedMinion = null;
+      });
+      return;
+    }
+
+    final occupantMinion = widget.state.minions
+        .where((m) => m.isAlive && m.occupiedTiles.contains(hex))
+        .firstOrNull;
+    // Only hold an override for minions on a hostile team.
+    final isEnemyMinion =
+        occupantMinion != null && occupantMinion.teamId != _local?.teamId;
+    setState(() {
+      _inspectedAvatar = null;
+      _inspectedMinion = isEnemyMinion ? occupantMinion : null;
+    });
   }
 
   /// Clouds (Water-Fire) base effect: entities in a cloud's radius may only
@@ -979,6 +1265,16 @@ class _BattleScreenState extends State<BattleScreen>
           .map((e) => ConveyorChainAnimation(path: e.path, killed: e.killed))
           .toList();
       final resolved = List<ResolvedSpellEvent>.from(_loop.lastResolvedSpells);
+      // LAN-only (§1.3): SoloBattleSession casts are scripted dummies with a
+      // sentinel commitment — never record them. Snapshot the base-cost map
+      // synchronously (it's reset at the top of the next runTurn, and this
+      // capture runs fire-and-forget).
+      if (widget.session != null && widget.session is! SoloBattleSession) {
+        unawaited(_recordSightings(
+          resolved,
+          Map<String, int>.from(_loop.lastCertifiedBaseManaCosts),
+        ));
+      }
       // Hold every effect created this turn off the field; the reveal sequence
       // un-hides each spell's set (and blooms it) only once that spell's card
       // has finished. See _playResolvedSpellSequence / _bloomSpellEffects.
@@ -1012,6 +1308,42 @@ class _BattleScreenState extends State<BattleScreen>
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Turn error: $e')));
+    }
+  }
+
+  // ── Sightings capture (docs/SIGHTINGS_PLAN.md §4) ───────────────────────────
+
+  /// Persists every opponent cast in [resolved] as a [SightingAsset]. A
+  /// local side effect only — never surfaces a failure to the player, never
+  /// blocks or affects the turn. [baseManaCosts] must be a snapshot taken
+  /// synchronously right after `runTurn` returns (see the call site in
+  /// [_submitTurn]), since this runs fire-and-forget and
+  /// `TurnLoop.lastCertifiedBaseManaCosts` is reset at the top of the next
+  /// turn. Needs no `mounted` guard: this only touches disk, never widget
+  /// state.
+  Future<void> _recordSightings(
+    List<ResolvedSpellEvent> resolved,
+    Map<String, int> baseManaCosts,
+  ) async {
+    try {
+      for (final capture in sightingsFromResolved(
+        resolved,
+        widget.localPlayerId,
+        widget.state.avatars,
+        baseManaCosts,
+      )) {
+        await SightingAsset.record(
+          opponentPubkeyHex: capture.opponentPubkeyHex,
+          commitmentHex: capture.commitmentHex,
+          spellName: capture.spellName,
+          formula: capture.formula,
+          t: capture.t,
+          tier: capture.tier,
+          manaCost: capture.manaCost,
+        );
+      }
+    } catch (e) {
+      debugPrint('Sightings capture failed: $e');
     }
   }
 
@@ -1213,6 +1545,46 @@ class _BattleScreenState extends State<BattleScreen>
 
   @override
   Widget build(BuildContext context) {
+    // Stage 2 fail-closed gate (see _initTurnLoop): never render the
+    // interactive battle UI before _loop exists, and never silently
+    // proceed if verifier init failed.
+    final initError = _verifierInitError;
+    if (initError != null) {
+      return Scaffold(
+        backgroundColor: const Color(0xFF1A1008),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.error_outline, color: Colors.redAccent, size: 48),
+                const SizedBox(height: 16),
+                Text(
+                  'Could not prepare this duel for play:\n$initError',
+                  style: manuscriptBodyStyle(fontSize: 14, color: kParchmentColor),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 24),
+                OutlinedButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Leave'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    if (!_loopReady) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF1A1008),
+        body: Center(
+          child: CircularProgressIndicator(color: kIlluminationGold),
+        ),
+      );
+    }
+
     final local = _local;
     final config = widget.state.config;
     final foes = _opponents;
@@ -1242,8 +1614,21 @@ class _BattleScreenState extends State<BattleScreen>
           // or playing out Summons/Resolution.
           _PhaseBanner(label: _phaseLabel),
 
-          // Opponent strip
-          if (foes.isNotEmpty)
+          // Opponent strip — swaps to the tapped enemy creature's HP (no
+          // mana row: minions don't have any) when one is inspected. Guards
+          // isAlive too: a dead minion is removed from state.minions by the
+          // engine, but this reference isn't cleared until the next tap.
+          // Watery Scrying Pool reveal — sits directly over the opponent
+          // strip below it; sourced from TurnLoop.revealedEnemyHand, which
+          // is reset every turn (see TurnLoop._beginTurnImpl), so this
+          // clears on its own at the next turn boundary with no separate
+          // expiry timer here.
+          if ((_loop.revealedEnemyHand?.isNotEmpty ?? false) && foes.isNotEmpty)
+            _RevealedHandRow(spells: _loop.revealedEnemyHand!),
+
+          if (_inspectedMinion != null && _inspectedMinion!.isAlive)
+            _EnemyCreatureHudRow(minion: _inspectedMinion!)
+          else if (foes.isNotEmpty)
             _OpponentHudRow(avatars: foes, maxHp: config.playerHp),
 
           // Battlefield — tappable
@@ -1405,12 +1790,16 @@ class _BattleScreenState extends State<BattleScreen>
           // Artifact counts
           _ArtifactRow(avatar: local),
 
-          // Spell hand
+          // Spell hand (SPELL_DRAW_WIRING_PLAN.md §5) — the live hand, not
+          // the whole chapter; deck count is the small HUD readout the plan
+          // calls out as a nice-to-have.
           _SpellBook(
-            spells: _spells,
+            spells: _handSpells,
             selectedId: _selectedSpell?.id,
             onSelect: _selectSpell,
             onView: (spell) => showSpellCardFullscreen(context, spell),
+            isWithered: _loop.isHandSpellWithered,
+            deckCount: _loop.localSpellDraw?.remaining.length,
           ),
         ],
       ),
@@ -1971,6 +2360,43 @@ class _ActionButton extends StatelessWidget {
   }
 }
 
+// ── Watery Scrying Pool reveal ──────────────────────────────────────────────
+
+/// Thumbnail row for a Watery Scrying Pool reveal — the enemy's spells for
+/// as long as [TurnLoop.revealedEnemyHand] is non-null this turn. Same small
+/// non-interactive thumbnail as [_IncantationTray]; tap opens the full card
+/// (no long-tap needed here — these aren't yours to cast).
+class _RevealedHandRow extends StatelessWidget {
+  const _RevealedHandRow({required this.spells});
+
+  final List<SpellAsset> spells;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: kInkColor.withValues(alpha: 0.90),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      height: 48,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: spells.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 6),
+        itemBuilder: (context, i) {
+          final spell = spells[i];
+          return GestureDetector(
+            onTap: () => showSpellCardFullscreen(context, spell),
+            child: SpellCardWidget(
+              spell: spell,
+              size: 36,
+              interactive: false,
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
 // ── Opponent strip ────────────────────────────────────────────────────────────
 
 class _OpponentHudRow extends StatelessWidget {
@@ -2040,6 +2466,51 @@ class _OpponentChip extends StatelessWidget {
           label: '${avatar.mana}',
         ),
       ],
+    );
+  }
+}
+
+/// Opponent strip's inspected-creature view: same slot as [_OpponentHudRow],
+/// shown instead of it while an enemy minion is tapped (see
+/// _updateInspection). Minions have no mana, so this is HP-only.
+class _EnemyCreatureHudRow extends StatelessWidget {
+  const _EnemyCreatureHudRow({required this.minion});
+
+  final Minion minion;
+
+  @override
+  Widget build(BuildContext context) {
+    final hpFrac = minion.stats.maxHp > 0
+        ? (minion.hp / minion.stats.maxHp).clamp(0.0, 1.0)
+        : 0.0;
+    final affinityName = minion.affinity.name;
+    final label =
+        '${affinityName[0].toUpperCase()}${affinityName.substring(1)} Creature';
+
+    return Container(
+      color: kInkColor.withValues(alpha: 0.90),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              fontFamily: 'serif',
+              fontSize: 10,
+              letterSpacing: 0.5,
+              color: BattlefieldPainter.colorForAffinity(minion.affinity),
+            ),
+          ),
+          const SizedBox(height: 3),
+          _ThinBar(
+            fraction: hpFrac,
+            color: const Color(0xFF8B1E1E),
+            label: '${minion.hp}',
+          ),
+        ],
+      ),
     );
   }
 }
@@ -2277,90 +2748,121 @@ class _SpellBook extends StatelessWidget {
     required this.selectedId,
     required this.onSelect,
     required this.onView,
+    this.isWithered = _neverWithered,
+    this.deckCount,
   });
+
+  static bool _neverWithered(SpellAsset spell) => false;
 
   final List<SpellAsset?> spells;
   final String? selectedId;
   final void Function(SpellAsset) onSelect;
   final void Function(SpellAsset) onView;
 
+  /// §9: a withered hand card renders greyed and refuses taps. Defaults to
+  /// "never withered" for callers that don't track wither state.
+  final bool Function(SpellAsset) isWithered;
+
+  /// Remaining deck size (SPELL_DRAW_WIRING_PLAN.md §5's HUD readout). Null
+  /// hides the counter (e.g. before the opening deal has run).
+  final int? deckCount;
+
   @override
   Widget build(BuildContext context) {
     return Container(
       height: 112,
       color: const Color(0xFF130C04),
-      child: spells.isEmpty
-          ? Center(
-              child: Text(
-                'No spells in chapter',
-                style: manuscriptCaptionStyle(
-                  color: kParchmentColor.withValues(alpha: 0.30),
-                ),
-              ),
-            )
-          : ListView.builder(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-              itemCount: spells.length,
-              itemBuilder: (_, i) {
-                final spell = spells[i];
-                if (spell == null) return const SizedBox(width: 6);
-                final selected = spell.id == selectedId;
-                return Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: GestureDetector(
-                    onTap: () => onSelect(spell),
-                    onLongPress: () => onView(spell),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          decoration: BoxDecoration(
-                            border: selected
-                                ? Border.all(color: kIlluminationGold, width: 2)
-                                : null,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Stack(
+      child: Stack(
+        children: [
+          spells.isEmpty
+              ? Center(
+                  child: Text(
+                    'No spells in hand',
+                    style: manuscriptCaptionStyle(
+                      color: kParchmentColor.withValues(alpha: 0.30),
+                    ),
+                  ),
+                )
+              : ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  itemCount: spells.length,
+                  itemBuilder: (_, i) {
+                    final spell = spells[i];
+                    if (spell == null) return const SizedBox(width: 6);
+                    final selected = spell.id == selectedId;
+                    final withered = isWithered(spell);
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: GestureDetector(
+                        onTap: withered ? null : () => onSelect(spell),
+                        onLongPress: () => onView(spell),
+                        child: Opacity(
+                          opacity: withered ? 0.35 : 1.0,
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
                             children: [
-                              SpellCardWidget(
-                                spell: spell,
-                                size: 72,
-                                interactive: false,
-                              ),
-                              if (spell.isSummon)
-                                const Positioned(
-                                  right: 2,
-                                  bottom: 2,
-                                  child: _SummonBadge(),
+                              Container(
+                                decoration: BoxDecoration(
+                                  border: selected
+                                      ? Border.all(color: kIlluminationGold, width: 2)
+                                      : null,
+                                  borderRadius: BorderRadius.circular(4),
                                 ),
+                                child: Stack(
+                                  children: [
+                                    SpellCardWidget(
+                                      spell: spell,
+                                      size: 72,
+                                      interactive: false,
+                                    ),
+                                    if (spell.isSummon)
+                                      const Positioned(
+                                        right: 2,
+                                        bottom: 2,
+                                        child: _SummonBadge(),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: 3),
+                              SizedBox(
+                                width: 72,
+                                child: Text(
+                                  spell.name.isNotEmpty ? spell.name : 'Unnamed',
+                                  textAlign: TextAlign.center,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontFamily: 'serif',
+                                    fontSize: 9,
+                                    letterSpacing: 0.3,
+                                    color: selected
+                                        ? kIlluminationGold
+                                        : kParchmentColor,
+                                  ),
+                                ),
+                              ),
                             ],
                           ),
                         ),
-                        const SizedBox(height: 3),
-                        SizedBox(
-                          width: 72,
-                          child: Text(
-                            spell.name.isNotEmpty ? spell.name : 'Unnamed',
-                            textAlign: TextAlign.center,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontFamily: 'serif',
-                              fontSize: 9,
-                              letterSpacing: 0.3,
-                              color: selected
-                                  ? kIlluminationGold
-                                  : kParchmentColor,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
+                      ),
+                    );
+                  },
+                ),
+          if (deckCount != null)
+            Positioned(
+              top: 4,
+              right: 8,
+              child: Text(
+                'Deck: $deckCount',
+                style: manuscriptCaptionStyle(
+                  color: kParchmentColor.withValues(alpha: 0.55),
+                ),
+              ),
             ),
+        ],
+      ),
     );
   }
 }

@@ -8,24 +8,54 @@ here first. When this document and the code disagree, the code is wrong.*
 
 ## 0. Session lifecycle
 
-The battle session begins **after** both sides have completed the proof-exchange handshake
-(`MatchSession` in `lib/protocol/match_session.dart`). The flow is:
+Two paths reach `BattleSession`:
+
+- **Proof-exchange path** (original design; not the LAN lobby's actual path — see below):
+  after the `MatchSession` proof handshake (`lib/protocol/match_session.dart`), `BattleSession`
+  reuses the same `Transport` and inherits a `matchId` from that handshake.
+- **LAN duel setup path** (what `battle_lobby_screen.dart` actually runs —
+  `runDuelSetup` in `lib/battle/networking/duel_setup.dart`, LAN_BATTLE_WIREUP_PLAN.md §3.2):
+  there is no proof-exchange handshake to inherit a `matchId` from, so this path
+  establishes one itself via a dedicated pre-auth exchange, then runs the identity-auth
+  and permission/book/artifact-loadout exchanges before ever constructing `TurnLoop`.
 
 ```
-[proof exchange — existing MatchSession]
+[LAN duel setup — runDuelSetup, lib/battle/networking/duel_setup.dart]
+  both:       BattleSession(transport, placeholder matchId) ← real matchId not known yet;
+                                                                 `this.matchId` is never read
+                                                                 internally, so this is safe
+                                                                 (see duel_setup.dart's header
+                                                                 comment for why placeholder-then-
+                                                                 thread-through is required, not a
+                                                                 shortcut)
+  both:       exchangeMatchIdNonce()    ← each sends a fresh 16-byte nonce; both derive
+                                           matchId = SHA-256(sorted(ourNonce, theirNonce))[0:16]
+                                           — neither side unilaterally controls it
+  both:       exchangeCapabilities()    ← + battleProtocolVersion gate; abort on mismatch
+  host:       sendHostMatchConfig(config)     ← host-authoritative (asymmetric — see
+  guest:      receiveHostMatchConfig()          exchangeMatchConfig's doc comment for why
+                                                 the strict-equality method can't express this)
+  both:       exchangeIdentityAuth(matchId: <real, derived above>)  ← BATTLE_AUTH_PLAN §3
+  both:       exchangeSpellPermissions()      ← BATTLE_AUTH_PLAN §5
+  both:       exchangeBookCommitment() / exchangeBookHash()
+  both:       exchangeArtifactLoadout() ← required for state-hash lockstep (peer avatar's
+                                           accoutrements/maxMana are hashed every turn —
+                                           see duel_battle_setup.dart's doc comment)
+  both:       buildDuelBattleState(...) ← symmetric, pubkey-sorted (no host/guest branch)
+  → push BattleScreen(session: <this BattleSession>, matchId: <real matchId>, ...)
+
+[proof exchange — existing MatchSession, alternate path above]
   initiator: MatchSession.initiate(transport)
   responder:  MatchSession.accept(transport)
   both:       presentProof / verifyIncomingProof
   both:       MatchSession.close()          ← cancels subscription; transport stays open
-
-[battle session — BattleSession in lib/battle/networking/battle_session.dart]
   both:       BattleSession(transport, matchId)  ← reuses same Transport + matchId from proof exchange
-  both:       exchangeCapabilities()    ← exchange DeviceCapabilities (RAM tier cap)
-  both:       exchangeMatchConfig()     ← agree on MatchConfig; abort on mismatch
-  both:       exchangeBookCommitment()  ← each commits to their Chapter Merkle root
+
+[turn loop — TurnLoop in lib/battle/engine/turn_loop.dart — both paths converge here]
+  both:       exchangeCapabilities() / exchangeMatchConfig() / exchangeBookCommitment()
+              (already done above on the LAN duel setup path)
   both:       exchangeNonce()           ← per-battle commit-reveal for initial entropy
               → joint entropy seeds the SpellDraw shuffle for both players
-  [turn loop — TurnLoop in lib/battle/engine/turn_loop.dart]
     each turn:
       both:   exchangeActionCommit()        ← action sealed before entropy is known (B-5 look-ahead fix)
       both:   exchangeMoveCommit()          ← movement sealed before entropy
@@ -34,9 +64,16 @@ The battle session begins **after** both sides have completed the proof-exchange
       (both:  summons act — deterministic AI, no wire message)
       both:   exchangeDelayedSpellReveals() ← pending delayed spells firing this turn
       both:   exchangeActionReveal()        ← action resolved
-      both:   exchangeStateHash()           ← lockstep per-turn signed state hash
+      both:   exchangeStateHash()           ← lockstep per-turn state hash (unsigned in Stage 1 —
+                                               Ed25519 signing is BATTLE_AUTH_PLAN §6 Phase D,
+                                               not yet implemented; see LAN_BATTLE_WIREUP_PLAN §4)
   both:   sendMatchEnd() or sendForfeit()
 ```
+
+Stage 1 (LAN_BATTLE_WIREUP_PLAN.md §2 DECISION 4): peer spell casts are trusted, not
+proof-verified (`TurnLoop.verifyProof` stays null, same as solo/test) — this is an
+honest interim milestone, not secure play. Stage 2 turns on proof verification, cast
+authorization, and (optionally) signed state hashes.
 
 ---
 
@@ -56,13 +93,18 @@ reassembly logic.
 
 | Type name | Byte | Direction | Payload | Notes |
 |---|---|---|---|---|
-| `capabilities` | 0x10 | both→both | JSON: `{"ramTierCap": 24}` | exchanged simultaneously at session start |
-| `matchConfig` | 0x11 | both→both | JSON: `MatchConfig.toJson()` | both send simultaneously; compare on receipt |
-| `matchConfigAck` | 0x12 | both→both | empty | sent after comparing configs and agreeing |
-| `matchConfigReject` | 0x13 | both→both | UTF-8 reason string | sent on mismatch; triggers abort |
+| `capabilities` | 0x10 | both→both | JSON: `DeviceCapabilities.toJson()` (`ramTierCap`, `battleProtocolVersion`) | exchanged simultaneously at session start; LAN duel setup aborts on `battleProtocolVersion` mismatch |
+| `matchConfig` | 0x11 | both→both (proof-exchange path) or host→guest (LAN duel setup, host-authoritative — DECISION 3) | JSON: `MatchConfig.toJson()` | proof-exchange path: both send, compare, abort on mismatch (`exchangeMatchConfig`). LAN duel setup path: only the host sends (`sendHostMatchConfig`/`receiveHostMatchConfig`) — the guest has no separate opinion to assert, so there's nothing to compare |
+| `matchConfigAck` | 0x12 | both→both | empty | sent after comparing configs and agreeing (or, on the LAN duel setup path, after the guest receives the host's config) |
+| `matchConfigReject` | 0x13 | both→both | UTF-8 reason string | sent on mismatch (proof-exchange path only); triggers abort |
 | `bookCommit` | 0x14 | both→both | 32 bytes: Chapter Merkle root | both send simultaneously |
 | `bookHash` | 0x15 | both→both | 32 bytes: SHA-256(sorted leaf bytes) | batch leaf hash exchanged at handshake (Option 2) |
 | `bookReveal` | 0x16 | both→both | JSON: sorted `commitmentHex` list | sorted chapter spell list revealed post-match; verified against `bookHash` |
+| `authChallenge` | 0x17 | both→both | 32-byte fresh random nonce | BATTLE_AUTH_PLAN.md §3 — mutual Ed25519 challenge-response, run once per session before any cast is trusted |
+| `authResponse` | 0x18 | both→both | rawPubkey(32) ‖ sig(64) over `TAG_AUTH ‖ matchId ‖ peerNonce` | see `exchangeIdentityAuth`; forfeits on invalid/stale/self signature |
+| `spellPermissions` | 0x19 | both→both | JSON array of `SpellPermission.toJson()` | BATTLE_AUTH_PLAN.md §5 — loan/transfer grants naming the peer as grantee |
+| `matchIdNonce` | 0x1A | both→both | 16-byte fresh random nonce | LAN duel setup only (LAN_BATTLE_WIREUP_PLAN.md §3.2 step 1) — establishes `matchId` before anything that needs to sign it |
+| `artifactLoadout` | 0x1B | both→both | JSON array of `ArtifactEntry.toJson()` | LAN duel setup only — public equipment loadout (not the secret-until-revealed spell book); required for state-hash lockstep, see `duel_battle_setup.dart` |
 | `nonceCommit` | 0x20 | both→both | 32 bytes: SHA-256(nonce) | commit phase of commit-reveal |
 | `nonceReveal` | 0x21 | both→both | 32 bytes: raw nonce | reveal phase; verify matches commit |
 | `refreshEntropyCommit` | 0x22 | both→both | 32 bytes: SHA-256(nonce) | mid-resolution entropy refresh commit (§3b) — **B-3/B-7 hardening pending** |
@@ -187,8 +229,15 @@ book_root ← MerkleRoot(sorted commitmentHex values of chapter spells)
 
 Each player sends their `bookCommit` message at session start. The peer stores this root
 for later membership-proof verification (e.g. proving a spell is in-chapter without
-revealing the full chapter). The hashing algorithm for the Merkle tree is
-`// TODO(battle): pin a concrete hash; candidate is SHA-256 of concatenated left/right nodes`.
+revealing the full chapter). Hash function: SHA-256(left ‖ right) for interior nodes;
+leaves sorted lexicographically by `commitmentHex` (see `book_commitment.dart`).
+
+`bookLeafCount` (`0x1C`): each player also sends their chapter's leaf count — a bare
+`uint32` big-endian, sent alongside `bookCommit`/`bookHash` at session start
+(`duel_setup.dart` Step 6). This is the minor disclosure SPELL_DRAW_WIRING_PLAN.md §3
+calls for: `DrawSchedule` needs the peer's chapter size `n` to compute
+`nextInt(n)`-shaped draws for the *peer's* hand/deck bookkeeping, without ever learning
+which spells are in it (only the Merkle root, `bookCommit`, commits to contents).
 
 ---
 

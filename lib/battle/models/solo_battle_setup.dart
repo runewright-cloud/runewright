@@ -10,6 +10,7 @@
 import 'package:rune_duel/engine/hex_grid.dart';
 
 import '../../spells/chapter_asset.dart';
+import 'accoutrement_loadout.dart';
 import 'battle_state.dart';
 import 'hex_battlefield.dart';
 import 'match_config.dart';
@@ -34,29 +35,10 @@ SoloBattleSetup buildSoloBattleState(
   String localId = 'local',
   String dummyId = 'dummy',
 }) {
-  // Convert chapter artifacts → WizardAvatar accoutrements.
-  // First mana gem becomes the indestructible core gem.
-  final accoutrements = <Accoutrement>[];
-  bool coreGemAdded = false;
-  for (int i = 0; i < chapter.artifacts.length; i++) {
-    final a = chapter.artifacts[i];
-    final kind = _toAccoutrementKind(a.kind);
-    final isCore = kind == AccoutrementKind.manaGem && !coreGemAdded;
-    if (isCore) coreGemAdded = true;
-    accoutrements.add(Accoutrement(
-      id: 'acc_$i',
-      kind: kind,
-      isCoreGem: isCore,
-      targetCommitmentHex: a.targetCommitmentHex,
-    ));
-  }
-  // Every wizard has at least the indestructible core gem.
-  if (!coreGemAdded) {
-    accoutrements.insert(
-      0,
-      const Accoutrement(id: 'acc_core', kind: AccoutrementKind.manaGem, isCoreGem: true),
-    );
-  }
+  // Convert chapter artifacts → WizardAvatar accoutrements (shared helper —
+  // see accoutrement_loadout.dart; ids match this function's prior inline
+  // logic exactly, so this is not a behavior change).
+  final accoutrements = accoutrementsFromArtifacts(chapter.artifacts, idPrefix: 'acc');
 
   final manaGems = accoutrements.where((a) => a.kind == AccoutrementKind.manaGem).length;
   final maxMana = manaGems * config.manaGemPoolPerGem;
@@ -115,10 +97,3 @@ SoloBattleSetup buildSoloBattleState(
 
   return SoloBattleSetup(state: battleState, dummyPosition: dummyPos);
 }
-
-AccoutrementKind _toAccoutrementKind(ArtifactKind kind) => switch (kind) {
-      ArtifactKind.manaGem => AccoutrementKind.manaGem,
-      ArtifactKind.bookmark => AccoutrementKind.bookmark,
-      ArtifactKind.deflectionRod => AccoutrementKind.absorptionRod,
-      ArtifactKind.counterCharm => AccoutrementKind.counterCharm,
-    };

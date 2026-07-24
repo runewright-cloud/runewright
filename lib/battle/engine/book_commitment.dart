@@ -43,6 +43,23 @@ class MembershipProof {
   /// false = sibling is on the left (we hash sibling ‖ current).
   final List<bool> directions;
 
+  /// The leaf's index in the sorted tree, decoded from [directions].
+  ///
+  /// [BookCommitment.proveMembership] halves its working index each level
+  /// (`idx ~/= 2`) and records `directions[i] = idx.isEven` (true = we were
+  /// the left child at level i) before halving — so `directions[i]` is
+  /// exactly bit *i* of the original leaf index, least-significant first.
+  /// This is the "authenticated position" SPELL_DRAW_WIRING_PLAN.md §2/§6
+  /// builds hand-membership enforcement on: a cast's Merkle path already
+  /// proves not just chapter membership but *which* position was cast.
+  int get leafIndex {
+    var idx = 0;
+    for (var i = 0; i < directions.length; i++) {
+      if (!directions[i]) idx |= 1 << i;
+    }
+    return idx;
+  }
+
   /// Recompute the path from [leafHex] and verify it reaches [root].
   bool verify() {
     var current = BookCommitment._leafBytes(leafHex);

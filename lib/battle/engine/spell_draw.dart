@@ -17,10 +17,13 @@
 // per-draw entropy (every joint-entropy value used is revealed as part of
 // the existing per-turn commit-reveal protocol).
 //
-// [remaining] is held in **canonical order** (sorted by spellId), never
-// pre-shuffled, so both clients agree on which index a given draw value
-// selects. Because draws only ever remove elements (never reorder them), the
-// untouched remainder always stays in that canonical order.
+// [remaining] is held in **canonical order** (sorted by commitmentHex — the
+// same key BookCommitment's Merkle tree sorts leaves by, see chapter.dart),
+// never pre-shuffled, so both clients agree on which index a given draw value
+// selects, and a drawn position lines up with a Merkle leaf index (see
+// docs/SPELL_DRAW_WIRING_PLAN.md §2). Because draws only ever remove elements
+// (never reorder them), the untouched remainder always stays in that
+// canonical order.
 //
 // Chapter spells must be in canonical order before calling [SpellDraw.opening]
 // so both clients compute the same opening hand.

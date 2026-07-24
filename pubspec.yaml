@@ -63,6 +63,12 @@ dependencies:
   # lib/spells/spell_art_import.dart's header comment.
   image: ^4.8.0
 
+  # Sorcerer mode: somatic-gesture capture (accelerometer + gyroscope
+  # streams). Used only by lib/sorcerer/gesture_capture.dart — every other
+  # gesture file (classifier, enrollment, DTW) is pure Dart over ImuSample
+  # and never imports this package directly. See docs/SOMATIC_GESTURE_PLAN.md.
+  sensors_plus: ^6.1.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

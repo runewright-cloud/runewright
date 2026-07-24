@@ -1,20 +1,42 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// battle_lobby_screen.dart — pre-duel lobby: chapter selection and LAN
-// matchmaking (host or join). Stops at Transport establishment; the turn
-// loop and combat UI are a later milestone.
+// battle_lobby_screen.dart — pre-duel lobby: chapter/settings selection, LAN
+// matchmaking (host or join), and the full runDuelSetup handshake
+// (LAN_BATTLE_WIREUP_PLAN.md §3.3). Host picks chapter + match settings
+// first (DuelHostSettingsScreen); guest picks only a chapter
+// (DuelJoinChapterScreen) since it adopts the host's MatchConfig verbatim
+// (DECISION 3). Once a peer Transport connects, runDuelSetup runs the full
+// handshake and this screen hands off into BattleScreen with the real
+// BattleSession — Stage 1 (LAN_BATTLE_WIREUP_PLAN.md §2 DECISION 4): peer
+// casts are trusted, not proof-verified.
+//
+// mDNS discovery/advertising (via `nsd`) is best-effort, not load-bearing:
+// `nsd` has no Linux desktop backend at all (lan_discovery.dart's header
+// comment), and real networks can block multicast outright (AP isolation).
+// Both the hosting and joining flows fall back to manual IP entry — the
+// same host:port TextField pattern already proven in gate_screen.dart's M4
+// two-device gate — dialing the same listening socket directly via
+// LanSocketTransport.connectTo, bypassing `nsd` entirely.
 
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../battle/networking/duel_setup.dart';
+import '../battle/models/match_config.dart';
 import '../battle/networking/match_discovery.dart';
+import '../identity/identity.dart';
+import '../protocol/lan_socket_transport.dart';
 import '../protocol/transport.dart';
+import '../spells/chapter_asset.dart';
+import 'battle_screen.dart';
+import 'duel_host_settings_screen.dart';
+import 'duel_join_chapter_screen.dart';
 import 'manuscript_theme.dart';
 import 'solo_practice_settings_screen.dart';
 import 'spell_test_lab_screen.dart';
 
-enum _LobbyMode { idle, hosting, joining, connecting, connected }
+enum _LobbyMode { idle, hosting, joining, connecting, preparingDuel }
 
 class BattleLobbyScreen extends StatefulWidget {
   const BattleLobbyScreen({super.key});
@@ -30,27 +52,78 @@ class _BattleLobbyScreenState extends State<BattleLobbyScreen> {
   final LanMatchDiscovery _discovery = LanMatchDiscovery();
   Transport? _transport;
 
+  // Chosen before networking begins — see _onHostTap/_onJoinTap.
+  DuelRole? _role;
+  ChapterAsset? _localChapter;
+  MatchConfig? _hostConfig; // host-authored; unused (placeholder) for guest.
+
+  // Once true, BattleScreen owns the session/transport lifecycle — dispose()
+  // must not also disconnect it (see that method's doc comment).
+  bool _handedOff = false;
+
+  // Manual-IP fallback state (see header comment).
+  String? _hostAddressHint; // "192.168.1.23:54321", shown while hosting.
+  String? _autoDiscoveryError; // set when startDiscovering() itself fails.
+  final _manualConnectController = TextEditingController();
+  bool _manualConnecting = false;
+
   @override
   void dispose() {
     _peerSub?.cancel();
-    _transport?.disconnect();
+    if (!_handedOff) {
+      _transport?.disconnect();
+    }
     _discovery.dispose();
+    _manualConnectController.dispose();
     super.dispose();
   }
+
+  // ── Pre-networking settings steps ───────────────────────────────────────────
+
+  Future<void> _onHostTap() async {
+    final settings = await Navigator.push<DuelHostSettings>(
+      context,
+      MaterialPageRoute(builder: (_) => const DuelHostSettingsScreen()),
+    );
+    if (settings == null || !mounted) return;
+    _role = DuelRole.host;
+    _localChapter = settings.chapter;
+    _hostConfig = settings.config;
+    await _startHosting();
+  }
+
+  Future<void> _onJoinTap() async {
+    final chapter = await Navigator.push<ChapterAsset>(
+      context,
+      MaterialPageRoute(builder: (_) => const DuelJoinChapterScreen()),
+    );
+    if (chapter == null || !mounted) return;
+    _role = DuelRole.guest;
+    _localChapter = chapter;
+    await _startJoining();
+  }
+
+  // ── LAN discovery / connection ──────────────────────────────────────────────
 
   Future<void> _startHosting() async {
     setState(() {
       _mode = _LobbyMode.hosting;
       _peers.clear();
+      _hostAddressHint = null;
     });
     try {
+      // mDNS advertising inside this call is itself best-effort (see
+      // LanMatchDiscovery.startAdvertising) — this only throws on a genuine
+      // socket-bind failure, not on `nsd` being unavailable.
       await _discovery.startAdvertising(caps: DeviceCapabilities.detect());
+      final ip = await _discovery.localAddressHint();
+      final port = _discovery.listeningPort;
+      if (mounted && port != null) {
+        setState(() => _hostAddressHint = '${ip ?? "?"}:$port');
+      }
       _discovery.acceptConnection().then((transport) {
         if (!mounted || _mode != _LobbyMode.hosting) return;
-        setState(() {
-          _transport = transport;
-          _mode = _LobbyMode.connected;
-        });
+        unawaited(_beginDuelSetup(transport));
       }).catchError((Object e) {
         if (!mounted || _mode != _LobbyMode.hosting) return;
         _showError('Connection failed: $e');
@@ -67,6 +140,7 @@ class _BattleLobbyScreenState extends State<BattleLobbyScreen> {
     setState(() {
       _mode = _LobbyMode.joining;
       _peers.clear();
+      _autoDiscoveryError = null;
     });
     try {
       final stream = await _discovery.startDiscovering();
@@ -75,9 +149,13 @@ class _BattleLobbyScreenState extends State<BattleLobbyScreen> {
         setState(() => _peers.add(peer));
       });
     } catch (e) {
+      // Soft failure: automatic mDNS discovery isn't available on every
+      // platform (`nsd` has no Linux desktop backend) or every network (AP
+      // isolation can block multicast). Manual IP entry below dials the
+      // same LanSocketTransport directly, so stay in the joining view
+      // rather than bouncing back to idle.
       if (!mounted) return;
-      _showError('Could not scan for duels: $e');
-      setState(() => _mode = _LobbyMode.idle);
+      setState(() => _autoDiscoveryError = '$e');
     }
   }
 
@@ -91,14 +169,45 @@ class _BattleLobbyScreenState extends State<BattleLobbyScreen> {
       await _discovery.stopDiscovering();
       final transport = await peer.connect();
       if (!mounted) return;
-      setState(() {
-        _transport = transport;
-        _mode = _LobbyMode.connected;
-      });
+      await _beginDuelSetup(transport);
     } catch (e) {
       if (!mounted) return;
       _showError('Could not connect: $e');
       await _startJoining();
+    }
+  }
+
+  /// Manual IP fallback (header comment) — parses "host:port" and dials
+  /// [LanSocketTransport.connectTo] directly, bypassing `nsd` discovery
+  /// entirely. Same hand-off path as a peer found via mDNS.
+  Future<void> _connectManual() async {
+    if (_manualConnecting) return;
+    final raw = _manualConnectController.text.trim();
+    final colonIdx = raw.lastIndexOf(':');
+    if (colonIdx <= 0) {
+      _showError('Enter host:port, e.g. 192.168.1.23:54321');
+      return;
+    }
+    final host = raw.substring(0, colonIdx);
+    final port = int.tryParse(raw.substring(colonIdx + 1));
+    if (port == null) {
+      _showError('Bad port in "$raw"');
+      return;
+    }
+
+    setState(() => _manualConnecting = true);
+    try {
+      await _peerSub?.cancel();
+      _peerSub = null;
+      await _discovery.stopDiscovering();
+      final transport = await LanSocketTransport.connectTo(host, port);
+      if (!mounted) return;
+      setState(() => _manualConnecting = false);
+      await _beginDuelSetup(transport);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _manualConnecting = false);
+      _showError('Could not connect to $host:$port: $e');
     }
   }
 
@@ -113,6 +222,60 @@ class _BattleLobbyScreenState extends State<BattleLobbyScreen> {
       _peers.clear();
     });
   }
+
+  // ── Handshake + hand-off ─────────────────────────────────────────────────────
+
+  /// Runs the full LAN duel handshake (LAN_BATTLE_WIREUP_PLAN.md §3.2) over
+  /// the just-connected [transport], then pushes [BattleScreen] with the
+  /// real [BattleSession]. On any handshake failure, disconnects and returns
+  /// to the idle lobby with an error.
+  Future<void> _beginDuelSetup(Transport transport) async {
+    if (!mounted) return;
+    setState(() {
+      _transport = transport;
+      _mode = _LobbyMode.preparingDuel;
+    });
+    try {
+      final identity = await Identity.loadOrCreate();
+      final result = await runDuelSetup(
+        transport: transport,
+        role: _role!,
+        localIdentity: identity,
+        localChapter: _localChapter!,
+        hostConfig: _hostConfig ?? const MatchConfig(),
+      );
+      if (!mounted) return;
+      // BattleScreen now owns the session/transport lifecycle — see dispose().
+      _handedOff = true;
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => BattleScreen(
+            state: result.state,
+            localPlayerId: result.localPlayerId,
+            chapter: result.localChapter,
+            session: result.session,
+            matchId: result.matchId,
+            peerBookRoot: result.peerBookRootHex,
+            peerBookLeafCount: result.peerBookLeafCount,
+            peerOwnerPubkeyHex: result.peer.ownerPubkeyHex,
+            peerRawPubkey: result.peer.rawPubkey,
+            peerPermissions: result.peerPermissions,
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      _showError('Duel setup failed: $e');
+      await transport.disconnect();
+      if (!mounted) return;
+      setState(() {
+        _mode = _LobbyMode.idle;
+        _transport = null;
+      });
+    }
+  }
+
+  // ── Solo / test surfaces (no networking) ────────────────────────────────────
 
   void _onSoloPracticeTap() {
     Navigator.push(
@@ -163,19 +326,26 @@ class _BattleLobbyScreenState extends State<BattleLobbyScreen> {
   Widget _buildModeSection() {
     return switch (_mode) {
       _LobbyMode.idle => _IdleSection(
-          onHostTap: _startHosting,
-          onJoinTap: _startJoining,
+          onHostTap: _onHostTap,
+          onJoinTap: _onJoinTap,
           onSoloPracticeTap: _onSoloPracticeTap,
           onSpellTestLabTap: _onSpellTestLabTap,
         ),
-      _LobbyMode.hosting => _HostingSection(onCancel: _cancelNetworking),
+      _LobbyMode.hosting => _HostingSection(
+          addressHint: _hostAddressHint,
+          onCancel: _cancelNetworking,
+        ),
       _LobbyMode.joining => _JoiningSection(
           peers: _peers,
           onPeerTap: _connectToPeer,
           onCancel: _cancelNetworking,
+          autoDiscoveryError: _autoDiscoveryError,
+          manualController: _manualConnectController,
+          manualConnecting: _manualConnecting,
+          onManualConnect: _connectManual,
         ),
       _LobbyMode.connecting => const _ConnectingSection(),
-      _LobbyMode.connected => const _ConnectedSection(),
+      _LobbyMode.preparingDuel => const _PreparingDuelSection(),
     };
   }
 }
@@ -218,8 +388,9 @@ class _IdleSection extends StatelessWidget {
 }
 
 class _HostingSection extends StatelessWidget {
-  const _HostingSection({required this.onCancel});
+  const _HostingSection({required this.addressHint, required this.onCancel});
 
+  final String? addressHint;
   final VoidCallback onCancel;
 
   @override
@@ -240,6 +411,26 @@ class _HostingSection extends StatelessWidget {
           style: manuscriptCaptionStyle(),
           textAlign: TextAlign.center,
         ),
+        if (addressHint != null) ...[
+          const SizedBox(height: 20),
+          Text(
+            'If your opponent can\'t find this duel automatically,\n'
+            'have them enter this address manually:',
+            style: manuscriptCaptionStyle(),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 8),
+          SelectableText(
+            addressHint!,
+            style: const TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: kInkColor,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ],
         const SizedBox(height: 28),
         TextButton(
           onPressed: onCancel,
@@ -262,37 +453,57 @@ class _JoiningSection extends StatelessWidget {
     required this.peers,
     required this.onPeerTap,
     required this.onCancel,
+    required this.autoDiscoveryError,
+    required this.manualController,
+    required this.manualConnecting,
+    required this.onManualConnect,
   });
 
   final List<DiscoveredPeer> peers;
   final void Function(DiscoveredPeer) onPeerTap;
   final VoidCallback onCancel;
+  final String? autoDiscoveryError;
+  final TextEditingController manualController;
+  final bool manualConnecting;
+  final VoidCallback onManualConnect;
 
   @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          children: [
-            const SizedBox(
-              width: 14,
-              height: 14,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: kIlluminationGold,
+        if (autoDiscoveryError == null) ...[
+          Row(
+            children: [
+              const SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: kIlluminationGold,
+                ),
               ),
-            ),
-            const SizedBox(width: 10),
-            Text('Scanning for duels...', style: manuscriptCaptionStyle()),
-          ],
-        ),
-        const SizedBox(height: 12),
+              const SizedBox(width: 10),
+              Text('Scanning for duels...', style: manuscriptCaptionStyle()),
+            ],
+          ),
+          const SizedBox(height: 12),
+        ] else ...[
+          Text(
+            'Automatic discovery isn\'t available here '
+            '(enter your opponent\'s address below instead).',
+            style: manuscriptCaptionStyle(color: kInkMutedColor),
+          ),
+          const SizedBox(height: 12),
+        ],
         Expanded(
           child: peers.isEmpty
               ? Center(
                   child: Text(
-                    'No challengers found yet.\nMake sure your opponent has hosted.',
+                    autoDiscoveryError == null
+                        ? 'No challengers found yet.\nMake sure your opponent has hosted.'
+                        : 'No challengers found automatically.\n'
+                            'Enter their address below.',
                     style: manuscriptBodyStyle(
                       fontSize: 14,
                       color: kInkMutedColor,
@@ -308,6 +519,41 @@ class _JoiningSection extends StatelessWidget {
                   ),
                 ),
         ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: manualController,
+                style: const TextStyle(fontFamily: 'serif', fontSize: 14, color: kInkColor),
+                decoration: InputDecoration(
+                  hintText: 'host:port',
+                  hintStyle: const TextStyle(color: kInkMutedColor),
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(4),
+                    borderSide: BorderSide(color: kInkColor.withValues(alpha: 0.3)),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton(
+              onPressed: manualConnecting ? null : onManualConnect,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: kIlluminationGold,
+                side: const BorderSide(color: kIlluminationGold),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+              ),
+              child: const Text(
+                'Connect',
+                style: TextStyle(fontFamily: 'serif', fontSize: 14),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
         TextButton(
           onPressed: onCancel,
           child: const Text(
@@ -347,24 +593,24 @@ class _ConnectingSection extends StatelessWidget {
   }
 }
 
-class _ConnectedSection extends StatelessWidget {
-  const _ConnectedSection();
+class _PreparingDuelSection extends StatelessWidget {
+  const _PreparingDuelSection();
 
   @override
   Widget build(BuildContext context) {
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        const Icon(Icons.check_circle_outline, size: 48, color: kIlluminationGold),
-        const SizedBox(height: 16),
+        const CircularProgressIndicator(color: kIlluminationGold),
+        const SizedBox(height: 20),
         Text(
-          'Opponent connected.',
+          'Preparing duel...',
           style: manuscriptBodyStyle(fontSize: 16),
           textAlign: TextAlign.center,
         ),
         const SizedBox(height: 6),
         Text(
-          'Ready to duel.',
+          'Authenticating and syncing with your opponent.',
           style: manuscriptCaptionStyle(),
           textAlign: TextAlign.center,
         ),
@@ -449,4 +695,3 @@ class _PeerTile extends StatelessWidget {
     );
   }
 }
-

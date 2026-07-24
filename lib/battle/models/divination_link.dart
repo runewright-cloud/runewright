@@ -4,14 +4,25 @@
 // (Air-Water) effects that grant one player standing knowledge of another's
 // hidden information.
 //
-// Mirrors reflection_link.dart's shape. Only the Air flavor (Airy Scrying
-// Pool — "see target's committed spell target tile") is wired to an actual
-// reveal mechanism today (see MESH_ARCHITECTURE.md §13b, TurnLoop.beginTurn).
-// Fire/Water flavors still create no link (unchanged stub behaviour) — their
-// reveal mechanisms (counter-charm alignment; available spell list, which
-// needs SpellDraw wired into BattleState first) are separate follow-up work.
+// Mirrors reflection_link.dart's shape. Both flavors are wired to an actual
+// reveal mechanism: Air (Airy Scrying Pool — "see target's committed spell
+// target tile", MESH_ARCHITECTURE.md §13b, TurnLoop.beginTurn) and Water
+// (Watery Scrying Pool — "see target's current hand",
+// TurnLoop._exchangeSpellRevealOpenings, SPELL_DRAW_WIRING_PLAN.md §8).
+// Link creation for both lives in effect_applicator.dart's _applyDivination.
 
 import 'dart:typed_data';
+
+/// Which reveal mechanism a [DivinationLink] drives.
+///
+///   targetTile — Air flavor: [casterId] learns [targetId]'s committed spell
+///                target tile each turn (MESH_ARCHITECTURE.md §13b).
+///   spellList  — Water flavor: [casterId] learns [targetId]'s current HAND
+///                each turn (not their whole chapter — SPELL_DRAW_WIRING_
+///                PLAN.md §8), each card individually verified against
+///                [targetId]'s already-exchanged `peerBookRoot` (see
+///                TurnLoop._exchangeSpellRevealOpenings).
+enum DivinationFlavor { targetTile, spellList }
 
 class DivinationLink {
   DivinationLink({
@@ -19,6 +30,7 @@ class DivinationLink {
     required this.casterId,
     required this.targetId,
     required this.remainingTurns,
+    required this.flavor,
   });
 
   final String id;
@@ -31,6 +43,8 @@ class DivinationLink {
 
   int remainingTurns;
 
+  final DivinationFlavor flavor;
+
   // ── Canonical serialisation ───────────────────────────────────────────────
 
   void writeToBytes(BytesBuilder buf) {
@@ -38,6 +52,7 @@ class DivinationLink {
     _writeUtf8(buf, casterId);
     _writeUtf8(buf, targetId);
     buf.addByte(remainingTurns & 0xFF);
+    buf.addByte(flavor.index);
   }
 
   static void _writeUtf8(BytesBuilder buf, String s) {

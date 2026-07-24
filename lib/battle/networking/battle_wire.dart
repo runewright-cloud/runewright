@@ -23,6 +23,25 @@ enum BattleMsgType {
   bookHash(0x15),    // Option 2: SHA-256(sorted leaf bytes) exchanged at handshake
   bookReveal(0x16),  // Option 2: sorted commitmentHex list sent at match end
 
+  // Identity authentication (BATTLE_AUTH_PLAN.md §3) — mutual Ed25519
+  // challenge-response binding each side's authenticated owner_pubkey before
+  // any spell cast is trusted.
+  authChallenge(0x17),    // 32-byte fresh random nonce
+  authResponse(0x18),     // rawPubkey(32) ‖ sig(64) over TAG_AUTH‖matchId‖peerNonce
+  // Loan-permission exchange (BATTLE_AUTH_PLAN.md §5).
+  spellPermissions(0x19), // JSON array of SpellPermission.toJson()
+
+  // LAN duel setup (LAN_BATTLE_WIREUP_PLAN.md §3.2) — run once, before
+  // exchangeCapabilities, to agree a matchId neither side unilaterally
+  // controls; and once alongside bookCommit, to exchange each side's public
+  // artifact loadout so both devices build an identical peer WizardAvatar.
+  matchIdNonce(0x1A),     // 16-byte fresh random nonce
+  artifactLoadout(0x1B),  // JSON array of ArtifactEntry.toJson()
+  // SPELL_DRAW_WIRING_PLAN.md §3: each side's chapter leaf count, declared
+  // publicly alongside bookCommit so DrawSchedule can compute nextInt(n) for
+  // the peer's chapter without ever learning its contents.
+  bookLeafCount(0x1C),    // uint32 big-endian
+
   // Commit-reveal entropy (§3)
   nonceCommit(0x20),
   nonceReveal(0x21),
@@ -48,6 +67,12 @@ enum BattleMsgType {
   // Post-resolution free-move commit-reveal (barrier-burst reactive step).
   freeMoveCommit(0x3C),
   freeMoveReveal(0x3D),
+  // Divination (Water flavor — Watery Scrying Pool) spell-list reveal.
+  // Same encrypted-broadcast shape as scryKey/scryOpen but kept as its own
+  // message pair since a player may have simultaneous Air + Water links to
+  // the same peer and each flavor's exchange stays independent.
+  spellRevealKey(0x3E),
+  spellRevealOpen(0x3F),
 
   // Match control (§2)
   forfeit(0x40),
@@ -84,10 +109,39 @@ class BattleFrame {
 /// Broadcast stream so multiple callers can subscribe simultaneously —
 /// required for the bidirectional battle session (unlike MatchSession's
 /// strict request/response).
+///
+/// [framesOfType] is queue-backed (see [_pendingByType]/[_waitersByType]),
+/// not a bare `.where()` filter over the broadcast stream — a plain
+/// broadcast `StreamController` drops any event added while it has no
+/// listener, and every exchange method's `send(...); await
+/// framesOfType(type).first` pattern has a real window where the peer's
+/// reply can be decoded before our own `.first` call gets around to
+/// subscribing (found while building the LAN duel setup flow — see
+/// LAN_BATTLE_WIREUP_PLAN.md: two genuinely concurrent identities' differing
+/// FFI latency during `exchangeIdentityAuth` was enough to trigger it
+/// reliably, not just a rare fluke). This never drops a frame that arrives
+/// first, and never replays a frame already claimed by an earlier waiter —
+/// every call site's usage is "at most one active waiter per type," so a
+/// later call for the same type is always for that type's NEXT occurrence
+/// (e.g. next turn's `actionCommit`, not a replay of this turn's).
 class BattleFrameReader {
   final _buffer = BytesBuilder();
   final _controller = StreamController<BattleFrame>.broadcast();
 
+  /// Frames of a given type received but not yet claimed by any
+  /// [framesOfType] listener.
+  final Map<BattleMsgType, List<BattleFrame>> _pendingByType = {};
+
+  /// Callbacks registered by a [framesOfType] listener that arrived before
+  /// any frame of that type — delivered directly, bypassing [_pendingByType],
+  /// the moment a matching frame is decoded.
+  final Map<BattleMsgType, List<void Function(BattleFrame)>> _waitersByType = {};
+
+  /// Every frame, in arrival order, regardless of type. Used only by
+  /// [BattleSession.exchangeMatchConfig]'s ack/reject dual-type wait — a
+  /// single, tightly-sequenced (send-then-immediately-await) case that
+  /// doesn't go through [framesOfType], so it's unaffected by (and doesn't
+  /// need) the buffering above.
   Stream<BattleFrame> get frames => _controller.stream;
 
   void addChunk(List<int> chunk) {
@@ -104,11 +158,47 @@ class BattleFrameReader {
       if (bytes.length < frameLen) break;
       final type = BattleMsgType.fromByte(bytes[0]);
       final payload = Uint8List.sublistView(bytes, 5, frameLen);
-      _controller.add(BattleFrame(type, payload));
+      _dispatch(BattleFrame(type, payload));
       bytes = Uint8List.sublistView(bytes, frameLen);
     }
     _buffer.clear();
     _buffer.add(bytes);
+  }
+
+  void _dispatch(BattleFrame frame) {
+    final waiters = _waitersByType[frame.type];
+    if (waiters != null && waiters.isNotEmpty) {
+      waiters.removeAt(0)(frame);
+    } else {
+      (_pendingByType[frame.type] ??= []).add(frame);
+    }
+    _controller.add(frame);
+  }
+
+  /// A stream whose first (and only) element is the next frame of exactly
+  /// [type] — already-arrived-and-buffered if one is pending, otherwise the
+  /// next one decoded. See the class doc comment for why this exists rather
+  /// than a `.where()` filter over [frames].
+  Stream<BattleFrame> framesOfType(BattleMsgType type) {
+    return Stream<BattleFrame>.multi((emitter) {
+      final pending = _pendingByType[type];
+      if (pending != null && pending.isNotEmpty) {
+        emitter
+          ..add(pending.removeAt(0))
+          ..close();
+        return;
+      }
+      void deliver(BattleFrame frame) {
+        emitter
+          ..add(frame)
+          ..close();
+      }
+
+      (_waitersByType[type] ??= []).add(deliver);
+      emitter.onCancel = () {
+        _waitersByType[type]?.remove(deliver);
+      };
+    });
   }
 
   Future<void> close() => _controller.close();

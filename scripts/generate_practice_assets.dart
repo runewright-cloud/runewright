@@ -1,5 +1,5 @@
 // scripts/generate_practice_assets.dart — renders the five Sorcerer-mode
-// incantation words through Piper's Italian voice and writes:
+// incantation words through Piper's English voice and writes:
 //   assets/audio/practice/<word>.wav        — trainer playback clip
 //   assets/practice_templates/<word>.json   — MFCC reference frames for
 //                                              StreamingPhonemeScorer
@@ -9,19 +9,34 @@
 // kHz and run through MfccExtractor. There is no separate phoneme-driven
 // pass and no second render, so the trainer audio and the scoring target
 // cannot silently diverge (see lib/practice/latin_phonemes.dart's header for
-// why that guarantee matters — e.g. ignis's ɲː palatalization).
+// why that guarantee matters — e.g. finitus's intervocalic t-flap).
+//
+// Switched from Italian to English 2026-07-22 (see latin_phonemes.dart's
+// header and docs/M4_findings.md) — most players will map Latin spelling
+// onto English pronunciation habits regardless, so the trainer teaches the
+// sound they'll actually produce.
 //
 // Toolchain (not committed to the repo — see docs/M4_findings.md):
 //   Piper 2023.11.14-2 (piper_linux_x86_64.tar.gz), self-contained release
 //   with bundled espeak-ng + onnxruntime, installed to ~/.piper/piper-bin/.
-//   Voice: rhasspy/piper-voices it_IT-paola-medium (medium quality, the
-//   better of the two available Italian voices; riccardo is x_low only),
-//   installed to ~/.piper/voices/. sha256 of the .onnx is pinned below so a
-//   re-fetch can be verified byte-identical.
+//   Voice: rhasspy/piper-voices en_US-lessac-medium (medium quality, clear
+//   neutral American English), installed to ~/.piper/voices/. sha256 of the
+//   .onnx is pinned below so a re-fetch can be verified byte-identical.
 //
 // Run with: dart run scripts/generate_practice_assets.dart
-// Requires: ~/.piper/piper-bin/piper and ~/.piper/voices/it_IT-paola-medium.onnx
+// Requires: ~/.piper/piper-bin/piper and ~/.piper/voices/en_US-lessac-medium.onnx
 //   present (see docs/M4_findings.md for the exact install commands).
+//
+// NOTE (2026-07-21): Piper's render carries a tail of near-digital-silence
+// frames (confirmed on the old aer.json — ~16 of its 34 frames were at the
+// log-energy floor). A trailing-silence trim was prototyped here and
+// DEFERRED, not applied — trimming shortens every template by a different
+// amount, which reshuffles which word is shortest and moves
+// StreamingPhonemeScorer's "shortest template wins argmin rows it
+// shouldn't" bias onto a different word (terra, in the prototype) rather
+// than removing it. See docs/M4_findings.md 2026-07-21 for the measured
+// false-advance regression and the decision to pursue a length-normalized
+// contrastive comparison instead of a trim, next session.
 
 import 'dart:convert';
 import 'dart:io';
@@ -32,13 +47,34 @@ import 'package:rune_duel/sorcerer/mfcc.dart';
 import 'package:rune_duel/sorcerer/vocal_score.dart';
 
 const String kExpectedOnnxSha256 =
-    '6fc918b5a0ea6137382833dddfa567bffbe6a5060c02043c87192ee59c04210c';
+    '5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f';
+
+/// Per-word TTS INPUT spelling override — the string fed to Piper/espeak,
+/// distinct from [VocalWord.name] (what players see/say/cast). Use when the
+/// natural en-us letter-to-sound rules don't land where the design wants
+/// (as opposed to the accepted-as-is outcomes documented in
+/// latin_phonemes.dart's header, which are natural rule output Soren chose
+/// to keep).
+///
+/// ignis (2026-07-22, Soren's direction, iterated twice):
+///   1. Plain "ignis" phonemizes to /ɪɡnˈiz/ ("ig-NEEZ") — reads as
+///      "digging knees." First target: sound like "ignite" (/ɪɡnˈaɪt/) but
+///      ending in /s/ not /t/. "ignyce" -> /ˈɪɡnaɪs/ ("IG-nyce") hit the
+///      vowel+consonant, but espeak's stress rule wouldn't shift onto the
+///      second syllable through spelling alone (several respellings tried).
+///   2. Revised target: last syllable rhymes with "kiss" (/kˈɪs/) instead —
+///      i.e. /ɪs/, not /aɪs/. "ignisse" -> /ɪɡnˈɪs/ ("ig-NISS") hits the
+///      rhyme exactly AND happens to land stress on the second syllable
+///      (unlike every "ignyce"-family attempt) — supersedes "ignyce".
+const Map<VocalWord, String> kTtsTextOverride = {
+  VocalWord.ignis: 'ignisse',
+};
 
 Future<void> main() async {
   final home = Platform.environment['HOME']!;
   final piperBin = '$home/.piper/piper-bin/piper';
   final piperLibDir = '$home/.piper/piper-bin';
-  final voiceModel = '$home/.piper/voices/it_IT-paola-medium.onnx';
+  final voiceModel = '$home/.piper/voices/en_US-lessac-medium.onnx';
 
   if (!File(piperBin).existsSync() || !File(voiceModel).existsSync()) {
     stderr.writeln('Piper binary or voice model not found. See '
@@ -63,7 +99,7 @@ Future<void> main() async {
       piperBin: piperBin,
       piperLibDir: piperLibDir,
       voiceModel: voiceModel,
-      text: word.name,
+      text: kTtsTextOverride[word] ?? word.name,
     );
 
     final wavFile = File('${audioDir.path}/${word.name}.wav');
@@ -105,7 +141,17 @@ Future<Uint8List> _renderWithPiper({
   try {
     final process = await Process.start(
       piperBin,
-      ['--model', voiceModel, '--output_file', tmp.path],
+      // --sentence_silence 0: Piper's default (0.2s) is a FIXED post-
+      // utterance pad, not synthesis noise — re-rendering doesn't remove it.
+      // Confirmed 2026-07-22 as the root cause of a real-word calibration
+      // fixture's attempt-gap misfire (docs/M4_findings.md) and almost
+      // certainly the same mechanism behind the 2026-07-21 "aer is half
+      // silence" finding: a FIXED pad biases short words proportionally
+      // more than long ones. Suppressing at the source is cleaner than
+      // trimming after the fact (the trim approach considered and reverted
+      // 2026-07-21 reshuffled relative word lengths; this doesn't, because
+      // it removes only the artificial pad, not any real trailing decay).
+      ['--model', voiceModel, '--output_file', tmp.path, '--sentence_silence', '0'],
       environment: {'LD_LIBRARY_PATH': piperLibDir},
     );
     process.stdin.writeln(text);

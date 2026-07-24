@@ -17,6 +17,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:nsd/nsd.dart' as nsd;
 
 import '../../protocol/lan_discovery.dart';
@@ -25,21 +26,38 @@ import '../../protocol/transport.dart';
 
 // ── Capability advertisement ──────────────────────────────────────────────────
 
+/// LAN battle wire-protocol version (LAN_BATTLE_WIREUP_PLAN.md §8 / §2
+/// DECISION 4 — protocol versioning, same discipline as `RULESET_VERSION`
+/// bumps). Exchanged in [exchangeCapabilities]; the setup flow aborts on
+/// mismatch rather than risk two builds silently disagreeing about wire
+/// framing. Bump whenever a `BattleMsgType`/payload shape changes in a way
+/// that breaks an older client.
+const kBattleProtocolVersion = 1;
+
 /// The max circuit tier (12 / 24 / 48) this device can reliably prove.
 ///
 /// Tier-48 requires ≥6 GB RAM (CIRCUIT_IO.md §7); detection is stubbed —
 /// [detect] returns 24 as a safe default until real RAM probing lands.
 class DeviceCapabilities {
-  const DeviceCapabilities({required this.ramTierCap});
+  const DeviceCapabilities({
+    required this.ramTierCap,
+    this.battleProtocolVersion = kBattleProtocolVersion,
+  });
 
   final int ramTierCap; // 12 | 24 | 48
+
+  /// See [kBattleProtocolVersion].
+  final int battleProtocolVersion;
 
   // TODO(battle): probe actual device RAM; return 48 only on ≥6 GB devices.
   static DeviceCapabilities detect() => const DeviceCapabilities(ramTierCap: 24);
 
-  Map<String, dynamic> toJson() => {'ramTierCap': ramTierCap};
-  static DeviceCapabilities fromJson(Map<String, dynamic> j) =>
-      DeviceCapabilities(ramTierCap: j['ramTierCap'] as int? ?? 24);
+  Map<String, dynamic> toJson() =>
+      {'ramTierCap': ramTierCap, 'battleProtocolVersion': battleProtocolVersion};
+  static DeviceCapabilities fromJson(Map<String, dynamic> j) => DeviceCapabilities(
+        ramTierCap: j['ramTierCap'] as int? ?? 24,
+        battleProtocolVersion: j['battleProtocolVersion'] as int? ?? 1,
+      );
 }
 
 // ── Discovered peer ───────────────────────────────────────────────────────────
@@ -107,10 +125,23 @@ class LanMatchDiscovery implements MatchDiscovery {
     String displayName = 'Runewright Duel',
   }) async {
     _listener = await LanSocketTransport.bind();
-    _registration = await advertiseDuelHost(
-      port: _listener!.port,
-      displayName: displayName,
-    );
+    try {
+      _registration = await advertiseDuelHost(
+        port: _listener!.port,
+        displayName: displayName,
+      );
+    } catch (e) {
+      // Soft failure by design (mirrors gate_screen.dart's connect-path
+      // note): `nsd` has no Linux desktop backend at all
+      // (lan_discovery.dart's header comment) and mDNS can fail for other
+      // reasons on real networks (AP isolation, multicast deprioritized).
+      // The listening socket above doesn't depend on it — a peer can still
+      // reach this host via manual IP entry (battle_lobby_screen.dart),
+      // which dials the same socket directly. Advertise failing must never
+      // block hosting.
+      debugPrint('mDNS advertise failed (manual IP entry still works): $e');
+      _registration = null;
+    }
     // TODO(battle): encode caps into mDNS TXT records so discovering peers
     //   can read ramTierCap without connecting; depends on nsd TXT record API.
   }
@@ -123,6 +154,23 @@ class LanMatchDiscovery implements MatchDiscovery {
     }
     await _listener?.close();
     _listener = null;
+  }
+
+  /// This device's listening port once [startAdvertising] has bound it, for
+  /// display alongside [localAddressHint] so a peer can connect via manual
+  /// IP entry when mDNS discovery isn't available on their platform/network.
+  int? get listeningPort => _listener?.port;
+
+  /// Best-effort local IPv4 address hint for manual-IP display — see
+  /// [preferredLocalAddress]. Null if undeterminable; display-only, never
+  /// blocks anything.
+  Future<String?> localAddressHint() async {
+    try {
+      final addr = await preferredLocalAddress();
+      return addr?.address;
+    } catch (_) {
+      return null;
+    }
   }
 
   @override

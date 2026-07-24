@@ -10,9 +10,9 @@
 //
 // What is asserted, per Soren's strict-tuning decision (never
 // false-advance):
-//   - same-voice (paola2, the enrolled-player proxy): the CORRECT word
+//   - same-voice (lessac2, the enrolled-player proxy): the CORRECT word
 //     completes, every WRONG word stalls;
-//   - cross-voice (riccardo, the unenrolled-fallback proxy): every WRONG
+//   - cross-voice (amy, the unenrolled-fallback proxy): every WRONG
 //     word stalls. Correct-word completion is NOT asserted cross-voice —
 //     measured discrimination is genuinely weak there (that's why
 //     enrollment exists), and a correct-but-stalled fallback attempt is
@@ -51,6 +51,10 @@ class _DiskTemplateSource implements VocalTemplateSource {
       checkpointLabels: [word.name],
     );
   }
+
+  @override
+  Future<List<VocalTemplate>> templatesFor(VocalWord word) async =>
+      [await templateFor(word)];
 }
 
 /// Reads a PCM-16 mono WAV and resamples to 16 kHz if needed (linear
@@ -89,7 +93,7 @@ Uint8List _pcmFromWav(String path) {
 void main() {
   const words = VocalWord.values;
   final fixtures = <String, Map<VocalWord, Uint8List>>{
-    for (final voice in ['paola2', 'riccardo'])
+    for (final voice in ['lessac2', 'amy'])
       voice: {
         for (final w in words)
           w: _pcmFromWav('test/practice/fixtures/voices/${voice}_${w.name}.wav'),
@@ -127,7 +131,7 @@ void main() {
   test('same voice (enrolled proxy): correct word completes', () async {
     final failures = <String>[];
     for (final w in words) {
-      if (!await run(w, fixtures['paola2']![w]!)) failures.add(w.name);
+      if (!await run(w, fixtures['lessac2']![w]!)) failures.add(w.name);
     }
     expect(failures, isEmpty,
         reason: 'correct same-voice words that stalled: $failures');
@@ -138,7 +142,7 @@ void main() {
     for (final target in words) {
       for (final spoken in words) {
         if (spoken == target) continue;
-        if (await run(target, fixtures['paola2']![spoken]!)) {
+        if (await run(target, fixtures['lessac2']![spoken]!)) {
           falseAdvances.add('${spoken.name} accepted as ${target.name}');
         }
       }
@@ -152,7 +156,7 @@ void main() {
     for (final target in words) {
       for (final spoken in words) {
         if (spoken == target) continue;
-        if (await run(target, fixtures['riccardo']![spoken]!)) {
+        if (await run(target, fixtures['amy']![spoken]!)) {
           falseAdvances.add('${spoken.name} accepted as ${target.name}');
         }
       }

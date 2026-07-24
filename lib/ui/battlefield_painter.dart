@@ -1190,7 +1190,7 @@ class BattlefieldPainter extends CustomPainter {
       old.barrierRings.length != barrierRings.length ||
       old.castAnimations.length != castAnimations.length ||
       old.tileEffects.length != tileEffects.length ||
-      old.clouds.length != clouds.length ||
+      !_cloudsMatch(old.clouds, clouds) ||
       old.directionPickHexes.length != directionPickHexes.length ||
       old.meleePickHexes.length != meleePickHexes.length ||
       old.conveyorChainAnimations.length != conveyorChainAnimations.length ||
@@ -1198,4 +1198,15 @@ class BattlefieldPainter extends CustomPainter {
       old.hiddenTileHexes.length != hiddenTileHexes.length ||
       old.hiddenMinionIds.length != hiddenMinionIds.length ||
       !identical(old.effectBloom, effectBloom);
+
+  /// Length-only comparison misses [CloudObject.position] mutating in place
+  /// (e.g. MobileCloud drifting toward its target) — same id/count, new tile.
+  /// Compare id+position pairwise so a moved cloud actually triggers a repaint.
+  static bool _cloudsMatch(List<CloudObject> a, List<CloudObject> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].id != b[i].id || a[i].position != b[i].position) return false;
+    }
+    return true;
+  }
 }

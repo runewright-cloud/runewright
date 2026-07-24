@@ -84,7 +84,7 @@ enum SummonAbility {
   moltenCarapace, // EFEF
 }
 
-const Map<SummonAbility, String> _kAbilityPattern = {
+const Map<SummonAbility, String> kSummonAbilityPattern = {
   SummonAbility.flying: 'AAAA',
   SummonAbility.cleave: 'FFFF',
   SummonAbility.big: 'EEEE',
@@ -171,7 +171,7 @@ class CreatureSpec {
   static Set<SummonAbility> _abilitiesOf(List<BorderZone> sequence) {
     final initials = sequence.map(_initial).join();
     final found = <SummonAbility>{};
-    for (final entry in _kAbilityPattern.entries) {
+    for (final entry in kSummonAbilityPattern.entries) {
       if (initials.contains(entry.value)) found.add(entry.key);
     }
     return found;
@@ -201,20 +201,50 @@ class CreatureSpec {
 /// preserving their relative order so affinity-tiebreak and ability-pattern
 /// matching on the reduced sequence stay meaningful. Returns null if the
 /// halved count is 0 (nothing coalesces; the creature just dies).
+///
+/// One slot is always reserved for an Earth activation when [original]
+/// contains at least one (chosen at random among them, same as everything
+/// else) — a reform can otherwise draw zero Earth and spawn at 0 maxHp,
+/// dying the instant it's created with no combat, no counterplay, and no
+/// visible cause (design decision 2026-07-18: a pure-random half-draw could
+/// silently kill the whole reform chain on an unlucky roll; guaranteeing one
+/// Earth slot keeps the "half the elements, at random" flavor while removing
+/// that feel-bad outcome). The other half-1 slots remain fully random. If
+/// [original] has zero Earth to begin with, this can't help — same as an
+/// original summon cast with zero Earth, which already spawns at 0 maxHp by
+/// design (see [CreatureSpec] "No minimum floor" above).
 List<BorderZone>? morphicReducedSequence(
     List<BorderZone> original, int Function(int max) nextInt) {
   final half = original.length ~/ 2;
   if (half == 0) return null;
-  final indices = List<int>.generate(original.length, (i) => i);
+
+  final earthIndices = [
+    for (var i = 0; i < original.length; i++)
+      if (original[i] == BorderZone.earth) i,
+  ];
+  int? reservedIndex;
+  var remaining = half;
+  if (earthIndices.isNotEmpty) {
+    reservedIndex = earthIndices[nextInt(earthIndices.length)];
+    remaining = half - 1;
+  }
+
+  final pool = [
+    for (var i = 0; i < original.length; i++)
+      if (i != reservedIndex) i,
+  ];
   // Fisher-Yates partial shuffle using the injected RNG (HashRng-compatible;
   // avoids a hard dependency on dart:math's Random type here).
-  for (var i = indices.length - 1; i > 0; i--) {
+  for (var i = pool.length - 1; i > 0; i--) {
     final j = nextInt(i + 1);
-    final tmp = indices[i];
-    indices[i] = indices[j];
-    indices[j] = tmp;
+    final tmp = pool[i];
+    pool[i] = pool[j];
+    pool[j] = tmp;
   }
-  final chosen = indices.take(half).toList()..sort();
+  final chosen = [
+    if (reservedIndex != null) reservedIndex,
+    ...pool.take(remaining),
+  ]..sort();
   return [for (final i in chosen) original[i]];
 }
 

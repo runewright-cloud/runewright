@@ -17,7 +17,7 @@ import 'dart:typed_data';
 /// The five incantation words recognised in Sorcerer mode.
 enum VocalWord {
   ignis,  // fire
-  aer,    // air
+  ventus, // air (wind)
   aqua,   // water
   terra,  // earth
   finitus;  // terminator (dismissal / chain break)
@@ -28,7 +28,7 @@ enum VocalWord {
   /// or empty zone name.
   static VocalWord? fromAffinityZone(String zone) => switch (zone.toLowerCase()) {
         'fire' => VocalWord.ignis,
-        'air' => VocalWord.aer,
+        'air' => VocalWord.ventus,
         'water' => VocalWord.aqua,
         'earth' => VocalWord.terra,
         _ => null,

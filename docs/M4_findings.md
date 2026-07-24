@@ -1,5 +1,638 @@
 # M4 — Findings Log (live, updated per milestone)
 
+## Practice Mode — multi-exemplar scoring, playtest strictness dial, English trainer voice (2026-07-22)
+
+Follow-up to 2026-07-21's `ventus` swap. On-device testing surfaced a new
+symptom: heavy stalling with the stall-hint pointing at `ventus` even with
+all five words freshly enrolled — ruling out both the cross-voice and
+short-template explanations already investigated. Root-caused and fixed
+across several linked changes; recorded together since each shaped the next.
+
+### Root cause #1: enrollment and casting were captured at wildly different paces
+
+Pulled the real enrollment off-device (`adb shell run-as` into
+`app_flutter/practice_enrollment/`) and compared frame counts against
+Soren's own hold-to-record attempt clips: `ventus` enrolled at 189 frames
+(1.9s) but cast in ~0.7s; `aqua` enrolled at 35 frames but cast in ~0.4s — up
+to a 5x spread. The min-audio guard
+(`kMinSegmentAudioFraction` x the *enrolled template's* length) makes a
+brisk cast of a slowly-enrolled word structurally unable to cross,
+regardless of threshold — the enrollment capture UI (tap → play sample →
+fixed 2.5s window) doesn't teach or enforce a consistent pace.
+
+A leave-one-out offline test (new `test/practice/vocal_calibration.dart`
+harness, run against Soren's own hold-to-record clips) confirmed the fix
+once pace was controlled: templates built from one brisk clip, scored
+against the other same-pace clips, hit 3/5 words at 4/4 with margins
++1.7-+3.8 (`terra`/`finitus`/`ventus`) — but `aqua` and `ignis` stayed at
+0-1/4 correct with near-zero or negative margins. Confirmed a SEPARATE,
+genuine acoustic confusion (`aqua`/`terra`, the same pairing flagged back in
+2026-07-16's Piper-voice measurement), not a pace artifact.
+
+### Root cause #2 explored and ruled out: delta (Δ) MFCC features
+
+Added `MfccExtractor.deltas()` (standard N=2 regression-window delta
+coefficients) and A/B'd static-only vs static+delta at weights 1x-8x against
+the same real clips (offline, via the calibration harness's `USE_DELTAS`/
+`DELTA_WEIGHT` flags — never wired into the shipped scorer). Result: a wash
+at every weight tested. `aqua` stayed stuck at 0-1/4 correct with negative
+margins across the ENTIRE weight range; margins scaled linearly with weight
+but never flipped sign. Conclusion: `aqua`/`terra` are closer in this
+speaker's voice than static-or-delta MFCC can separate — not a feature-
+engineering problem. Deltas are implemented and available but NOT wired into
+`StreamingPhonemeScorer`; keep in reserve, don't retry without new evidence.
+
+### Fix: multi-exemplar scoring (recommendation #1, tried before deltas and it won)
+
+Same leave-one-out data, scored against a SET of the OTHER clips (min
+distance over the set) instead of one held-out template: **25/25 correct,
+every margin positive** (`aqua` +0.47 to +2.81, `ignis` +0.05 to +1.80 — one
+`ignis` fold's margin is thin, worth firming up with more real reps before
+fully trusting it). Beat delta features outright with zero new signal —
+just don't collapse a word down to one brittle exemplar.
+
+Shipped end to end:
+- `VocalEnrollment` (lib/practice/vocal_enrollment.dart): storage moved from
+  one `{"frames": [...]}` file per word to `{"takes": [[...], ...]}`, up to
+  `maxTakes` (5, FIFO past the cap). Legacy single-take files still load
+  (migrated as a one-element set). Added `maxVoicedFrames` (200 frames,
+  ~2s) — a hard ceiling on one take, so a held-too-long button press (the
+  230-frame `finitus` that started this investigation) is rejected with an
+  actionable message instead of silently poisoning the template.
+- `VocalTemplateSource.templatesFor(word)` — new method returning the full
+  exemplar set; defaults to wrapping `templateFor` as a one-element list, so
+  `SingleVoiceTemplateSource` needed no change. `PerUserEnrolledTemplateSource`
+  returns the real set (or the Piper fallback's one-element set per-word).
+- `StreamingPhonemeScorer`: `_Segment.referenceSets` +
+  `_minQualityOverSet()` replace the old single-reference `_windowQuality`.
+  Both the target-quality check (condition 3) and every competitor's
+  contrastive quality (condition 4) are now min-over-set. Written as a
+  standalone helper depending only on the query buffer (no streaming
+  state), specifically so it's **lift-and-reuse for the battle-mode port**
+  per Soren's "only pursue battle-portable solutions" direction — battle's
+  whole-utterance `endCapture()` can call the same method.
+- `test/practice/multi_exemplar_e2e_test.dart` (new): the golden corpus only
+  ever exercised 1-element sets. Added a 2-element-set variant (bundled
+  template + `lessac2`, both already-committed fixtures, no new assets)
+  proving the SAFETY-relevant direction — a larger set introduces zero new
+  false advances. (The completion-improves direction is what the real-voice
+  leave-one-out already proved; a synthetic-voice-only corpus can't
+  reproduce genuine cross-take speaker variation, so it isn't asserted here.)
+
+### Playtest tool: strictness dial (Settings + Practice tab)
+
+Soren's explicit design constraint: careful enunciation must stay part of
+the challenge, and the right bar depends on the play environment (quiet
+solo practice vs a noisy multi-caster battle) — so rather than hand-pick one
+"medium" operating point, built a single 0.0 (easy) - 1.0 (strict) dial
+(`lib/practice/vocal_tuning.dart`) mapping to the three raw constants:
+
+- 1.0 reproduces the shipped constants EXACTLY (floor 6.25 / margin 0.9 /
+  debounce 8) — an untouched dial changes nothing.
+- 0.0 is deliberately forgiving (floor 9.5 / margin 0.3 / debounce 4) per
+  Soren's "err on the too easy side, battles may be noisy" direction —
+  margin 0.3 rather than lower because measured correct multi-exemplar
+  attempts still need real separation, just less of it than 0.9.
+- Default 0.45 (floor 8.04 / margin 0.57 / debounce 6) — a starting point
+  for playtesting, not a conclusion.
+
+Persisted to `vocal_tuning.json`; the identical slider widget
+(`VocalStrictnessSlider`) appears in both the new `SettingsScreen` (menu's
+"Settings" button was a dead `onTap: null` stub before this) and Practice's
+Vocal tab, reading/writing the same file so either surface reflects the
+other. Verified on-device via adb screenshots: math matches the formula
+exactly at three tested points, and both directions of cross-screen sync
+confirmed.
+
+### Enrollment UI rebuilt: hold-to-record, multi-take, per-word clear
+
+The old enrollment flow (tap → play sample → fixed 2.5s window) is exactly
+what caused root cause #1's pace mismatch, and only ever stored one take.
+Replaced with the same hold-to-record mechanism already built for
+calibration-capture attempts (unified into one shared `_onHoldStart`/
+`_finishHold` pair, parameterized by `_HoldTarget.{enrollment,calibration}`,
+rather than duplicating the mic-handling code a third time). Each word row:
+play-model icon, hold-to-record button, live `n/5` take count, per-word
+clear. Verified on-device: mic engagement, the `EnrollmentException`
+too-quiet/short error path, take counting, and per-word clearing all
+confirmed against the real running app (see the on-device screenshot pass —
+also cleared Soren's real `ignis` enrollment as a side effect of testing the
+clear button; flagged for re-recording).
+
+### English trainer voice (Soren's direction, separate from the bug hunt)
+
+Most players will map Latin spelling onto English pronunciation habits
+regardless of what the trainer teaches — switched the trainer/bundled-
+template voice from Italian (`it_IT-paola-medium`/`it_IT-riccardo-x_low`) to
+English (`en_US-lessac-medium`/`en_US-amy-medium`, fetched from
+`rhasspy/piper-voices`). IPA re-derived from the actual bundled espeak-ng
+(not guessed) — notable non-classical outcomes accepted the same way the
+Italian entry's were: `ignis` word-final "s" voices to /z/ ("IG-neez"),
+unstressed "-us"/"-a" endings reduce to schwa across four of the five
+words, and `finitus`'s medial "t" flaps to /ɾ/ (American "water"-style) —
+all genuine `espeak-ng -v en-us` output, all documented in
+`latin_phonemes.dart`'s header. `test/practice/latin_phonemes_test.dart`'s
+Italian-specific palatalized-geminate assertion replaced with checks for
+the s-voicing and t-flap instead.
+
+### A second, unrelated bug found while regenerating fixtures: Piper's default trailing silence
+
+Regenerating the English e2e fixtures, `same voice: correct word completes`
+failed for `finitus` — full-utterance DTW quality was excellent (2.71,
+nowhere near the 6.25 floor) but the live per-frame trace showed the
+attempt-gap reset (`kAttemptGapFrames`, 30 consecutive unvoiced frames)
+firing before 8 consecutive passing frames could accumulate. Measured: the
+fixture carried ~380-430ms of trailing silence, comfortably past the 300ms
+reset threshold. Re-rendering (to exploit Piper's known synthesis
+nondeterminism, per 2026-07-21's finding) did NOT fix it — the padding
+turned out to be **deterministic**, not stochastic: `piper --help` shows
+`--sentence_silence` defaults to a fixed 0.2s post-utterance pad. This is
+almost certainly the same mechanism behind 2026-07-21's "`aer` is half
+silence" finding — a FIXED pad biases short words proportionally more than
+long ones, which is exactly the shape of that bug.
+
+**Fix: `--sentence_silence 0`** added to `generate_practice_assets.dart`'s
+Piper invocation and to every fixture-rendering command. This is a cleaner
+fix than the trim-after-the-fact approach prototyped and reverted
+2026-07-21 (that trim reshuffled every word's relative length and moved the
+"shortest template" bias onto `terra`) — suppressing the pad at the source
+removes only the artificial addition, leaving real per-word trailing-decay
+differences alone, so it can't reshuffle relative lengths the same way.
+Regenerated all bundled templates + trainer clips + e2e fixtures with the
+flag; full corpus (44 tests across `real_template_e2e_test.dart`,
+`multi_exemplar_e2e_test.dart`, and the rest of `test/practice/`) passes
+clean. Worth remembering for any future Piper-based asset work in this repo.
+
+### ignis pronunciation override: "ignisse" TTS input, not plain "ignis" (iterated twice)
+
+Soren's ear on hearing the English trainer clip: plain "ignis" (espeak's
+natural /ɪɡnˈiz/, "IG-neez") read as "digging knees." Two rounds of target,
+swept via `espeak-ng --ipa -v en-us` against candidate respellings:
+
+1. **"Sound like ignite, ending in /s/ not /t/"** — `ignyce` -> `/ˈɪɡnaɪs/`
+   hit the vowel+consonant, but no respelling tried (ignyce, ignisse,
+   ignyse, ig'nyce, igNYCE, ...) shifted espeak's stress rule onto the
+   second syllable the way "ignite" itself stresses it — rule-based stress
+   assignment isn't controllable through spelling alone here.
+2. **Revised: "last syllable rhymes with kiss"** (`/kˈɪs/`) — `ignisse` ->
+   `/ɪɡnˈɪs/` ("ig-NISS") hits that exactly, and as a bonus lands stress on
+   the second syllable that round 1 couldn't get — supersedes `ignyce`
+   entirely, both the sound and (incidentally) the stress goal.
+
+Added `kTtsTextOverride` (scripts/generate_practice_assets.dart) — a
+per-word map from `VocalWord` to the string actually fed to Piper/espeak,
+separate from `VocalWord.name` (what players see, say, and cast). Only
+`ignis` uses it so far. `latin_phonemes.dart`'s ignis entry: `ɪ-ɡ-n-ɪ-s`;
+the espeak-derivation comment shows the override input, not the literal
+word, so a future reader isn't confused about why "ignis" phonemizes
+differently than a direct `espeak-ng ... ignis` run would show.
+
+Regenerated ignis's bundled template, trainer clip, and both e2e fixture
+voices (twice, once per iteration); backed up and restored the other four
+words' assets around each regen since the generator has no per-word
+selection flag and Piper's synthesis is non-deterministic (2026-07-21
+finding) — don't let one word's change perturb four that don't need it.
+Full corpus (44 tests) green after both iterations.
+
+### Deferred / open
+
+- The thin `ignis` margin (+0.05 in one leave-one-out fold) — trust it for
+  now per Soren's call (mid-playtest-session, couldn't re-record), but
+  firm it up with more real reps before treating multi-exemplar as fully
+  proven on `ignis` specifically.
+- Delta features (built, validated as NOT helpful, not wired in) and
+  length-normalized contrastive comparison (never built) both remain
+  in reserve if multi-exemplar alone proves insufficient during playtesting.
+- Battle-mode port: `_minQualityOverSet` is deliberately written to be
+  reusable from `ReferenceMatchVocalScorer.endCapture()`. Not done this
+  session (explicitly deferred) — wire enrolled multi-take templates in
+  there once Practice Mode's discrimination is trusted through playtesting.
+- The strictness dial's medium/default numbers are a starting point, not a
+  conclusion — the whole point of building it was to let Soren find the
+  real number empirically rather than have it re-guessed offline again.
+
+## Practice Mode — aer replaced with ventus; silence-trim prototyped and reverted (2026-07-21)
+
+Soren's on-device report: heavy stalling, and when it wasn't stalling the
+stall-hint disproportionately named `aer` as "what it sounds like you
+said" — even with all five words enrolled (ruling out the mixed-voice
+cross-template ranking failure mode from the 2026-07-16 entry). Matches
+that entry's own prediction: `aer` is the shortest bundled template (34
+frames) and has the vocabulary's lowest spectral norm (3.43), so it
+structurally steals argmin rows in the contrastive comparison (condition 4
+in streaming_phoneme_scorer.dart) regardless of who's speaking.
+
+**Fix: retired `aer` (air) in favor of `ventus` (wind), everywhere** —
+`VocalWord` enum, `fromAffinityZone`'s `'air'` mapping, `latin_phonemes.dart`,
+`formula_generator.dart`, bundled asset + trainer clip, both e2e voice
+fixtures. This is a real casting-word change, not practice-only (Soren
+confirmed): Air spells are now cast by speaking "ventus." IPA verified via
+the same bundled espeak-ng Piper uses (not guessed): `ventus -> vˈɛntʊs`
+(the "-us" ending gets Italian /ʊ/, same pattern as `finitus`). Re-ran
+`real_template_e2e_test.dart` after the swap alone: **passed clean**,
+`ventus` never appears in any false-advance pair.
+
+### Side-quest: bundled templates are silence-padded, not just `aer`'s
+
+While investigating, found the shipped `aer.json`'s tail was ~16 of 34
+frames at the log-energy floor (`c0 ≈ -93.9`, every other coefficient
+`~1e-15`) — pure digital silence appended by Piper's render, not word
+content. Since silence is the scorer's documented best imposter (2026-07-16
+entry), a half-silence reference is pure downside. Prototyped a trim in
+`generate_practice_assets.dart` (same voiced-span algorithm as
+`VocalEnrollment.trimSilence`) and regenerated all five templates: **every
+one of them shrank substantially** (`aqua.json` 18KB -> 7.6KB), confirming
+the padding was universal, not an `aer`-specific defect.
+
+**Reverted anyway.** Trimming shortens each template by a different
+amount, which reshuffles the vocabulary's relative lengths — after
+trimming, `terra` became the new shortest template (24 frames) and
+**inherited `aer`'s exact failure mode**: re-running the e2e harness
+produced 4 new false advances, all `X accepted as terra` or `aqua`/`terra`
+cross-contamination (the two post-trim shortest words), zero involving
+`ventus`. Removing the weakest word didn't remove the bias, it relocated
+it — confirming (via Soren's question about whether this trades off
+against fast-but-clear casting) that the real fix has to be a
+length-normalized contrastive comparison, not vocabulary curation or a
+floor/margin/debounce re-tune (re-tuning was considered and rejected too:
+tightening margin/debounce to compensate would add latency and stalls,
+directly opposed to Soren's fast-casting goal — see below).
+
+**Piper's synthesis is NOT deterministic run-to-run** — a real trap for
+whoever touches this generator next. Re-rendering `ignis` alone produced
+33, then 57, then 62 MFCC frames across three separate runs with identical
+input/model/args (the VITS stochastic duration predictor isn't seeded
+deterministically in this Piper build). Practical consequence: **never
+"regenerate to be safe" on words you didn't mean to change** —
+`git checkout` the untouched assets back to their committed bytes instead
+of re-running the generator, or you'll silently perturb every template's
+length and invalidate the whole calibration. This cost real time in this
+session (the trim revert required two rounds of `git checkout` because the
+first regen pass touched all five words, not just the new one).
+
+### Confirmed while here: real-time casting doesn't use any of this yet
+
+`BattleScreen._initSorcererMode()` calls `VocalScorerFactory.create()` with
+**no templates**, so live casting runs `ReferenceMatchVocalScorer`'s energy
+fallback (`pronunciation = volume`) — word identity is not checked in
+battle today, only loudness, inside a fixed capture window
+(`_voiceCaptureWindow`, no endpointing). Two separate future items, per
+discussion with Soren:
+1. Once Practice Mode's contrastive discrimination is trustworthy (the
+   length-normalization fix above), port it into
+   `ReferenceMatchVocalScorer.endCapture()` reading the same
+   `PerUserEnrolledTemplateSource` templates — battle's version is actually
+   *simpler* (known target, bracketed window, no streaming/debounce
+   machinery needed). This makes real pronunciation scoring self-reported
+   by the caster's device (same trust model as today's volume score — the
+   peer can't recompute it from audio it never received).
+2. Soren's "enunciate clearly but cast fast" goal is a separate lever:
+   endpointing/VAD on `_voiceCaptureWindow` so the window closes when
+   speech stops, instead of always waiting out the fixed delay. Independent
+   of pronunciation scoring; don't conflate the two when picking this back
+   up.
+
+## LAN duel setup Stage 2 implemented (docs/LAN_BATTLE_WIREUP_PLAN.md §4) (2026-07-20)
+
+Turns on the full "sound duel" trust chain on top of Stage 1's playable-but-
+trust-incomplete duel: proof verification, cast authorization (both
+directions — outgoing grants were a TODO left in Stage 1, now wired), and
+Phase D's signed per-turn state hash (built, not left optional).
+
+**`BattleScreen`'s `TurnLoop` construction is now asynchronous** for a real
+duel — loading the tier's bundled VK asset + circuit bytecode and calling
+`initSrsCached` (CLAUDE.md Bug-Avoidance #4: a pure verifier that never
+proves in a session still needs the CRS initialized) all happen before
+`_loop` exists. New `_loopReady` gate in `build()`: a loading spinner until
+ready, and a **blocking, fail-closed error screen** if any of that setup
+throws — deliberately does NOT fall back to trusting peer casts unverified.
+Solo/test play is unaffected (same synchronous-feeling path, `verifyProof`/
+`vkBytes`/`signMessage` all stay null).
+
+**Phase D closes a doc-comment-only gap**: `battle_session.dart` referenced
+a `kStateHashSignatureTag` in a comment, but it was never actually defined
+anywhere in the codebase. Now defined in `turn_loop.dart`, used to sign/
+verify `TAG ‖ matchId ‖ turnNumber ‖ hash` — distinct from the auth-handshake
+tag so a signature can't be replayed across the two purposes.
+
+**Real bug found while writing tests, not scoped to product code:** two of
+three new cast-authorization tests initially passed for the wrong reason.
+`throwsA(isA<StateError>())` is satisfied by any `StateError`, and the test
+fixture never set `localChapterCommitments` on the caster's `TurnLoop`, so
+no proof bytes were attached to the wire — the verifier was forfeiting on
+`missing_spell_proof`, not the authorization check the test claimed to
+cover. Caught because the *third* (success-path) test hung: when one side's
+`runTurn()` forfeits and throws mid-turn, the other side hangs forever
+waiting for exchanges (melee/free-move/state-hash) that will never come —
+`Future.wait([both sides])` is only safe when neither side is expected to
+throw. Fixed the fixture and tightened every rejection assertion to check
+the actual forfeit-reason substring. Worth remembering for any future test
+in this area.
+
+**Verification:** four new test files, all exercising real mechanisms (no
+mocked crypto) — `turn_loop_proof_verification_test.dart` (a genuine
+FFI-proven spell, via `inscribeSpell`, verified end-to-end through two real
+`TurnLoop`s over paired `BattleSession`s — the actual "real-device proof
+round trip" the plan asked for), `turn_loop_cast_authorization_test.dart`
+(forged-owner rejected / valid-loan authorized / expired-loan rejected),
+`turn_loop_phase_d_test.dart` (valid signature round-trips / tampered
+signature forfeits), and the manual-IP-fallback test from the entry below.
+Full suite green except the same two pre-existing, unrelated issues already
+on record (SRS-download network flakiness under heavy concurrent load;
+the `spell_authorization_test.dart` date-rollover fixture) — neither is
+new, neither is this work's doing.
+
+**Not yet done:** a real two-device LAN run that reaches proof verification
+(the Stage 1 two-device pass only exercised the trust-incomplete path). No
+second physical device in this environment — same gate as Stage 1.
+
+---
+
+## Real bug report: hosting from Pixel 6 worked, joining from Linux desktop crashed back to the lobby (2026-07-20)
+
+**Root cause confirmed live, not guessed:** `nsd` (the mDNS package
+`match_discovery.dart`/`lan_discovery.dart` use) has **no Linux desktop
+backend at all** — `lan_discovery.dart`'s own header comment already said
+this, but nothing had exercised the path end-to-end until Stage 1 made
+`battle_lobby_screen.dart` actually try. Confirmed by running the real app
+on `-d linux` and calling `discoverDuelHosts()`/`advertiseDuelHost()`
+directly: both threw `NsdError(MissingPluginException(No implementation
+found for method startDiscovery/register on channel com.haberey/nsd))` — a
+clean, catchable Future rejection, not a native crash.
+
+`_startJoining`'s existing try/catch DID catch this cleanly and reset to
+`_LobbyMode.idle` — from the user's perspective indistinguishable from "the
+app crashed back to the battle menu," even though it was working exactly as
+coded. The real bug: `_startHosting` treated *any* `startAdvertising`
+failure as fatal to hosting, even though the mDNS-advertise half is purely
+cosmetic — the underlying `LanSocketTransport` listening socket has no `nsd`
+dependency and peers can reach it directly if they know the address.
+
+**Fix — manual IP fallback restored to the real duel flow**, reusing the
+exact pattern already proven in `gate_screen.dart`'s M4.5 two-device gate
+(which is where "manual IP entry... previously had that working" came
+from — a separate diagnostic screen, not part of the battle lobby):
+- `LanMatchDiscovery.startAdvertising` now binds the listening socket first
+  (unconditional) and treats the `nsd` registration as best-effort — a
+  failure there is logged and swallowed, never fatal to hosting. Added
+  `listeningPort` + `localAddressHint()` so the host can display its
+  address for the peer to type in.
+- `LanMatchDiscovery`/`battle_lobby_screen.dart`'s `_startJoining` no longer
+  treats an `nsd.startDiscovery` failure as fatal either — it surfaces as a
+  small inline note ("Automatic discovery isn't available here") and stays
+  in the joining view rather than bouncing to idle.
+- `_JoiningSection` now has a permanent `host:port` manual-entry field
+  (always visible, not just on discovery failure — real networks can also
+  block multicast outright via AP isolation, per `lan_discovery.dart`'s own
+  risk note) that dials `LanSocketTransport.connectTo` directly, same
+  hand-off path (`_beginDuelSetup`) as an mDNS-discovered peer.
+- `_HostingSection` now displays "Listening on `<ip>:<port>`" so the host
+  can read it off to the joining player.
+
+**New test** (`test/battle/networking/match_discovery_resilience_test.dart`)
+exploits a convenient property: the plain `flutter_test` harness has no
+platform channels registered either — the same condition as `nsd` on Linux
+desktop — so it validates the exact resilience path without needing a real
+device: `startAdvertising` still binds and accepts a real connection even
+though mDNS registration fails, and `startDiscovering` fails cleanly (never
+hangs). Full suite green except two pre-existing, unrelated issues surfaced
+by the calendar rolling to 2026-07-20 while re-running the suite (not
+caused by this fix — see below); do not confuse them with this fix.
+
+**Two pre-existing, unrelated issues noticed while re-verifying (not fixed
+here, out of scope for this bug report):**
+- `test/spells/spell_authorization_test.dart` — "a caster holding a valid
+  loan grant naming them may cast" hardcodes `expiresAt:
+  DateTime.utc(2026, 7, 20)` and calls `castingPlayerMayUse` without an
+  explicit `now:` override, so it silently relied on real wall-clock time
+  staying *before* 2026-07-20. Today's rollover to that exact date makes the
+  grant read as already-expired at midnight. Needs a real `now:` fixture
+  fix, not a networking concern.
+- `test/spells/inscribe_test.dart` / `test/ui/gate_runner_test.dart` —
+  intermittent "SRS download failed — check your network connection" under
+  system load (these tests fetch/cache a large structured-reference-string
+  file and run real ~2GB-RSS provers). Passed cleanly in this session's
+  earlier full-suite run; failed only when re-run under heavier concurrent
+  load (this machine was also running the user's own live Pixel 6 session
+  throughout). Environmental, not a logic regression.
+
+---
+
+## LAN duel setup Stage 1 implemented (docs/LAN_BATTLE_WIREUP_PLAN.md) (2026-07-19)
+
+**Closes the "no LAN → `BattleScreen` flow" gap** noted below (Sightings entry)
+and in `BATTLE_AUTH_PLAN.md §0a` — `battle_lobby_screen.dart` no longer
+dead-ends at "Ready to duel."; it now runs the full handshake
+(`runDuelSetup`, `lib/battle/networking/duel_setup.dart`) and pushes
+`BattleScreen` with a real `BattleSession`. New: `duel_setup.dart`,
+`duel_battle_setup.dart` (symmetric, pubkey-sorted `BattleState` — DECISION 2),
+`duel_host_settings_screen.dart`, `duel_join_chapter_screen.dart`,
+`ui/widgets/chapter_picker.dart` + `int_stepper_row.dart` (extracted from
+`solo_practice_settings_screen.dart`, reused by the new host-settings screen).
+Two new wire types (`matchIdNonce` 0x1A, `artifactLoadout` 0x1B) plus
+`battleProtocolVersion` on `DeviceCapabilities` and an asymmetric
+`sendHostMatchConfig`/`receiveHostMatchConfig` pair on `BattleSession`
+(host-authoritative config — DECISION 3; `exchangeMatchConfig`'s existing
+strict-equality check can't express "guest adopts whatever the host sends in
+this same round trip," since the guest can't already know the value it would
+need to send back to match).
+
+**Stage 1 only** (LAN_BATTLE_WIREUP_PLAN §2 DECISION 4): identity auth + real
+pubkey binding are real; peer spell casts are trusted, not proof-verified
+(`TurnLoop.verifyProof` stays null, same as solo/test). Do not present this as
+secure play. Stage 2 (proof verification, cast authorization, optional signed
+state hash) is separately scoped in the plan.
+
+**Real bug found and fixed while building this — not scoped to the new
+code:** `BattleFrameReader`/`BattleSession.framesOfType` (`battle_wire.dart`,
+`battle_session.dart`) used a plain broadcast `StreamController`, which drops
+any event added while it has zero listeners. Every exchange method's
+`send(...); await framesOfType(type).first` pattern has a real window where
+the peer's reply can be decoded and dropped before the local `.first` call
+gets around to subscribing — this is possible on a **real two-device LAN
+duel**, not just a same-process test artifact (two devices' differing FFI
+latency during `exchangeIdentityAuth`, e.g., is enough). It surfaced
+reliably in `duel_setup_test.dart` once `exchangeIdentityAuth` (FFI-heavy) sat
+directly before a new symmetric exchange. Fixed by making
+`BattleFrameReader` buffer per-type (`_pendingByType`) and deliver directly to
+a registered waiter when one's already listening (`_waitersByType`) — a frame
+is never dropped, and never replayed to a *later* caller for the same type
+(every call site's usage is "at most one active waiter per type," so a later
+call is always for that type's next occurrence, e.g. next turn's
+`actionCommit`). Full existing test suite (479 tests) re-run green after the
+fix — no regressions. See `battle_wire.dart`'s `BattleFrameReader` doc comment
+for the full explanation.
+
+**Also found (test-only, not a production hazard):** a second, unrelated race
+in the *test* harness itself — `Future.wait([runDuelSetup(...host),
+runDuelSetup(...guest)])` evaluates the host call synchronously up to its own
+first `await` before the guest call even starts, so host's first `send()`
+could race ahead of guest's `BattleSession` ever subscribing a listener
+(dropped by the *transport-level* broadcast stream, same class of bug as
+above but one layer up). This can only happen when both roles run in one
+isolate — i.e. every test using `InMemoryTransport`, never real cross-device
+play, since two real devices each run their own independent event loop with
+no shared synchronous ordering. Fixed with a one-line `await
+Future<void>.value();` yield in `runDuelSetup` right after constructing the
+session, forcing both sides' constructors to finish before either sends
+anything — harmless in production (a real LAN socket already buffers at the
+OS level regardless of listener timing).
+
+**Verification done:** `test/battle/networking/duel_setup_test.dart` (new) —
+paired-session integration confirming byte-identical `BattleState` across
+host/guest with *different* artifact loadouts (deliberately, to catch a
+regression back to a stubbed peer loadout) and pubkey-sorted role assignment,
+plus a 2-turn `TurnLoop` determinism check over the real `BattleSession` (not
+a fake). `flutter analyze` clean on every new/touched file. Full suite (479
+tests) green.
+
+**Not yet done — the actual gate (CLAUDE.md: hardware run > everything
+else):** no two-device LAN pass. This environment has no second physical
+device; the headless paired-session tests are necessary but the plan's own
+§6 risk section is explicit that they're not sufficient. Whoever picks this
+up next should run `flutter run` on two devices (or one device + `-d linux`
+as the second) on the same network, host from one, join from the other, and
+play at least one full turn before calling Stage 1 done.
+
+---
+
+## Sightings tab implemented (docs/SIGHTINGS_PLAN.md) (2026-07-19)
+
+Full vertical slice: `lib/spells/sighting_asset.dart` (`SightingAsset` model
++ file-per-record store, grouped by opponent pubkey), the `0x01`/`0x03`
+wire-format name field (`turn_loop.dart` `_encodeAction`/`_decodeAction`,
+wire-format bump per plan §2 — nothing had shipped, so no compat shim), the
+certified BASE mana cost retained via a new `TurnLoop.lastCertifiedBaseManaCosts`
+turn-scoped map (factored out of `_certifiedManaCost` step 1 into
+`_certifiedBaseManaCost` so the two call sites can't drift), the
+`sightingsFromResolved` pure capture-filter + gated `_recordSightings` hook
+in `battle_screen.dart`, and the grouped `_SightingsTab` UI in
+`library_screen.dart` (replacing the placeholder; stale header comment fixed).
+
+**Capture is wired but dormant** (plan §0a): there is still no LAN →
+`BattleScreen` flow (`BattleScreen` is only ever constructed with a
+`SoloBattleSession`). The capture hook is correct and will start populating
+the tab the moment a real networked `BattleTurnSession` reaches
+`BattleScreen` — proven here with the synthetic-event tests below, not by
+playing a duel.
+
+**Widget-test limitation, not silently skipped:** attempted a `testWidgets`
+pass driving the real `LibraryScreen` → SIGHTINGS tab (`test/ui/sightings_tab_test.dart`,
+since deleted). It hung indefinitely under both `pumpAndSettle()` and bounded
+`tester.pump(Duration(...))` — this is the same, already-documented
+`testWidgets()` + real `dart:io` + `FakeAsync` zone deadlock as the "Real
+finding" entry further down this log (`BattleScreen`'s `_loadSpells()`):
+`_CraftingsTabState.initState()` fires `SpellAsset.loadAll()` (real disk I/O
+against the fake-path-provider temp dir) as an un-awaited side effect of
+`pumpWidget()`, outside any `runAsync()` wrapping, with no constructor seam
+to inject pre-loaded data. `test/ui/commune_trade_navigation_test.dart` had
+already independently hit and documented this exact same "`LibraryScreen`
+never settles, even on its unrelated default tab" limitation for the Loans
+tab; this confirms it's structural to `LibraryScreen`, not specific to
+Sightings. Per the same precedent (didn't make an architecture change to
+force a test past a pre-existing, unrelated limitation without asking):
+covered the actual logic with two disk-I/O-free unit-test files instead —
+`test/spells/sighting_asset_test.dart` (model/store: upsert, round-trip,
+grouping, delete) and `test/ui/battle_screen_sightings_capture_test.dart`
+(`sightingsFromResolved` filtering + one persistence round trip through
+`SightingAsset.record` confirming a repeat cast upserts). Manually confirmed
+`flutter run -d linux --release` still boots and runs cleanly with the new
+tab wired in (no GUI automation tooling in this sandbox to click through and
+screenshot the tab itself — same tooling gap noted in the "Real finding"
+entry below).
+
+## Morphic (WWWW) reform: guarantee an Earth slot, no more stillborn successors (2026-07-18)
+
+Follow-up to the previous entry: investigating the flaky
+`summon_cast_test.dart` failure ("reform through a real battle turn: a dying
+Morphic creature leaves a successor") found a real, if narrow, design gap —
+not just a flaky test.
+
+**Mechanism:** `morphicReducedSequence` (`lib/battle/models/creature_spec.dart`)
+picks `floor(n/2)` elements from the dying creature's full element sequence
+uniformly at random (Fisher-Yates over indices). `CreatureSpec._statsOf` sets
+`maxHp = earthCount` in whatever got picked, with **no minimum floor** (an
+already-documented, deliberate design principle). Put together: a Morphic
+reform whose random draw happens to exclude every Earth activation spawns a
+successor at 0 HP — dead on arrival, no combat, no visible cause. Quantified
+against the test's own `WWWW FF EE` (8-element) creature via a 20,000-trial
+probe: **21.6%** of draws were stillborn this way (matches
+`C(6,4)/C(8,4) = 15/70 ≈ 21.4%` by hand), and 98.5% of those couldn't
+re-chain either (their own reduced sequence wasn't a pure `WWWW`), so the
+whole reform line silently vanished. `TurnLoop._reapDead` running 3x per
+turn (action resolution → creature-AI sweep → end-of-turn tick) meant a
+stillborn successor from the first reap got swept away by the second before
+anyone saw it exist.
+
+**Soren's call, on hearing the mechanism explained:** this was intentional
+when the "no minimum floor" design went in, but re-litigated once he saw it
+concretely — instant, unexplained death on reform reads as a feel-bad
+moment, not fair randomness. Decision: reserve one of the `half` reduced
+slots for a guaranteed Earth activation (chosen at random among the
+original's Earth activations, same as everything else); the remaining
+`half - 1` slots stay fully random as before. If the original has zero
+Earth to begin with, there's nothing to reserve — same as an original
+summon cast with zero Earth, which already spawns at 0 HP by the same
+"no minimum floor" principle; this fix targets the "had Earth, randomly
+lost it on reform" case specifically, not that pre-existing edge case.
+
+**Verification:** re-ran the same 20,000-trial probe against the fixed
+`morphicReducedSequence` — 0/20000 stillborn. Added permanent regression
+coverage in `test/battle/models/creature_spec_test.dart` (Earth-guaranteed
+across 500 deterministic RNG draws; explicit fallback-to-random case when
+the original has no Earth at all). The previously-flaky
+`summon_cast_test.dart` case passed 15/15 in a row (was failing roughly
+1-in-3 to 1-in-5 runs before). Full `flutter test test/battle` (199 tests,
+was 197 — the 2 new creature_spec cases) green, no regressions.
+
+## Bellows (Air-Fire multiplierCycles) never actually amplified anything (2026-07-18)
+
+Soren reported that Airy Bellows (Air-flavor multiplierCycles, targeting the
+caster's next Water-flavor effect) didn't visibly double the next water
+spell's effect.
+
+**Root cause:** `WizardAvatar.pendingEffectMultipliers` was correctly *set*
+by `EffectApplicator._applyMultiplierCycles` and correctly synced in
+`BattleState`'s serialization, but the only place that read it —
+`TurnLoop._applySpell` (`lib/battle/engine/turn_loop.dart`) — just called
+`.remove()` on it and discarded the value, behind an explicit
+`TODO(battle): apply the retrieved multiplier ... once SpellEffect supports
+it`. This was affinity-generic code, so **all four Bellows flavors were
+broken** (Fire→Air, Earth→Fire, Water→Earth, Air→Water), not just the one
+Soren happened to test.
+
+**Design call, escalated and resolved:** "doubling power" has no uniform
+numeric meaning across the 16 effect kinds (Divination/TileModification/etc.
+have no obvious "power" field). Soren's answer: don't scale fields at all —
+insert extra copies of the *same resolved effect* into the resolution
+order, applied immediately after the original (2 total for base, 3 under
+Potency). This sidesteps the per-effect-kind semantics question entirely
+and is the mechanism now implemented.
+
+**Fix:** `TurnLoop._applySpell`'s per-formula loop now computes each
+formula's own affinity, consumes (`.remove()`s) any pending multiplier keyed
+to *that* affinity, and calls `EffectApplicator.apply` that many times
+instead of once. Consuming via `.remove()` means only the first
+matching-affinity formula in a spell is amplified — matches the design doc's
+singular "next effect of [element]" wording, and naturally prevents the
+multiplier from persisting past the one cast that consumes it.
+
+**Known interaction, not a new bug:** effects that reposition their target
+(e.g. Air-flavor Damage's knockback) can cause the second application to
+miss if the first knockback already moved the target off the fixed spell
+target tile. Confirmed via a boundary-pinned test case (dummy placed where
+the knockback push lands out-of-bounds and no-ops) that when the target
+*does* stay put, the second hit lands correctly. This is inherent to
+"insert a copy in the resolution order" for position-mutating effects, not
+something this fix introduces or was asked to solve.
+
+**Verification:** new `test/battle/engine/multiplier_cycles_test.dart`, 7
+cases — all four Bellows flavors doubling their target element's damage
+end-to-end through `TurnLoop`/`SoloBattleSession`, one Potency case (2→3),
+one negative case (non-matching affinity untouched), one single-consumption
+case (multiplier doesn't leak into a second cast). Full `flutter test
+test/battle` (197 tests) green, no regressions.
+
 ## Practice Mode — scoring redesign: enrollment + contrastive crossing (2026-07-16)
 
 Follow-up to the 2026-07-10 entries, triggered by Soren's on-device report

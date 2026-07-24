@@ -5,9 +5,11 @@ import '../identity/identity.dart';
 import '../identity/key_packing.dart';
 import '../main.dart';
 import 'battle_lobby_screen.dart';
+import 'commune_screen.dart';
 import 'library_screen.dart';
 import 'onboarding/onboarding_landing_screen.dart';
 import 'practice_screen.dart';
+import 'settings_screen.dart';
 import 'sigil_painter.dart';
 
 class MenuScreen extends StatelessWidget {
@@ -91,6 +93,13 @@ class MenuScreen extends StatelessWidget {
                   ),
                 ),
                 _MenuButton(
+                  label: 'Commune',
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const CommuneScreen()),
+                  ),
+                ),
+                _MenuButton(
                   label: 'Practice',
                   onTap: () => Navigator.push(
                     context,
@@ -103,7 +112,10 @@ class MenuScreen extends StatelessWidget {
                 ),
                 _MenuButton(
                   label: 'Settings',
-                  onTap: null,
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                  ),
                 ),
                 const SizedBox(height: 24),
                 // TEMPORARY -- remove once onboarding is reachable some other way.

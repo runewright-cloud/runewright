@@ -54,8 +54,22 @@ class VocalEnrollment {
   /// each) after trimming to count as a real utterance.
   static const int minVoicedFrames = 20;
 
+  /// Upper guard on a single take's voiced length (~2 s). A take longer than
+  /// this is almost never one briskly-spoken word — it's a held button that
+  /// caught breath/hesitation/a second rep (the 230-frame `finitus` that
+  /// poisoned scoring on 2026-07-22). Rejected with actionable feedback
+  /// rather than silently stored as a bad reference. See docs/M4_findings.md.
+  static const int maxVoicedFrames = 200;
+
   /// Frames kept as padding on each side of the detected voiced span.
   static const int trimPaddingFrames = 3;
+
+  /// Maximum exemplar takes kept per word. Scoring is min-distance over this
+  /// set (StreamingPhonemeScorer); more takes capture more of the speaker's
+  /// natural variation, but past a handful the returns flatten and the
+  /// per-frame DTW cost grows linearly. Appending past the cap drops the
+  /// oldest take (FIFO), so "record another" always refreshes the set.
+  static const int maxTakes = 5;
 
   File _fileFor(VocalWord word) => File('${baseDir.path}/${word.name}.json');
 
@@ -64,22 +78,53 @@ class VocalEnrollment {
   Set<VocalWord> enrolledWords() =>
       VocalWord.values.where(hasEnrollment).toSet();
 
+  int takeCount(VocalWord word) => _readTakes(word).length;
+
+  /// All enrolled exemplar takes for [word] (each a sequence of MFCC frames),
+  /// or an empty list if none. Reads the multi-take format and transparently
+  /// migrates the legacy single-`frames` format as a one-element set.
+  Future<List<List<List<double>>>?> loadTakes(VocalWord word) async {
+    final takes = _readTakes(word);
+    return takes.isEmpty ? null : takes;
+  }
+
+  /// Back-compat: the FIRST enrolled take's frames (or null). Retained for
+  /// callers/tests that predate multi-take; new code uses [loadTakes].
   Future<List<List<double>>?> loadFrames(VocalWord word) async {
+    final takes = _readTakes(word);
+    return takes.isEmpty ? null : takes.first;
+  }
+
+  List<List<List<double>>> _readTakes(VocalWord word) {
     final file = _fileFor(word);
-    if (!file.existsSync()) return null;
-    final json = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
-    return (json['frames'] as List)
+    if (!file.existsSync()) return const [];
+    final json = jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
+    List<List<double>> frames(List raw) => raw
         .map((row) => (row as List).map((v) => (v as num).toDouble()).toList())
         .toList();
+    if (json['takes'] is List) {
+      return [for (final t in json['takes'] as List) frames(t as List)];
+    }
+    // Legacy single-take format {"frames": [...]}.
+    if (json['frames'] is List) return [frames(json['frames'] as List)];
+    return const [];
+  }
+
+  Future<void> _writeTakes(
+      VocalWord word, List<List<List<double>>> takes) async {
+    await baseDir.create(recursive: true);
+    await _fileFor(word).writeAsString(jsonEncode({'takes': takes}));
   }
 
   /// Trims leading/trailing silence from [pcm] (PCM-16 LE mono, 16 kHz),
-  /// extracts MFCC frames, validates the result, and persists it as
-  /// [word]'s template. Returns the stored frame count.
+  /// extracts MFCC frames, validates the result, and APPENDS it as a new
+  /// exemplar take for [word] (FIFO past [maxTakes]). Returns the saved
+  /// take's frame count and the new total take count.
   ///
-  /// Throws [EnrollmentException] when the recording is too quiet or the
-  /// voiced span too short to be a usable reference.
-  Future<int> saveFromRecording(VocalWord word, Uint8List pcm) async {
+  /// Throws [EnrollmentException] when the recording is too quiet/short or
+  /// too long to be a usable single-word reference.
+  Future<({int frameCount, int takeCount})> saveFromRecording(
+      VocalWord word, Uint8List pcm) async {
     final trimmed = trimSilence(pcm);
     final frames = MfccExtractor.extract(trimmed);
     if (frames.length < minVoicedFrames) {
@@ -87,9 +132,37 @@ class VocalEnrollment {
           'Recording was too quiet or too short — say the word clearly, '
           'a little louder, and try again.');
     }
-    await baseDir.create(recursive: true);
-    await _fileFor(word).writeAsString(jsonEncode({'frames': frames}));
-    return frames.length;
+    if (frames.length > maxVoicedFrames) {
+      throw const EnrollmentException(
+          'That was too long for one word — hold, say the word once briskly, '
+          'then release. Try again.');
+    }
+    final takes = _readTakes(word).toList()..add(frames);
+    while (takes.length > maxTakes) {
+      takes.removeAt(0); // FIFO: drop the oldest take
+    }
+    await _writeTakes(word, takes);
+    return (frameCount: frames.length, takeCount: takes.length);
+  }
+
+  /// Removes the take at [index] for [word]; deletes the word's file when no
+  /// takes remain. No-op if the index is out of range.
+  Future<void> removeTake(VocalWord word, int index) async {
+    final takes = _readTakes(word).toList();
+    if (index < 0 || index >= takes.length) return;
+    takes.removeAt(index);
+    if (takes.isEmpty) {
+      final file = _fileFor(word);
+      if (file.existsSync()) await file.delete();
+    } else {
+      await _writeTakes(word, takes);
+    }
+  }
+
+  /// Removes ALL takes for [word] (deletes its file). No-op if unenrolled.
+  Future<void> clearWord(VocalWord word) async {
+    final file = _fileFor(word);
+    if (file.existsSync()) await file.delete();
   }
 
   Future<void> clearAll() async {

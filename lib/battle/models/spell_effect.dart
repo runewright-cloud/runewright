@@ -519,12 +519,17 @@ class HaymakerInteractionEffect extends SpellEffect {
 ///   Fire affinity:  [revealsCounterCharms]=true for rest of match;
 ///                   opponent's bookmarks targeting those spells turn red
 ///   Water affinity: see target's available spell list for [durationTurns] (2/3 potent)
-///                   — [requiresOpponentReveal]=true; BattleSession must send
-///                   a DivinationReveal protocol message
+///                   — [requiresOpponentReveal]=true; driven by
+///                   `TurnLoop._exchangeSpellRevealOpenings` (spellRevealKey/
+///                   spellRevealOpen), verified against the target's already-
+///                   exchanged `peerBookRoot` — no separate hand/deck
+///                   commitment needed since "available spells" is the
+///                   target's whole chapter today (SpellDraw is unwired; see
+///                   docs/OUTSTANDING_ITEMS.md)
 ///   Air affinity:   see target's committed spell target tile for [durationTurns]
-///                   (2/3 potent) — [requiresOpponentReveal]=true
+///                   (2/3 potent) — [requiresOpponentReveal]=true; driven by
+///                   `TurnLoop._exchangeScryOpenings` (scryKey/scryOpen)
 ///
-// TODO(battle): implement DivinationReveal message in BattleSession for Water/Air.
 class DivinationEffect extends SpellEffect {
   const DivinationEffect({
     required this.affinity,

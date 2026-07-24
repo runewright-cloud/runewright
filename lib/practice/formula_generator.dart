@@ -27,7 +27,7 @@ class PracticeFormulaGenerator {
 
   static const List<VocalWord> _elements = [
     VocalWord.ignis,
-    VocalWord.aer,
+    VocalWord.ventus,
     VocalWord.aqua,
     VocalWord.terra,
   ];

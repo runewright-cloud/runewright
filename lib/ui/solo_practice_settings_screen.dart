@@ -13,6 +13,8 @@ import '../battle/networking/solo_battle_session.dart';
 import '../spells/chapter_asset.dart';
 import 'battle_screen.dart';
 import 'manuscript_theme.dart';
+import 'widgets/chapter_picker.dart';
+import 'widgets/int_stepper_row.dart';
 
 class SoloPracticeSettingsScreen extends StatefulWidget {
   const SoloPracticeSettingsScreen({super.key});
@@ -24,9 +26,7 @@ class SoloPracticeSettingsScreen extends StatefulWidget {
 
 class _SoloPracticeSettingsScreenState
     extends State<SoloPracticeSettingsScreen> {
-  List<ChapterAsset> _chapters = [];
   ChapterAsset? _selectedChapter;
-  bool _loadingChapters = true;
 
   int _hp = 24;
   int _gridRadius = 4;
@@ -37,29 +37,6 @@ class _SoloPracticeSettingsScreenState
   static const _hpStep = 4;
   static const _gridRadiusMin = 2;
   static const _gridRadiusMax = 6;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadChapters();
-  }
-
-  Future<void> _loadChapters() async {
-    final chapters = await ChapterAsset.loadAll();
-    final activeId = await ChapterAsset.loadActiveChapterId();
-    if (!mounted) return;
-    ChapterAsset? active;
-    if (activeId != null) {
-      final matches = chapters.where((c) => c.id == activeId);
-      if (matches.isNotEmpty) active = matches.first;
-    }
-    active ??= chapters.length == 1 ? chapters[0] : null;
-    setState(() {
-      _chapters = chapters;
-      _selectedChapter = active;
-      _loadingChapters = false;
-    });
-  }
 
   MatchConfig get _config => MatchConfig(
         playerHp: _hp,
@@ -106,159 +83,32 @@ class _SoloPracticeSettingsScreenState
   }
 
   Widget _buildChapterPicker() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('CHAPTER', style: manuscriptCaptionStyle()),
-        const SizedBox(height: 6),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          decoration: BoxDecoration(
-            color: kParchmentPanelColor,
-            border: Border.all(
-              color: _selectedChapter != null
-                  ? kInkColor.withValues(alpha: 0.4)
-                  : kInkMutedColor.withValues(alpha: 0.35),
-            ),
-            borderRadius: BorderRadius.circular(4),
-          ),
-          child: _loadingChapters
-              ? const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 14),
-                  child: Text(
-                    'Loading...',
-                    style: TextStyle(fontFamily: 'serif', color: kInkMutedColor),
-                  ),
-                )
-              : DropdownButtonHideUnderline(
-                  child: DropdownButton<ChapterAsset?>(
-                    value: _selectedChapter,
-                    isExpanded: true,
-                    dropdownColor: kParchmentPanelColor,
-                    style: const TextStyle(
-                      fontFamily: 'serif',
-                      fontSize: 16,
-                      color: kInkColor,
-                    ),
-                    items: [
-                      const DropdownMenuItem<ChapterAsset?>(
-                        value: null,
-                        child: Text(
-                          'Select Chapter',
-                          style: TextStyle(
-                            fontFamily: 'serif',
-                            fontSize: 16,
-                            color: kInkMutedColor,
-                          ),
-                        ),
-                      ),
-                      for (final c in _chapters)
-                        DropdownMenuItem<ChapterAsset?>(
-                          value: c,
-                          child: Text(
-                            c.name,
-                            style: const TextStyle(
-                              fontFamily: 'serif',
-                              fontSize: 16,
-                              color: kInkColor,
-                            ),
-                          ),
-                        ),
-                    ],
-                    onChanged: (c) => setState(() => _selectedChapter = c),
-                  ),
-                ),
-        ),
-      ],
+    return ChapterPicker(
+      selected: _selectedChapter,
+      onChanged: (c) => setState(() => _selectedChapter = c),
     );
   }
 
   Widget _buildHpStepper() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('STARTING HP', style: manuscriptCaptionStyle()),
-        const SizedBox(height: 12),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            _StepButton(
-              icon: Icons.remove,
-              onTap: _hp > _hpMin
-                  ? () => setState(() => _hp -= _hpStep)
-                  : null,
-            ),
-            const SizedBox(width: 24),
-            SizedBox(
-              width: 48,
-              child: Text(
-                '$_hp',
-                style: const TextStyle(
-                  fontFamily: 'serif',
-                  fontSize: 28,
-                  fontWeight: FontWeight.w600,
-                  color: kInkColor,
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ),
-            const SizedBox(width: 24),
-            _StepButton(
-              icon: Icons.add,
-              onTap: _hp < _hpMax
-                  ? () => setState(() => _hp += _hpStep)
-                  : null,
-            ),
-          ],
-        ),
-      ],
+    return IntStepperRow(
+      label: 'STARTING HP',
+      value: _hp,
+      min: _hpMin,
+      max: _hpMax,
+      step: _hpStep,
+      onChanged: (v) => setState(() => _hp = v),
     );
   }
 
   Widget _buildGridRadiusStepper() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('GRID SIZE', style: manuscriptCaptionStyle()),
-        const SizedBox(height: 2),
-        Text(
-          'Radius of the battlefield in tiles',
-          style: manuscriptCaptionStyle(color: kInkMutedColor.withValues(alpha: 0.7)),
-        ),
-        const SizedBox(height: 12),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            _StepButton(
-              icon: Icons.remove,
-              onTap: _gridRadius > _gridRadiusMin
-                  ? () => setState(() => _gridRadius--)
-                  : null,
-            ),
-            const SizedBox(width: 24),
-            SizedBox(
-              width: 48,
-              child: Text(
-                '$_gridRadius',
-                style: const TextStyle(
-                  fontFamily: 'serif',
-                  fontSize: 28,
-                  fontWeight: FontWeight.w600,
-                  color: kInkColor,
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ),
-            const SizedBox(width: 24),
-            _StepButton(
-              icon: Icons.add,
-              onTap: _gridRadius < _gridRadiusMax
-                  ? () => setState(() => _gridRadius++)
-                  : null,
-            ),
-          ],
-        ),
-      ],
+    return IntStepperRow(
+      label: 'GRID SIZE',
+      caption: 'Radius of the battlefield in tiles',
+      value: _gridRadius,
+      min: _gridRadiusMin,
+      max: _gridRadiusMax,
+      step: 1,
+      onChanged: (v) => setState(() => _gridRadius = v),
     );
   }
 
@@ -343,41 +193,6 @@ class _SoloPracticeSettingsScreenState
             dummyAutoCast: true,
             dummyCastTarget: target,
           ),
-        ),
-      ),
-    );
-  }
-}
-
-// ── Shared small widgets ──────────────────────────────────────────────────────
-
-class _StepButton extends StatelessWidget {
-  const _StepButton({required this.icon, required this.onTap});
-
-  final IconData icon;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final enabled = onTap != null;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(4),
-      child: Container(
-        width: 40,
-        height: 40,
-        decoration: BoxDecoration(
-          border: Border.all(
-            color: enabled
-                ? kInkColor.withValues(alpha: 0.4)
-                : kInkMutedColor.withValues(alpha: 0.2),
-          ),
-          borderRadius: BorderRadius.circular(4),
-        ),
-        child: Icon(
-          icon,
-          size: 18,
-          color: enabled ? kInkColor : kInkMutedColor.withValues(alpha: 0.3),
         ),
       ),
     );

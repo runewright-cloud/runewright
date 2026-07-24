@@ -16,8 +16,12 @@
 // Stubs (require additional system seams — noted inline):
 //   - Water / SpellInteraction: copy target's last-cast spell (needs history)
 //   - Water+Air / Divination: requires DivinationReveal protocol message
-//   - Fire+Earth / FuelTransmutation: wither/reactivate a hand spell (needs
-//     SpellDraw wired into BattleState — see battle_state.dart TODO)
+//
+// Fire+Earth / FuelTransmutation's wither/reactivate (SPELL_DRAW_WIRING_
+// PLAN.md §9) needs the caster's DrawSchedule (draw_schedule.dart) and a
+// dedicated RNG, both supplied by the caller via ApplyContext.drawSchedules/
+// .witherRng — no-ops gracefully when either is absent (e.g. direct
+// ApplyContext construction in tests that don't exercise this flavor).
 //
 // Tile effects produced here are "instantiated" on state.tileEffects.
 // Cloud objects are added to state.clouds with a UUID-ish id.
@@ -38,6 +42,7 @@ import 'package:rune_duel/battle/models/spell_effect.dart';
 import 'package:rune_duel/battle/models/status_effect_ids.dart';
 import 'package:rune_duel/battle/models/terrain.dart';
 import 'package:rune_duel/battle/models/wizard_avatar.dart';
+import 'draw_schedule.dart';
 import 'tile_entry_resolver.dart';
 
 // ── Apply context ─────────────────────────────────────────────────────────────
@@ -54,6 +59,8 @@ class ApplyContext {
     Map<String, List<HexCoord>>? movePaths,
     this.chosenConveyorDirection,
     List<ConveyorChainEvent>? conveyorChainEvents,
+    this.drawSchedules,
+    this.witherRng,
   }) : rodConsumedFor = rodConsumedFor ?? {},
        movePaths      = movePaths      ?? {},
        conveyorChainEvents = conveyorChainEvents ?? [];
@@ -83,6 +90,21 @@ class ApplyContext {
   /// a conveyor tile mid-spell, so the caller (TurnLoop) can fold them into
   /// its per-turn event list for UI animation.
   final List<ConveyorChainEvent> conveyorChainEvents;
+
+  /// TurnLoop's own position-only hand/deck bookkeeping for both players
+  /// (SPELL_DRAW_WIRING_PLAN.md §9) — the SAME mutable map instance, passed
+  /// by reference, so FuelTransmutation wither/reactivate can update
+  /// `drawSchedules[caster.playerId]` directly, the same way other handlers
+  /// mutate `state` in place. Null when the caller has no draw state to
+  /// offer (e.g. direct ApplyContext construction in tests that don't
+  /// exercise FuelTransmutation) — wither/reactivate then no-op.
+  final Map<String, DrawSchedule>? drawSchedules;
+
+  /// Dedicated RNG for FuelTransmutation wither/reactivate position
+  /// selection (§9), seeded independently from [rng]/`actionRng` so drawing
+  /// from it can never desync the shared action-resolution RNG stream. Null
+  /// has the same no-op effect as a null [drawSchedules].
+  final Random? witherRng;
 }
 
 // ── Effect applicator ─────────────────────────────────────────────────────────
@@ -388,10 +410,7 @@ class EffectApplicator {
   static void _applyFuelTransmutation(ApplyContext ctx, FuelTransmutationEffect e) {
     switch (e.affinity) {
       case SpellAffinity.fire:
-        // TODO(battle): wither e.witherSpellCount random active (hand)
-        //   spells, found by bookmark. Requires SpellDraw wired into
-        //   BattleState (see battle_state.dart TODO) plus a withered-spell
-        //   flag enforced at cast time.
+        _witherHandPositions(ctx, e.witherSpellCount);
         for (var i = 0; i < e.gainArtifactCount; i++) {
           const pool = [
             AccoutrementKind.manaGem,
@@ -407,8 +426,7 @@ class EffectApplicator {
 
       case SpellAffinity.earth:
         ctx.caster.absorbDamage(e.burnLife);
-        // TODO(battle): reactivate e.reactivateSpellCount withered hand
-        //   spells. Same SpellDraw-wiring dependency as the Fire flavor above.
+        _reactivateHandPositions(ctx, e.reactivateSpellCount);
 
       case SpellAffinity.water:
         ctx.caster.mana = (ctx.caster.mana - e.burnMana).clamp(0, ctx.caster.maxMana);
@@ -424,6 +442,50 @@ class EffectApplicator {
           burned++;
         }
         ctx.caster.mana = (ctx.caster.mana + e.gainMana).clamp(0, ctx.caster.maxMana);
+    }
+  }
+
+  /// Fire flavor: withers up to [count] random in-hand, not-already-withered
+  /// positions for [ctx.caster] (SPELL_DRAW_WIRING_PLAN.md §9). No-ops if
+  /// draw state isn't available (see [ApplyContext.drawSchedules]/
+  /// [ApplyContext.witherRng]'s doc comments) or the caster has none in hand.
+  /// Picks without replacement from a shrinking pool, same technique as the
+  /// Air flavor's burnable-accoutrement selection above — deterministic
+  /// given [ApplyContext.witherRng].
+  static void _witherHandPositions(ApplyContext ctx, int count) {
+    final schedules = ctx.drawSchedules;
+    final rng = ctx.witherRng;
+    if (schedules == null || rng == null || count <= 0) return;
+    final casterId = ctx.caster.playerId;
+    final schedule = schedules[casterId];
+    if (schedule == null) return;
+    final pool = schedule.hand.where((p) => !schedule.withered.contains(p)).toList();
+    final chosen = <int>[];
+    while (chosen.length < count && pool.isNotEmpty) {
+      chosen.add(pool.removeAt(rng.nextInt(pool.length)));
+    }
+    if (chosen.isNotEmpty) {
+      schedules[casterId] = schedule.witherPositions(chosen);
+    }
+  }
+
+  /// Earth flavor: clears the withered flag on up to [count] random withered
+  /// positions for [ctx.caster]. Mirrors [_witherHandPositions]; see its doc
+  /// comment for the no-op conditions and selection technique.
+  static void _reactivateHandPositions(ApplyContext ctx, int count) {
+    final schedules = ctx.drawSchedules;
+    final rng = ctx.witherRng;
+    if (schedules == null || rng == null || count <= 0) return;
+    final casterId = ctx.caster.playerId;
+    final schedule = schedules[casterId];
+    if (schedule == null) return;
+    final pool = schedule.withered.toList();
+    final chosen = <int>[];
+    while (chosen.length < count && pool.isNotEmpty) {
+      chosen.add(pool.removeAt(rng.nextInt(pool.length)));
+    }
+    if (chosen.isNotEmpty) {
+      schedules[casterId] = schedule.reactivatePositions(chosen);
     }
   }
 
@@ -647,8 +709,9 @@ class EffectApplicator {
   // ── Multiplier Cycles (Air-Fire) ──────────────────────────────────────────
 
   static void _applyMultiplierCycles(ApplyContext ctx, MultiplierCyclesEffect e) {
-    // Store pending multiplier; consumed by EffectResolver the next time the
-    // caster resolves a spell with an effect of targetElement affinity.
+    // Store pending multiplier; consumed by TurnLoop.castSpell the next time
+    // the caster resolves a formula of targetElement affinity, which applies
+    // that formula's effect this many times instead of once.
     ctx.caster.pendingEffectMultipliers[e.targetElement] = e.multiplier;
   }
 
@@ -681,32 +744,33 @@ class EffectApplicator {
     }
     if (!e.requiresOpponentReveal) return;
 
-    if (ctx.descriptor.affinity == SpellAffinity.water) {
-      // Water Divination ("see target's available spell list") needs
-      // SpellDraw/hand state wired into BattleState first (see
-      // battle_state.dart TODO) — still a stub.
-      _addStatusWithDuration(ctx.caster, StatusEffectId.revealSpells, {}, e.durationTurns, ctx);
-      return;
-    }
-
-    // Air Divination (Airy Scrying Pool): "see target's committed spell
-    // target tile." Only valid when the target tile holds a living enemy —
-    // links to that avatar so TurnLoop.beginTurn knows whose committed
-    // target to open for ctx.caster each turn (MESH_ARCHITECTURE.md §13b).
+    // Water (Watery Scrying Pool — "see target's available spell list") and
+    // Air (Airy Scrying Pool — "see target's committed spell target tile")
+    // both require a living enemy at the target tile to link to; the actual
+    // reveal is driven each turn by TurnLoop from state.divinationLinks (see
+    // MESH_ARCHITECTURE.md §13b and TurnLoop._exchangeScryOpenings /
+    // _exchangeSpellRevealOpenings). The status chip added below is cosmetic
+    // only.
     final target = _avatarsAt(ctx.state, ctx.targetTile)
         .where((av) => av.teamId != ctx.caster.teamId)
         .firstOrNull;
     if (target == null) return;
 
+    final isWater = ctx.descriptor.affinity == SpellAffinity.water;
     ctx.state.divinationLinks.add(DivinationLink(
       id: _uid(ctx, 'dv'),
       casterId: ctx.caster.playerId,
       targetId: target.playerId,
       remainingTurns: e.durationTurns,
+      flavor: isWater ? DivinationFlavor.spellList : DivinationFlavor.targetTile,
     ));
-    // Cosmetic chip only; TurnLoop.beginTurn/state.divinationLinks is the
-    // actual source of truth for the reveal mechanism.
-    _addStatusWithDuration(ctx.caster, StatusEffectId.revealTargetTile, {}, e.durationTurns, ctx);
+    _addStatusWithDuration(
+      ctx.caster,
+      isWater ? StatusEffectId.revealSpells : StatusEffectId.revealTargetTile,
+      {},
+      e.durationTurns,
+      ctx,
+    );
   }
 
   // ── Absorption rod / illusion-decoy helpers ───────────────────────────────

@@ -107,11 +107,23 @@ SpellDraw? localSpellDraw;
   `commitmentHex` (consequence 3). The `DrawSchedule` opening is dealt from the
   same seed and leaf count on both clients.
 - **Opening seed** = the battle-start joint entropy (`BATTLE_PROTOCOL.md §0`:
-  `exchangeNonce` → "joint entropy seeds the SpellDraw shuffle"). **Verify this
-  exchange actually runs before turn 1** and thread its result to the deal; if
-  the only entropy exchange today is the per-turn one, deal from turn-1's entropy
-  instead (still fine — the opening hand is legitimately known to its owner the
-  moment it's dealt).
+  `exchangeNonce` → "joint entropy seeds the SpellDraw shuffle"). **The deal MUST
+  run before turn 1's action commit** — turn 1 is fully castable like any other
+  turn (Soren, 2026-07-23), so the opening hand must exist when the UI presents
+  the turn-1 action, i.e. before the first `beginTurn`.
+  **DONE (2026-07-23).** The battle-start `exchangeNonce` was specified in
+  BATTLE_PROTOCOL §0 but never implemented, so `_dealOpeningHandsIfNeeded` had
+  been dealing mid-turn-1 (after the Phase-3 reveal), leaving turn 1 with no
+  castable hand. Implemented as `TurnLoop.startBattle()` — one battle-start
+  commit-reveal (`_resolveEntropy`, the same round `runTurn` runs every turn),
+  placed ahead of the loop; it deals both opening hands from that joint entropy.
+  `battle_screen` awaits it in its init sequence (`_startBattleIfNeeded`, gated
+  behind both `_loopConstructed` + `_spellsLoaded`) and only flips `_loopReady`
+  once it completes, so the spinner holds until turn 1 has a full hand. Idempotent;
+  `runTurn`'s deal stays as a turn-1 fallback for headless tests. Verified: two
+  `TurnLoop`s over a paired `BattleSession` deal the opening hand before any
+  `runTurn` (`spell_draw_wiring_test`). No look-ahead risk — the opening hand is
+  the owner's own cards, and the peer's *contents* stay uncomputable.
 - **Chapter leaf count `n` must be public** for the `DrawSchedule` to compute
   `nextInt(n)`: declare it at handshake alongside `peerBookRoot`. Minor
   disclosure (how many spells are in the chapter), and plausibly already implied
@@ -138,6 +150,19 @@ SpellDraw? localSpellDraw;
   identically for the `DrawSchedule`; the local client additionally uses it for
   contents. Timing is inherently safe: `entropy` is turn-N's, revealed in Phase 3
   *after* the Phase-1 action commit, so the refill can't be foreseen at cast time.
+- **Per-draw discriminator — DONE (2026-07-23).** The `(turn, player)` seed is
+  unique for the turn-based engine's one-draw-per-turn, but **real-time/sorcerer
+  mode casts as fast as mana + input allow** (Soren), so a player draws many
+  times within one entropy window and the bare seed would collide every rapid
+  draw onto the same RNG stream. Implemented a monotonic per-player draw counter
+  (`_consumeDrawNonce` / `_drawSeedNonce`) folded into both the refill (0x05) and
+  wither (§9, 0x06) seed preimages via `_playerPhaseSeed`'s new `drawNonce` arg;
+  both clients increment it in the same lockstep resolution order, so it stays in
+  sync (turn-loop determinism tests guard that). When sorcerer mode lands, swap
+  the whole seed to `SORCERER_REALTIME_PLAN.md §4`'s tick pipeline
+  (`HashRng(joint_entropy_{t+1}, context = eventKind ‖ authorIndex ‖ tick)`),
+  which carries the tick+event discriminator natively — the counter is the
+  turn-based stand-in until then.
 
 ---
 
@@ -304,6 +329,12 @@ check extended to exclude withered positions.
    high-half-differing / realistic leaves (the spike's positive vectors use
    small integers, so all have hi=0 — the `leaf_lt` hi-branch is currently
    untested by a vector; correct-by-reading, but pin it before production).
+   All four are scoped in `docs/SORTEDNESS_PRODUCTIONIZING_BRIEF.md` (its §8
+   lists the decisions Soren still needs to make). **The Dart wiring itself
+   (§§3–9) is done** — `DrawSchedule`, `_advanceDrawState`, the §6 in-hand
+   check, and the §8/§9 reveal+wither paths, all with the interim soft
+   enforcement live; the productionizing brief only adds the crypto that makes
+   the check hard.
 2. **Sequencing:** the Dart wiring (§§3–6, 8, 9) is self-contained and can ship
    first with §6's interim soft check; the §7 circuit upgrades it to hard
    enforcement without reworking the wire. Is the wiring next up, or queued? It

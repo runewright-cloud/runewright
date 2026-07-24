@@ -25,21 +25,26 @@ bool _hexEq(String a, String b) {
 }
 
 /// Returns true if [identity] may use [spell] — i.e., their Poseidon2 pubkey
-/// matches [spell.ownerPubkeyHex], or a locally stored SpellPermission covers
-/// [spell.commitmentHex] and names the identity as grantee.
+/// matches [spell.ownerPubkeyHex], or a locally stored, currently-unexpired
+/// SpellPermission covers [spell.commitmentHex] and names the identity as
+/// grantee.
 ///
 /// Call this before [ChapterAsset.withEntry] to enforce the ownership gate.
 ///
-/// Locally stored permissions are trusted without re-verifying the signature —
+/// Locally stored permissions' signatures are trusted without re-verifying —
 /// they were verified when received and saved (see [SpellPermission.isSignatureValid]).
-Future<bool> localIdentityMayUse(SpellAsset spell, Identity identity) async {
+/// Expiry, however, is checked live against [now] (defaults to the current
+/// UTC time) on every call: a day-limited loan must drop out of the usable
+/// set the moment it lapses, not just when it was first saved.
+Future<bool> localIdentityMayUse(SpellAsset spell, Identity identity, {DateTime? now}) async {
   final myPubkeyHex = await identity.ownerPubkeyHex();
   if (_hexEq(spell.ownerPubkeyHex, myPubkeyHex)) return true;
   final perms = await SpellPermission.loadForCommitment(spell.commitmentHex);
   return perms.any(
     (p) =>
         _hexEq(p.granteePubkeyHex, myPubkeyHex) &&
-        _hexEq(p.ownerPubkeyHex, spell.ownerPubkeyHex),
+        _hexEq(p.ownerPubkeyHex, spell.ownerPubkeyHex) &&
+        !p.isExpired(now: now),
   );
 }
 
@@ -49,8 +54,9 @@ Future<bool> localIdentityMayUse(SpellAsset spell, Identity identity) async {
 /// and [commitmentHex].
 ///
 /// [permissions] are the SpellPermission records the casting player transmitted
-/// at battle session start. Each candidate permission's Ed25519 signature is
-/// verified before authorization is granted.
+/// at battle session start. Each candidate permission's signature and (for
+/// loans) expiry are checked via [SpellPermission.isCurrentlyUsable] before
+/// authorization is granted.
 ///
 /// TODO(battle): wire permission exchange into BattleSession setup and pass the
 ///   received list here. Until then pass an empty list — owned spells are
@@ -66,7 +72,7 @@ Future<bool> castingPlayerMayUse({
     if (_hexEq(perm.commitmentHex, commitmentHex) &&
         _hexEq(perm.granteePubkeyHex, castingPlayerPubkeyHex) &&
         _hexEq(perm.ownerPubkeyHex, spellOwnerPubkeyHex) &&
-        await perm.isSignatureValid()) {
+        await perm.isCurrentlyUsable()) {
       return true;
     }
   }

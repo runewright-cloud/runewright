@@ -63,6 +63,7 @@ void main() {
           casterId: localId,
           targetId: dummyId,
           remainingTurns: 2,
+          flavor: DivinationFlavor.targetTile,
         ),
       ],
     );

@@ -44,6 +44,18 @@ import 'lan_socket_transport.dart';
 /// needs to change).
 const kRunewrightServiceType = '_runewright._tcp';
 
+/// Distinct service type for Commune/Trade pairing (docs/COMMUNE_TRADE_PLAN.md
+/// §5.4) -- kept separate from [kRunewrightServiceType] so a device browsing
+/// for a duel never lists a trade-only peer and vice versa.
+const kRunewrightTradeServiceType = '_runewright-trade._tcp';
+
+/// Distinct service type for Commune/Sync Art pairing
+/// (lib/trade/sync_art_session.dart) -- kept separate from
+/// [kRunewrightServiceType] and [kRunewrightTradeServiceType] so a device
+/// browsing for a duel or a trade never lists a sync-art-only peer, and
+/// vice versa.
+const kRunewrightSyncArtServiceType = '_runewright-syncart._tcp';
+
 /// Advertises this device as a duel host at [port] (the port a prior
 /// `LanSocketTransport.bind()` returned). Returns the active
 /// `Registration` -- pass it to [stopAdvertisingDuelHost] when the host
@@ -51,8 +63,15 @@ const kRunewrightServiceType = '_runewright._tcp';
 ///
 /// [displayName] is shown to discovering peers; the platform may suffix it
 /// ("Name (2)") on a local name collision -- harmless, just cosmetic.
-Future<Registration> advertiseDuelHost({required int port, String displayName = 'Runewright Duel'}) {
-  return register(Service(name: displayName, type: kRunewrightServiceType, port: port));
+///
+/// [serviceType] defaults to the duel service type; pass
+/// [kRunewrightTradeServiceType] to advertise a trade session instead.
+Future<Registration> advertiseDuelHost({
+  required int port,
+  String displayName = 'Runewright Duel',
+  String serviceType = kRunewrightServiceType,
+}) {
+  return register(Service(name: displayName, type: serviceType, port: port));
 }
 
 Future<void> stopAdvertisingDuelHost(Registration registration) => unregister(registration);
@@ -62,7 +81,11 @@ Future<void> stopAdvertisingDuelHost(Registration registration) => unregister(re
 /// found/lost callback) -- see the `nsd` package docs. Call
 /// [stopDiscoveringDuelHosts] when done; per `nsd`'s own docs, discovery is
 /// an expensive platform operation and must be explicitly stopped.
-Future<Discovery> discoverDuelHosts() => startDiscovery(kRunewrightServiceType, autoResolve: true);
+///
+/// [serviceType] defaults to the duel service type; pass
+/// [kRunewrightTradeServiceType] to discover trade sessions instead.
+Future<Discovery> discoverDuelHosts({String serviceType = kRunewrightServiceType}) =>
+    startDiscovery(serviceType, autoResolve: true);
 
 Future<void> stopDiscoveringDuelHosts(Discovery discovery) => stopDiscovery(discovery);
 

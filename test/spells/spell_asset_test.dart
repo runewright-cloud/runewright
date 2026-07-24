@@ -87,6 +87,34 @@ void main() {
     expect(restored.artHash, isNull);
   });
 
+  test('gridWithheld defaults to false and round-trips', () {
+    final original = sample();
+    expect(original.gridWithheld, isFalse);
+
+    final restored = SpellAsset.fromJson(original.toJson());
+    expect(restored.gridWithheld, isFalse);
+    // Default-false is omitted from the wire entirely, not serialized as
+    // an explicit `false` -- confirms old JSON (pre-dating this field)
+    // still parses to the same default.
+    expect(original.toJson().containsKey('gridWithheld'), isFalse);
+  });
+
+  test('withGridWithheld() redacts the grid, sets the flag, and preserves everything else', () {
+    final original = sample();
+    final redacted = original.withGridWithheld();
+
+    expect(redacted.gridWithheld, isTrue);
+    expect(redacted.initialGrid, isEmpty);
+    expect(redacted.proofBytes, equals(original.proofBytes));
+    expect(redacted.commitmentHex, equals(original.commitmentHex));
+    expect(redacted.ownerPubkeyHex, equals(original.ownerPubkeyHex));
+    expect(redacted.name, equals(original.name));
+
+    final restored = SpellAsset.fromJson(redacted.toJson());
+    expect(restored.gridWithheld, isTrue);
+    expect(restored.initialGrid, isEmpty);
+  });
+
   test('save() writes a JSON file under <docs>/spells/<id>.json', () async {
     final asset = sample();
     final file = await asset.save();

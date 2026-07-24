@@ -11,7 +11,8 @@ import 'engine/element.dart';
 import 'engine/formula.dart';
 import 'engine/hex_grid.dart';
 import 'engine/stepper.dart';
-import 'battle/models/creature_spec.dart' show CreatureSpec, summonSummaryLabel;
+import 'battle/models/creature_spec.dart'
+    show CreatureSpec, SummonAbility, summonSummaryLabel;
 import 'battle/models/effect_kind.dart' show formulaTripletKind;
 import 'battle/models/minion.dart' show SummonPersonality, kSummonPersonalityLabel;
 import 'identity/identity.dart';
@@ -126,6 +127,12 @@ class _GameScreenState extends State<GameScreen>
   // groups instead of re-marking everything on every step.
   int _recordedFormulaCount = 0;
 
+  // Summon abilities already reported to the RecipeBook this session (see
+  // _recordNewAbilities) -- abilities are pattern-matched over the whole
+  // sequence so far, not the last-committed group, so a plain set diff
+  // (rather than a count) avoids re-marking an ability every step once found.
+  final _recordedAbilities = <SummonAbility>{};
+
   late AnimationController _flickerCtrl;
   late AnimationController _growthCtrl;
   late Animation<double> _growth;
@@ -178,6 +185,7 @@ class _GameScreenState extends State<GameScreen>
         _rules = dom.rule;
       }
       _recordNewFormulas();
+      _recordNewAbilities();
     } else {
       _grid = HexGrid(_radius);
       _rules = CARules.neutral;
@@ -299,6 +307,7 @@ class _GameScreenState extends State<GameScreen>
       }
     });
     _recordNewFormulas();
+    _recordNewAbilities();
     _triggerFlicker(next);
     _growthCtrl.forward(from: 0.0);
   }
@@ -336,6 +345,7 @@ class _GameScreenState extends State<GameScreen>
           }
         });
         _recordNewFormulas();
+        _recordNewAbilities();
         _triggerFlicker(next);
         _growthCtrl.forward(from: 0.0);
       });
@@ -355,6 +365,7 @@ class _GameScreenState extends State<GameScreen>
       _activatedCells = {};
       _formulaTracker.reset();
       _recordedFormulaCount = 0;
+      _recordedAbilities.clear();
       _supremeElements.clear();
     });
   }
@@ -372,6 +383,7 @@ class _GameScreenState extends State<GameScreen>
       _activatedCells = {};
       _formulaTracker.reset();
       _recordedFormulaCount = 0;
+      _recordedAbilities.clear();
       _supremeElements.clear();
       _isSummonMode = false;
       _summonPersonality = SummonPersonality.aggressive;
@@ -393,6 +405,20 @@ class _GameScreenState extends State<GameScreen>
     }
     _recordedFormulaCount = formulas.length;
     RecipeBook.markDiscovered(newKeys);
+  }
+
+  // Summon-mode counterpart to _recordNewFormulas: re-derives the creature
+  // spec from the full committed sequence and marks any not-yet-seen
+  // abilities as discovered. Only meaningful in Summon mode -- incantation
+  // play never touches _recordedAbilities.
+  void _recordNewAbilities() {
+    if (!_isSummonMode) return;
+    final spec = CreatureSpec.fromElements(_formulaTracker.committed);
+    if (spec == null) return;
+    final newAbilities = spec.abilities.difference(_recordedAbilities);
+    if (newAbilities.isEmpty) return;
+    _recordedAbilities.addAll(newAbilities);
+    RecipeBook.markDiscovered(newAbilities.map(summonAbilityKey));
   }
 
   void _triggerFlicker(HexGrid next) {
@@ -534,10 +560,12 @@ class _GameScreenState extends State<GameScreen>
         actions: [
           IconButton(
             icon: const Icon(Icons.menu_book),
-            tooltip: 'Recipes',
+            tooltip: _isSummonMode ? 'Abilities' : 'Recipes',
             onPressed: () => Navigator.push(
               context,
-              MaterialPageRoute(builder: (_) => const RecipesScreen()),
+              MaterialPageRoute(
+                builder: (_) => RecipesScreen(isSummon: _isSummonMode),
+              ),
             ),
           ),
           IconButton(

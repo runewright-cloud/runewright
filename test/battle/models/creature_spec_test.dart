@@ -205,6 +205,29 @@ void main() {
       final r2 = morphicReducedSequence(original, scriptedNextInt);
       expect(r1, equals(r2));
     });
+
+    test('always keeps at least one Earth when the original has one, across '
+        'every RNG draw (design decision 2026-07-18: no stillborn reforms)', () {
+      // WWWW FF EE: half = 4, drawn from a pool where a fully-random pick
+      // has a real chance (~21%) of excluding both Earth activations --
+      // this is exactly the scenario that used to spawn a 0-maxHp successor.
+      final original = _seq('WWWWFFEE');
+      for (var seed = 0; seed < 500; seed++) {
+        var i = seed; // vary the "RNG" deterministically per iteration
+        int nextInt(int max) => (i++) % max;
+        final reduced = morphicReducedSequence(original, nextInt)!;
+        expect(reduced, contains(BorderZone.earth),
+            reason: 'seed $seed produced a reform with no Earth at all');
+      }
+    });
+
+    test('falls back to fully random selection when the original has zero '
+        'Earth (nothing to reserve)', () {
+      final original = _seq('WWWWFF'); // no Earth anywhere in the source
+      final reduced = morphicReducedSequence(original, (max) => 0)!;
+      expect(reduced.length, 3); // half = 3, unaffected by the Earth guarantee
+      expect(reduced, isNot(contains(BorderZone.earth)));
+    });
   });
 
   group('resistance wheel', () {

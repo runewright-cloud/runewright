@@ -22,7 +22,11 @@
 //      nearest enemy (TurnLoop._moveClouds). Deliberately kept here, ahead
 //      of Action resolution, so a cloud's position for the rest of the turn
 //      (including the adjacent-only targeting restriction checked during
-//      Phase 5) reflects this turn's move, not last turn's.
+//      Phase 5) reflects this turn's move, not last turn's. A cloud a spell
+//      *creates* during Phase 5 (below) has already missed this sweep, so
+//      TurnLoop._resolveActions gives it one immediate _moveCloud step right
+//      after it's summoned — same idea as a Potent summon's immediate
+//      action, so a fresh cloud is never dead-still on the turn it's cast.
 //   4b. Melee commit-reveal — after movement has resolved, each player with
 //      an adjacent hostile target may commit an optional melee choice;
 //      resolved at the start of phase 5, independent of the main action (a
@@ -92,7 +96,7 @@
 //   No melee: [0x00]   Melee: [0x01][q:2][r:2]
 // Commit/reveal shape identical to movement's.
 
-import 'dart:convert' show utf8;
+import 'dart:convert' show jsonDecode, jsonEncode, utf8;
 import 'dart:math' show max, min, pow;
 import 'dart:typed_data';
 
@@ -101,6 +105,8 @@ import 'package:cryptography/cryptography.dart';
 import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
+import 'package:rune_duel/spells/spell_authorization.dart';
+import 'package:rune_duel/spells/spell_permission.dart';
 
 import '../models/battle_state.dart';
 import '../models/casting_enhancements.dart';
@@ -121,17 +127,21 @@ import '../models/terrain.dart'
         WaterCloud,
         FloorIsLava,
         MobileCloud,
+        CloudObject,
         SlowTile,
         ConveyorTile;
 import '../models/wizard_avatar.dart';
 import '../networking/battle_session.dart';
+import '../../identity/identity.dart';
 import '../../protocol/match_session.dart' show ProofVerifier;
 import 'book_commitment.dart';
 import 'commit_reveal.dart';
+import 'draw_schedule.dart';
 import 'effect_applicator.dart';
 import 'hash_rng.dart';
 import 'effect_resolver.dart';
 import 'proof_intake.dart';
+import 'spell_draw.dart';
 import 'tile_entry_resolver.dart';
 import 'trajectory_parser.dart';
 import '../../sorcerer/vocal_score.dart';
@@ -373,6 +383,12 @@ const _kMaxMana = 9999;
 /// [TurnInput.meditateInMove] and [MeditateAction].
 const _kMeditateManaGain = 25;
 
+/// Domain-separation tag for the per-turn signed state-hash (Phase D,
+/// BATTLE_AUTH_PLAN.md §6). Distinct from battle_session.dart's
+/// `kIdentityAuthSignatureTag` so a state-hash signature can never be
+/// replayed as an auth signature or vice-versa.
+const kStateHashSignatureTag = 'RUNEWRIGHT_BATTLE_STATE_V1\x00';
+
 /// Asks the local UI which adjacent tile (if any) to melee this turn, given
 /// the list of adjacent tiles that hold at least one living hostile entity.
 /// [candidates] is always non-empty when this is called — [TurnLoop] only
@@ -403,11 +419,16 @@ class TurnLoop {
     this.verifyProof,
     this.vkBytes,
     this.peerBookRoot,
+    this.peerBookLeafCount,
+    this.peerOwnerPubkeyHex,
+    this.peerPermissions = const [],
     this.tier = 24,
     this.isSorcererMode = false,
     this.meleeTargetPicker = _defaultNoMelee,
     this.freeMoveDirectionPicker = _defaultNoFreeMove,
     this.onPhase,
+    this.signMessage,
+    this.peerRawPubkey,
   });
 
   final BattleState state;
@@ -464,6 +485,26 @@ class TurnLoop {
   /// to verify the membership proof included with each peer spell cast.
   final String? peerBookRoot;
 
+  /// The peer's chapter leaf count, declared publicly at handshake alongside
+  /// [peerBookRoot] (SPELL_DRAW_WIRING_PLAN.md §3). Lets this client deal the
+  /// peer's [DrawSchedule] (position bookkeeping only — see [_drawSchedules])
+  /// without ever learning the peer's chapter contents. Null in solo/test,
+  /// matching [peerBookRoot]'s own doc comment.
+  final int? peerBookLeafCount;
+
+  /// The peer's *authenticated* owner_pubkey (BATTLE_AUTH_PLAN.md §3) — the
+  /// result of a fresh-nonce Ed25519 challenge-response at handshake
+  /// (`BattleSession.exchangeIdentityAuth`), NOT the unauthenticated value a
+  /// proof merely declares. Gates cast authorization (§4): null in solo/test,
+  /// where there is no real peer to authenticate and the check is skipped.
+  final String? peerOwnerPubkeyHex;
+
+  /// Signed loan/transfer grants naming the peer as grantee, verified at
+  /// handshake (`BattleSession.exchangeSpellPermissions`,
+  /// BATTLE_AUTH_PLAN.md §5). Consulted by [castingPlayerMayUse] when the
+  /// peer casts a spell they don't own. Empty in solo/test.
+  final List<SpellPermission> peerPermissions;
+
   /// Circuit tier (12 / 24 / 48), from [MatchConfig.tier]. Required for
   /// [ProofIntake.verifyAndParse] to parse public outputs correctly.
   final int tier;
@@ -479,6 +520,248 @@ class TurnLoop {
   /// When null, proof bytes and membership proofs are omitted from the wire.
   List<String>? localChapterCommitments;
 
+  /// The local player's own chapter, as full [SpellAsset]s rather than just
+  /// commitment hashes — set alongside [localChapterCommitments]. Needed to
+  /// answer an incoming Watery Scrying Pool reveal (§ divination spellList
+  /// flavor): the peer needs the actual spell data, not just its hash, to
+  /// render anything. When null, an incoming reveal request is answered as
+  /// "no active reveal" — same as having no chapter loaded yet.
+  ///
+  /// NOT required to be pre-sorted by commitmentHex — [_dealOpeningHandsIfNeeded]
+  /// sorts its own canonical copy before dealing (see that method's doc
+  /// comment for why: this field arrives in whatever order the UI's chapter
+  /// resolution produced, which is not the Merkle leaf order).
+  List<SpellAsset>? localChapterSpells;
+
+  /// The local player's verified view of the enemy's spell list, when an
+  /// outgoing Water [DivinationLink] is active this turn — null otherwise.
+  /// Reset to null at the start of every [beginTurn] before the exchange
+  /// runs, so a stale reveal never survives past the turn it was granted for
+  /// (this is what makes the UI's reveal row clear at end of turn).
+  List<SpellAsset>? revealedEnemyHand;
+
+  // ── Hand/deck (SPELL_DRAW_WIRING_PLAN.md §2) ────────────────────────────────
+  //
+  // Two kinds of draw state, split by secrecy (§2 consequence 1):
+  //   - CONTENTS (which SpellAsset sits at each position): local-only,
+  //     [localSpellDraw], never serialized into the state hash.
+  //   - POSITIONS (the in-hand/withered index sets): publicly computable by
+  //     BOTH clients from the entropy stream + the public cast/effect log —
+  //     [_drawSchedules], keyed by playerId, for BOTH players.
+  // Both are dealt together, from the same seed bytes via two independently
+  // constructed HashRng instances, so they can never desync from a shared
+  // mutable-RNG-state bug (only from a genuine logic error, which
+  // draw_schedule_test.dart's cross-check and the turn-loop determinism tests
+  // guard against).
+
+  /// The local player's live hand/deck contents. Null until [localChapterSpells]
+  /// has resolved and the opening deal has run (see [_dealOpeningHandsIfNeeded]).
+  SpellDraw? localSpellDraw;
+
+  /// Position-only hand/deck bookkeeping for BOTH players, keyed by playerId.
+  /// The single public source of truth §6's in-hand cast enforcement and §9's
+  /// wither/reactivate run against. The local player's entry always stays in
+  /// lockstep with [localSpellDraw] (same draws, independently seeded — see
+  /// header comment above). The peer's entry exists only when [peerBookLeafCount]
+  /// is non-null (a real duel); stays absent for solo/test, matching how there
+  /// is no peer chapter at all in that mode.
+  final Map<String, DrawSchedule> _drawSchedules = {};
+
+  /// Set once [_dealOpeningHandsIfNeeded] has dealt the opening hands, so a
+  /// later turn never re-deals (chapter resolution is async and may not be
+  /// ready on turn 1 — see that method's doc comment).
+  bool _handsDealt = false;
+
+  /// True once [startBattle] has run the battle-start entropy exchange, so a
+  /// second call (e.g. a re-render triggering the init path again) no-ops.
+  bool _battleStarted = false;
+
+  /// Monotonic per-player draw counter, folded into every refill (0x05) and
+  /// wither (0x06) seed so multiple draws for one player within a single
+  /// entropy window never collide onto the same RNG stream. The turn-based
+  /// engine draws at most once per player per turn, so today this only ever
+  /// reaches 1 per turn — but real-time/sorcerer mode casts as fast as mana +
+  /// input allow (SPELL_DRAW_WIRING_PLAN.md §4), so the discriminator has to
+  /// exist before that engine lands. Both clients increment it in the same
+  /// lockstep resolution order, so it stays in sync (turn-loop determinism
+  /// tests guard that).
+  final Map<String, int> _drawSeedNonce = {};
+
+  int _consumeDrawNonce(String playerId) {
+    final n = _drawSeedNonce[playerId] ?? 0;
+    _drawSeedNonce[playerId] = n + 1;
+    return n;
+  }
+
+  /// Runs the battle-start commit-reveal (BATTLE_PROTOCOL.md §0's per-battle
+  /// `exchangeNonce`, specified but previously unimplemented) and deals both
+  /// opening hands from its joint entropy — once, *before* turn 1's action
+  /// commit — so turn 1 is fully castable like any other turn. The UI must
+  /// await this before enabling turn-1 interaction (battle_screen gates its
+  /// `_loopReady` spinner on it).
+  ///
+  /// Mechanically this is just one extra round of the same `exchangeNonce`
+  /// [_resolveEntropy] already runs every turn, placed ahead of the loop; both
+  /// clients call it symmetrically from the same setup path. Idempotent.
+  ///
+  /// Headless callers (tests) that never call this still get an opening hand:
+  /// [runTurn] deals from turn-1 entropy the first time via
+  /// [_dealOpeningHandsIfNeeded] (the `_handsDealt` guard makes that a no-op
+  /// once this has dealt). That fallback is why turn-based tests don't need a
+  /// setup step.
+  Future<void> startBattle() async {
+    if (_battleStarted) return;
+    _battleStarted = true;
+    final startEntropy = await _resolveEntropy();
+    _dealOpeningHandsIfNeeded(startEntropy);
+  }
+
+  /// Deals the opening hand/deck for both players, once, from [entropy].
+  ///
+  /// Interactive play deals from the **battle-start** joint entropy, via
+  /// [startBattle], before turn 1's action commit — so turn 1 is fully castable
+  /// (SPELL_DRAW_WIRING_PLAN.md §3). Headless callers that skip [startBattle]
+  /// (turn-based tests) fall back to dealing from turn-1's entropy the first
+  /// time [runTurn] reaches here; the `_handsDealt` guard makes whichever path
+  /// runs first the only one that deals.
+  ///
+  /// No-ops (and leaves [_handsDealt] false, so the next turn retries) until
+  /// [localChapterSpells] is set — mirrors [_maybeSetLocalChapterCommitments]'s
+  /// same race in battle_screen.dart.
+  ///
+  /// [localChapterSpells] is NOT required to already be commitmentHex-sorted
+  /// (battle_screen.dart's `_loadSpells` builds it in chapter-entry order) —
+  /// this method sorts its own canonical copy first. That sort is load-bearing:
+  /// SpellDraw/DrawSchedule's positions only line up with BookCommitment's
+  /// Merkle leaf indices when both sort by the same key (§2 consequence 3).
+  void _dealOpeningHandsIfNeeded(Uint8List entropy) {
+    if (_handsDealt) return;
+    final chapter = localChapterSpells;
+    if (chapter == null) return;
+    _handsDealt = true;
+
+    final canonicalChapter = List<SpellAsset>.from(chapter)
+      ..sort((a, b) => a.commitmentHex.compareTo(b.commitmentHex));
+    final bookmarkCount = state.config.bookmarkCount;
+
+    final localSeed = _playerPhaseSeed(
+      entropy,
+      matchId,
+      state.turnNumber,
+      0x07,
+      localPlayerId,
+    );
+    localSpellDraw = SpellDraw.opening(
+      canonicalChapter,
+      bookmarkCount,
+      HashRng(localSeed),
+    );
+    _drawSchedules[localPlayerId] = DrawSchedule.opening(
+      canonicalChapter.length,
+      bookmarkCount,
+      HashRng(localSeed),
+    );
+
+    final peerId = _peerId();
+    final leafCount = peerBookLeafCount;
+    if (peerId != null && leafCount != null && leafCount > 0) {
+      final peerSeed = _playerPhaseSeed(
+        entropy,
+        matchId,
+        state.turnNumber,
+        0x07,
+        peerId,
+      );
+      _drawSchedules[peerId] = DrawSchedule.opening(
+        leafCount,
+        bookmarkCount,
+        HashRng(peerSeed),
+      );
+    }
+  }
+
+  /// Advances hand/deck draw state after a validated cast leaves [casterId]'s
+  /// hand (SPELL_DRAW_WIRING_PLAN.md §4). [position] is the cast's
+  /// authenticated chapter position (a Merkle leafIndex, derived identically
+  /// whether [casterId] is the local player or the peer — see the two call
+  /// sites in [runTurn]).
+  ///
+  /// Always advances the public [_drawSchedules] entry for [casterId] — the
+  /// bookkeeping both clients compute for both players — when one has been
+  /// dealt (no-ops otherwise: a chapter-load race, see
+  /// [_dealOpeningHandsIfNeeded], not a correctness issue since no cast can
+  /// reach here before dealing succeeds on an honest peer). Additionally
+  /// advances [localSpellDraw]'s CONTENTS when [casterId] is the local
+  /// player — the peer's contents are never known to this client.
+  ///
+  /// The schedule and (when local) SpellDraw updates use two independently
+  /// constructed HashRng instances from the *same* seed bytes, never a
+  /// shared mutable instance — see this class's "Hand/deck" header comment
+  /// for why that's what keeps them from ever desyncing.
+  void _advanceDrawState(String casterId, int position, Uint8List entropy) {
+    final schedule = _drawSchedules[casterId];
+    if (schedule == null) return;
+    final handIndex = schedule.hand.indexOf(position);
+    if (handIndex < 0) return; // already validated castable — shouldn't happen
+    final seed = _playerPhaseSeed(
+      entropy,
+      matchId,
+      state.turnNumber,
+      0x05,
+      casterId,
+      _consumeDrawNonce(casterId),
+    );
+    _drawSchedules[casterId] = schedule.useSlotAtPosition(
+      position,
+      HashRng(seed),
+    );
+    if (casterId == localPlayerId) {
+      final draw = localSpellDraw;
+      if (draw != null && handIndex < draw.hand.length) {
+        localSpellDraw = draw.useSpell(handIndex, HashRng(seed));
+      }
+    }
+  }
+
+  /// Whether chapter position [position] is currently withered, per this
+  /// client's own public [_drawSchedules] bookkeeping for [playerId] — the
+  /// same bookkeeping both clients compute identically (§9). False if that
+  /// player's schedule isn't dealt yet. Exposed beyond [isHandSpellWithered]'s
+  /// local-only convenience so callers (and tests — SPELL_DRAW_WIRING_PLAN.md
+  /// §10 item 5) can assert cross-client agreement on withered state for
+  /// either player, not just the local one.
+  bool isPositionWithered(String playerId, int position) =>
+      _drawSchedules[playerId]?.isWithered(position) ?? false;
+
+  /// Whether [spell] — a card currently in [localSpellDraw]'s hand — is
+  /// withered and therefore not castable (FuelTransmutation Fire, §9). The
+  /// UI seam (battle_screen.dart) uses this to grey out withered cards and
+  /// [_selectSpell] should refuse them. False (never withered) if draw state
+  /// isn't dealt yet or [spell] isn't a chapter member.
+  bool isHandSpellWithered(SpellAsset spell) {
+    final commitments = localChapterCommitments;
+    if (commitments == null) return false;
+    final proof = BookCommitment.proveMembership(commitments, spell.commitmentHex);
+    if (proof == null) return false;
+    return isPositionWithered(localPlayerId, proof.leafIndex);
+  }
+
+  // ── Phase D: signed per-turn state hash (BATTLE_AUTH_PLAN.md §6) ───────────
+
+  /// Signs a message with the local identity's private key
+  /// (`Identity.sign`, bound at construction). When non-null, every
+  /// outgoing state hash is signed; when null (solo/test), the raw 32-byte
+  /// hash is sent unsigned, exactly as before Phase D existed.
+  final Future<List<int>> Function(List<int> message)? signMessage;
+
+  /// The peer's raw 32-byte Ed25519 public key, authenticated at handshake
+  /// (`BattleSession.exchangeIdentityAuth`'s `AuthenticatedPeer.rawPubkey`) —
+  /// NOT the unauthenticated value a proof merely declares. When non-null,
+  /// every incoming state hash's signature is verified against it before the
+  /// hash-equality lockstep check runs. Null in solo/test, where there is no
+  /// real peer to verify against.
+  final Uint8List? peerRawPubkey;
+
   /// commitmentHex values the peer has cast this match. A second cast of the
   /// same grid is a protocol violation (Kin-stacking exploit); the match is
   /// forfeited on detection.
@@ -492,6 +775,17 @@ class TurnLoop {
   /// order (the same order [_resolveActions] applied them). Cleared and
   /// repopulated at the start of every turn. See [ResolvedSpellEvent].
   List<ResolvedSpellEvent> lastResolvedSpells = [];
+
+  /// commitmentHex → certified BASE mana cost (5×segmentCount + dotCount,
+  /// grown by 1.05^T × 1.5^effectCount — see [_certifiedBaseManaCost]) for
+  /// every peer spell verified during the most recent [runTurn] call.
+  /// Cleared and repopulated at the start of every turn, populated only for
+  /// peer casts (by [_verifyPeerSpellCast]) — never for the local player's
+  /// own cast. This is the "clean bestiary stat" (Sightings, docs/
+  /// SIGHTINGS_PLAN.md §2), deliberately excluding the per-cast modifiers
+  /// (chain discount, Efficiency, sorcerer multiplier, nextSpellCostDouble)
+  /// that [_certifiedManaCost] layers on top for the actual mana deduction.
+  Map<String, int> lastCertifiedBaseManaCosts = {};
 
   /// Conveyor-tile pushes (cascades, closed loops) resolved during the most
   /// recent [runTurn] call, for the UI's belt/loop animation. Cleared and
@@ -577,12 +871,20 @@ class TurnLoop {
 
     _deductManaForCommittedSpell(action);
 
-    return _exchangeScryOpenings(
+    final openedTarget = await _exchangeScryOpenings(
       actionBytes: actionBytes,
       saltA: saltA,
       saltB: saltB,
       peerActionCommit: peerActionCommit,
     );
+
+    // Reset before the exchange so a stale reveal never survives past the
+    // turn it was granted for — this is what makes the UI's thumbnail row
+    // clear at end of turn, with no separate expiry timer needed.
+    revealedEnemyHand = null;
+    revealedEnemyHand = await _exchangeSpellRevealOpenings();
+
+    return openedTarget;
   }
 
   /// Deducts mana for [action] immediately after its commit is exchanged
@@ -660,6 +962,7 @@ class TurnLoop {
     lastCastEvents = [];
     lastResolvedSpells = [];
     lastConveyorChainEvents = [];
+    lastCertifiedBaseManaCosts = {};
 
     // Turn-scoped map from commitmentHex → certified ParsedFormulas derived from
     // the peer's verified proof. Populated by _verifyPeerSpellCast; consumed by
@@ -780,6 +1083,10 @@ class TurnLoop {
     // now; it seeds all resolution RNG in phases 4–6.
     final entropy = await _resolveEntropy();
 
+    // Opening hand/deck deal (SPELL_DRAW_WIRING_PLAN.md §3) — once only, the
+    // first time localChapterSpells has resolved (in practice, turn 1).
+    _dealOpeningHandsIfNeeded(entropy);
+
     // Movement resolution (contested-tile collision, then the actual walk)
     // is deferred to here rather than done inline in Phase 2: Phase 2 only
     // needs to exchange the *declared* paths fairly before entropy is known
@@ -883,6 +1190,35 @@ class TurnLoop {
       );
     }
 
+    // Hand/deck refill (SPELL_DRAW_WIRING_PLAN.md §4) — a spell leaves the
+    // caster's hand the instant its cast is committed this turn, regardless
+    // of whether it resolves immediately or is held for a Mystery delay
+    // (matches where the in-hand check above already validated it, and
+    // where _appendSpellProofTail/proveMembership prove "which position").
+    // Deliberately uses the ORIGINAL action/input.action (not myAction/
+    // peerAction below) since those get mystery-converted, losing this
+    // distinction for delayed casts, while .spell survives either way.
+    final localSpell = switch (input.action) {
+      SpellCastAction(:final spell) => spell,
+      MysterySpellCastAction(:final spell) => spell,
+      _ => null,
+    };
+    final localCommitments = localChapterCommitments;
+    if (localSpell != null && localCommitments != null) {
+      final localProof = BookCommitment.proveMembership(
+        localCommitments,
+        localSpell.commitmentHex,
+      );
+      if (localProof != null) {
+        _advanceDrawState(localPlayerId, localProof.leafIndex, entropy);
+      }
+    }
+    if ((action is SpellCastAction || action is MysterySpellCastAction) &&
+        merkleProof != null &&
+        peerId != null) {
+      _advanceDrawState(peerId, merkleProof.leafIndex, entropy);
+    }
+
     // For immediate mystery spells (delay=0), verify the commitment and
     // convert to SpellCastAction. Fizzles to Pass on hash mismatch.
     final myAction = await _verifyMysteryAction(input.action);
@@ -917,6 +1253,7 @@ class TurnLoop {
       peerAction,
       preMovPos,
       actionRng,
+      entropy,
       traversedPaths: walked,
       delayedFires: [...localFires, ...peerFires],
       certifiedPeerFormulas: certifiedPeerFormulas,
@@ -1035,6 +1372,33 @@ class TurnLoop {
     return Uint8List.fromList(sha256.convert(buf.toBytes()).bytes);
   }
 
+  /// Per-player phase seed: [_phaseSeed] with [playerId] folded into the
+  /// preimage, so two players' draws in the same turn/phase never share a
+  /// HashRng stream (SPELL_DRAW_ENTROPY_PLAN.md §9's "append to preimage"
+  /// recommendation for per-player stream separation — this codebase has no
+  /// numeric player-index convention, so [playerId] itself is the domain
+  /// separator). Used for SpellDraw/DrawSchedule opening deals (tag 0x07),
+  /// refill draws (tag 0x05), and FuelTransmutation wither/reactivate draws
+  /// (tag 0x06) — see SPELL_DRAW_WIRING_PLAN.md §§4, 9.
+  static Uint8List _playerPhaseSeed(
+    Uint8List entropy,
+    Uint8List? matchId,
+    int turnNumber,
+    int tag,
+    String playerId, [
+    int drawNonce = 0,
+  ]) {
+    final buf = BytesBuilder(copy: false);
+    buf.add(_phaseSeed(entropy, matchId, turnNumber, tag));
+    buf.add(utf8.encode(playerId));
+    buf
+      ..addByte((drawNonce >> 24) & 0xFF)
+      ..addByte((drawNonce >> 16) & 0xFF)
+      ..addByte((drawNonce >> 8) & 0xFF)
+      ..addByte(drawNonce & 0xFF);
+    return Uint8List.fromList(sha256.convert(buf.toBytes()).bytes);
+  }
+
   /// Action phase seed: folds in XOR of both action commits.
   /// XOR is commutative so both clients compute the same value regardless of
   /// which is local vs peer.
@@ -1087,14 +1451,24 @@ class TurnLoop {
   /// enemy of the cloud owner's team during the Summons step each turn.
   void _moveClouds() {
     for (final cloud in state.clouds) {
-      if (cloud.kind is! MobileCloud) continue;
-      final ownerTeamId = _avatarById(cloud.ownerId)?.teamId;
-      if (ownerTeamId == null) continue;
-      final nearestEnemy = _nearestEnemyTarget(ownerTeamId, cloud.position);
-      if (nearestEnemy == null) continue;
-      final step = _greedyStep(cloud.position, nearestEnemy);
-      if (step != null) cloud.position = step;
+      _moveCloud(cloud);
     }
+  }
+
+  /// Single-cloud step used both by [_moveClouds] (every Mobile Cloud, each
+  /// turn's Phase 4) and, once, by [_resolveActions] right after a spell
+  /// creates a new cloud (Phase 5) — otherwise a cloud born this turn would
+  /// sit dead-still until *next* turn's Phase 4, since Phase 4 already ran
+  /// before this turn's spells resolved. Fully deterministic (distance-only,
+  /// no RNG), so it's safe to call outside the phase-seeded RNG flow.
+  void _moveCloud(CloudObject cloud) {
+    if (cloud.kind is! MobileCloud) return;
+    final ownerTeamId = _avatarById(cloud.ownerId)?.teamId;
+    if (ownerTeamId == null) return;
+    final nearestEnemy = _nearestEnemyTarget(ownerTeamId, cloud.position);
+    if (nearestEnemy == null) return;
+    final step = _greedyStep(cloud.position, nearestEnemy);
+    if (step != null) cloud.position = step;
   }
 
   // ── Personality AI (design doc "Personalities") ───────────────────────────
@@ -1584,7 +1958,8 @@ class TurnLoop {
     TurnAction myAction,
     TurnAction peerAction,
     Map<String, HexCoord> preMovPos,
-    HashRng rng, {
+    HashRng rng,
+    Uint8List entropy, {
     Map<String, List<HexCoord>> traversedPaths = const {},
     List<(WizardAvatar, SpellCastAction)> delayedFires = const [],
     Map<String, List<ParsedFormula>> certifiedPeerFormulas = const {},
@@ -1717,6 +2092,19 @@ class TurnLoop {
             final cloudsBefore = state.clouds.map((c) => c.id).toSet();
             final tilesBefore = state.tileEffects.keys.toSet();
             final minionsBefore = state.minions.map((m) => m.id).toSet();
+            // FuelTransmutation wither/reactivate (§9): a dedicated,
+            // per-caster RNG, kept separate from the shared actionRng
+            // stream so drawing from it can never desync that stream.
+            final witherRng = HashRng(
+              _playerPhaseSeed(
+                entropy,
+                matchId,
+                state.turnNumber,
+                0x06,
+                actor.playerId,
+                _consumeDrawNonce(actor.playerId),
+              ),
+            );
             final summoned = _applySpell(
               actor,
               spell,
@@ -1728,7 +2116,16 @@ class TurnLoop {
               certElementSequence:
                   certifiedPeerElementSequences[spell.commitmentHex],
               conveyorDirection: conveyorDirection,
+              witherRng: witherRng,
             );
+            // A cloud born this turn would otherwise sit dead-still until
+            // *next* turn's Phase 4 (_moveClouds already ran, ahead of this
+            // spell resolution, before the cloud existed) — give it its
+            // Summons-phase move right now, same turn it's summoned, so it's
+            // never visibly stationary. See _moveCloud's doc comment.
+            for (final c in state.clouds) {
+              if (!cloudsBefore.contains(c.id)) _moveCloud(c);
+            }
             lastResolvedSpells.add(
               ResolvedSpellEvent(
                 spell: spell,
@@ -1964,6 +2361,7 @@ class TurnLoop {
     List<ParsedFormula>? certFormulas,
     List<BorderZone>? certElementSequence,
     HexCoord? conveyorDirection,
+    HashRng? witherRng,
   }) {
     // design doc "Summons": a summon-mode spell's element sequence is read
     // as a creature instead of being resolved as incantation effects.
@@ -2000,31 +2398,36 @@ class TurnLoop {
     // per-turn list once for the UI's belt/loop animation.
     final conveyorEvents = <ConveyorChainEvent>[];
 
-    // Consume any pending multiplier from a previous Air-Fire multiplierCycle.
-    // TODO(battle): apply the retrieved multiplier to per-field effect scaling
-    //   once SpellEffect supports it.
-    final primaryAffinity = formulas.isNotEmpty
-        ? spellAffinityFromZone(formulas.first.affinity)
-        : null;
-    if (primaryAffinity != null) {
-      actor.pendingEffectMultipliers.remove(primaryAffinity);
-    }
-
     for (final formula in formulas) {
       final descriptor = EffectResolver.resolve(formula, enhancements);
-      EffectApplicator.apply(
-        ApplyContext(
-          descriptor: descriptor,
-          targetTile: targetHex,
-          caster: actor,
-          state: state,
-          rng: rng,
-          rodConsumedFor: rodConsumedFor,
-          movePaths: traversedPaths,
-          chosenConveyorDirection: conveyorDirection,
-          conveyorChainEvents: conveyorEvents,
-        ),
-      );
+
+      // A pending Air-Fire multiplierCycle (Bellows) on this formula's
+      // affinity re-resolves the formula's effect into extra copies inserted
+      // immediately after the original in the resolution order -- 2 total
+      // applications normally, 3 under potency. Consuming (removing) the
+      // entry here means only the first formula of a matching affinity in
+      // this spell is amplified, matching the design doc's singular "next
+      // effect of [element]" wording.
+      final formulaAffinity = spellAffinityFromZone(formula.affinity);
+      final repeatCount = actor.pendingEffectMultipliers.remove(formulaAffinity) ?? 1;
+
+      for (var i = 0; i < repeatCount; i++) {
+        EffectApplicator.apply(
+          ApplyContext(
+            descriptor: descriptor,
+            targetTile: targetHex,
+            caster: actor,
+            state: state,
+            rng: rng,
+            rodConsumedFor: rodConsumedFor,
+            movePaths: traversedPaths,
+            chosenConveyorDirection: conveyorDirection,
+            conveyorChainEvents: conveyorEvents,
+            drawSchedules: _drawSchedules,
+            witherRng: witherRng,
+          ),
+        );
+      }
     }
     lastConveyorChainEvents.addAll(conveyorEvents);
 
@@ -2397,16 +2800,63 @@ class TurnLoop {
     return jointEntropy;
   }
 
+  /// Builds the message signed/verified over a state hash: distinct per
+  /// match (matchId) and per turn (turnNumber), so a signature can't be
+  /// replayed across matches or turns.
+  List<int> _stateHashMessage(Uint8List hash) => [
+        ...utf8.encode(kStateHashSignatureTag),
+        ...(matchId ?? const <int>[]),
+        ..._be4(state.turnNumber),
+        ...hash,
+      ];
+
   Future<void> _exchangeStateHash() async {
     final canonical = state.toCanonicalBytes();
     final hashBytes = await Sha256().hash(canonical);
     final ourHash = Uint8List.fromList(hashBytes.bytes);
 
-    // TODO(battle): prepend Ed25519 signature to ourHash before sending
-    //   (BATTLE_PROTOCOL.md §6); depends on identity module.
-    final peerHash = await session.exchangeStateHash(ourHash);
+    // Phase D (BATTLE_AUTH_PLAN.md §6): sign the hash when we have a local
+    // identity to sign with (real duel); solo/test sends the raw 32-byte
+    // hash unsigned, exactly as before Phase D existed.
+    final sign = signMessage;
+    final Uint8List outgoing;
+    if (sign == null) {
+      outgoing = ourHash;
+    } else {
+      final sig = await sign(_stateHashMessage(ourHash));
+      outgoing = Uint8List.fromList([...ourHash, ...sig]);
+    }
+
+    final peerBytes = await session.exchangeStateHash(outgoing);
+
+    final rawPeerKey = peerRawPubkey;
+    final Uint8List peerHash;
+    if (rawPeerKey == null) {
+      peerHash = peerBytes;
+    } else {
+      if (peerBytes.length < 32 + 64) {
+        session.sendForfeit('missing_state_signature');
+        throw StateError(
+          'peer state hash missing signature (turn ${state.turnNumber}) — match forfeit',
+        );
+      }
+      peerHash = peerBytes.sublist(0, 32);
+      final peerSig = peerBytes.sublist(32, 96);
+      final sigOk = await Identity.verify(
+        message: _stateHashMessage(peerHash),
+        signatureBytes: peerSig,
+        publicKeyBytes: rawPeerKey,
+      );
+      if (!sigOk) {
+        session.sendForfeit('bad_state_signature');
+        throw StateError(
+          'peer state hash signature invalid (turn ${state.turnNumber}) — match forfeit',
+        );
+      }
+    }
 
     if (!_bytesEqual(ourHash, peerHash)) {
+      session.sendForfeit('state_hash_mismatch');
       throw StateError(
         'state hash mismatch on turn ${state.turnNumber}: '
         'local=${_hex(ourHash)} peer=${_hex(peerHash)}',
@@ -2678,6 +3128,254 @@ class TurnLoop {
     ..._be4(state.turnNumber),
   ]);
 
+  // ── Divination (Water) spell-list reveal ───────────────────────────────────
+  //
+  // Watery Scrying Pool ("see target's available spells") reuses the exact
+  // §13b encrypted-broadcast transport shape as [_exchangeScryOpenings], but
+  // carries a spell list rather than a single committed-target leaf, and is
+  // verified against [peerBookRoot] (the peer's chapter Merkle root, already
+  // exchanged at handshake) rather than a fresh per-turn action commitment.
+  //
+  // SPELL_DRAW_WIRING_PLAN.md §8: reveals the target's current HAND, not
+  // their whole chapter (confirmed intent — scrying shows what an opponent
+  // holds, not their whole deck). This is NOT the "transport unchanged"
+  // claim §8's prose makes: the old design proved the revealed set honest by
+  // recomputing [BookCommitment.computeRoot] over the *entire* revealed set
+  // and checking it equals [peerBookRoot] — that only works when the
+  // revealed set IS the whole chapter. A 3-card hand's root will never equal
+  // the N-card chapter's root. So each revealed spell now carries its own
+  // [MembershipProof] (siblings + directions) against [peerBookRoot]
+  // instead — the only sound way to reveal a subset while staying tied to
+  // the same root. Each proof's [MembershipProof.leafIndex] also lets the
+  // receiver check the revealed positions match the target's publicly-
+  // computed in-hand set (_drawSchedules) — checkable today, no ZK circuit
+  // needed, since that bookkeeping is already public — so a cheat client
+  // can't under-report its hand either, per §8's closing note.
+  //
+  // Residual trust boundary, shared with every other non-cast use of
+  // commitmentHex in this codebase (CLAUDE.md invariant 1 — Poseidon2 is
+  // never reimplemented in Dart, so a commitmentHex can't be independently
+  // recomputed from grid data client-side): this verifies that each revealed
+  // commitmentHex is a genuine chapter member at an in-hand position, not
+  // that its displayed name/grid/formula is honestly bound to that
+  // commitmentHex — that binding is only ever checked by the ZK proof at
+  // actual cast time. A malicious peer could pair a real commitmentHex with
+  // fabricated display data. Same boundary [_verifyPeerSpellCast] already
+  // lives with for uncast spells.
+
+  /// Returns the peer's verified current hand if this player has an active
+  /// outgoing Water [DivinationLink] and the peer's opening verified; null
+  /// otherwise (no active link, peer's hand isn't dealt yet, or the peer
+  /// declined — e.g. solo/test sessions, which never have a real chapter to
+  /// reveal).
+  Future<List<SpellAsset>?> _exchangeSpellRevealOpenings() async {
+    final peerId = _peerId();
+    final outgoingLink = peerId == null
+        ? null
+        : state.divinationLinks
+              .where(
+                (l) =>
+                    l.casterId == localPlayerId &&
+                    l.targetId == peerId &&
+                    l.remainingTurns > 0 &&
+                    l.flavor == DivinationFlavor.spellList,
+              )
+              .firstOrNull;
+    final incomingLink = peerId == null
+        ? null
+        : state.divinationLinks
+              .where(
+                (l) =>
+                    l.casterId == peerId &&
+                    l.targetId == localPlayerId &&
+                    l.remainingTurns > 0 &&
+                    l.flavor == DivinationFlavor.spellList,
+              )
+              .firstOrNull;
+
+    final x25519 = X25519();
+
+    SimpleKeyPair? myEphemeral;
+    Uint8List myKeyFrame;
+    if (outgoingLink != null) {
+      myEphemeral = await x25519.newKeyPair();
+      final pub = await myEphemeral.extractPublicKey();
+      myKeyFrame = Uint8List.fromList([0x01, ...pub.bytes]);
+    } else {
+      myKeyFrame = Uint8List.fromList([0x00]);
+    }
+    final peerKeyFrame = await session.exchangeSpellRevealKey(myKeyFrame);
+
+    Uint8List myOpenFrame = Uint8List.fromList([0x00]);
+    final hand = localSpellDraw?.hand;
+    final commitments = localChapterCommitments;
+    if (incomingLink != null &&
+        hand != null &&
+        commitments != null &&
+        peerKeyFrame.length == 33 &&
+        peerKeyFrame[0] == 0x01) {
+      final peerEkPub = SimplePublicKey(
+        peerKeyFrame.sublist(1),
+        type: KeyPairType.x25519,
+      );
+      final vk = await x25519.newKeyPair();
+      final vkPub = await vk.extractPublicKey();
+      final shared = await x25519.sharedSecretKey(
+        keyPair: vk,
+        remotePublicKey: peerEkPub,
+      );
+      final derived = await Hkdf(
+        hmac: Hmac.sha256(),
+        outputLength: 32,
+      ).deriveKey(secretKey: shared, info: _spellRevealHkdfInfo());
+
+      // Each hand card carries its own Merkle proof (siblings/directions)
+      // against our own committed book — the receiver checks it against
+      // [peerBookRoot] on their side (see this method's header comment for
+      // why a single batch root over just the hand can't work).
+      final entries = <Map<String, dynamic>>[];
+      for (final spell in hand) {
+        final proof = BookCommitment.proveMembership(
+          commitments,
+          spell.commitmentHex,
+        );
+        if (proof == null) continue; // unreachable: hand spells are chapter members
+        entries.add({
+          'spell': spell.toJson(),
+          'siblings': proof.siblings,
+          'directions': proof.directions,
+        });
+      }
+      final payload = Uint8List.fromList(utf8.encode(jsonEncode(entries)));
+      final cipher = Xchacha20.poly1305Aead();
+      final nonce = cipher.newNonce();
+      final box = await cipher.encrypt(payload, secretKey: derived, nonce: nonce);
+      myOpenFrame = Uint8List.fromList([
+        0x01,
+        ...vkPub.bytes,
+        ...box.concatenation(),
+      ]);
+    }
+    final peerOpenFrame = await session.exchangeSpellRevealOpen(myOpenFrame);
+
+    if (myEphemeral == null ||
+        peerOpenFrame.isEmpty ||
+        peerOpenFrame[0] != 0x01) {
+      return null;
+    }
+    if (peerOpenFrame.length < 1 + 32) return null;
+    final vkPub = SimplePublicKey(
+      peerOpenFrame.sublist(1, 33),
+      type: KeyPairType.x25519,
+    );
+    final shared = await x25519.sharedSecretKey(
+      keyPair: myEphemeral,
+      remotePublicKey: vkPub,
+    );
+    final derived = await Hkdf(
+      hmac: Hmac.sha256(),
+      outputLength: 32,
+    ).deriveKey(secretKey: shared, info: _spellRevealHkdfInfo());
+
+    const nonceLen = 24, macLen = 16;
+    final boxBytes = peerOpenFrame.sublist(33);
+    if (boxBytes.length < nonceLen + macLen) return null;
+    final box = SecretBox.fromConcatenation(
+      boxBytes,
+      nonceLength: nonceLen,
+      macLength: macLen,
+    );
+
+    List<int> payloadBytes;
+    try {
+      payloadBytes = await Xchacha20.poly1305Aead().decrypt(box, secretKey: derived);
+    } catch (_) {
+      session.sendForfeit('bad_spell_reveal');
+      throw StateError('peer spell reveal failed AEAD auth — match forfeit');
+    }
+
+    List<SpellAsset> revealed;
+    List<MembershipProof> revealedProofs;
+    try {
+      final decoded = jsonDecode(utf8.decode(payloadBytes)) as List<dynamic>;
+      final spells = <SpellAsset>[];
+      final proofs = <MembershipProof>[];
+      for (final entryRaw in decoded) {
+        final entry = entryRaw as Map<String, dynamic>;
+        final spell = SpellAsset.fromJson(entry['spell'] as Map<String, dynamic>);
+        final siblings = (entry['siblings'] as List<dynamic>).cast<String>();
+        final directions = (entry['directions'] as List<dynamic>).cast<bool>();
+        spells.add(spell);
+        proofs.add(MembershipProof(
+          root: '', // filled per-entry below, from peerBookRoot
+          leafHex: spell.commitmentHex,
+          siblings: siblings,
+          directions: directions,
+        ));
+      }
+      revealed = spells;
+      revealedProofs = proofs;
+    } catch (_) {
+      session.sendForfeit('bad_spell_reveal');
+      throw StateError('peer spell reveal payload malformed — match forfeit');
+    }
+
+    final root = peerBookRoot;
+    if (root == null) {
+      session.sendForfeit('bad_spell_reveal');
+      throw StateError(
+        'peer spell reveal received with no book commitment on file — match forfeit',
+      );
+    }
+    // The public in-hand set for the revealing peer — checkable today with
+    // no ZK circuit (see this method's header comment). Absent (skip, not
+    // fail) if our own bookkeeping for them isn't dealt yet — a local
+    // chapter-load race, not the peer's fault (mirrors §6's same treatment).
+    final revealSchedule = _drawSchedules[peerId];
+    try {
+      for (var i = 0; i < revealed.length; i++) {
+        final proofWithRoot = MembershipProof(
+          root: root,
+          leafHex: revealedProofs[i].leafHex,
+          siblings: revealedProofs[i].siblings,
+          directions: revealedProofs[i].directions,
+        );
+        if (!proofWithRoot.verify()) {
+          session.sendForfeit('bad_spell_reveal');
+          throw StateError(
+            'peer spell reveal entry ${revealed[i].commitmentHex} failed '
+            'membership verification — match forfeit',
+          );
+        }
+        if (revealSchedule != null &&
+            !revealSchedule.isInHand(proofWithRoot.leafIndex)) {
+          session.sendForfeit('bad_spell_reveal');
+          throw StateError(
+            'peer spell reveal entry ${revealed[i].commitmentHex} is not in '
+            'their public in-hand set — match forfeit',
+          );
+        }
+      }
+    } on StateError {
+      rethrow;
+    } catch (_) {
+      session.sendForfeit('bad_spell_reveal');
+      throw StateError('peer spell reveal entry malformed — match forfeit');
+    }
+
+    return revealed;
+  }
+
+  /// Domain-separates the spell-reveal HKDF derivation by match and turn —
+  /// mirrors [_scryHkdfInfo] with a distinct tag so the two exchanges never
+  /// derive the same symmetric key even if somehow run with identical
+  /// ephemeral keys.
+  Uint8List _spellRevealHkdfInfo() => Uint8List.fromList([
+    ...utf8.encode('RWSPELLREV1'),
+    ...(matchId ?? const <int>[]),
+    ..._be4(state.turnNumber),
+  ]);
+
   // ── Action wire encoding / decoding ──────────────────────────────────────
 
   /// Encode a [TurnAction] to bytes for commitment hashing and wire transmission.
@@ -2709,6 +3407,9 @@ class TurnLoop {
         final formulaBytes = utf8.encode(formulaStr);
         buf.add(_be2(formulaBytes.length));
         buf.add(formulaBytes);
+        final nameBytes = utf8.encode(spell.name);
+        buf.add(_be2(nameBytes.length));
+        buf.add(nameBytes);
         buf.addByte(isPotent ? 1 : 0);
         buf.addByte(isVelocity ? 1 : 0);
         buf.addByte(isEfficiency ? 1 : 0);
@@ -2739,6 +3440,9 @@ class TurnLoop {
         final formulaBytes = utf8.encode(formulaStr);
         buf.add(_be2(formulaBytes.length));
         buf.add(formulaBytes);
+        final nameBytes3 = utf8.encode(spell.name);
+        buf.add(_be2(nameBytes3.length));
+        buf.add(nameBytes3);
         buf.add(mysteryCommitment);
         final isImmediate = immediateTarget != null && immediateNonce != null;
         buf.addByte(isImmediate ? 1 : 0);
@@ -2808,18 +3512,27 @@ class TurnLoop {
     bool withProof = false,
     bool isSorcererMode = false,
   }) {
+    // BUG FIX (found via SPELL_DRAW_WIRING_PLAN.md §10 item 4's test — a
+    // pre-existing bug, dormant because every prior test used a single-spell
+    // chapter, where BookCommitment.proveMembership has no siblings and
+    // _appendSpellProofTail writes depth=0, never exercising this path):
+    // [pos] here is ALREADY past the wire's [proof_len:4][proof_bytes:N]
+    // segment — both call sites below decode that segment themselves first
+    // (into decodedProofBytes/decodedProofBytes3) and pass the ADVANCED
+    // [pos]. This function used to re-read another [proof_len:4] from that
+    // already-advanced position and skip that many (garbage) bytes, which
+    // for any REAL multi-spell chapter (nonzero merkle depth) blew past
+    // [b.length] and made every merkleProof silently null — book-membership
+    // and hand-membership (§6) checks were both unconditionally skipped
+    // for any chapter with more than one spell. The tail format is
+    // [proof_len:4][proof_bytes:N][merkle_depth:1][path...] — this function
+    // only ever needs to read from merkle_depth onward.
     MembershipProof? parseProofTail(
       Uint8List b,
       int pos,
       String commitmentHex,
     ) {
-      if (!withProof || pos + 4 > b.length) return null;
-      final proofLen = _readBe4(b, pos);
-      pos += 4;
-      if (pos + proofLen > b.length) return null;
-      // proofBytes are on the spell — already decoded separately; skip past them.
-      pos += proofLen;
-      if (pos >= b.length) return null;
+      if (!withProof || pos >= b.length) return null;
       final depth = b[pos++];
       final siblings = <String>[];
       final directions = <bool>[];
@@ -2848,7 +3561,7 @@ class TurnLoop {
         return (action: PassAction(), merkleProof: null);
 
       case 0x01:
-        if (bytes.length < 1 + 32 + 2 + 4 + 2 + 3) {
+        if (bytes.length < 1 + 32 + 2 + 4 + 2 + 2 + 3) {
           return (action: PassAction(), merkleProof: null);
         }
         int pos = 1;
@@ -2867,6 +3580,12 @@ class TurnLoop {
             : '';
         pos += formulaLen;
         final formula = formulaStr.isEmpty ? <String>[] : formulaStr.split(',');
+        final nameLen = pos + 2 <= bytes.length ? _readBe2(bytes, pos) : 0;
+        pos += 2;
+        final name = pos + nameLen <= bytes.length
+            ? utf8.decode(bytes.sublist(pos, pos + nameLen))
+            : '';
+        pos += nameLen;
         final commitmentHex =
             '0x${commitBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join()}';
 
@@ -2905,7 +3624,7 @@ class TurnLoop {
           dotCount: 0,
           initialGrid: const [],
           proofBytes: decodedProofBytes,
-          name: '',
+          name: name,
           commitmentHex: commitmentHex,
           spellHashHex: '',
           formula: formula,
@@ -2946,7 +3665,7 @@ class TurnLoop {
         return (action: MeditateAction(), merkleProof: null);
 
       case 0x03:
-        if (bytes.length < 1 + 32 + 2 + 2)
+        if (bytes.length < 1 + 32 + 2 + 2 + 2)
           return (action: PassAction(), merkleProof: null);
         int pos3 = 1;
         final spellCommit = bytes.sublist(pos3, pos3 + 32);
@@ -2959,6 +3678,12 @@ class TurnLoop {
             ? utf8.decode(bytes.sublist(pos3, pos3 + formulaLen3))
             : '';
         pos3 += formulaLen3;
+        final nameLen3 = pos3 + 2 <= bytes.length ? _readBe2(bytes, pos3) : 0;
+        pos3 += 2;
+        final name3 = pos3 + nameLen3 <= bytes.length
+            ? utf8.decode(bytes.sublist(pos3, pos3 + nameLen3))
+            : '';
+        pos3 += nameLen3;
         if (pos3 + 32 + 1 > bytes.length)
           return (action: PassAction(), merkleProof: null);
         final mysteryCommit = bytes.sublist(pos3, pos3 + 32);
@@ -2998,7 +3723,7 @@ class TurnLoop {
           dotCount: 0,
           initialGrid: const [],
           proofBytes: decodedProofBytes3,
-          name: '',
+          name: name3,
           commitmentHex: commitmentHex3,
           spellHashHex: '',
           formula: formulaStr3.isEmpty ? [] : formulaStr3.split(','),
@@ -3111,6 +3836,11 @@ class TurnLoop {
     certifiedPeerFormulas[spell.commitmentHex] = certFormulas;
     certifiedPeerElementSequences[spell.commitmentHex] =
         TrajectoryParser.certifiedElementSequence(outputs);
+    // Retained for Sightings capture (docs/SIGHTINGS_PLAN.md §2/§4) — the
+    // clean bestiary base cost, independent of this cast's modifiers. Read
+    // by battle_screen.dart's capture hook after runTurn returns.
+    lastCertifiedBaseManaCosts[spell.commitmentHex] =
+        _certifiedBaseManaCost(outputs, certFormulas);
 
     // 2b. Enhancement-claim verification. isPotent/isVelocity/isEfficiency
     // (and Mystery, implied by the action type itself) must each be backed
@@ -3154,6 +3884,52 @@ class TurnLoop {
         session.sendForfeit('book_membership_failed');
         throw StateError(
           'peer spell ${spell.commitmentHex} is not a member of their committed book — match forfeit',
+        );
+      }
+
+      // 3a. Hand membership (SPELL_DRAW_WIRING_PLAN.md §6). The Merkle path
+      // just verified doesn't only prove chapter membership — its directions
+      // authenticate *which* position was cast (proofWithRoot.leafIndex).
+      // That position must be in the caster's publicly-computed in-hand set
+      // and not withered. This is the "interim soft" enforcement §6 calls
+      // for: correct against an honest client; a malicious client could
+      // still forge an unsorted book tree (closed by the §7 sortedness
+      // circuit, not yet landed). Skipped (not failed) when our own
+      // DrawSchedule bookkeeping for the peer isn't dealt yet — a local
+      // chapter-load race (see _dealOpeningHandsIfNeeded), not the peer's
+      // fault.
+      final schedule = _drawSchedules[_peerId()];
+      if (schedule != null && !schedule.isCastable(proofWithRoot.leafIndex)) {
+        session.sendForfeit('cast_out_of_hand');
+        throw StateError(
+          'peer spell ${spell.commitmentHex} at position ${proofWithRoot.leafIndex} '
+          'is not in their castable hand — match forfeit',
+        );
+      }
+    }
+
+    // 3b. Cast authorization (BATTLE_AUTH_PLAN.md §4). The proof declares an
+    // owner_pubkey (outputs.ownerPubkeyHex), but per CLAUDE.md invariant 5 the
+    // circuit never proves the caster holds that key — a proof alone can
+    // declare any owner. [peerOwnerPubkeyHex] is the peer's *authenticated*
+    // identity (verified via a fresh-nonce Ed25519 signature at handshake —
+    // see BattleSession.exchangeIdentityAuth), so this check is what actually
+    // stops a peer casting a spell they neither own nor hold a grant for.
+    // Null in solo/test (no authenticated peer to check against — skip).
+    final authenticatedPeerPubkeyHex = peerOwnerPubkeyHex;
+    if (authenticatedPeerPubkeyHex != null) {
+      final authorized = await castingPlayerMayUse(
+        spellOwnerPubkeyHex: outputs.ownerPubkeyHex,
+        commitmentHex: outputs.commitmentHex,
+        castingPlayerPubkeyHex: authenticatedPeerPubkeyHex,
+        permissions: peerPermissions,
+      );
+      if (!authorized) {
+        session.sendForfeit('unauthorized_spell:${outputs.commitmentHex}');
+        throw StateError(
+          'peer cast a spell they neither own nor hold a grant for '
+          '(owner=${outputs.ownerPubkeyHex}, caster=$authenticatedPeerPubkeyHex) '
+          '— match forfeit',
         );
       }
     }
@@ -3204,6 +3980,20 @@ class TurnLoop {
   /// wire gives effectCount=1 (floor((4-1)÷3)=1), certified gives effectCount=0
   /// (max(0,1-1)=0). The certified count is the correct trust boundary — the wire count
   /// was exploitable by padding the formula list.
+  /// Certified base mana cost: 5×segmentCount + dotCount, grown by
+  /// 1.05^T × 1.5^effectCount — step 1 of [_certifiedManaCost]'s modifier
+  /// chain, factored out so it can't drift from the value Sightings capture
+  /// stores (docs/SIGHTINGS_PLAN.md §2, "the clean bestiary stat" — every
+  /// later step is a per-cast modifier, not intrinsic to the spell).
+  int _certifiedBaseManaCost(
+    VerifiedSpellOutputs outputs,
+    List<ParsedFormula> certFormulas,
+  ) {
+    final base = 5 * outputs.segmentCount + outputs.dotCount;
+    final effectCount = max(0, certFormulas.length - 1);
+    return (base * pow(1.05, outputs.t) * pow(1.5, effectCount)).round();
+  }
+
   int _certifiedManaCost(
     VerifiedSpellOutputs outputs,
     List<ParsedFormula> certFormulas,
@@ -3212,9 +4002,7 @@ class TurnLoop {
     bool isEfficiency = false,
   }) {
     // 1. Certified base + growth.
-    final base = 5 * outputs.segmentCount + outputs.dotCount;
-    final effectCount = max(0, certFormulas.length - 1);
-    var cost = (base * pow(1.05, outputs.t) * pow(1.5, effectCount)).round();
+    var cost = _certifiedBaseManaCost(outputs, certFormulas);
 
     // 2. Chain discount from certified formulas.
     final chainEl = caster.activeChainElement;

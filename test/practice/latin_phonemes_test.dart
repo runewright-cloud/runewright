@@ -14,9 +14,16 @@ void main() {
     }
   });
 
-  test('ignis carries the palatalized-gn geminate as its second phoneme', () {
+  test('ignis rhymes with "kiss" via a voiceless final s '
+      '(deliberate "ignisse" TTS override, not plain "ignis")', () {
     final phonemes = LatinPhonemes.phonemesFor(VocalWord.ignis);
-    expect(phonemes[1].label, 'ɲː');
+    expect(phonemes.last.label, 's');
+    expect(phonemes[phonemes.length - 2].label, 'ɪ');
+  });
+
+  test('finitus carries the English intervocalic t-flap', () {
+    final phonemes = LatinPhonemes.phonemesFor(VocalWord.finitus);
+    expect(phonemes.any((p) => p.label == 'ɾ'), isTrue);
   });
 
   group('cumulativeWeightFractions', () {

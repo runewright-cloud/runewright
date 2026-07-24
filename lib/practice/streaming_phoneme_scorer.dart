@@ -78,13 +78,24 @@ class _Segment {
     required this.wordIndex,
     required this.word,
     required this.label,
-    required this.referenceFrames,
-  });
+    required this.referenceSets,
+  }) : minRefLen = referenceSets.map((r) => r.length).reduce(math.min);
 
   final int wordIndex;
   final VocalWord word;
   final String label;
-  final List<List<double>> referenceFrames;
+
+  /// The word's exemplar SET — one or more CMN'd, c0-dropped reference
+  /// frame-sequences (the player's enrolled takes; a single Piper render
+  /// when unenrolled). Match quality is the MIN cost/steps over this set
+  /// (2026-07-22 multi-exemplar: a set of the speaker's own takes separates
+  /// confusable words a single brittle exemplar can't — see
+  /// docs/M4_findings.md and [_minQualityOverSet]).
+  final List<List<List<double>>> referenceSets;
+
+  /// Shortest exemplar length in [referenceSets] — the min-audio guard keys
+  /// off this so a brisk delivery matching the shortest take can still cross.
+  final int minRefLen;
 }
 
 /// Drops MFCC coefficient c0 (loudness/log-energy, not phonetic content) —
@@ -222,9 +233,10 @@ class StreamingPhonemeScorer {
 
   List<_Segment> _segments = const [];
 
-  /// CMN'd, c0-dropped reference frames for every word in the vocabulary —
-  /// the contrastive competitors (condition 4).
-  Map<VocalWord, List<List<double>>> _vocabulary = const {};
+  /// CMN'd, c0-dropped reference exemplar SETS for every word — the
+  /// contrastive competitors (condition 4). Each word maps to one-or-more
+  /// takes; match quality is the min cost/steps over the set.
+  Map<VocalWord, List<List<List<double>>>> _vocabulary = const {};
 
   int _currentSegmentIdx = 0;
   int _segmentQueryStart = 0;
@@ -279,10 +291,12 @@ class StreamingPhonemeScorer {
   /// vocabulary, as contrastive competitors) and resets all pointer state.
   /// Must be called before the first [acceptPcmChunk].
   Future<void> beginFormula(PracticeFormula formula) async {
-    final vocabulary = <VocalWord, List<List<double>>>{};
+    final vocabulary = <VocalWord, List<List<List<double>>>>{};
     for (final word in VocalWord.values) {
-      final template = await _templateSource.templateFor(word);
-      vocabulary[word] = _meanNormalize(_dropC0All(template.mfccFrames));
+      final templates = await _templateSource.templatesFor(word);
+      vocabulary[word] = [
+        for (final t in templates) _meanNormalize(_dropC0All(t.mfccFrames)),
+      ];
     }
 
     final segments = <_Segment>[];
@@ -292,7 +306,7 @@ class StreamingPhonemeScorer {
         wordIndex: wordIndex,
         word: word,
         label: word.name,
-        referenceFrames: vocabulary[word]!,
+        referenceSets: vocabulary[word]!,
       ));
     }
 
@@ -369,15 +383,35 @@ class StreamingPhonemeScorer {
   bool _isVoiced(double rms) =>
       rms >= math.max(kSpeechRmsEpsilon, kVoicedAmbientRatio * _ambientRms);
 
-  /// cost/steps of the window ending at [queryEnd] against [ref], using
-  /// ref's own 2x sliding cap (each template is evaluated exactly as it
-  /// would be as a target, so contrastive comparisons are fair).
-  double _windowQuality(List<List<double>> ref, int queryEnd) {
-    final windowStart =
-        math.max(_segmentQueryStart, queryEnd - ref.length * 2);
-    final window = _meanNormalize(_queryFrames.sublist(windowStart, queryEnd));
-    final result = DtwMatcher.distanceWithSteps(window, ref);
-    return result.cost / result.steps;
+  /// Battle-portable primitive: the MIN cost/steps of the query window ending
+  /// at [queryEnd] over an exemplar SET [refSets] — each exemplar windowed by
+  /// its own 2x sliding cap and CMN'd independently, then the best (lowest)
+  /// quality taken. Also returns the window start that produced the min, so
+  /// the caller can run its energy/spectral gates on the same frames.
+  ///
+  /// The min over the set is what forgives a speaker's natural variation
+  /// (any of their own takes can explain the audio) without excusing a wrong
+  /// word (which matches NONE of a different word's takes). The whole-
+  /// utterance battle scorer can reuse this verbatim with queryEnd = end of
+  /// capture — it depends only on [_queryFrames]/[_segmentQueryStart], no
+  /// streaming state.
+  ({double quality, int windowStart}) _minQualityOverSet(
+      List<List<List<double>>> refSets, int queryEnd) {
+    var bestQuality = double.infinity;
+    var bestStart = _segmentQueryStart;
+    for (final ref in refSets) {
+      final windowStart =
+          math.max(_segmentQueryStart, queryEnd - ref.length * 2);
+      final window =
+          _meanNormalize(_queryFrames.sublist(windowStart, queryEnd));
+      final result = DtwMatcher.distanceWithSteps(window, ref);
+      final q = result.cost / result.steps;
+      if (q < bestQuality) {
+        bestQuality = q;
+        bestStart = windowStart;
+      }
+    }
+    return (quality: bestQuality, windowStart: bestStart);
   }
 
   void _evaluateCurrentSegment(int queryLengthSoFar) {
@@ -413,21 +447,18 @@ class StreamingPhonemeScorer {
     // CMN'd windows are degenerate (see file header) — don't even run DTW.
     final freshFrames = queryLengthSoFar - _segmentQueryStart;
     final minFrames =
-        (segment.referenceFrames.length * kMinSegmentAudioFraction).ceil();
+        (segment.minRefLen * kMinSegmentAudioFraction).ceil();
     if (freshFrames < minFrames) {
       _framesClear = 0;
       return;
     }
 
-    // Target window, built once: DTW quality, energy gate, and spectral
-    // gate all read the same frames.
-    final windowStart = math.max(
-        _segmentQueryStart, queryLengthSoFar - segment.referenceFrames.length * 2);
-    final targetWindow =
-        _meanNormalize(_queryFrames.sublist(windowStart, queryLengthSoFar));
-    final targetResult =
-        DtwMatcher.distanceWithSteps(targetWindow, segment.referenceFrames);
-    final targetQuality = targetResult.cost / targetResult.steps;
+    // Target quality: MIN cost/steps over the word's exemplar set. The
+    // best-matching exemplar's window is where the energy/spectral gates
+    // then read their frames, so all three read the same evidence.
+    final target = _minQualityOverSet(segment.referenceSets, queryLengthSoFar);
+    final targetQuality = target.quality;
+    final windowStart = target.windowStart;
     _lastNormalizedQuality = targetQuality;
 
     // Condition 2: enough of the evaluated window must be voiced. Silence
@@ -480,7 +511,7 @@ class StreamingPhonemeScorer {
       var bestCompetitor = double.infinity;
       for (final entry in _vocabulary.entries) {
         if (entry.key == segment.word) continue;
-        final q = _windowQuality(entry.value, queryLengthSoFar);
+        final q = _minQualityOverSet(entry.value, queryLengthSoFar).quality;
         if (q < bestCompetitor) bestCompetitor = q;
         if (q < bestQuality) {
           bestQuality = q;

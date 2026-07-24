@@ -4,33 +4,51 @@
 // Sorcerer-mode incantation words (VocalWord), for Practice Mode only.
 //
 // The vocabulary is closed (5 words, never extended at runtime), so this is
-// a lookup table, not a general Italian G2P engine. Each entry was derived
-// by running the actual Italian voice/phonemizer Practice Mode's trainer
-// audio is rendered with (espeak-ng -v it, bundled inside the Piper release
+// a lookup table, not a general G2P engine. Each entry was derived by
+// running the actual English voice/phonemizer Practice Mode's trainer audio
+// is rendered with (espeak-ng -v en-us, bundled inside the Piper release
 // used by scripts/generate_practice_assets.dart), not hand-guessed:
 //
-//   $ espeak-ng --path=<piper>/espeak-ng-data -v it --ipa -q ignis    -> ˈiɲɲis
-//   $ espeak-ng --path=<piper>/espeak-ng-data -v it --ipa -q aer      -> aˈɛr
-//   $ espeak-ng --path=<piper>/espeak-ng-data -v it --ipa -q aqua     -> ˈakwa
-//   $ espeak-ng --path=<piper>/espeak-ng-data -v it --ipa -q terra    -> tˈɛrɾa
-//   $ espeak-ng --path=<piper>/espeak-ng-data -v it --ipa -q finitus  -> finˈitʊs
+//   $ espeak-ng --path=<piper>/espeak-ng-data -v en-us --ipa -q ignisse  -> ɪɡnˈɪs
+//   $ espeak-ng --path=<piper>/espeak-ng-data -v en-us --ipa -q ventus   -> vˈɛntəs
+//   $ espeak-ng --path=<piper>/espeak-ng-data -v en-us --ipa -q aqua     -> ˈækwə
+//   $ espeak-ng --path=<piper>/espeak-ng-data -v en-us --ipa -q terra    -> tˈɛɹə
+//   $ espeak-ng --path=<piper>/espeak-ng-data -v en-us --ipa -q finitus  -> fˈɪnɪɾəs
 //
-// Two deliberate non-classical outcomes, both accepted per design brief
-// ("a Latin professor would frown; that's fine"):
-//   - ignis: Italian orthographic "gn" palatalizes and geminates to /ɲː/,
-//     not classical hard /gn/ — "EE-nyees", not "IG-nis". The trainer clip
+// Switched from Italian to English 2026-07-22 per Soren's direction: most
+// players will map Latin spelling onto English pronunciation habits anyway
+// (that's what their speech naturally does), so the trainer should teach
+// the sound they'll actually produce rather than one they'd have to
+// suppress. See docs/M4_findings.md for the full rationale.
+//
+// ignis is phonemized from "ignisse", NOT the literal word — a deliberate
+// spelling override (kTtsTextOverride in scripts/generate_practice_assets.dart),
+// not a natural rule outcome. Plain "ignis" gives /ɪɡnˈiz/ ("IG-neez",
+// word-final "s" voiced to /z/ the way English does "his") — reported
+// 2026-07-22 as reading like "digging knees." Iterated twice: first target
+// was "like ignite but ending in /s/" ("ignyce" -> /ˈɪɡnaɪs/, stress
+// wouldn't shift off the first syllable); revised target was "last syllable
+// rhymes with kiss" (/kˈɪs/) — "ignisse" -> /ɪɡnˈɪs/ ("ig-NISS") hits that
+// exactly and, as a bonus, lands stress on the second syllable. Players
+// still see/say "ignis" everywhere else; only the TTS input string differs.
+//
+// Other notable non-classical outcomes from the en-us letter-to-sound rules
+// (accepted, same spirit — "a Latin professor would frown; that's fine"):
+//   - Unstressed word-final "-us"/"-a" reduce to schwa /ə/ across all four
+//     affected words (ventus, aqua, terra, finitus) — standard English
+//     vowel reduction, matching how "campus" or "aqua" (already an English
+//     loanword) are actually said.
+//   - finitus: the medial "t" flaps to /ɾ/ between vowels ("fih-NIH-ruhs"),
+//     the same rule that makes American "water" -> /wɔɾɚ/. The trainer clip
 //     and the scorer target both come from this same phonemization (see
 //     scripts/generate_practice_assets.dart), so they can't silently diverge.
-//   - finitus: the "-us" ending gets the Italian near-close back vowel /ʊ/
-//     (an English-flavoured letter-to-sound fallback for an un-Italian
-//     word-final cluster) rather than pure Italian /u/. Left as-is.
 //
 // [PracticePhoneme.weight] is a coarse relative-duration heuristic (vowel
-// ~1.0, plosive ~0.5, nasal/liquid ~0.6-0.8, geminate ~1.3-1.4) used only to
-// divide a word's reference MFCC frames into checkpoint segments
-// proportionally rather than uniformly by count. It is not measured
-// acoustic-phone duration — this is a practice-tool approximation, not a
-// forced-alignment ground truth.
+// ~1.0, reduced/schwa vowel ~0.7, plosive/flap ~0.4-0.5, nasal/liquid
+// ~0.6-0.8) used only to divide a word's reference MFCC frames into
+// checkpoint segments proportionally rather than uniformly by count. It is
+// not measured acoustic-phone duration — this is a practice-tool
+// approximation, not a forced-alignment ground truth.
 
 import '../sorcerer/vocal_score.dart';
 
@@ -50,35 +68,39 @@ class LatinPhonemes {
 
   static const Map<VocalWord, List<PracticePhoneme>> _table = {
     VocalWord.ignis: [
-      PracticePhoneme('i', 1.0),
-      PracticePhoneme('ɲː', 1.4),
-      PracticePhoneme('i', 1.0),
+      PracticePhoneme('ɪ', 1.0),
+      PracticePhoneme('ɡ', 0.5),
+      PracticePhoneme('n', 0.6),
+      PracticePhoneme('ɪ', 1.0),
       PracticePhoneme('s', 0.8),
     ],
-    VocalWord.aer: [
-      PracticePhoneme('a', 1.0),
+    VocalWord.ventus: [
+      PracticePhoneme('v', 0.6),
       PracticePhoneme('ɛ', 1.0),
-      PracticePhoneme('r', 0.6),
+      PracticePhoneme('n', 0.6),
+      PracticePhoneme('t', 0.4),
+      PracticePhoneme('ə', 0.7),
+      PracticePhoneme('s', 0.8),
     ],
     VocalWord.aqua: [
-      PracticePhoneme('a', 1.0),
+      PracticePhoneme('æ', 1.0),
       PracticePhoneme('k', 0.5),
       PracticePhoneme('w', 0.5),
-      PracticePhoneme('a', 1.0),
+      PracticePhoneme('ə', 0.7),
     ],
     VocalWord.terra: [
       PracticePhoneme('t', 0.4),
       PracticePhoneme('ɛ', 1.0),
-      PracticePhoneme('rɾ', 1.3),
-      PracticePhoneme('a', 1.0),
+      PracticePhoneme('ɹ', 0.6),
+      PracticePhoneme('ə', 0.7),
     ],
     VocalWord.finitus: [
       PracticePhoneme('f', 0.6),
-      PracticePhoneme('i', 1.0),
+      PracticePhoneme('ɪ', 1.0),
       PracticePhoneme('n', 0.6),
-      PracticePhoneme('i', 1.0),
-      PracticePhoneme('t', 0.4),
-      PracticePhoneme('ʊ', 1.0),
+      PracticePhoneme('ɪ', 1.0),
+      PracticePhoneme('ɾ', 0.4),
+      PracticePhoneme('ə', 0.7),
       PracticePhoneme('s', 0.8),
     ],
   };

@@ -11,11 +11,17 @@ import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
 
+import '../battle/models/creature_spec.dart' show SummonAbility;
 import '../battle/models/effect_kind.dart';
 
 /// Stable string key identifying a (affinity, effect kind) pair -- the
 /// on-disk identity of a discovered recipe.
 String recipeKey(SpellAffinity affinity, EffectKind kind) => '${affinity.name}:${kind.name}';
+
+/// Stable string key identifying a discovered [SummonAbility] -- shares the
+/// same on-disk discovered-set as [recipeKey] (a distinct 'summon:' prefix
+/// keeps the two key spaces from colliding).
+String summonAbilityKey(SummonAbility ability) => 'summon:${ability.name}';
 
 class RecipeBook {
   // Every load()/markDiscovered() call is chained onto this future so file

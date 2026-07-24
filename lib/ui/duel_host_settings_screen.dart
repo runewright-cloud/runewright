@@ -1,0 +1,165 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// duel_host_settings_screen.dart — the host's chapter + match-settings step
+// for a LAN duel (LAN_BATTLE_WIREUP_PLAN.md §3.3, DECISION 3: host authors
+// the MatchConfig, the guest adopts it verbatim). Shown before hosting
+// begins; pops its result back to BattleLobbyScreen, which then starts
+// advertising and — once a guest connects — runs `runDuelSetup` with this
+// chapter/config.
+//
+// Mirrors solo_practice_settings_screen.dart's settings UI (same steppers,
+// same chapter picker) via the shared widgets in ui/widgets/ — this is not a
+// copy-paste of that screen, just the same controls repurposed for a
+// pre-connection step rather than a start-battle-immediately button.
+
+import 'package:flutter/material.dart';
+
+import '../battle/models/match_config.dart';
+import '../spells/chapter_asset.dart';
+import 'manuscript_theme.dart';
+import 'widgets/chapter_picker.dart';
+import 'widgets/int_stepper_row.dart';
+
+/// What the host picked — chapter for its own artifact loadout, config for
+/// the whole match (both sides' shared HP/grid/sorcerer settings).
+typedef DuelHostSettings = ({ChapterAsset chapter, MatchConfig config});
+
+class DuelHostSettingsScreen extends StatefulWidget {
+  const DuelHostSettingsScreen({super.key});
+
+  @override
+  State<DuelHostSettingsScreen> createState() => _DuelHostSettingsScreenState();
+}
+
+class _DuelHostSettingsScreenState extends State<DuelHostSettingsScreen> {
+  ChapterAsset? _selectedChapter;
+
+  int _hp = 24;
+  int _gridRadius = 4;
+  bool _sorcererMode = false;
+
+  static const _hpMin = 8;
+  static const _hpMax = 48;
+  static const _hpStep = 4;
+  static const _gridRadiusMin = 2;
+  static const _gridRadiusMax = 6;
+
+  MatchConfig get _config => MatchConfig(
+        playerHp: _hp,
+        gridRadius: _gridRadius,
+        maxPlayers: 2,
+        sorcererMode: _sorcererMode,
+      );
+
+  void _onReady() {
+    final chapter = _selectedChapter;
+    if (chapter == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No Chapter Selected')),
+      );
+      return;
+    }
+    Navigator.pop<DuelHostSettings>(context, (chapter: chapter, config: _config));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kParchmentColor,
+      appBar: AppBar(
+        backgroundColor: kInkColor,
+        foregroundColor: kParchmentColor,
+        elevation: 0,
+        title: Text(
+          'HOST SETTINGS',
+          style: manuscriptHeaderStyle(fontSize: 20, color: kParchmentColor),
+        ),
+      ),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              ChapterPicker(
+                selected: _selectedChapter,
+                onChanged: (c) => setState(() => _selectedChapter = c),
+              ),
+              const SizedBox(height: 24),
+              Divider(color: kInkColor.withValues(alpha: 0.12)),
+              const SizedBox(height: 20),
+              IntStepperRow(
+                label: 'STARTING HP',
+                value: _hp,
+                min: _hpMin,
+                max: _hpMax,
+                step: _hpStep,
+                onChanged: (v) => setState(() => _hp = v),
+              ),
+              const SizedBox(height: 28),
+              IntStepperRow(
+                label: 'GRID SIZE',
+                caption: 'Radius of the battlefield in tiles',
+                value: _gridRadius,
+                min: _gridRadiusMin,
+                max: _gridRadiusMax,
+                step: 1,
+                onChanged: (v) => setState(() => _gridRadius = v),
+              ),
+              const SizedBox(height: 28),
+              _buildSorcererModeToggle(),
+              const Spacer(),
+              SizedBox(
+                height: 52,
+                child: OutlinedButton(
+                  onPressed: _onReady,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: kIlluminationGold,
+                    side: const BorderSide(color: kIlluminationGold, width: 2),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                  ),
+                  child: const Text(
+                    'HOST',
+                    style: TextStyle(
+                      fontFamily: 'serif',
+                      fontSize: 18,
+                      letterSpacing: 3,
+                      fontWeight: FontWeight.w600,
+                      color: kIlluminationGold,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSorcererModeToggle() {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('SORCERER MODE', style: manuscriptCaptionStyle()),
+              const SizedBox(height: 2),
+              Text(
+                'Speak the incantation aloud to cast',
+                style: manuscriptCaptionStyle(color: kInkMutedColor.withValues(alpha: 0.7)),
+              ),
+            ],
+          ),
+        ),
+        Switch(
+          value: _sorcererMode,
+          activeThumbColor: kIlluminationGold,
+          onChanged: (v) => setState(() => _sorcererMode = v),
+        ),
+      ],
+    );
+  }
+}

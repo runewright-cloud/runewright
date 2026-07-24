@@ -19,12 +19,46 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import '../../identity/identity.dart';
 import '../../protocol/transport.dart';
+import '../../spells/chapter_asset.dart' show ArtifactEntry;
+import '../../spells/spell_permission.dart';
 import '../engine/book_commitment.dart';
 import '../engine/commit_reveal.dart';
 import '../models/match_config.dart';
 import 'battle_wire.dart';
 import 'match_discovery.dart';
+
+/// Domain-separation tag for the identity-authentication handshake signature
+/// (BATTLE_AUTH_PLAN.md §3). Distinct from [kStateHashSignatureTag] so an
+/// auth signature can never be replayed as a state-hash signature or
+/// vice-versa.
+const kIdentityAuthSignatureTag = 'RUNEWRIGHT_BATTLE_AUTH_V1\x00';
+
+/// The result of a successful [BattleTurnSession.exchangeIdentityAuth] — the
+/// peer's raw Ed25519 public key and its derived circuit-facing owner_pubkey,
+/// both *authenticated* by a fresh-nonce signature (not merely asserted by an
+/// unverified proof public input — see BATTLE_AUTH_PLAN.md §0/§2).
+class AuthenticatedPeer {
+  const AuthenticatedPeer({required this.rawPubkey, required this.ownerPubkeyHex});
+
+  /// Raw 32-byte Ed25519 public key, verified via a fresh-nonce signature.
+  final Uint8List rawPubkey;
+
+  /// Poseidon2(key_hi, key_lo) of [rawPubkey] — the circuit-facing identity
+  /// that spell proofs declare as their owner_pubkey public input.
+  final String ownerPubkeyHex;
+
+  /// Sentinel for solo/local play, where there is no real peer to
+  /// authenticate. Empty owner_pubkey hex so identity/authorization checks
+  /// (which compare hex strings) never accidentally match a real spell owner.
+  static final none = AuthenticatedPeer(rawPubkey: Uint8List(0), ownerPubkeyHex: '');
+}
+
+bool _hexEq(String a, String b) {
+  BigInt parse(String s) => BigInt.parse(s.startsWith('0x') ? s.substring(2) : s, radix: 16);
+  return parse(a) == parse(b);
+}
 
 // ── TurnLoop exchange interface ───────────────────────────────────────────────
 
@@ -32,6 +66,25 @@ import 'match_discovery.dart';
 /// needs. Implemented by [BattleSession] (network) and [SoloBattleSession]
 /// (local solo stub).
 abstract class BattleTurnSession {
+  /// Mutual Ed25519 challenge-response identity authentication
+  /// (BATTLE_AUTH_PLAN.md §3). Must run once per session, before any spell
+  /// cast is trusted (it feeds cast authorization and loan-permission
+  /// verification). Solo/local play returns [AuthenticatedPeer.none].
+  Future<AuthenticatedPeer> exchangeIdentityAuth({
+    required Identity localIdentity,
+    required Uint8List matchId,
+  });
+
+  /// Exchanges signed loan/transfer grants naming the authenticated peer as
+  /// grantee (BATTLE_AUTH_PLAN.md §5). Returns only permissions that verify —
+  /// signature valid, not expired, and [SpellPermission.granteePubkeyHex]
+  /// matches [peerOwnerPubkeyHex] (the value [exchangeIdentityAuth] returned).
+  /// Solo/local play returns an empty list.
+  Future<List<SpellPermission>> exchangeSpellPermissions(
+    List<SpellPermission> ours, {
+    required String peerOwnerPubkeyHex,
+  });
+
   Future<({Uint8List theirNonce, Uint8List theirCommit})> exchangeNonce({
     required Uint8List ourCommit,
     required Uint8List ourNonce,
@@ -75,6 +128,18 @@ abstract class BattleTurnSession {
   /// this turn. [0x00] means "no active incoming scry to open."
   Future<Uint8List> exchangeScryOpen(Uint8List ourFrame);
 
+  /// Divination (Water flavor — Watery Scrying Pool) spell-list reveal.
+  /// Same shape and uniform-slot rule as [exchangeScryKey]/[exchangeScryOpen],
+  /// kept as an independent exchange so simultaneous Air + Water links to the
+  /// same peer never share a payload format.
+  Future<Uint8List> exchangeSpellRevealKey(Uint8List ourFrame);
+
+  /// The reply half: an AEAD-encrypted JSON spell list, addressed to the
+  /// peer's [exchangeSpellRevealKey] public key, when the peer is scrying the
+  /// local player's spell list this turn. [0x00] means "no active incoming
+  /// reveal to open."
+  Future<Uint8List> exchangeSpellRevealOpen(Uint8List ourFrame);
+
   /// Request a fresh commit-reveal entropy exchange during spell resolution.
   ///
   /// For interactive effects where foreknowledge of pseudo-random outcomes
@@ -102,18 +167,134 @@ class BattleSession implements BattleTurnSession {
   late final BattleFrameReader _reader;
   late final StreamSubscription<List<int>> _sub;
 
-  /// All incoming battle frames, broadcast.
+  /// All incoming battle frames, broadcast. Only used directly by
+  /// [exchangeMatchConfig]'s ack/reject dual-type wait — everything else
+  /// should use [framesOfType].
   Stream<BattleFrame> get frames => _reader.frames;
 
-  /// Filtered view: only frames of [type].
-  Stream<BattleFrame> framesOfType(BattleMsgType type) =>
-      frames.where((f) => f.type == type);
+  /// The next frame of exactly [type] — buffers if it already arrived, never
+  /// drops it. See [BattleFrameReader.framesOfType]'s doc comment for why
+  /// this isn't a `.where()` filter over [frames].
+  Stream<BattleFrame> framesOfType(BattleMsgType type) => _reader.framesOfType(type);
 
   void send(BattleMsgType type, Uint8List payload) {
     _transport.send(BattleFrame(type, payload).encode());
   }
 
+  // ── Identity authentication (BATTLE_AUTH_PLAN.md §3) ────────────────────────
+
+  /// Mutual Ed25519 challenge-response: each side signs the *peer's* fresh
+  /// nonce and presents its raw public key, proving both freshness (the
+  /// verifier chose the nonce, so a captured signature can't be replayed from
+  /// a prior session) and possession (only the private-key holder can sign).
+  /// The presented raw key is then hashed via
+  /// [Identity.ownerPubkeyHexFromRawKey] to bind it to the circuit-facing
+  /// owner_pubkey that spell proofs declare — this is what proof verification
+  /// alone cannot do (CLAUDE.md invariant 5: the circuit never proves key
+  /// possession).
+  ///
+  /// Forfeits and throws on: an invalid signature (forged, wrong nonce, or a
+  /// raw key that doesn't match what was signed) or the peer presenting our
+  /// own identity (self/reflection).
+  @override
+  Future<AuthenticatedPeer> exchangeIdentityAuth({
+    required Identity localIdentity,
+    required Uint8List matchId,
+  }) async {
+    final nonceLocal = CommitRevealEntropy.generateNonce();
+    send(BattleMsgType.authChallenge, nonceLocal);
+    final noncePeer = (await framesOfType(BattleMsgType.authChallenge).first).payload;
+
+    final tag = utf8.encode(kIdentityAuthSignatureTag);
+    final ourSig = await localIdentity.sign([...tag, ...matchId, ...noncePeer]);
+    send(
+      BattleMsgType.authResponse,
+      Uint8List.fromList([...localIdentity.publicKeyBytes, ...ourSig]),
+    );
+    final responsePayload =
+        (await framesOfType(BattleMsgType.authResponse).first).payload;
+    if (responsePayload.length < 32 + 64) {
+      sendForfeit('auth_malformed_response');
+      throw StateError('peer auth response too short — match forfeit');
+    }
+    final peerRawPubkey = responsePayload.sublist(0, 32);
+    final peerSig = responsePayload.sublist(32, 96);
+
+    final sigOk = await Identity.verify(
+      message: [...tag, ...matchId, ...nonceLocal],
+      signatureBytes: peerSig,
+      publicKeyBytes: peerRawPubkey,
+    );
+    if (!sigOk) {
+      sendForfeit('auth_failed');
+      throw StateError('peer identity signature invalid — match forfeit');
+    }
+
+    final peerOwnerPubkeyHex =
+        await Identity.ownerPubkeyHexFromRawKey(peerRawPubkey);
+    final myOwnerPubkeyHex = await localIdentity.ownerPubkeyHex();
+    if (_hexEq(peerOwnerPubkeyHex, myOwnerPubkeyHex)) {
+      sendForfeit('auth_self');
+      throw StateError('peer presented our own identity — match forfeit');
+    }
+
+    return AuthenticatedPeer(
+      rawPubkey: Uint8List.fromList(peerRawPubkey),
+      ownerPubkeyHex: peerOwnerPubkeyHex,
+    );
+  }
+
+  /// Exchanges signed [SpellPermission] grants (BATTLE_AUTH_PLAN.md §5).
+  /// [ours] should be the local grants naming the peer as grantee. The
+  /// returned list is filtered to only permissions that are currently usable
+  /// (valid signature, not expired) AND name [peerOwnerPubkeyHex] as grantee —
+  /// a permission that fails either check is silently dropped, not trusted.
+  @override
+  Future<List<SpellPermission>> exchangeSpellPermissions(
+    List<SpellPermission> ours, {
+    required String peerOwnerPubkeyHex,
+  }) async {
+    final payload = Uint8List.fromList(
+      utf8.encode(jsonEncode(ours.map((p) => p.toJson()).toList())),
+    );
+    send(BattleMsgType.spellPermissions, payload);
+    final frame = await framesOfType(BattleMsgType.spellPermissions).first;
+    final decoded = jsonDecode(utf8.decode(frame.payload)) as List<dynamic>;
+    final received = decoded
+        .map((j) => SpellPermission.fromJson(j as Map<String, dynamic>))
+        .toList();
+
+    final verified = <SpellPermission>[];
+    for (final perm in received) {
+      if (!_hexEq(perm.granteePubkeyHex, peerOwnerPubkeyHex)) continue;
+      if (!await perm.isCurrentlyUsable()) continue;
+      verified.add(perm);
+    }
+    return verified;
+  }
+
   // ── Setup exchanges ─────────────────────────────────────────────────────────
+
+  /// Symmetric matchId establishment (LAN_BATTLE_WIREUP_PLAN.md §3.2 step 1;
+  /// DECISION 1). Both sides exchange a fresh 16-byte nonce, then each
+  /// independently derives `matchId = SHA-256(sorted(ourNonce, theirNonce))[0:16]`
+  /// — neither side unilaterally controls it, and both compute the same value
+  /// regardless of arrival order (sorted by byte value before concatenating).
+  ///
+  /// Must be called on `this` session before [matchId] is meaningfully used
+  /// elsewhere (e.g. [exchangeIdentityAuth]'s `matchId` parameter) — this
+  /// session is typically constructed with a placeholder `matchId` (e.g. 16
+  /// zero bytes) specifically so this exchange can run over its one
+  /// persistent frame reader before the real value is known. The `matchId`
+  /// this returns should be threaded through as an explicit parameter to
+  /// every subsequent call that needs it (`this.matchId` stays the
+  /// placeholder — it is inert plumbing, read by nothing internal to this
+  /// class).
+  Future<Uint8List> exchangeMatchIdNonce(Uint8List ourNonce) async {
+    send(BattleMsgType.matchIdNonce, ourNonce);
+    final frame = await framesOfType(BattleMsgType.matchIdNonce).first;
+    return frame.payload;
+  }
 
   /// Both sides send capabilities simultaneously; we return what we received.
   ///
@@ -149,6 +330,29 @@ class BattleSession implements BattleTurnSession {
     return theirs;
   }
 
+  /// Host-authoritative variant of [exchangeMatchConfig] (DECISION 3,
+  /// LAN_BATTLE_WIREUP_PLAN.md §2): the host authors [config] and the guest
+  /// has no separate opinion to assert, so there is nothing to compare — the
+  /// guest simply adopts what it receives via [receiveHostMatchConfig].
+  /// [exchangeMatchConfig]'s strict mutual-equality check can't express this
+  /// (both sides would need to already know the same value *before* the one
+  /// round trip that's supposed to convey it); this pair sidesteps that by
+  /// only ever having one side originate the value. Reuses the existing
+  /// `matchConfig`/`matchConfigAck` wire types — call this from the host,
+  /// [receiveHostMatchConfig] from the guest.
+  Future<void> sendHostMatchConfig(MatchConfig config) async {
+    send(BattleMsgType.matchConfig, Uint8List.fromList(utf8.encode(jsonEncode(config.toJson()))));
+    await framesOfType(BattleMsgType.matchConfigAck).first;
+  }
+
+  /// See [sendHostMatchConfig]. Call from the guest.
+  Future<MatchConfig> receiveHostMatchConfig() async {
+    final frame = await framesOfType(BattleMsgType.matchConfig).first;
+    final config = MatchConfig.fromJson(jsonDecode(utf8.decode(frame.payload)) as Map<String, dynamic>);
+    send(BattleMsgType.matchConfigAck, Uint8List(0));
+    return config;
+  }
+
   /// Both sides send their Chapter Merkle root simultaneously.
   /// Returns the peer's root bytes (32 bytes).
   Future<Uint8List> exchangeBookCommitment(Uint8List ourRoot) async {
@@ -166,6 +370,39 @@ class BattleSession implements BattleTurnSession {
     send(BattleMsgType.bookHash, ourHash);
     final frame = await framesOfType(BattleMsgType.bookHash).first;
     return frame.payload;
+  }
+
+  /// Both sides declare their chapter's leaf count simultaneously
+  /// (SPELL_DRAW_WIRING_PLAN.md §3). Minor disclosure (how many spells are in
+  /// the chapter) — needed publicly so DrawSchedule can compute
+  /// `nextInt(leafCount)` for the *peer's* chapter without ever learning its
+  /// contents (only the Merkle root of which is committed via
+  /// [exchangeBookCommitment]). Returns the peer's leaf count.
+  Future<int> exchangeBookLeafCount(int ourCount) async {
+    final payload = ByteData(4)..setUint32(0, ourCount, Endian.big);
+    send(BattleMsgType.bookLeafCount, payload.buffer.asUint8List());
+    final frame = await framesOfType(BattleMsgType.bookLeafCount).first;
+    return ByteData.sublistView(frame.payload).getUint32(0, Endian.big);
+  }
+
+  /// Both sides send their Chapter's public artifact loadout simultaneously
+  /// (LAN_BATTLE_WIREUP_PLAN.md §3.1/§3.2 step 8). Required — not optional
+  /// hardening — because `BattleState.toCanonicalBytes()` hashes each
+  /// avatar's full accoutrement list and its mana-gem-derived maxMana/mana;
+  /// a peer avatar built from any other loadout diverges the state-hash
+  /// lockstep on the very first turn. Unlike the Chapter's *spells* (kept
+  /// secret behind [exchangeBookCommitment]'s Merkle root), artifact loadout
+  /// is public equipment — safe to exchange in the clear.
+  Future<List<ArtifactEntry>> exchangeArtifactLoadout(List<ArtifactEntry> ours) async {
+    final payload = Uint8List.fromList(
+      utf8.encode(jsonEncode(ours.map((a) => a.toJson()).toList())),
+    );
+    send(BattleMsgType.artifactLoadout, payload);
+    final frame = await framesOfType(BattleMsgType.artifactLoadout).first;
+    final decoded = jsonDecode(utf8.decode(frame.payload)) as List<dynamic>;
+    return decoded
+        .map((j) => ArtifactEntry.fromJson(j as Map<String, dynamic>))
+        .toList();
   }
 
   /// Post-match: both sides reveal their sorted commitmentHex list simultaneously.
@@ -328,6 +565,22 @@ class BattleSession implements BattleTurnSession {
   Future<Uint8List> exchangeScryOpen(Uint8List ourFrame) async {
     send(BattleMsgType.scryOpen, ourFrame);
     final frame = await framesOfType(BattleMsgType.scryOpen).first;
+    return frame.payload;
+  }
+
+  // ── Divination (Water) spell-list reveal ───────────────────────────────────
+
+  @override
+  Future<Uint8List> exchangeSpellRevealKey(Uint8List ourFrame) async {
+    send(BattleMsgType.spellRevealKey, ourFrame);
+    final frame = await framesOfType(BattleMsgType.spellRevealKey).first;
+    return frame.payload;
+  }
+
+  @override
+  Future<Uint8List> exchangeSpellRevealOpen(Uint8List ourFrame) async {
+    send(BattleMsgType.spellRevealOpen, ourFrame);
+    final frame = await framesOfType(BattleMsgType.spellRevealOpen).first;
     return frame.payload;
   }
 

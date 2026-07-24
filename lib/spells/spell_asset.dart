@@ -42,6 +42,7 @@ class SpellAsset {
     this.artHash,
     this.artSource,
     this.artUpdatedAt,
+    this.gridWithheld = false,
   });
 
   /// Unique within a device install -- a microsecond timestamp is more than
@@ -139,6 +140,14 @@ class SpellAsset {
   /// When [artHash] was last set. Null iff [artHash] is null.
   final DateTime? artUpdatedAt;
 
+  /// True iff [initialGrid] was deliberately redacted (stored empty) before
+  /// this asset was handed to someone other than its creator -- the Trade
+  /// loan case (docs/COMMUNE_TRADE_PLAN.md §2): the loanee gets proof bytes
+  /// (zero-knowledge -- they don't leak the grid) plus enough metadata to
+  /// use the spell locally, but never the grid itself. False for every
+  /// spell this device inscribed or received via a full transfer.
+  final bool gridWithheld;
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'createdAt': createdAt.toIso8601String(),
@@ -160,6 +169,7 @@ class SpellAsset {
         if (artHash != null) 'artHash': artHash,
         if (artSource != null) 'artSource': artSource!.name,
         if (artUpdatedAt != null) 'artUpdatedAt': artUpdatedAt!.toIso8601String(),
+        if (gridWithheld) 'gridWithheld': gridWithheld,
       };
 
   static SpellAsset fromJson(Map<String, dynamic> json) => SpellAsset(
@@ -191,6 +201,7 @@ class SpellAsset {
         artUpdatedAt: json['artUpdatedAt'] != null
             ? DateTime.parse(json['artUpdatedAt'] as String)
             : null,
+        gridWithheld: (json['gridWithheld'] as bool?) ?? false,
       );
 
   static Future<Directory> _spellsDir() async {
@@ -275,6 +286,33 @@ class SpellAsset {
         supremeTags: supremeTags,
         isSummon: isSummon,
         summonPersonality: summonPersonality,
+      );
+
+  /// Returns a copy with [initialGrid] redacted (stored empty) and
+  /// [gridWithheld] set -- what a Trade loan sends its grantee: proof bytes
+  /// and every other field are copied through unchanged (proofBytes are
+  /// zero-knowledge and don't leak the grid), but the grid itself never
+  /// leaves this device. See docs/COMMUNE_TRADE_PLAN.md §2 and
+  /// lib/trade/trade_session.dart.
+  SpellAsset withGridWithheld() => SpellAsset(
+        id: id,
+        createdAt: createdAt,
+        tier: tier,
+        t: t,
+        ownerPubkeyHex: ownerPubkeyHex,
+        manaCost: manaCost,
+        segmentCount: segmentCount,
+        dotCount: dotCount,
+        initialGrid: const [],
+        proofBytes: proofBytes,
+        name: name,
+        commitmentHex: commitmentHex,
+        spellHashHex: spellHashHex,
+        formula: formula,
+        supremeTags: supremeTags,
+        isSummon: isSummon,
+        summonPersonality: summonPersonality,
+        gridWithheld: true,
       );
 
   /// Deletes this spell's persisted JSON file. Silently no-ops if already gone.

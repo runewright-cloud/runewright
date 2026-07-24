@@ -1,24 +1,27 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// library_screen.dart — the player's grimoire: four tabs covering spells they
-// have inscribed (Craftings), spells observed from opponents (Sightings),
-// spells loaned by allies (Loans), and battle-ready spell bundles (Chapters).
-// Only Craftings and Chapters hold real data today; the other two are
-// placeholders for upcoming protocol features (CLAUDE.md scope).
+// library_screen.dart — the player's grimoire: spells they have inscribed
+// (Craftings), spells observed from opponents in LAN duels (Sightings),
+// spells loaned by allies (Loans), battle-ready spell bundles (Chapters),
+// and spells fabricated by the Spell Test Lab (Tests). All five tabs hold
+// real, persisted data (docs/SIGHTINGS_PLAN.md).
 
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 
 import '../identity/identity.dart';
 import '../identity/key_packing.dart';
 import '../battle/models/creature_spec.dart' show summonSummaryFromFormula;
 import '../battle/models/effect_kind.dart' show formulaEffectLabels;
 import '../spells/chapter_asset.dart';
+import '../spells/sighting_asset.dart';
 import '../spells/spell_art_import.dart';
 import '../spells/spell_art_io.dart';
 import '../spells/spell_art_store.dart';
 import '../spells/spell_asset.dart';
+import '../spells/spell_permission.dart';
 import '../spells/supreme_tags.dart' show deriveSupremeTags;
 import '../main.dart' show GameScreen;
 import 'manuscript_theme.dart';
@@ -197,21 +200,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
               selectedChapterId: _selectedChapterId,
               onChaptersChanged: _loadChapters,
             ),
-            const _PlaceholderTab(
-              icon: Icons.visibility_outlined,
-              title: 'Sightings',
-              description:
-                  'Spells your opponents have cast against you will be recorded here. '
-                  'Face a challenger to begin your record.',
-            ),
-            const _PlaceholderTab(
-              icon: Icons.handshake_outlined,
-              title: 'Loans',
-              description:
-                  'Spells leased to you by other wizards will appear here. '
-                  'They are bound to your Runekey, and you may add them to chapters and cast them in battle, '
-                  'but you may not view their workings nor lend them to others yourself. '
-                  'Some loans such as between a master and apprentice will cease to function with time unless renewed.',
+            const _SightingsTab(),
+            _LoansTab(
+              selectedChapterId: _selectedChapterId,
+              onChaptersChanged: _loadChapters,
             ),
             _ChaptersTab(
               chapters: _chapters,
@@ -2009,38 +2001,466 @@ class _NameInputDialogState extends State<_NameInputDialog> {
   }
 }
 
-// ── Placeholder tab (Sightings / Loans) ──────────────────────────────────────
+// ── Loans tab ────────────────────────────────────────────────────────────────
+//
+// Spells another wizard has loaned to this identity via Commune/Trade
+// (docs/COMMUNE_TRADE_PLAN.md). Each entry is a SpellAsset with
+// [SpellAsset.gridWithheld] set -- the grid was never sent, only proof
+// bytes and a day-limited SpellPermission grant -- so this list intentionally
+// cannot show a thumbnail derived from the grid, only name/cost/expiry.
+// A lightweight tile list, not the full _SpellCard: art/kin/supreme-tag
+// features on that widget assume a locally-inscribed, fully-owned spell,
+// none of which applies to a loan.
 
-class _PlaceholderTab extends StatelessWidget {
-  const _PlaceholderTab({
-    required this.icon,
-    required this.title,
-    required this.description,
-  });
+class _LoanEntry {
+  const _LoanEntry({required this.spell, required this.permission});
+  final SpellAsset spell;
+  final SpellPermission permission;
+}
 
-  final IconData icon;
-  final String title;
-  final String description;
+bool _loanHexEq(String a, String b) {
+  BigInt parse(String s) => BigInt.parse(s.startsWith('0x') ? s.substring(2) : s, radix: 16);
+  return parse(a) == parse(b);
+}
+
+class _LoansTab extends StatefulWidget {
+  const _LoansTab({required this.selectedChapterId, required this.onChaptersChanged});
+
+  final String? selectedChapterId;
+  final VoidCallback onChaptersChanged;
+
+  @override
+  State<_LoansTab> createState() => _LoansTabState();
+}
+
+class _LoansTabState extends State<_LoansTab> with AutomaticKeepAliveClientMixin {
+  late Future<List<_LoanEntry>> _loansFuture;
+
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loansFuture = _loadUsableLoans();
+  }
+
+  Future<List<_LoanEntry>> _loadUsableLoans() async {
+    final identity = await Identity.loadOrCreate();
+    final myPubkeyHex = await identity.ownerPubkeyHex();
+    final all = await SpellAsset.loadAll();
+    final entries = <_LoanEntry>[];
+    for (final spell in all.where((s) => s.gridWithheld)) {
+      final perms = await SpellPermission.loadForCommitment(spell.commitmentHex);
+      for (final perm in perms) {
+        if (perm.kind != SpellGrantKind.loan) continue;
+        if (!_loanHexEq(perm.granteePubkeyHex, myPubkeyHex)) continue;
+        if (!await perm.isCurrentlyUsable()) continue;
+        entries.add(_LoanEntry(spell: spell, permission: perm));
+        break;
+      }
+    }
+    return entries;
+  }
+
+  void _reload() => setState(() => _loansFuture = _loadUsableLoans());
+
+  Future<void> _addToChapter(SpellAsset spell) async {
+    final chapterId = widget.selectedChapterId;
+    if (chapterId == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Select a chapter in the Chapters tab first.')),
+        );
+      }
+      return;
+    }
+    final chapter = await ChapterAsset.loadById(chapterId);
+    if (chapter == null || !mounted) return;
+    if (chapter.entries.any((e) => e.spellId == spell.id)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Already in this chapter.')),
+      );
+      return;
+    }
+    final updated = chapter.withEntry(ChapterEntry(spellId: spell.id));
+    await updated.save();
+    widget.onChaptersChanged();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('"${spell.name}" added to ${chapter.name}.')),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 40),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 48, color: kInkMutedColor),
-            const SizedBox(height: 20),
-            Text(
-              title.toUpperCase(),
-              style: manuscriptHeaderStyle(fontSize: 16, color: kInkMutedColor),
+    super.build(context);
+    return FutureBuilder<List<_LoanEntry>>(
+      future: _loansFuture,
+      builder: (context, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator(color: kIlluminationGold));
+        }
+        final entries = snap.data ?? [];
+        if (entries.isEmpty) {
+          return const _EmptyBody(
+            icon: Icons.handshake_outlined,
+            message: 'Spells leased to you by other wizards will appear here.\n'
+                'They are bound to your Runekey, and you may add them to chapters and cast them in battle, '
+                'but you may not view their workings nor lend them to others yourself.\n'
+                'Loans expire with time unless renewed.',
+          );
+        }
+        return RefreshIndicator(
+          onRefresh: () async => _reload(),
+          child: ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: entries.length,
+            itemBuilder: (_, i) => _LoanTile(entry: entries[i], onAddToChapter: () => _addToChapter(entries[i].spell)),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _LoanTile extends StatelessWidget {
+  const _LoanTile({required this.entry, required this.onAddToChapter});
+  final _LoanEntry entry;
+  final VoidCallback onAddToChapter;
+
+  String get _daysRemaining {
+    final remaining = entry.permission.expiresAt!.difference(DateTime.now().toUtc());
+    if (remaining.inDays <= 0) return 'expires today';
+    return '${remaining.inDays}d remaining';
+  }
+
+  String get _lenderLabel {
+    final hex = entry.permission.ownerPubkeyHex;
+    final trimmed = hex.startsWith('0x') ? hex.substring(2) : hex;
+    return trimmed.length > 8 ? '0x${trimmed.substring(0, 8)}…' : hex;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final name = entry.spell.name.isNotEmpty ? entry.spell.name : 'Unnamed Spell';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: kParchmentPanelColor,
+        border: Border.all(color: kInkColor.withValues(alpha: 0.2)),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.handshake_outlined, size: 22, color: kIlluminationGold),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(name, style: const TextStyle(fontFamily: 'serif', fontSize: 15, color: kInkColor)),
+                const SizedBox(height: 2),
+                Text(
+                  'Loaned by $_lenderLabel  ·  ♦ ${entry.spell.manaCost}  ·  $_daysRemaining',
+                  style: manuscriptCaptionStyle(),
+                ),
+              ],
             ),
-            const SizedBox(height: 12),
-            Text(
-              description,
-              textAlign: TextAlign.center,
-              style: manuscriptBodyStyle(fontSize: 14, color: kInkMutedColor),
+          ),
+          TextButton(
+            onPressed: onAddToChapter,
+            child: Text('Add', style: manuscriptCaptionStyle(color: kIlluminationGold)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Sightings tab ────────────────────────────────────────────────────────────
+//
+// Read-only (SIGHTINGS_PLAN.md §1.2): spells sighted cast against the player
+// in a real LAN duel, grouped by opponent. No gameplay hooks, no delete-spell
+// / add-to-chapter / custom-art actions — those apply to the player's own
+// library, not to what they've observed of someone else's.
+
+class _SightingsTab extends StatefulWidget {
+  const _SightingsTab();
+
+  @override
+  State<_SightingsTab> createState() => _SightingsTabState();
+}
+
+class _SightingsTabState extends State<_SightingsTab> with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
+  late Future<List<SightingAsset>> _sightingsFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _sightingsFuture = SightingAsset.loadAll();
+  }
+
+  void _reload() => setState(() => _sightingsFuture = SightingAsset.loadAll());
+
+  /// Groups by opponent, each opponent's spells sorted most-recent first.
+  Map<String, List<SightingAsset>> _groupByOpponent(List<SightingAsset> all) {
+    final grouped = <String, List<SightingAsset>>{};
+    for (final s in all) {
+      grouped.putIfAbsent(s.opponentPubkeyHex, () => []).add(s);
+    }
+    for (final spells in grouped.values) {
+      spells.sort((a, b) => b.lastSeen.compareTo(a.lastSeen));
+    }
+    return grouped;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return FutureBuilder<List<SightingAsset>>(
+      future: _sightingsFuture,
+      builder: (context, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
+          return const Center(
+            child: CircularProgressIndicator(color: kIlluminationGold),
+          );
+        }
+        if (snap.hasError) {
+          return _ErrorBody(
+            message: 'Could not load your sightings.\n${snap.error}',
+            onRetry: _reload,
+          );
+        }
+        final all = snap.data ?? [];
+        if (all.isEmpty) {
+          return const _EmptyBody(
+            icon: Icons.visibility_outlined,
+            message: 'No spells sighted yet.\n'
+                'Spells cast against you in a duel will be recorded here.',
+          );
+        }
+        final grouped = _groupByOpponent(all);
+        // Most-recent opponent first, using each opponent's own already-sorted
+        // (most-recent-first) spell list.
+        final opponents = grouped.keys.toList()
+          ..sort((a, b) => grouped[b]!.first.lastSeen.compareTo(grouped[a]!.first.lastSeen));
+
+        return RefreshIndicator(
+          color: kIlluminationGold,
+          backgroundColor: kParchmentColor,
+          onRefresh: () async => _reload(),
+          child: ListView.builder(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            itemCount: opponents.length,
+            itemBuilder: (context, i) {
+              final opponentPubkeyHex = opponents[i];
+              return _OpponentSection(
+                opponentPubkeyHex: opponentPubkeyHex,
+                sightings: grouped[opponentPubkeyHex]!,
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _OpponentSection extends StatelessWidget {
+  const _OpponentSection({required this.opponentPubkeyHex, required this.sightings});
+
+  final String opponentPubkeyHex;
+  final List<SightingAsset> sightings;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _OpponentHeader(
+            opponentPubkeyHex: opponentPubkeyHex,
+            opponentName: sightings.first.opponentName,
+            spellCount: sightings.length,
+          ),
+          const SizedBox(height: 8),
+          for (final sighting in sightings) _SightingCard(sighting: sighting),
+        ],
+      ),
+    );
+  }
+}
+
+/// Identity triad header (SIGHTINGS_PLAN.md §2/§5): sigil first, then the
+/// wizard name if one is known (nullable — no authenticated name reaches
+/// BattleScreen yet), then always the pubkey fingerprint. The fingerprint is
+/// the thing that actually disambiguates two same-named wizards, so it's
+/// never hidden even when a name is shown, and the name is styled no larger
+/// than it — the viewer should trust the sigil/pubkey, not the name.
+class _OpponentHeader extends StatelessWidget {
+  const _OpponentHeader({
+    required this.opponentPubkeyHex,
+    required this.opponentName,
+    required this.spellCount,
+  });
+
+  final String opponentPubkeyHex;
+  final String? opponentName;
+  final int spellCount;
+
+  String get _fingerprint {
+    final trimmed =
+        opponentPubkeyHex.startsWith('0x') ? opponentPubkeyHex.substring(2) : opponentPubkeyHex;
+    return trimmed.length > 8 ? '0x${trimmed.substring(0, 8)}…' : opponentPubkeyHex;
+  }
+
+  String get _spellCountLabel => '$spellCount spell${spellCount == 1 ? '' : 's'} sighted';
+
+  void _copyFullKey(BuildContext context) {
+    Clipboard.setData(ClipboardData(text: opponentPubkeyHex));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Runekey copied.')),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final name = opponentName;
+    final hasName = name != null && name.isNotEmpty;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        SigilWidget(
+          keyBytes: fieldHexToLeBytes(opponentPubkeyHex, 32),
+          size: 36,
+          saturation: 2.5,
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                hasName ? name : _fingerprint,
+                style: const TextStyle(
+                  fontFamily: 'serif',
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: kInkColor,
+                  letterSpacing: 0.3,
+                ),
+              ),
+              const SizedBox(height: 2),
+              GestureDetector(
+                onLongPress: () => _copyFullKey(context),
+                child: Text(
+                  hasName ? '$_fingerprint  ·  $_spellCountLabel' : _spellCountLabel,
+                  style: manuscriptCaptionStyle(color: kInkColor.withValues(alpha: 0.6)),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Compact, read-only spell card (SIGHTINGS_PLAN.md §5) — no menu, no
+/// delete/add-to-chapter/art actions. Reuses [SpellCardWidget] and
+/// [formulaEffectLabels] via [SightingAsset.toDisplaySpell] so it renders
+/// identically to an owned [_SpellCard] apart from those actions. Shows
+/// mana cost (the certified BASE cost, §2/§3) alongside the generation
+/// count, same `♦` convention as [_SpellCard]/[_LoanTile].
+class _SightingCard extends StatelessWidget {
+  const _SightingCard({required this.sighting});
+
+  final SightingAsset sighting;
+
+  String get _displayName =>
+      sighting.spellName.isNotEmpty ? sighting.spellName : 'Unnamed Spell';
+
+  String get _meta => 'Gen ${sighting.t}  ·  ♦ ${sighting.manaCost}';
+
+  String get _formulaText {
+    if (sighting.formula.isEmpty) return '';
+    final labels = formulaEffectLabels(sighting.formula);
+    if (labels.isEmpty) return '';
+    return labels.join('  ·  ');
+  }
+
+  String get _lastSeenText {
+    final d = sighting.lastSeen.toLocal();
+    const months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    ];
+    return 'Last seen ${months[d.month - 1]} ${d.day}, ${d.year}  ·  '
+        'seen ×${sighting.timesSeen}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8, left: 46),
+      child: Container(
+        decoration: BoxDecoration(
+          color: kParchmentPanelColor,
+          border: Border.all(color: kInkColor.withValues(alpha: 0.15)),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            ClipRRect(
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(3),
+                bottomLeft: Radius.circular(3),
+              ),
+              child: SpellCardWidget(spell: sighting.toDisplaySpell(), size: 84),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _displayName,
+                      style: const TextStyle(
+                        fontFamily: 'serif',
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: kInkColor,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _meta,
+                      style: manuscriptCaptionStyle(color: kInkColor.withValues(alpha: 0.7))
+                          .copyWith(fontStyle: FontStyle.normal),
+                    ),
+                    if (_formulaText.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        _formulaText,
+                        style: manuscriptCaptionStyle(color: kInkColor.withValues(alpha: 0.55))
+                            .copyWith(fontStyle: FontStyle.normal, fontSize: 11),
+                      ),
+                    ],
+                    const SizedBox(height: 2),
+                    Text(_lastSeenText, style: manuscriptCaptionStyle()),
+                  ],
+                ),
+              ),
             ),
           ],
         ),

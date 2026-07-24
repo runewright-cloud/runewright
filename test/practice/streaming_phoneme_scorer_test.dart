@@ -30,6 +30,10 @@ class _FakeTemplateSource implements VocalTemplateSource {
 
   @override
   Future<VocalTemplate> templateFor(VocalWord word) async => templates[word]!;
+
+  @override
+  Future<List<VocalTemplate>> templatesFor(VocalWord word) async =>
+      [templates[word]!];
 }
 
 /// A linear frequency sweep — unlike silence or a steady tone, this has
@@ -56,7 +60,7 @@ Uint8List _chirpPcm(int samples, {required double startFreq, required double end
 /// template are unambiguous synthetic stand-ins.
 final Map<VocalWord, ({double start, double end})> _bands = {
   VocalWord.ignis: (start: 300, end: 900),
-  VocalWord.aer: (start: 1100, end: 1700),
+  VocalWord.ventus: (start: 1100, end: 1700),
   VocalWord.aqua: (start: 1900, end: 2500),
   VocalWord.terra: (start: 2700, end: 3300),
   VocalWord.finitus: (start: 3500, end: 4100),
@@ -157,7 +161,7 @@ void main() {
 
   test('pure digital silence never crosses (energy gate)', () async {
     final scorer = buildScorer();
-    await scorer.beginFormula(const PracticeFormula([VocalWord.aer]));
+    await scorer.beginFormula(const PracticeFormula([VocalWord.ventus]));
 
     final initialTarget = scorer.currentTarget;
     // 3 seconds of true silence. Before the 2026-07-16 redesign this

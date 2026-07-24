@@ -3,7 +3,7 @@
 // sherpa_vocal_scorer.dart — SherpaVocalScorer: Sherpa-ONNX integration scaffold.
 //
 // NOT YET INTEGRATED. sherpa_onnx is absent from pubspec.yaml until Latin-phoneme
-// accuracy has been validated against real recordings of ignis/aer/aqua/terra/finitus.
+// accuracy has been validated against real recordings of ignis/ventus/aqua/terra/finitus.
 //
 // Integration checklist (complete in order before switching the factory):
 //   1. Add to pubspec.yaml:

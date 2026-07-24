@@ -78,6 +78,47 @@ class MfccExtractor {
     return frames;
   }
 
+  /// First-order delta (regression) coefficients over [frames], one delta
+  /// vector per input frame, using the standard N=2 regression window
+  /// (Furui 1986 / HTK convention):
+  ///   delta[t] = sum_{n=1..N} n·(frame[t+n] − frame[t−n]) / (2·sum n²)
+  /// Frame indices outside [0, frames.length) are clamped to the nearest
+  /// boundary frame (replicate padding) rather than zero-padded, so edge
+  /// deltas reflect the nearest real transition instead of an artificial
+  /// jump to/from silence.
+  ///
+  /// Captures the trajectory (onset/offset dynamics) static coefficients
+  /// miss — e.g. a stop-glide transition like aqua's /kw/ — which is why
+  /// they exist: measured 2026-07-22 that static-only MFCC+DTW leaves some
+  /// vowel-heavy word pairs essentially tied (aqua vs terra, negative
+  /// margins) even with matched-pace, same-speaker templates. See
+  /// docs/M4_findings.md.
+  ///
+  /// Dimension-agnostic — works on any per-frame vector width, so callers
+  /// can compute delta-delta by calling this again on its own output.
+  static List<List<double>> deltas(List<List<double>> frames, {int n = 2}) {
+    if (frames.isEmpty) return frames;
+    final dims = frames[0].length;
+    final len = frames.length;
+    final denom = 2.0 *
+        List<int>.generate(n, (i) => i + 1)
+            .fold<int>(0, (sum, k) => sum + k * k);
+    return List<List<double>>.generate(len, (t) {
+      final out = List<double>.filled(dims, 0.0);
+      for (int k = 1; k <= n; k++) {
+        final plus = frames[math.min(t + k, len - 1)];
+        final minus = frames[math.max(t - k, 0)];
+        for (int d = 0; d < dims; d++) {
+          out[d] += k * (plus[d] - minus[d]);
+        }
+      }
+      for (int d = 0; d < dims; d++) {
+        out[d] /= denom;
+      }
+      return out;
+    });
+  }
+
   /// RMS of [pcmBytes] (PCM-16 LE mono), normalised to the ±1.0 float range.
   ///
   /// Returns 0.0 for input shorter than 2 bytes.

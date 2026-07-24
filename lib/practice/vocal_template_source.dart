@@ -4,7 +4,7 @@
 // swappable VocalTemplateSource abstraction in front of
 // StreamingPhonemeScorer.
 //
-// Shipped now: SingleVoiceTemplateSource, one Piper voice (it_IT-paola-medium)
+// Shipped now: SingleVoiceTemplateSource, one Piper voice (en_US-lessac-medium)
 // per VocalWord, generated offline by scripts/generate_practice_assets.dart
 // from the exact same render used for the trainer clip (see that script's
 // header and latin_phonemes.dart's file header for the derivation trail).
@@ -65,6 +65,18 @@ class VocalTemplate {
 /// is consensus-invisible and self-contained under lib/practice/ + lib/ui/.
 abstract class VocalTemplateSource {
   Future<VocalTemplate> templateFor(VocalWord word);
+
+  /// The full exemplar SET for [word] — the references the scorer takes the
+  /// min DTW distance over (StreamingPhonemeScorer, 2026-07-22: a set of the
+  /// speaker's own takes discriminates confusable words where a single
+  /// brittle exemplar can't; see docs/M4_findings.md). Battle-portable: the
+  /// whole-utterance path can call this and min over the same set.
+  ///
+  /// Default: the single [templateFor] template as a one-element list, so
+  /// single-template sources (e.g. [SingleVoiceTemplateSource]) need no
+  /// change.
+  Future<List<VocalTemplate>> templatesFor(VocalWord word) async =>
+      [await templateFor(word)];
 }
 
 /// Single-Piper-voice [VocalTemplateSource]. The active implementation for
@@ -111,6 +123,10 @@ class SingleVoiceTemplateSource implements VocalTemplateSource {
     _cache[word] = template;
     return template;
   }
+
+  @override
+  Future<List<VocalTemplate>> templatesFor(VocalWord word) async =>
+      [await templateFor(word)];
 }
 
 /// [VocalTemplateSource] backed by the player's own enrolled recordings
@@ -130,25 +146,35 @@ class PerUserEnrolledTemplateSource implements VocalTemplateSource {
   final VocalEnrollment enrollment;
   final VocalTemplateSource fallback;
 
-  final Map<VocalWord, VocalTemplate> _cache = {};
+  final Map<VocalWord, List<VocalTemplate>> _cache = {};
 
   void invalidate() => _cache.clear();
 
+  VocalTemplate _templateFrom(VocalWord word, List<List<double>> frames) =>
+      VocalTemplate(
+        word: word,
+        mfccFrames: frames,
+        checkpointFrameIndices: [frames.length - 1],
+        checkpointLabels: [word.name],
+      );
+
+  /// The player's enrolled take set for [word], or the fallback's set when
+  /// that word isn't enrolled yet. Cached until [invalidate].
   @override
-  Future<VocalTemplate> templateFor(VocalWord word) async {
+  Future<List<VocalTemplate>> templatesFor(VocalWord word) async {
     final cached = _cache[word];
     if (cached != null) return cached;
 
-    final frames = await enrollment.loadFrames(word);
-    if (frames == null) return fallback.templateFor(word);
-
-    final template = VocalTemplate(
-      word: word,
-      mfccFrames: frames,
-      checkpointFrameIndices: [frames.length - 1],
-      checkpointLabels: [word.name],
-    );
-    _cache[word] = template;
-    return template;
+    final takes = await enrollment.loadTakes(word);
+    final templates = takes == null
+        ? await fallback.templatesFor(word)
+        : [for (final frames in takes) _templateFrom(word, frames)];
+    _cache[word] = templates;
+    return templates;
   }
+
+  /// Back-compat single template: the first enrolled take (or fallback).
+  @override
+  Future<VocalTemplate> templateFor(VocalWord word) async =>
+      (await templatesFor(word)).first;
 }

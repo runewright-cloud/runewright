@@ -140,6 +140,18 @@ class Identity {
     );
   }
 
+  /// Computes `Poseidon2(split(pubkeyBytes))` for an arbitrary raw Ed25519
+  /// public key -- the circuit-facing owner_pubkey hex for a *presented*
+  /// key with no prior claim to check against (unlike [ownerPubkeyMatches],
+  /// which validates a claim). Used wherever a peer's raw key must be
+  /// resolved to their owner_pubkey directly, e.g. trade pairing
+  /// (lib/trade/trade_session.dart), rather than duplicating the split +
+  /// FFI-hash call site.
+  static Future<String> ownerPubkeyHexFromRawKey(List<int> pubkeyBytes) async {
+    final split = splitPubkeyToFieldHex(pubkeyBytes);
+    return ffi.poseidon2Hash2(split.keyHiHex, split.keyLoHex);
+  }
+
   /// Recomputes `Poseidon2(split(presentedPubkeyBytes))` and checks it
   /// against a proof's `owner_pubkey` public input -- the cast-time check
   /// CIRCUIT_IO.md CIRCUIT_IO 5 requires of the verifying client: "the

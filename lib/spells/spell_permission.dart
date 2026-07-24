@@ -6,6 +6,12 @@
 // Grants are at the grid-commitment level (commitmentHex = Poseidon2(packed_grid)),
 // so one permission covers all Kin spells that share the same grid, regardless of T.
 //
+// Two kinds (see docs/COMMUNE_TRADE_PLAN.md):
+//   loan     — day-limited (expiresAt required); the initial grid state is
+//              never part of this record. Not re-tradeable by the grantee.
+//   transfer — perpetual (expiresAt null); accompanies a full SpellAsset
+//              (grid included) sent out-of-band. Carries a provenance chain.
+//
 // Signature scheme: Ed25519 off-circuit (CLAUDE.md hard invariant 5).
 // The owner's raw Ed25519 public key bytes are embedded so the verifying peer
 // can (a) confirm the key maps to the circuit-level ownerPubkeyHex via Poseidon2
@@ -24,6 +30,32 @@ bool _hexEq(String a, String b) {
   return parse(a) == parse(b);
 }
 
+/// Whether a [SpellPermission] is a day-limited loan or a perpetual transfer
+/// grant. See docs/COMMUNE_TRADE_PLAN.md §2 for why indefinite/revocable
+/// loans were ruled out — every loan carries an enforceable expiry instead.
+enum SpellGrantKind { loan, transfer }
+
+/// One hop in a transferred spell's custody chain: who held it, and when
+/// they received it. Recorded (not yet independently re-verified per hop)
+/// so a transfer chain reads as a genuine heirloom history in a future
+/// provenance UI. Empty for [SpellGrantKind.loan] grants.
+class ProvenanceStep {
+  const ProvenanceStep({required this.pubkeyHex, required this.at});
+
+  final String pubkeyHex;
+  final DateTime at;
+
+  Map<String, dynamic> toJson() => {
+        'pubkeyHex': pubkeyHex,
+        'at': at.toIso8601String(),
+      };
+
+  static ProvenanceStep fromJson(Map<String, dynamic> json) => ProvenanceStep(
+        pubkeyHex: json['pubkeyHex'] as String,
+        at: DateTime.parse(json['at'] as String),
+      );
+}
+
 class SpellPermission {
   SpellPermission({
     required this.id,
@@ -33,7 +65,17 @@ class SpellPermission {
     required this.ownerRawPubkeyBase64,
     required this.granteePubkeyHex,
     required this.signatureBase64,
-  });
+    required this.kind,
+    this.expiresAt,
+    this.provenance = const [],
+  }) {
+    if (kind == SpellGrantKind.loan && expiresAt == null) {
+      throw ArgumentError('loan grants require a non-null expiresAt');
+    }
+    if (kind == SpellGrantKind.transfer && expiresAt != null) {
+      throw ArgumentError('transfer grants must be perpetual (expiresAt must be null)');
+    }
+  }
 
   final String id;
   final DateTime grantedAt;
@@ -59,42 +101,79 @@ class SpellPermission {
   /// Ed25519 signature by the owner over [canonicalMessage].
   final String signatureBase64;
 
+  /// [SpellGrantKind.loan] or [SpellGrantKind.transfer].
+  final SpellGrantKind kind;
+
+  /// Required and enforced client-side for [SpellGrantKind.loan]; always
+  /// null for [SpellGrantKind.transfer] (perpetual). Part of the signed
+  /// message (see [canonicalMessage]) so a loanee cannot extend their own
+  /// loan by editing the stored JSON.
+  final DateTime? expiresAt;
+
+  /// Custody chain for [SpellGrantKind.transfer] grants — original creator
+  /// first, each subsequent holder appended on re-transfer. Empty for loans.
+  final List<ProvenanceStep> provenance;
+
+  // ── Expiry ───────────────────────────────────────────────────────────────
+
+  /// True iff this is an expired loan as of [now] (defaults to the current
+  /// UTC time). Always false for [SpellGrantKind.transfer].
+  bool isExpired({DateTime? now}) {
+    if (kind != SpellGrantKind.loan) return false;
+    final clock = now ?? DateTime.now().toUtc();
+    return !clock.isBefore(expiresAt!);
+  }
+
   // ── Canonical message ─────────────────────────────────────────────────────
 
   /// The bytes the owner signs. Null-byte delimited to prevent prefix attacks.
   /// All hex strings are lowercased before encoding for canonical form.
+  /// [expiresAt] is included so tampering with it on disk invalidates the
+  /// signature — this is what makes the day-limited model enforceable
+  /// without a revocation mechanism.
   List<int> get canonicalMessage =>
-      _buildMessage(ownerPubkeyHex, commitmentHex, granteePubkeyHex);
+      _buildMessage(kind, ownerPubkeyHex, commitmentHex, granteePubkeyHex, expiresAt);
 
   static List<int> _buildMessage(
+    SpellGrantKind kind,
     String ownerPubkeyHex,
     String commitmentHex,
     String granteePubkeyHex,
+    DateTime? expiresAt,
   ) =>
       [
-        ...utf8.encode('RUNEWRIGHT_SPELL_LOAN_V1\x00'),
+        ...utf8.encode('RUNEWRIGHT_SPELL_GRANT_V2\x00'),
+        ...utf8.encode(kind.name),
+        0,
         ...utf8.encode(ownerPubkeyHex.toLowerCase()),
         0,
         ...utf8.encode(commitmentHex.toLowerCase()),
         0,
         ...utf8.encode(granteePubkeyHex.toLowerCase()),
+        0,
+        ...utf8.encode(expiresAt?.toUtc().toIso8601String() ?? 'never'),
       ];
 
   // ── Factory ───────────────────────────────────────────────────────────────
 
   /// Creates and signs a permission for [granteePubkeyHex] to use spells with
   /// [spell.commitmentHex]. Throws [ArgumentError] if [ownerIdentity] is not
-  /// the owner of [spell] (their ownerPubkeyHex does not match the spell's).
+  /// the owner of [spell] (their ownerPubkeyHex does not match the spell's),
+  /// or if [kind]/[expiresAt] violate the loan-requires-expiry /
+  /// transfer-must-be-perpetual invariant.
   static Future<SpellPermission> createAndSign({
     required SpellAsset spell,
     required Identity ownerIdentity,
     required String granteePubkeyHex,
+    required SpellGrantKind kind,
+    DateTime? expiresAt,
+    List<ProvenanceStep> provenance = const [],
   }) async {
     final ownerPubkeyHex = await ownerIdentity.ownerPubkeyHex();
     if (!_hexEq(ownerPubkeyHex, spell.ownerPubkeyHex)) {
       throw ArgumentError('ownerIdentity is not the owner of spell ${spell.id}');
     }
-    final msg = _buildMessage(ownerPubkeyHex, spell.commitmentHex, granteePubkeyHex);
+    final msg = _buildMessage(kind, ownerPubkeyHex, spell.commitmentHex, granteePubkeyHex, expiresAt);
     final sigBytes = await ownerIdentity.sign(msg);
     return SpellPermission(
       id: DateTime.now().toUtc().microsecondsSinceEpoch.toString(),
@@ -104,6 +183,9 @@ class SpellPermission {
       ownerRawPubkeyBase64: base64Encode(ownerIdentity.publicKeyBytes),
       granteePubkeyHex: granteePubkeyHex,
       signatureBase64: base64Encode(sigBytes),
+      kind: kind,
+      expiresAt: expiresAt,
+      provenance: provenance,
     );
   }
 
@@ -113,6 +195,8 @@ class SpellPermission {
   ///   1. [ownerRawPubkeyBase64] decodes to a key that Poseidon2-hashes to
   ///      [ownerPubkeyHex] (the raw key is genuine for this owner).
   ///   2. The Ed25519 signature over [canonicalMessage] is valid for that key.
+  ///
+  /// Does NOT check expiry — see [isCurrentlyUsable] for the combined check.
   Future<bool> isSignatureValid() async {
     final rawPubKey = base64Decode(ownerRawPubkeyBase64);
     final pubkeyMatches = await Identity.ownerPubkeyMatches(
@@ -127,6 +211,13 @@ class SpellPermission {
     );
   }
 
+  /// True iff the signature is valid AND (for loans) not yet expired as of
+  /// [now]. The check every call site should use before trusting a grant.
+  Future<bool> isCurrentlyUsable({DateTime? now}) async {
+    if (isExpired(now: now)) return false;
+    return isSignatureValid();
+  }
+
   // ── Serialization ─────────────────────────────────────────────────────────
 
   Map<String, dynamic> toJson() => {
@@ -137,6 +228,9 @@ class SpellPermission {
         'ownerRawPubkeyBase64': ownerRawPubkeyBase64,
         'granteePubkeyHex': granteePubkeyHex,
         'signatureBase64': signatureBase64,
+        'kind': kind.name,
+        if (expiresAt != null) 'expiresAt': expiresAt!.toIso8601String(),
+        'provenance': provenance.map((p) => p.toJson()).toList(),
       };
 
   static SpellPermission fromJson(Map<String, dynamic> json) => SpellPermission(
@@ -147,6 +241,11 @@ class SpellPermission {
         ownerRawPubkeyBase64: json['ownerRawPubkeyBase64'] as String,
         granteePubkeyHex: json['granteePubkeyHex'] as String,
         signatureBase64: json['signatureBase64'] as String,
+        kind: SpellGrantKind.values.byName(json['kind'] as String),
+        expiresAt: json['expiresAt'] != null ? DateTime.parse(json['expiresAt'] as String) : null,
+        provenance: (json['provenance'] as List<dynamic>? ?? [])
+            .map((p) => ProvenanceStep.fromJson(p as Map<String, dynamic>))
+            .toList(),
       );
 
   // ── Persistence ───────────────────────────────────────────────────────────

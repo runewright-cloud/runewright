@@ -11,7 +11,7 @@ import 'package:test/test.dart';
 import 'package:rune_duel/practice/formula_generator.dart';
 import 'package:rune_duel/sorcerer/vocal_score.dart';
 
-const _elements = {VocalWord.ignis, VocalWord.aer, VocalWord.aqua, VocalWord.terra};
+const _elements = {VocalWord.ignis, VocalWord.ventus, VocalWord.aqua, VocalWord.terra};
 
 void main() {
   group('generate', () {

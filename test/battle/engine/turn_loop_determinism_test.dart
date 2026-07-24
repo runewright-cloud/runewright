@@ -26,6 +26,9 @@ import 'package:rune_duel/battle/models/match_config.dart';
 import 'package:rune_duel/battle/models/wizard_avatar.dart';
 import 'package:rune_duel/battle/networking/battle_session.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
+import 'package:rune_duel/identity/identity.dart';
+import 'package:rune_duel/spells/spell_asset.dart';
+import 'package:rune_duel/spells/spell_permission.dart';
 
 void main() {
   // ── HashRng unit tests ────────────────────────────────────────────────────
@@ -190,9 +193,140 @@ void main() {
       expect(b.mana, 75); // player_b: Meditate (main), starting 50 + 25.
     });
   });
+
+  // ── Spell-cast wire round trip (SIGHTINGS_PLAN.md §2 wire change) ────────
+
+  group('SpellCastAction wire round trip', () {
+    test(
+        "receiving loop decodes the caster's spell name off the 0x01 wire "
+        'action unchanged', () async {
+      final state1 = _makeAdjacentState();
+      final state2 = _makeAdjacentState();
+
+      final pair = _TurnSessionPair();
+      // Both loops verify (rather than skip verification, as the other
+      // tests in this file do) so the receiving loop actually decodes and
+      // certifies the peer's proof outputs instead of short-circuiting at
+      // TurnLoop._verifyPeerSpellCast's "verify == null" bail-out — that
+      // path would leave the caster's mana deducted on one side only and
+      // diverge canonical state for reasons unrelated to the wire format
+      // under test here.
+      Future<bool> alwaysOk(Uint8List vk, Uint8List proof) async => true;
+      final loop1 = TurnLoop(
+        state: state1,
+        session: pair.sessionA,
+        localPlayerId: 'player_a',
+        verifyProof: alwaysOk,
+        vkBytes: Uint8List(0),
+      );
+      final loop2 = TurnLoop(
+        state: state2,
+        session: pair.sessionB,
+        localPlayerId: 'player_b',
+        verifyProof: alwaysOk,
+        vkBytes: Uint8List(0),
+      );
+
+      // Empty formula + segmentCount/dotCount == 0 keeps this a "whiff"
+      // cast on both the wire-trust side (spell.formula, read directly by
+      // the caster's own loop) and the certified side (TrajectoryParser
+      // output from the all-zero synthetic trajectory below, read by the
+      // receiving loop) — zero effect, zero certified base cost, so the
+      // two independently-computed mana/effect paths can't diverge for
+      // reasons unrelated to the thing this test actually checks: does the
+      // name survive the wire round trip.
+      final commitmentBytes = Uint8List.fromList(List.filled(32, 0xab));
+      final commitmentHex =
+          '0x${commitmentBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join()}';
+      final spell = SpellAsset(
+        id: 'test-spell',
+        createdAt: DateTime.utc(2026, 7, 19),
+        tier: 24,
+        t: 1,
+        ownerPubkeyHex: '0x${'00' * 32}',
+        manaCost: 0,
+        segmentCount: 0,
+        dotCount: 0,
+        initialGrid: const [],
+        proofBytes: _syntheticProofFor(
+          tier: 24,
+          t: 1,
+          commitmentBytes: commitmentBytes,
+          segmentCount: 0,
+          dotCount: 0,
+        ),
+        name: 'Ember Wake',
+        commitmentHex: commitmentHex,
+        spellHashHex: '',
+        formula: const [],
+      );
+      // _encodeAction only appends the [proof_len][proof_bytes]... tail
+      // (which the receiving loop needs — verifyProof != null means it
+      // decodes withProof: true and forfeits on an empty proof) when the
+      // caster has a local chapter to prove membership against. A
+      // single-spell "chapter" is enough (depth-0 membership proof).
+      loop1.localChapterCommitments = [spell.commitmentHex];
+
+      // player_a casts at the adjacent player_b; player_b passes. Both
+      // loops independently decode/resolve BOTH actions to reach identical
+      // canonical state, so loop2's lastResolvedSpells reflects what it
+      // decoded off the wire from loop1's encoded action — the real
+      // encode -> wire bytes -> decode round trip, not a direct call into
+      // the private _encodeAction/_decodeAction methods.
+      await Future.wait([
+        loop1.runTurn(TurnInput(
+          action: SpellCastAction(spell: spell, targetHex: const HexCoord(1, 0)),
+        )),
+        loop2.runTurn(TurnInput(action: PassAction())),
+      ]);
+
+      expect(
+        state1.toCanonicalBytes(),
+        equals(state2.toCanonicalBytes()),
+        reason: 'Spell-cast turn diverged between the two loops.',
+      );
+
+      expect(loop2.lastResolvedSpells, hasLength(1));
+      final resolved = loop2.lastResolvedSpells.single;
+      expect(resolved.spell.name, equals('Ember Wake'),
+          reason: 'name must survive the 0x01 wire encode/decode round trip');
+      expect(resolved.spell.commitmentHex, equals(spell.commitmentHex));
+      expect(resolved.spell.formula, equals(spell.formula));
+      expect(resolved.casterId, equals('player_a'));
+    });
+  });
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Build synthetic proof bytes in the canonical wire format ProofIntake
+/// parses: `[4 BE bytes: field count N][N × 32-byte fields][proof body]`
+/// (mirrors test/battle/engine/proof_intake_test.dart's `_syntheticProof`,
+/// extended to stamp the commitment/segmentCount/dotCount fields a real
+/// `_verifyPeerSpellCast` call reads). All other fields (owner_pubkey,
+/// border_activations, dominance_trajectory, supreme_dominance_flags) stay
+/// zero, which TrajectoryParser reads as "no certified effect zones" —
+/// paired with an empty wire `formula` on the caster's [SpellAsset] so both
+/// the wire-trust and certified resolution paths agree on a no-op cast.
+Uint8List _syntheticProofFor({
+  required int tier,
+  required int t,
+  required Uint8List commitmentBytes,
+  required int segmentCount,
+  required int dotCount,
+}) {
+  final count = 10 + 2 * tier;
+  final bytes = Uint8List(4 + count * 32 + 1);
+  final data = ByteData.sublistView(bytes);
+
+  data.setUint32(0, count, Endian.big);
+  data.setUint32(4 + 0 * 32 + 28, t, Endian.big); // field 0: T
+  data.setUint32(4 + 2 * 32 + 28, 3, Endian.big); // field 2: ruleset_version
+  bytes.setRange(4 + 3 * 32, 4 + 3 * 32 + 32, commitmentBytes); // field 3: commitment
+  data.setUint32(4 + (8 + 2 * tier) * 32 + 28, segmentCount, Endian.big);
+  data.setUint32(4 + (8 + 2 * tier + 1) * 32 + 28, dotCount, Endian.big);
+  return bytes;
+}
 
 /// Like [_makeState] but with adjacent avatars (so both have a melee target)
 /// and headroom below maxMana (so a Meditate gain is observable rather than
@@ -322,6 +456,10 @@ class _TurnSessionPair {
   var _bScryKey = Completer<Uint8List>();
   var _aScryOpen = Completer<Uint8List>();
   var _bScryOpen = Completer<Uint8List>();
+  var _aSpellRevealKey = Completer<Uint8List>();
+  var _bSpellRevealKey = Completer<Uint8List>();
+  var _aSpellRevealOpen = Completer<Uint8List>();
+  var _bSpellRevealOpen = Completer<Uint8List>();
 
   void reset() {
     _aActionCommit = Completer();
@@ -348,6 +486,10 @@ class _TurnSessionPair {
     _bScryKey = Completer();
     _aScryOpen = Completer();
     _bScryOpen = Completer();
+    _aSpellRevealKey = Completer();
+    _bSpellRevealKey = Completer();
+    _aSpellRevealOpen = Completer();
+    _bSpellRevealOpen = Completer();
   }
 }
 
@@ -356,6 +498,25 @@ class _PairedSession implements BattleTurnSession {
 
   final _TurnSessionPair _pair;
   final bool isA;
+
+  // ── Identity authentication (BATTLE_AUTH_PLAN.md §3) ────────────────────────
+  //
+  // This fixture tests resolution-RNG determinism, not authentication — both
+  // sides report no authenticated peer (mirrors SoloBattleSession's stub) so
+  // TurnLoop's cast-authorization and state-hash-signing checks stay skipped,
+  // matching this test's pre-existing unsigned/unauthorized behaviour.
+
+  @override
+  Future<AuthenticatedPeer> exchangeIdentityAuth({
+    required Identity localIdentity,
+    required Uint8List matchId,
+  }) async => AuthenticatedPeer.none;
+
+  @override
+  Future<List<SpellPermission>> exchangeSpellPermissions(
+    List<SpellPermission> ours, {
+    required String peerOwnerPubkeyHex,
+  }) async => const <SpellPermission>[];
 
   // ── Entropy ───────────────────────────────────────────────────────────────
 
@@ -420,6 +581,30 @@ class _PairedSession implements BattleTurnSession {
     } else {
       _pair._bScryOpen.complete(ourFrame);
       return _pair._aScryOpen.future;
+    }
+  }
+
+  // ── Divination (Water) spell-list reveal ───────────────────────────────────
+
+  @override
+  Future<Uint8List> exchangeSpellRevealKey(Uint8List ourFrame) {
+    if (isA) {
+      _pair._aSpellRevealKey.complete(ourFrame);
+      return _pair._bSpellRevealKey.future;
+    } else {
+      _pair._bSpellRevealKey.complete(ourFrame);
+      return _pair._aSpellRevealKey.future;
+    }
+  }
+
+  @override
+  Future<Uint8List> exchangeSpellRevealOpen(Uint8List ourFrame) {
+    if (isA) {
+      _pair._aSpellRevealOpen.complete(ourFrame);
+      return _pair._bSpellRevealOpen.future;
+    } else {
+      _pair._bSpellRevealOpen.complete(ourFrame);
+      return _pair._aSpellRevealOpen.future;
     }
   }
 

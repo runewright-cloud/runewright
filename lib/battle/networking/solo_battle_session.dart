@@ -30,6 +30,8 @@ import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
 
+import '../../identity/identity.dart';
+import '../../spells/spell_permission.dart';
 import '../engine/commit_reveal.dart';
 import '../models/battle_state.dart';
 import 'battle_session.dart';
@@ -72,6 +74,26 @@ class SoloBattleSession implements BattleTurnSession {
   Uint8List _peerMeleeBytes = Uint8List.fromList([0x00]); // no melee target
   Uint8List _peerFreeMoveNonce = Uint8List(16);
   Uint8List _peerFreeMoveBytes = Uint8List.fromList([0x00]); // no free move
+
+  // ── Identity authentication (BATTLE_AUTH_PLAN.md §3) ────────────────────────
+  //
+  // There is no real peer to authenticate in solo/practice play, so both
+  // exchanges are stubs: no signature is checked or produced, and the
+  // sentinel AuthenticatedPeer.none carries an empty owner_pubkey that can
+  // never match a real spell's owner (TurnLoop skips cast-authorization and
+  // state-hash-signing checks when the authenticated peer is this sentinel).
+
+  @override
+  Future<AuthenticatedPeer> exchangeIdentityAuth({
+    required Identity localIdentity,
+    required Uint8List matchId,
+  }) async => AuthenticatedPeer.none;
+
+  @override
+  Future<List<SpellPermission>> exchangeSpellPermissions(
+    List<SpellPermission> ours, {
+    required String peerOwnerPubkeyHex,
+  }) async => const <SpellPermission>[];
 
   // ── Entropy ─────────────────────────────────────────────────────────────────
 
@@ -162,6 +184,24 @@ class SoloBattleSession implements BattleTurnSession {
         ...utf8.encode('RWSCRY1'),
         ..._be4(state.turnNumber),
       ]);
+
+  // ── Divination (Water) spell-list reveal ─────────────────────────────────
+  //
+  // Unlike the Air scry pattern, the dummy has no modeled chapter — only a
+  // single scripted [dummyCastFormula], not a spell list — and solo mode's
+  // TurnLoop never carries a peerBookRoot to verify a reveal against (see
+  // battle_screen.dart's peerBookRoot, always null for solo/practice
+  // sessions). Both directions are honest stubs: the dummy never has spells
+  // to reveal, so casting Watery Scrying Pool on it in solo practice shows
+  // an empty reveal, same as "the dummy never melees" below.
+
+  @override
+  Future<Uint8List> exchangeSpellRevealKey(Uint8List ourFrame) async =>
+      Uint8List.fromList([0x00]);
+
+  @override
+  Future<Uint8List> exchangeSpellRevealOpen(Uint8List ourFrame) async =>
+      Uint8List.fromList([0x00]);
 
   static Uint8List _be4(int v) => Uint8List(4)
     ..[0] = (v >> 24) & 0xFF
