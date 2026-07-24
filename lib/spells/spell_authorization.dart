@@ -10,10 +10,8 @@
 //   castingPlayerMayUse — call this when an opponent declares a spellCast in
 //     battle, given the SpellPermission records they transmitted at session start.
 //     Each matching permission's signature is verified before granting access.
-//
-// TODO(battle): add a SpellPermission exchange step to BattleSession setup
-//   (new wire message or extended matchConfig payload) and pass the received
-//   list to castingPlayerMayUse. See BATTLE_PROTOCOL.md.
+//     The exchange is wired through BattleSession.exchangeSpellPermissions
+//     (BattleMsgType.spellPermissions), invoked from runDuelSetup step 5.
 
 import '../identity/identity.dart';
 import 'spell_asset.dart';
@@ -54,13 +52,11 @@ Future<bool> localIdentityMayUse(SpellAsset spell, Identity identity, {DateTime?
 /// and [commitmentHex].
 ///
 /// [permissions] are the SpellPermission records the casting player transmitted
-/// at battle session start. Each candidate permission's signature and (for
-/// loans) expiry are checked via [SpellPermission.isCurrentlyUsable] before
-/// authorization is granted.
-///
-/// TODO(battle): wire permission exchange into BattleSession setup and pass the
-///   received list here. Until then pass an empty list — owned spells are
-///   authorized by the first branch and loan verification is deferred.
+/// at battle session start (via BattleSession.exchangeSpellPermissions). Each
+/// candidate permission's signature and (for loans) expiry are checked via
+/// [SpellPermission.isCurrentlyUsable] before authorization is granted. On the
+/// solo/test path an empty list is passed — owned spells are still authorized
+/// by the first branch.
 Future<bool> castingPlayerMayUse({
   required String spellOwnerPubkeyHex,
   required String commitmentHex,
