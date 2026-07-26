@@ -818,7 +818,18 @@
       "Bash(xwd -root -silent -out screen.xwd)",
       "Bash(python3 -c \"import PIL; print\\(PIL.__version__\\)\")",
       "Bash(xwd -id 0x4000007 -silent -out mywindow.xwd)",
-      "Bash(kill 1541771 1541588 1541811)"
+      "Bash(kill 1541771 1541588 1541811)",
+      "Bash(git commit -q -m 'Remove stale spell-permission-exchange TODOs *)",
+      "Bash(python3 -c \"import Xlib\")",
+      "Bash(npm --version)",
+      "Read(//home/soren/Documents/**)",
+      "Bash(xargs -I{} basename {})",
+      "Bash(pkill -f \"_countered_card_preview\")",
+      "Bash(pkill -f \"flutter_tools.snapshot run\")",
+      "Bash(pkill -f \"_countered_card_preview\" 2>/dev/null *)",
+      "Bash(grep -n \"^  void \\\\|^  Future\\\\|^  static\\\\|^  [A-Za-z_<].*\\(.*{$\" /home/soren/runewright/lib/battle/engine/turn_loop.dart)",
+      "Bash(awk -F: '{print}')",
+      "Bash(awk 'NR<=2900 && /^  [A-Za-z].*\\\\\\(.*\\\\{$|^  Future|^  void /{print NR\": \"$0}' /home/soren/runewright/lib/battle/engine/turn_loop.dart)"
     ],
     "additionalDirectories": [
       "/tmp",

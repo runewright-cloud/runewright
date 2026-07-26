@@ -61,6 +61,7 @@ class ApplyContext {
     List<ConveyorChainEvent>? conveyorChainEvents,
     this.drawSchedules,
     this.witherRng,
+    this.effectiveRadiusBonus = 0,
   }) : rodConsumedFor = rodConsumedFor ?? {},
        movePaths      = movePaths      ?? {},
        conveyorChainEvents = conveyorChainEvents ?? [];
@@ -70,6 +71,13 @@ class ApplyContext {
   final WizardAvatar caster;
   final BattleState state;
   final Random rng;
+
+  /// Rod of Spreading bonus: +1 effective radius applied to this spell's
+  /// spatial effects (0 when no rod was activated). Set once for the whole
+  /// cast in TurnLoop. See EffectApplicator.apply's footprint expansion.
+  // TODO(velocity): the Air "Velocity (+2 range)" enhancement — a documented
+  //   no-op today (casting_enhancements.dart) — should feed this same seam.
+  final int effectiveRadiusBonus;
 
   /// Tracks which playerIds have had an absorption rod consumed for this spell.
   final Set<String> rodConsumedFor;
@@ -110,8 +118,47 @@ class ApplyContext {
 // ── Effect applicator ─────────────────────────────────────────────────────────
 
 class EffectApplicator {
-  /// Apply [ctx.descriptor.spellEffect] to [ctx.state], targeting [ctx.targetTile].
-  static void apply(ApplyContext ctx) => switch (ctx.descriptor.spellEffect) {
+  /// Apply [ctx.descriptor.spellEffect] to [ctx.state], targeting
+  /// [ctx.targetTile].
+  ///
+  /// Rod of Spreading ([ApplyContext.effectiveRadiusBonus] > 0) enlarges a
+  /// spell's *spatial* effects by that many rings. Three shapes of expansion:
+  ///
+  ///   1. Radius-carrying effects (splash damage, clouds) grow their own
+  ///      radius field by the bonus — one application, wider disc.
+  ///   2. Tile-local effects that hit whatever is on the target tile (direct/
+  ///      knockback damage, status-effect interactions, terrain summons) are
+  ///      re-applied once per tile of the wall-blocked disc around the target
+  ///      (Earth ImpassableTile walls block the spread; design v3.0 §Artifacts).
+  ///   3. Everything else is left single-target: self-buffs (barrier, quick,
+  ///      penetrating…) and caster-mutating meta effects (chain, artifact
+  ///      summons, divination…) have no spatial radius, and re-running them per
+  ///      tile would wrongly multiply a self-effect. [_isSpreadableAtTiles]
+  ///      names exactly the case-2 set — audit it when a new effect kind lands.
+  static void apply(ApplyContext ctx) {
+    final bonus = ctx.effectiveRadiusBonus;
+    final effect = ctx.descriptor.spellEffect;
+
+    if (bonus > 0) {
+      // Case 1: bump a radius-carrying effect's own footprint.
+      final widened = _withRadiusBonus(effect, bonus);
+      if (widened != null) {
+        _dispatch(_reTargeted(ctx, ctx.targetTile, widened), widened);
+        return;
+      }
+      // Case 2: re-apply a tile-local effect across the wall-blocked disc.
+      if (_isSpreadableAtTiles(effect)) {
+        for (final tile in _spreadTiles(ctx.state, ctx.targetTile, bonus)) {
+          _dispatch(_reTargeted(ctx, tile, effect), effect);
+        }
+        return;
+      }
+    }
+    // Case 3 (and the no-bonus fast path): apply once at the target tile.
+    _dispatch(ctx, effect);
+  }
+
+  static void _dispatch(ApplyContext ctx, SpellEffect effect) => switch (effect) {
         DamageEffect e => _applyDamage(ctx, e),
         BarrierEffect e => _applyBarrier(ctx, e),
         ReflectionEffect e => _applyReflections(ctx, e),
@@ -129,6 +176,95 @@ class EffectApplicator {
         HaymakerInteractionEffect e => _applyHaymakerInteraction(ctx, e),
         DivinationEffect e => _applyDivination(ctx, e),
       };
+
+  // ── Rod of Spreading: footprint expansion ─────────────────────────────────
+
+  /// If [effect] already carries its own AoE radius (splash damage, clouds),
+  /// returns a copy with that radius grown by [bonus]; otherwise null (the
+  /// caller then tries the per-tile disc expansion instead).
+  static SpellEffect? _withRadiusBonus(SpellEffect effect, int bonus) =>
+      switch (effect) {
+        DamageEffect e when e.kind == DamageKind.splash => DamageEffect(
+            amount: e.amount,
+            kind: e.kind,
+            splashRadius: e.splashRadius + bonus,
+            knockback: e.knockback,
+          ),
+        CloudEffect e => CloudEffect(
+            affinity: e.affinity,
+            kind: e.kind,
+            radius: e.radius + bonus,
+            durationTurns: e.durationTurns,
+          ),
+        _ => null,
+      };
+
+  /// Effects that resolve against whatever occupies a single target tile, so
+  /// re-running them once per tile of an enlarged disc is a true AoE (case 2).
+  /// Deliberately excludes: splash/cloud (handled by [_withRadiusBonus]),
+  /// traversal damage (already a caster→target line), self-buffs, and
+  /// caster-mutating meta effects (which would multiply if looped).
+  static bool _isSpreadableAtTiles(SpellEffect effect) => switch (effect) {
+        DamageEffect e =>
+          e.kind == DamageKind.direct || e.kind == DamageKind.knockback,
+        StatusEffectInteractionEffect _ => true,
+        TileModificationEffect _ => true,
+        _ => false,
+      };
+
+  /// Tiles reachable from [center] within [radius] steps without passing
+  /// *through* an ImpassableTile (Earth wall). BFS so a wall shadows the tiles
+  /// behind it — matching traversal damage's stop-at-wall rule and the design's
+  /// "Earth wall tiles still prevent spell effects from traveling past them
+  /// through this AoE." [center] is always included; blocked *destination*
+  /// tiles are still valid targets (the wall tile itself can be hit), they just
+  /// don't propagate the spread onward.
+  static List<HexCoord> _spreadTiles(BattleState state, HexCoord center, int radius) {
+    final seen = <HexCoord>{center};
+    final result = <HexCoord>[center];
+    var frontier = <HexCoord>[center];
+    for (var step = 0; step < radius; step++) {
+      final next = <HexCoord>[];
+      for (final tile in frontier) {
+        // A wall stops the spread from continuing past it, but the wall tile
+        // itself (already added when it was reached) remains a valid target.
+        if (state.tileEffects[tile] is ImpassableTile) continue;
+        for (final n in _hexNeighbors(tile)) {
+          if (!state.battlefield.isInBounds(n) || !seen.add(n)) continue;
+          result.add(n);
+          next.add(n);
+        }
+      }
+      frontier = next;
+    }
+    return result;
+  }
+
+  /// A copy of [ctx] centered on [tile] with the rod bonus cleared (so a
+  /// per-tile dispatch never re-expands) and [effect] as its spell effect.
+  /// Shares every mutable collection (state, rodConsumedFor, movePaths,
+  /// conveyorChainEvents, drawSchedules) by reference — the whole point is that
+  /// bookkeeping accumulates across the expanded tiles exactly as it would for
+  /// a single application.
+  static ApplyContext _reTargeted(ApplyContext ctx, HexCoord tile, SpellEffect effect) =>
+      ApplyContext(
+        descriptor: EffectDescriptor(
+          affinity: ctx.descriptor.affinity,
+          effectKind: ctx.descriptor.effectKind,
+          spellEffect: effect,
+        ),
+        targetTile: tile,
+        caster: ctx.caster,
+        state: ctx.state,
+        rng: ctx.rng,
+        rodConsumedFor: ctx.rodConsumedFor,
+        movePaths: ctx.movePaths,
+        chosenConveyorDirection: ctx.chosenConveyorDirection,
+        conveyorChainEvents: ctx.conveyorChainEvents,
+        drawSchedules: ctx.drawSchedules,
+        witherRng: ctx.witherRng,
+        effectiveRadiusBonus: 0,
+      );
 
   // ── Damage (Fire-Fire) ────────────────────────────────────────────────────
 
@@ -614,7 +750,8 @@ class EffectApplicator {
   static void _applyIllusionMinionCopy(ApplyContext ctx) {
     final source = _minionsAt(ctx.state, ctx.targetTile).firstOrNull;
     if (source == null) return;
-    final spawn = _findCreatureSpawnTile(ctx.state, ctx.targetTile, source.abilities);
+    final spawn = _findCreatureSpawnTile(
+        ctx.state, ctx.targetTile, source.abilities, source.sizeBonus);
     ctx.state.minions.add(Minion(
       id: _uid(ctx, 'ic'),
       ownerId: ctx.caster.playerId,
@@ -626,6 +763,7 @@ class EffectApplicator {
       abilities: source.abilities,
       personality: source.personality,
       forceCloseToAttack: true,
+      sizeBonus: source.sizeBonus,
     ));
   }
 
@@ -709,10 +847,14 @@ class EffectApplicator {
   // ── Multiplier Cycles (Air-Fire) ──────────────────────────────────────────
 
   static void _applyMultiplierCycles(ApplyContext ctx, MultiplierCyclesEffect e) {
-    // Store pending multiplier; consumed by TurnLoop.castSpell the next time
-    // the caster resolves a formula of targetElement affinity, which applies
-    // that formula's effect this many times instead of once.
-    ctx.caster.pendingEffectMultipliers[e.targetElement] = e.multiplier;
+    // Always self-applied to the caster (never ctx.targetTile). Consumed by
+    // TurnLoop.castSpell the next time the caster resolves a formula of
+    // targetElement affinity -- immediately if one follows later in this same
+    // spell, otherwise on a spell cast next turn -- which applies that
+    // formula's effect this many times instead of once. Expires unused after
+    // 2 turns total; see WizardAvatar.tickStatusEffects.
+    ctx.caster.pendingEffectMultipliers[e.targetElement] =
+        PendingMultiplier(multiplier: e.multiplier, remainingTurns: 2);
   }
 
   // ── Haymaker Interaction (Air-Earth) ─────────────────────────────────────
@@ -899,7 +1041,10 @@ class EffectApplicator {
   }
 
   static void _knockbackMinion(Minion m, ApplyContext ctx) {
-    if (m.abilities.contains(SummonAbility.big)) return; // EEEE: immovable
+    // Any multi-tile body is immovable by exterior forces — naturally Big
+    // (EEEE) or enlarged by a Rod of Spreading. Keying off the footprint (not
+    // the ability) keeps a rod-grown creature consistent with a born-Big one.
+    if (m.occupiedTiles.length > 1) return;
     final dir = _pushDir(ctx.caster.position, m.position);
     if (dir == null) return;
     final pushed = HexCoord(m.position.q + dir.q, m.position.r + dir.r);
@@ -932,7 +1077,7 @@ class EffectApplicator {
   /// ImpassableTile, matching TurnLoop._footprintValid's movement rule).
   static bool _minionFootprintValid(BattleState state, HexCoord center, Minion m) {
     final flying = m.abilities.contains(SummonAbility.flying);
-    for (final t in footprintFor(center, m.abilities)) {
+    for (final t in footprintFor(center, m.abilities, m.sizeBonus)) {
       if (!state.battlefield.isInBounds(t)) return false;
       if (!flying && state.tileEffects[t] is ImpassableTile) return false;
     }
@@ -995,9 +1140,10 @@ class EffectApplicator {
   /// non-Big creatures occupy just the one tile) is open, preferring
   /// [preferred] itself.
   static HexCoord _findCreatureSpawnTile(
-      BattleState state, HexCoord preferred, Set<SummonAbility> abilities) {
+      BattleState state, HexCoord preferred, Set<SummonAbility> abilities,
+      [int sizeBonus = 0]) {
     bool footprintOpen(HexCoord center) {
-      for (final t in footprintFor(center, abilities)) {
+      for (final t in footprintFor(center, abilities, sizeBonus)) {
         if (!state.battlefield.isInBounds(t)) return false;
         if (!_isTileOpen(state, t)) return false;
       }

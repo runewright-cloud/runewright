@@ -233,5 +233,36 @@ void main() {
       expect(hpBeforeSecondWaterCast - ctx.dummy.hp, 2,
           reason: 'the multiplier must not persist past the one cast that consumed it');
     });
+
+    test('an unused multiplier expires after 2 turns: the cast turn plus one more '
+        'turn to spend it', () async {
+      final ctx = _setup(localPos: const HexCoord(0, 1), dummyPos: const HexCoord(0, -1));
+
+      // Turn 1: Air-flavor Bellows only (targets Water, multiplier queued).
+      await ctx.loop.runTurn(TurnInput(
+        action: SpellCastAction(
+          spell: _spell(['air', 'air', 'fire']),
+          targetHex: ctx.dummy.position,
+        ),
+      ));
+
+      // Turn 2: caster does nothing else with it (passes) -- the buff is
+      // still alive at this point (1 turn remaining) but goes unused.
+      await ctx.loop.runTurn(TurnInput(action: PassAction()));
+
+      // Turn 3: too late -- 2 turns have elapsed since the Bellows cast
+      // without a matching Water effect, so this should be back to base (2),
+      // not doubled.
+      final hpBeforeWaterCast = ctx.dummy.hp;
+      await ctx.loop.runTurn(TurnInput(
+        action: SpellCastAction(
+          spell: _spell(['water', 'fire', 'fire']),
+          targetHex: ctx.dummy.position,
+        ),
+      ));
+      expect(hpBeforeWaterCast - ctx.dummy.hp, 2,
+          reason: 'Bellows lasts 2 turns (cast turn + 1 more to use it); left unused '
+              'through turn 2 it must expire before turn 3');
+    });
   });
 }

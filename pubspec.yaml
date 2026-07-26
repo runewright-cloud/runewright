@@ -85,6 +85,14 @@ dev_dependencies:
   # (no native documents directory under headless `flutter test`).
   path_provider_platform_interface: ^2.1.0
 
+  # Real-widget-tree, real-device UI verification (integration_test/): runs
+  # against the actual Linux desktop engine/gesture pipeline rather than the
+  # headless flutter_test binding. No screen-automation tooling (xdotool,
+  # scrot) is installed on this machine and there's no root to add it, so
+  # this is the mechanism for driving real taps through real rendering.
+  integration_test:
+    sdk: flutter
+
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 

@@ -106,7 +106,7 @@ void main() {
       ownerPubkeyHex: guestOwnerHex,
       artifacts: const [
         ArtifactEntry(kind: ArtifactKind.manaGem),
-        ArtifactEntry(kind: ArtifactKind.deflectionRod),
+        ArtifactEntry(kind: ArtifactKind.rodOfSpreading),
       ],
     );
 

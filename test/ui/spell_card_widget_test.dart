@@ -193,4 +193,47 @@ void main() {
     expect(selected, isTrue);
     expect(find.byType(Dialog), findsNothing);
   });
+
+  group('countered overlay (battle_screen.dart resolution reveal)', () {
+    testWidgets('showSpellCardFullscreen(countered: true) stamps COUNTERED and the sublabel',
+        (tester) async {
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => showSpellCardFullscreen(
+                context,
+                _sample(),
+                countered: true,
+                counteredByLabel: 'Blocked by your ward',
+              ),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('COUNTERED'), findsOneWidget);
+      expect(find.text('Blocked by your ward'), findsOneWidget);
+    });
+
+    testWidgets('a normal (non-countered) card shows no COUNTERED stamp', (tester) async {
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => showSpellCardFullscreen(context, _sample()),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('COUNTERED'), findsNothing);
+    });
+  });
 }

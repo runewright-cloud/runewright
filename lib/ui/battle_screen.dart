@@ -359,6 +359,15 @@ class _BattleScreenState extends State<BattleScreen>
   // _selectedSpell.supremeTags; see _EnhancementPicker.
   String? _selectedEnhancement;
 
+  // Cast-time Rod of Spreading toggle — spend one Air artifact to add +1 effect
+  // radius (or one minion size rung) to this cast. Only offered when the local
+  // avatar carries an unused rod; realised at resolution iff still owned (the
+  // engine's trust boundary, TurnLoop._consumeRodOfSpreading). Reset after each
+  // committed cast.
+  bool _useRodOfSpreading = false;
+
+  bool get _localOwnsRod => (_local?.rodOfSpreadingCount ?? 0) > 0;
+
   // Earth/Mystery only: chosen delay in turns (0 = fire immediately).
   int _mysteryDelay = 0;
 
@@ -703,6 +712,7 @@ class _BattleScreenState extends State<BattleScreen>
     _isBusy = false;
     _selectedEnhancement = null;
     _mysteryDelay = 0;
+    _useRodOfSpreading = false;
     // Phase A of the held cast orb ends here -- on success, _submitTurn's
     // caller populates _castAnimations right after this for phase B; on
     // failure (turn never committed), there's nothing left to hold.
@@ -775,6 +785,7 @@ class _BattleScreenState extends State<BattleScreen>
       if (_selectedSpell == null) _targetHex = null;
       _selectedEnhancement = null;
       _mysteryDelay = 0;
+      _useRodOfSpreading = false;
     });
   }
 
@@ -859,6 +870,7 @@ class _BattleScreenState extends State<BattleScreen>
     final isPotent = _selectedEnhancement == 'fire';
     final isVelocity = _selectedEnhancement == 'air';
     final isEfficiency = _selectedEnhancement == 'water';
+    final useRod = _useRodOfSpreading && _localOwnsRod;
 
     final scorer = _vocalScorer;
     final word = spell.formula.isNotEmpty
@@ -875,6 +887,7 @@ class _BattleScreenState extends State<BattleScreen>
           isPotent: isPotent,
           isVelocity: isVelocity,
           isEfficiency: isEfficiency,
+          isRodOfSpreading: useRod,
           conveyorDirection: conveyorDirection,
         ),
       );
@@ -949,6 +962,7 @@ class _BattleScreenState extends State<BattleScreen>
         isPotent: isPotent,
         isVelocity: isVelocity,
         isEfficiency: isEfficiency,
+        isRodOfSpreading: useRod,
         vocalScore: vocalScore,
         conveyorDirection: conveyorDirection,
       ),
@@ -1024,6 +1038,7 @@ class _BattleScreenState extends State<BattleScreen>
           mysteryCommitment: commitment,
           immediateTarget: isImmediate ? target : null,
           immediateNonce: isImmediate ? nonce : null,
+          isRodOfSpreading: _useRodOfSpreading && _localOwnsRod,
         ),
       );
       return;
@@ -1050,6 +1065,7 @@ class _BattleScreenState extends State<BattleScreen>
         mysteryCommitment: commitment,
         immediateTarget: isImmediate ? target : null,
         immediateNonce: isImmediate ? nonce : null,
+        isRodOfSpreading: _useRodOfSpreading && _localOwnsRod,
         vocalScore: vocalScore,
       ),
     );
@@ -1426,19 +1442,30 @@ class _BattleScreenState extends State<BattleScreen>
         autoDismissAfter: const Duration(seconds: 2),
         growFrom: _tileGlobalCenter(ev.targetHex),
         shrinkTo: _thumbnailTarget(ev),
+        countered: ev.wasCountered,
+        counteredByLabel: ev.wasCountered
+            ? (ev.counterCharmOwnerId == widget.localPlayerId
+                ? 'Blocked by your ward'
+                : "Blocked by the opponent's ward")
+            : null,
       );
       if (!mounted) return;
-      setState(() {
-        final minionId = ev.summonMinionId;
-        if (ev.isSummon && minionId != null) {
-          _summonSpellByMinionId[minionId] = ev.spell;
-        } else if (!ev.isSummon) {
-          _incantationTray = [
-            ..._incantationTray,
-            _ResolvedThumbnail(spell: ev.spell, casterId: ev.casterId),
-          ];
-        }
-      });
+      // A countered cast leaves no thumbnail anywhere — nothing was
+      // actually summoned or resolved, so neither the grid map nor the
+      // incantation tray gets an entry for it.
+      if (!ev.wasCountered) {
+        setState(() {
+          final minionId = ev.summonMinionId;
+          if (ev.isSummon && minionId != null) {
+            _summonSpellByMinionId[minionId] = ev.spell;
+          } else if (!ev.isSummon) {
+            _incantationTray = [
+              ..._incantationTray,
+              _ResolvedThumbnail(spell: ev.spell, casterId: ev.casterId),
+            ];
+          }
+        });
+      }
 
       // Now that the card has finished, let this spell's created effects
       // (clouds/terrain/summons) bloom out of the cast tile before the next
@@ -1502,8 +1529,12 @@ class _BattleScreenState extends State<BattleScreen>
   /// thumbnail comes to rest. A summon lives on the grid, so its own tile; an
   /// incantation drops into the next open slot of the left-aligned tray, which
   /// we compute from the tray box + the slot index (the thumbnail isn't added
-  /// until after the card, so the current tray length *is* its index).
+  /// until after the card, so the current tray length *is* its index). A
+  /// countered cast leaves no thumbnail anywhere — null here lets the card's
+  /// own fallback shrink it straight back into the tile it hit, i.e. it just
+  /// dissolves at the point of impact instead of flying to a resting spot.
   Offset? _thumbnailTarget(ResolvedSpellEvent ev) {
+    if (ev.wasCountered) return null;
     final summonPos = ev.summonPosition;
     if (ev.isSummon && summonPos != null) return _tileGlobalCenter(summonPos);
 
@@ -1730,6 +1761,32 @@ class _BattleScreenState extends State<BattleScreen>
               onDelayChanged: (d) => setState(() => _mysteryDelay = d),
             ),
 
+          // Cast-time Rod of Spreading toggle — only when a spell is selected
+          // and the local avatar carries an unused rod. Spends one rod to add
+          // +1 effect radius (or one minion size rung) to this cast.
+          if (_phase == _InputPhase.action &&
+              _selectedSpell != null &&
+              _localOwnsRod)
+            CheckboxListTile(
+              dense: true,
+              controlAffinity: ListTileControlAffinity.leading,
+              value: _useRodOfSpreading,
+              onChanged: (v) =>
+                  setState(() => _useRodOfSpreading = v ?? false),
+              activeColor: kParchmentColor,
+              checkColor: const Color(0xFF2A1E12),
+              secondary: const Icon(Icons.open_in_full, color: kParchmentColor),
+              title: Text(
+                'Rod of Spreading  ×${_local?.rodOfSpreadingCount ?? 0}',
+                style: manuscriptBodyStyle(fontSize: 14, color: kParchmentColor),
+              ),
+              subtitle: Text(
+                '+1 effect radius (or minion size) — consumes one rod',
+                style: manuscriptBodyStyle(
+                    fontSize: 11, color: kParchmentColor.withValues(alpha: 0.7)),
+              ),
+            ),
+
           // Sorcerer mode: vocal capture indicator
           if (_isCapturingVoice && _capturingWord != null)
             Container(
@@ -1762,6 +1819,7 @@ class _BattleScreenState extends State<BattleScreen>
               _targetHex = null;
               _selectedEnhancement = null;
               _mysteryDelay = 0;
+              _useRodOfSpreading = false;
             }),
             onMeditateMove: _onMeditateMove,
             onConfirmMove: _onConfirmMove,

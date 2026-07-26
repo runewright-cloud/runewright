@@ -185,7 +185,9 @@ const Map<EffectKind, String> kEffectNote = {
           'target/be targeted by adjacent entities.',
   EffectKind.artifactsInteraction: '',
   EffectKind.illusions: 'Illusory copies.',
-  EffectKind.multiplierCycles: 'Doubles the power of the caster\'s next effect of the named element.',
+  EffectKind.multiplierCycles: 'Self-applied immediately. Doubles the power of the caster\'s next '
+      'effect of the named element -- right away if one follows later in this spell, otherwise on '
+      'the caster\'s next turn. Lasts 2 turns; unused, it expires.',
   EffectKind.haymakerInteraction: 'Lasts 2 turns.',
   EffectKind.divination: 'Information effects.',
 };

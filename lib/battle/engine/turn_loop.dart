@@ -207,6 +207,7 @@ class SpellCastAction extends TurnAction {
     this.isPotent = false,
     this.isVelocity = false,
     this.isEfficiency = false,
+    this.isRodOfSpreading = false,
     this.vocalScore,
     this.conveyorDirection,
     this.delayedOriginHex,
@@ -217,6 +218,13 @@ class SpellCastAction extends TurnAction {
   final bool isPotent;
   final bool isVelocity;
   final bool isEfficiency;
+
+  /// Air-typed Rod of Spreading: the caster asks to consume one rod to add +1
+  /// effective radius to this spell's effects (or one size rung to a summoned
+  /// minion). Only realised at resolution if the caster actually owns an
+  /// unused rod (see TurnLoop._resolveSpellCast); a peer that sets this without
+  /// owning one gets no bonus (trust boundary, like _certifiedManaCost).
+  final bool isRodOfSpreading;
 
   /// Sorcerer-mode vocal quality score for this cast. Null in Wizard mode.
   ///
@@ -274,6 +282,13 @@ class SpellCastEvent {
 /// on-grid for summons). [summonMinionId]/[summonPosition] are set only when
 /// [isSummon] is true and the summon actually spawned (null for a void/no-op
 /// summon cast — no thumbnail to place).
+///
+/// [wasCountered] is true when a bound counter charm nullified this cast
+/// instead of letting it resolve — [counterCharmOwnerId] then names who
+/// owns the triggered charm, which may equal [casterId] (a charm counters
+/// the first cast of its bound grid by anyone, including its own owner; see
+/// CLAUDE.md counter-charm plan). A countered spell always has empty
+/// summon/created-effect fields, since it never actually applied.
 class ResolvedSpellEvent {
   const ResolvedSpellEvent({
     required this.spell,
@@ -285,6 +300,8 @@ class ResolvedSpellEvent {
     this.createdCloudIds = const [],
     this.createdTileHexes = const [],
     this.createdMinionIds = const [],
+    this.wasCountered = false,
+    this.counterCharmOwnerId,
   });
 
   final SpellAsset spell;
@@ -293,6 +310,8 @@ class ResolvedSpellEvent {
   final bool isSummon;
   final String? summonMinionId;
   final HexCoord? summonPosition;
+  final bool wasCountered;
+  final String? counterCharmOwnerId;
 
   /// Battlefield effects this spell brought into being — purely for the UI's
   /// resolution reveal, which holds them off the field until the spell's card
@@ -317,6 +336,7 @@ class MysterySpellCastAction extends TurnAction {
     this.immediateNonce,
     this.isPotent = false,
     this.isVelocity = false,
+    this.isRodOfSpreading = false,
     this.vocalScore,
   });
 
@@ -331,6 +351,10 @@ class MysterySpellCastAction extends TurnAction {
 
   final bool isPotent;
   final bool isVelocity;
+
+  /// See [SpellCastAction.isRodOfSpreading]. Carried through the delayed-fire
+  /// path so a Mystery-precommitted spell can still spend a rod on reveal.
+  final bool isRodOfSpreading;
 
   /// Sorcerer-mode vocal quality score. Null in Wizard mode.
   /// Transmitted and decoded identically to SpellCastAction.vocalScore.
@@ -772,7 +796,8 @@ class TurnLoop {
   List<SpellCastEvent> lastCastEvents = [];
 
   /// Spells resolved during the most recent [runTurn] call, in resolution
-  /// order (the same order [_resolveActions] applied them). Cleared and
+  /// order (the same order [_resolveActions] applied them) — including
+  /// countered casts ([ResolvedSpellEvent.wasCountered]). Cleared and
   /// repopulated at the start of every turn. See [ResolvedSpellEvent].
   List<ResolvedSpellEvent> lastResolvedSpells = [];
 
@@ -2038,6 +2063,7 @@ class TurnLoop {
           :final isPotent,
           :final isVelocity,
           :final isEfficiency,
+          :final isRodOfSpreading,
           :final vocalScore,
           :final conveyorDirection,
         ):
@@ -2075,6 +2101,9 @@ class TurnLoop {
             // a Pass for chain purposes.
             _regressChain(actor);
           } else {
+            // The orb still flies for a countered cast (it visibly happened
+            // and drew a counter, unlike a fizzle) — emitted once here for
+            // both outcomes below, then the two diverge.
             final affinity = primaryFormulaAffinity(spell.formula);
             if (affinity != null) {
               lastCastEvents.add(
@@ -2086,68 +2115,92 @@ class TurnLoop {
                 ),
               );
             }
-            // Snapshot the field so the UI's resolution reveal can tell which
-            // clouds/terrain/minions THIS spell brought into being (diffed
-            // right around its application), and animate them in per-card.
-            final cloudsBefore = state.clouds.map((c) => c.id).toSet();
-            final tilesBefore = state.tileEffects.keys.toSet();
-            final minionsBefore = state.minions.map((m) => m.id).toSet();
-            // FuelTransmutation wither/reactivate (§9): a dedicated,
-            // per-caster RNG, kept separate from the shared actionRng
-            // stream so drawing from it can never desync that stream.
-            final witherRng = HashRng(
-              _playerPhaseSeed(
-                entropy,
-                matchId,
-                state.turnNumber,
-                0x06,
-                actor.playerId,
-                _consumeDrawNonce(actor.playerId),
-              ),
-            );
-            final summoned = _applySpell(
-              actor,
-              spell,
-              targetHex,
-              enhancements,
-              rng,
-              traversedPaths: traversedPaths,
-              certFormulas: certifiedPeerFormulas[spell.commitmentHex],
-              certElementSequence:
-                  certifiedPeerElementSequences[spell.commitmentHex],
-              conveyorDirection: conveyorDirection,
-              witherRng: witherRng,
-            );
-            // A cloud born this turn would otherwise sit dead-still until
-            // *next* turn's Phase 4 (_moveClouds already ran, ahead of this
-            // spell resolution, before the cloud existed) — give it its
-            // Summons-phase move right now, same turn it's summoned, so it's
-            // never visibly stationary. See _moveCloud's doc comment.
-            for (final c in state.clouds) {
-              if (!cloudsBefore.contains(c.id)) _moveCloud(c);
+            final counterHit = _findCounteringCharm(spell.commitmentHex);
+            if (counterHit != null) {
+              // A bound counter charm intercepts this cast: consume the
+              // charm, record a countered ResolvedSpellEvent for the UI's
+              // card reveal (battle_screen.dart shows it, then dissolves it
+              // — no bloom, no thumbnail, since nothing was actually
+              // created), and skip application entirely. Mana was already
+              // spent at commit time, so this is otherwise treated like a
+              // Pass for chain purposes.
+              _triggerCounterCharm(counterHit);
+              lastResolvedSpells.add(
+                ResolvedSpellEvent(
+                  spell: spell,
+                  casterId: actor.playerId,
+                  targetHex: targetHex,
+                  isSummon: spell.isSummon,
+                  wasCountered: true,
+                  counterCharmOwnerId: counterHit.$1.playerId,
+                ),
+              );
+              _regressChain(actor);
+            } else {
+              // Snapshot the field so the UI's resolution reveal can tell which
+              // clouds/terrain/minions THIS spell brought into being (diffed
+              // right around its application), and animate them in per-card.
+              final cloudsBefore = state.clouds.map((c) => c.id).toSet();
+              final tilesBefore = state.tileEffects.keys.toSet();
+              final minionsBefore = state.minions.map((m) => m.id).toSet();
+              // FuelTransmutation wither/reactivate (§9): a dedicated,
+              // per-caster RNG, kept separate from the shared actionRng
+              // stream so drawing from it can never desync that stream.
+              final witherRng = HashRng(
+                _playerPhaseSeed(
+                  entropy,
+                  matchId,
+                  state.turnNumber,
+                  0x06,
+                  actor.playerId,
+                  _consumeDrawNonce(actor.playerId),
+                ),
+              );
+              final summoned = _applySpell(
+                actor,
+                spell,
+                targetHex,
+                enhancements,
+                rng,
+                traversedPaths: traversedPaths,
+                certFormulas: certifiedPeerFormulas[spell.commitmentHex],
+                certElementSequence:
+                    certifiedPeerElementSequences[spell.commitmentHex],
+                conveyorDirection: conveyorDirection,
+                witherRng: witherRng,
+                rodRequested: isRodOfSpreading,
+              );
+              // A cloud born this turn would otherwise sit dead-still until
+              // *next* turn's Phase 4 (_moveClouds already ran, ahead of this
+              // spell resolution, before the cloud existed) — give it its
+              // Summons-phase move right now, same turn it's summoned, so it's
+              // never visibly stationary. See _moveCloud's doc comment.
+              for (final c in state.clouds) {
+                if (!cloudsBefore.contains(c.id)) _moveCloud(c);
+              }
+              lastResolvedSpells.add(
+                ResolvedSpellEvent(
+                  spell: spell,
+                  casterId: actor.playerId,
+                  targetHex: targetHex,
+                  isSummon: spell.isSummon,
+                  summonMinionId: summoned?.id,
+                  summonPosition: summoned?.position,
+                  createdCloudIds: [
+                    for (final c in state.clouds)
+                      if (!cloudsBefore.contains(c.id)) c.id,
+                  ],
+                  createdTileHexes: [
+                    for (final k in state.tileEffects.keys)
+                      if (!tilesBefore.contains(k)) k,
+                  ],
+                  createdMinionIds: [
+                    for (final m in state.minions)
+                      if (!minionsBefore.contains(m.id)) m.id,
+                  ],
+                ),
+              );
             }
-            lastResolvedSpells.add(
-              ResolvedSpellEvent(
-                spell: spell,
-                casterId: actor.playerId,
-                targetHex: targetHex,
-                isSummon: spell.isSummon,
-                summonMinionId: summoned?.id,
-                summonPosition: summoned?.position,
-                createdCloudIds: [
-                  for (final c in state.clouds)
-                    if (!cloudsBefore.contains(c.id)) c.id,
-                ],
-                createdTileHexes: [
-                  for (final k in state.tileEffects.keys)
-                    if (!tilesBefore.contains(k)) k,
-                ],
-                createdMinionIds: [
-                  for (final m in state.minions)
-                    if (!minionsBefore.contains(m.id)) m.id,
-                ],
-              ),
-            );
           }
 
         case MysterySpellCastAction(
@@ -2155,6 +2208,7 @@ class TurnLoop {
           :final mysteryCommitment,
           :final isPotent,
           :final isVelocity,
+          :final isRodOfSpreading,
         ):
           // Immediate mystery spells were converted to SpellCastAction by
           // _verifyMysteryAction before reaching here. A MysterySpellCastAction
@@ -2169,6 +2223,7 @@ class TurnLoop {
               origin: actor.position,
               isPotent: isPotent,
               isVelocity: isVelocity,
+              isRodOfSpreading: isRodOfSpreading,
             ),
           );
       }
@@ -2197,6 +2252,7 @@ class TurnLoop {
       targetHex: action.immediateTarget!,
       isPotent: action.isPotent,
       isVelocity: action.isVelocity,
+      isRodOfSpreading: action.isRodOfSpreading,
       vocalScore: action.vocalScore,
     );
   }
@@ -2251,6 +2307,7 @@ class TurnLoop {
           targetHex: targetTile,
           isPotent: pending.isPotent,
           isVelocity: pending.isVelocity,
+          isRodOfSpreading: pending.isRodOfSpreading,
           delayedOriginHex: pending.origin,
         ),
       ));
@@ -2362,6 +2419,7 @@ class TurnLoop {
     List<BorderZone>? certElementSequence,
     HexCoord? conveyorDirection,
     HashRng? witherRng,
+    bool rodRequested = false,
   }) {
     // design doc "Summons": a summon-mode spell's element sequence is read
     // as a creature instead of being resolved as incantation effects.
@@ -2377,6 +2435,7 @@ class TurnLoop {
         spell.summonPersonality,
         enhancements,
         rng,
+        rodRequested: rodRequested,
       );
     }
 
@@ -2386,9 +2445,16 @@ class TurnLoop {
     // current-turn peer spell must forfeit rather than fall through here.
     final formulas = certFormulas ?? _parsedFormulas(spell);
     if (formulas.isEmpty) {
-      // Wild-magic stub (zero formulas = void spell).
+      // Wild-magic stub (zero formulas = void spell). Nothing resolves, so a
+      // requested Rod of Spreading is NOT consumed here (don't burn a rod on a
+      // no-op cast).
       return null;
     }
+
+    // Rod of Spreading: consume one now (if requested and owned) — a real cast
+    // with at least one effect follows, so the rod does something. +1 radius
+    // applies to every spatial effect of this spell (see EffectApplicator).
+    final radiusBonus = _consumeRodOfSpreading(actor, rodRequested);
 
     // Absorption rod: tracked per-target for this whole spell.
     final rodConsumedFor = <String>{};
@@ -2409,7 +2475,8 @@ class TurnLoop {
       // this spell is amplified, matching the design doc's singular "next
       // effect of [element]" wording.
       final formulaAffinity = spellAffinityFromZone(formula.affinity);
-      final repeatCount = actor.pendingEffectMultipliers.remove(formulaAffinity) ?? 1;
+      final repeatCount =
+          actor.pendingEffectMultipliers.remove(formulaAffinity)?.multiplier ?? 1;
 
       for (var i = 0; i < repeatCount; i++) {
         EffectApplicator.apply(
@@ -2425,6 +2492,7 @@ class TurnLoop {
             conveyorChainEvents: conveyorEvents,
             drawSchedules: _drawSchedules,
             witherRng: witherRng,
+            effectiveRadiusBonus: radiusBonus,
           ),
         );
       }
@@ -2434,6 +2502,27 @@ class TurnLoop {
     // Update chain state after casting.
     _updateChainState(actor, spell, certFormulas: certFormulas);
     return null;
+  }
+
+  /// Rod of Spreading (Air artifact): if [requested] and [actor] carries an
+  /// unused rod, removes one from their loadout and returns +1 — the effective
+  /// radius bonus for an incantation, or the size-rung bonus for a summon.
+  /// Otherwise returns 0.
+  ///
+  /// Reading the bonus from the actor's OWN accoutrements — not the bare wire
+  /// flag — is the peer trust boundary: a peer that sets isRodOfSpreading
+  /// without actually owning a rod gets no bonus. This mirrors how
+  /// _certifiedManaCost recomputes cost from authoritative state rather than
+  /// trusting the caster's word. Removing the accoutrement mutates the avatar,
+  /// so it shows up in BattleState.toCanonicalBytes() and both devices stay in
+  /// lockstep on the consumed rod.
+  int _consumeRodOfSpreading(WizardAvatar actor, bool requested) {
+    if (!requested) return 0;
+    final idx = actor.accoutrements
+        .indexWhere((a) => a.kind == AccoutrementKind.rodOfSpreading);
+    if (idx < 0) return 0;
+    actor.accoutrements.removeAt(idx);
+    return 1;
   }
 
   // ── Summoning (design doc "Summons") ──────────────────────────────────────
@@ -2452,16 +2541,21 @@ class TurnLoop {
     List<BorderZone> sequence,
     String personalityName,
     CastingEnhancements enhancements,
-    HashRng rng,
-  ) {
+    HashRng rng, {
+    bool rodRequested = false,
+  }) {
     final spec = CreatureSpec.fromElements(sequence);
     if (spec == null) return null; // no activations -- nothing to summon (void)
+
+    // Rod of Spreading: a real creature will spawn, so consume the rod now (if
+    // requested and owned) and bump the creature one size rung up the ladder.
+    final sizeBonus = _consumeRodOfSpreading(actor, rodRequested);
 
     final personality = SummonPersonality.values.firstWhere(
       (p) => p.name == personalityName,
       orElse: () => SummonPersonality.aggressive,
     );
-    final spawn = _findCreatureSpawnTile(targetHex, spec.abilities);
+    final spawn = _findCreatureSpawnTile(targetHex, spec.abilities, sizeBonus);
     final creature = Minion(
       id: '${actor.playerId}_sm_${rng.nextInt(1 << 30).toRadixString(36)}',
       ownerId: actor.playerId,
@@ -2472,6 +2566,7 @@ class TurnLoop {
       elementSequence: sequence,
       abilities: spec.abilities,
       personality: personality,
+      sizeBonus: sizeBonus,
     );
     state.minions.add(creature);
     if (enhancements.isPotent) {
@@ -2494,6 +2589,7 @@ class TurnLoop {
       final spawn = _findCreatureSpawnTile(
         mirrorOwner.position,
         summoned.abilities,
+        summoned.sizeBonus,
       );
       state.minions.add(
         Minion(
@@ -2506,6 +2602,7 @@ class TurnLoop {
           elementSequence: summoned.elementSequence,
           abilities: summoned.abilities,
           personality: summoned.personality,
+          sizeBonus: summoned.sizeBonus,
         ),
       );
     }
@@ -2515,10 +2612,11 @@ class TurnLoop {
   /// [footprintFor]) is in bounds, passable, and unoccupied.
   HexCoord _findCreatureSpawnTile(
     HexCoord preferred,
-    Set<SummonAbility> abilities,
-  ) {
+    Set<SummonAbility> abilities, [
+    int sizeBonus = 0,
+  ]) {
     bool footprintOpen(HexCoord center) {
-      for (final t in footprintFor(center, abilities)) {
+      for (final t in footprintFor(center, abilities, sizeBonus)) {
         if (!state.battlefield.isInBounds(t)) return false;
         if (state.tileEffects[t] is ImpassableTile) return false;
         if (state.avatars.any((av) => av.isAlive && av.position == t))
@@ -2567,6 +2665,47 @@ class TurnLoop {
     } else {
       actor.chainLengths.remove(el);
       actor.activeChainElement = null;
+    }
+  }
+
+  // ── Counter charms ────────────────────────────────────────────────────────
+
+  /// Returns the un-revealed counter charm (if any) bound to [commitmentHex],
+  /// searched in a fixed order — avatars by playerId, then that avatar's
+  /// accoutrements by id — so two devices resolving the same turn always
+  /// pick the same charm when more than one is bound to the same grid.
+  /// Charms trigger on the first cast of their bound grid by ANY wizard,
+  /// including the charm's own owner (design: counter-charm plan, "Trigger
+  /// source" — deliberately not opponent-only).
+  (WizardAvatar, Accoutrement)? _findCounteringCharm(String commitmentHex) {
+    if (commitmentHex.isEmpty) return null;
+    final sortedAvatars = List<WizardAvatar>.from(state.avatars)
+      ..sort((a, b) => a.playerId.compareTo(b.playerId));
+    for (final av in sortedAvatars) {
+      final sortedAcc = List<Accoutrement>.from(av.accoutrements)
+        ..sort((a, b) => a.id.compareTo(b.id));
+      for (final acc in sortedAcc) {
+        if (acc.kind == AccoutrementKind.counterCharm &&
+            !acc.counterCharmRevealed &&
+            acc.targetCommitmentHex == commitmentHex) {
+          return (av, acc);
+        }
+      }
+    }
+    return null;
+  }
+
+  /// Marks [hit]'s charm revealed (consuming it — it never triggers again).
+  /// Does not apply the spell, touch mana, or record any event — the caller
+  /// (the sole call site, in [_resolveActions]) builds the countered
+  /// [ResolvedSpellEvent] itself and is responsible for skipping
+  /// [_applySpell] and regressing the chain, same as any other failed cast.
+  void _triggerCounterCharm((WizardAvatar, Accoutrement) hit) {
+    final (owner, charm) = hit;
+    final idx = owner.accoutrements.indexWhere((a) => a.id == charm.id);
+    if (idx >= 0) {
+      owner.accoutrements[idx] =
+          owner.accoutrements[idx].copyWith(counterCharmRevealed: true);
     }
   }
 
@@ -3396,6 +3535,7 @@ class TurnLoop {
         :final isPotent,
         :final isVelocity,
         :final isEfficiency,
+        :final isRodOfSpreading,
         :final vocalScore,
         :final conveyorDirection,
       ):
@@ -3413,6 +3553,7 @@ class TurnLoop {
         buf.addByte(isPotent ? 1 : 0);
         buf.addByte(isVelocity ? 1 : 0);
         buf.addByte(isEfficiency ? 1 : 0);
+        buf.addByte(isRodOfSpreading ? 1 : 0);
         buf.addByte(conveyorDirection != null ? 1 : 0);
         if (conveyorDirection != null) buf.add(_encodeCoord(conveyorDirection));
         _appendSpellProofTail(buf, spell);
@@ -3431,6 +3572,7 @@ class TurnLoop {
         :final immediateNonce,
         :final isPotent,
         :final isVelocity,
+        :final isRodOfSpreading,
         :final vocalScore,
       ):
         buf.addByte(0x03);
@@ -3452,6 +3594,7 @@ class TurnLoop {
         }
         buf.addByte(isPotent ? 1 : 0);
         buf.addByte(isVelocity ? 1 : 0);
+        buf.addByte(isRodOfSpreading ? 1 : 0);
         _appendSpellProofTail(buf, spell);
         if (isSorcererMode) _appendSorcererBytes(buf, vocalScore);
     }
@@ -3592,6 +3735,7 @@ class TurnLoop {
         final isPotent01 = pos < bytes.length && bytes[pos++] == 1;
         final isVelocity01 = pos < bytes.length && bytes[pos++] == 1;
         final isEfficiency01 = pos < bytes.length && bytes[pos++] == 1;
+        final isRod01 = pos < bytes.length && bytes[pos++] == 1;
 
         HexCoord? conveyorDirection01;
         if (pos < bytes.length) {
@@ -3652,6 +3796,7 @@ class TurnLoop {
             isPotent: isPotent01,
             isVelocity: isVelocity01,
             isEfficiency: isEfficiency01,
+            isRodOfSpreading: isRod01,
             vocalScore: vocalScore01,
             conveyorDirection: conveyorDirection01,
           ),
@@ -3699,6 +3844,7 @@ class TurnLoop {
         }
         final isPotent3 = pos3 < bytes.length && bytes[pos3++] == 1;
         final isVelocity3 = pos3 < bytes.length && bytes[pos3++] == 1;
+        final isRod3 = pos3 < bytes.length && bytes[pos3++] == 1;
 
         Uint8List decodedProofBytes3 = Uint8List(0);
         final commitmentHex3 =
@@ -3745,6 +3891,7 @@ class TurnLoop {
             immediateNonce: immNonce,
             isPotent: isPotent3,
             isVelocity: isVelocity3,
+            isRodOfSpreading: isRod3,
             vocalScore: vocalScore03,
           ),
           merkleProof: merkle3,

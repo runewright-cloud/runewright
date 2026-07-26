@@ -97,17 +97,74 @@ Future<void> _clearCustomArtOnSpell(SpellAsset spell, VoidCallback onReload) asy
   onReload();
 }
 
+/// Binds the first unbound counter charm in the chapter [chapterId] to
+/// [spell]'s grid commitment. Shared by the Craftings and Tests tabs' menu
+/// actions. Reports every outcome (no chapter selected, no runes to bind to,
+/// already-attuned duplicate, no unbound charm, success) via a snackbar.
+Future<void> _bindCounterCharmOnSpell(
+  BuildContext context,
+  SpellAsset spell,
+  String? chapterId,
+  VoidCallback onReload,
+) async {
+  if (chapterId == null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Select a chapter in the Chapters tab first.')),
+    );
+    return;
+  }
+  if (spell.commitmentHex.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('This spell has no runes to attune to.')),
+    );
+    return;
+  }
+
+  final chapter = await ChapterAsset.loadById(chapterId);
+  if (chapter == null || !context.mounted) return;
+
+  if (chapter.artifacts.any((a) =>
+      a.kind == ArtifactKind.counterCharm &&
+      a.targetCommitmentHex == spell.commitmentHex)) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('A charm is already attuned to these runes.')),
+    );
+    return;
+  }
+
+  final spellName = spell.name.isNotEmpty ? spell.name : 'Unnamed Spell';
+  final updated = chapter.bindFirstUnboundCounterCharm(
+    commitmentHex: spell.commitmentHex,
+    spellName: spellName,
+  );
+  if (updated == null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('No unbound charms available.')),
+    );
+    return;
+  }
+
+  await updated.save();
+  onReload();
+
+  if (context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Counter charm attuned to "$spellName".')),
+    );
+  }
+}
+
 const _kArtifactLabel = {
   ArtifactKind.manaGem: 'Mana Gem',
   ArtifactKind.bookmark: 'Bookmark',
-  ArtifactKind.deflectionRod: 'Deflection Rod',
+  ArtifactKind.rodOfSpreading: 'Rod of Spreading',
   ArtifactKind.counterCharm: 'Counter Charm',
 };
 
 const _kArtifactIcon = {
   ArtifactKind.manaGem: Icons.diamond_outlined,
   ArtifactKind.bookmark: Icons.bookmark_outlined,
-  ArtifactKind.deflectionRod: Icons.shield_outlined,
+  ArtifactKind.rodOfSpreading: Icons.open_in_full,
   ArtifactKind.counterCharm: Icons.block,
 };
 
@@ -354,6 +411,13 @@ class _CraftingsTabState extends State<_CraftingsTab>
     }
   }
 
+  Future<void> _bindCounterCharm(SpellAsset spell) => _bindCounterCharmOnSpell(
+        context,
+        spell,
+        widget.selectedChapterId,
+        widget.onChaptersChanged,
+      );
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -403,6 +467,7 @@ class _CraftingsTabState extends State<_CraftingsTab>
                 onView: () => _viewSpell(spell),
                 onDelete: () => _deleteSpell(spell),
                 onAddToChapter: () => _addToChapter(spell),
+                onBindCounterCharm: () => _bindCounterCharm(spell),
                 onSetArt: () => _setCustomArt(spell),
                 onClearArt: () => _clearCustomArt(spell),
               );
@@ -469,6 +534,13 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
       _setCustomArtOnSpell(context, spell, _reload);
 
   Future<void> _clearCustomArt(SpellAsset spell) => _clearCustomArtOnSpell(spell, _reload);
+
+  Future<void> _bindCounterCharm(SpellAsset spell) => _bindCounterCharmOnSpell(
+        context,
+        spell,
+        widget.selectedChapterId,
+        widget.onChaptersChanged,
+      );
 
   /// Adds every spell in [spells] to the selected chapter as a single batch:
   /// one chapter load, one save, skipping any whose grid commitment is
@@ -575,6 +647,7 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
                 onView: () => _viewSpell(spell),
                 onDelete: () => _deleteSpell(spell),
                 onAddToChapter: () => _addAllToChapter([spell]),
+                onBindCounterCharm: () => _bindCounterCharm(spell),
                 onSetArt: () => _setCustomArt(spell),
                 onClearArt: () => _clearCustomArt(spell),
               );
@@ -594,6 +667,7 @@ class _SpellCard extends StatelessWidget {
     required this.kinSiblings,
     required this.onDelete,
     required this.onAddToChapter,
+    required this.onBindCounterCharm,
     required this.onView,
     required this.onSetArt,
     required this.onClearArt,
@@ -605,6 +679,7 @@ class _SpellCard extends StatelessWidget {
   final int kinSiblings;
   final VoidCallback onDelete;
   final VoidCallback onAddToChapter;
+  final VoidCallback onBindCounterCharm;
   final VoidCallback onView;
   final VoidCallback onSetArt;
   final VoidCallback onClearArt;
@@ -661,6 +736,8 @@ class _SpellCard extends StatelessWidget {
       });
     } else if (action == 'add') {
       onAddToChapter();
+    } else if (action == 'bind_charm') {
+      onBindCounterCharm();
     } else if (action == 'set_art') {
       onSetArt();
     } else if (action == 'clear_art') {
@@ -729,6 +806,10 @@ class _SpellCard extends StatelessWidget {
                           itemBuilder: (_) => [
                             const PopupMenuItem(value: 'view', child: Text('View')),
                             const PopupMenuItem(value: 'add', child: Text('Add to Chapter')),
+                            const PopupMenuItem(
+                              value: 'bind_charm',
+                              child: Text('Bind to Counter Charm'),
+                            ),
                             PopupMenuItem(
                               value: 'set_art',
                               child: Text(spell.artHash == null
@@ -1122,29 +1203,7 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
     );
     if (kind == null || !mounted) return;
 
-    if (kind == ArtifactKind.counterCharm) {
-      await _addCounterCharm();
-      return;
-    }
     final updated = _chapter.withArtifact(ArtifactEntry(kind: kind));
-    await updated.save();
-    if (!mounted) return;
-    setState(() => _chapter = updated);
-    widget.onChapterChanged();
-  }
-
-  Future<void> _addCounterCharm() async {
-    final spell = await showDialog<SpellAsset>(
-      context: context,
-      builder: (_) => const _CounterCharmAttunementDialog(),
-    );
-    if (spell == null || !mounted) return;
-    final entry = ArtifactEntry(
-      kind: ArtifactKind.counterCharm,
-      targetCommitmentHex: spell.commitmentHex,
-      targetSpellName: spell.name.isNotEmpty ? spell.name : 'Unnamed Spell',
-    );
-    final updated = _chapter.withArtifact(entry);
     await updated.save();
     if (!mounted) return;
     setState(() => _chapter = updated);
@@ -1158,8 +1217,13 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
     widget.onChapterChanged();
   }
 
+  // For counterCharm, only ever removes an *unbound* charm — a bound charm
+  // is removed exclusively via _removeCounterCharm (with its own confirm
+  // dialog naming the attuned spell), never by this generic +/- control.
   Future<void> _decrementArtifact(ArtifactKind kind) async {
-    final idx = _chapter.artifacts.lastIndexWhere((a) => a.kind == kind);
+    final idx = kind == ArtifactKind.counterCharm
+        ? _chapter.artifacts.lastIndexWhere((a) => a.isUnboundCounterCharm)
+        : _chapter.artifacts.lastIndexWhere((a) => a.kind == kind);
     if (idx < 0) return;
     final updated = _chapter.withoutArtifactAt(idx);
     await updated.save();
@@ -1195,22 +1259,25 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
   }
 
   Widget _buildBody(List<SpellAsset?> spells) {
-    // Group non-CC artifacts by kind; collect CC indices for individual display.
+    // Group non-CC artifacts by kind; collect bound-CC indices for individual
+    // display (unbound CCs are shown as a single grouped count tile, same as
+    // the other kinds).
     final kindCounts = <ArtifactKind, int>{};
-    final counterCharmIndices = <int>[];
+    final boundCharmIndices = <int>[];
     for (int i = 0; i < _chapter.artifacts.length; i++) {
       final a = _chapter.artifacts[i];
       if (a.kind == ArtifactKind.counterCharm) {
-        counterCharmIndices.add(i);
+        if (a.targetCommitmentHex != null) boundCharmIndices.add(i);
       } else {
         kindCounts[a.kind] = (kindCounts[a.kind] ?? 0) + 1;
       }
     }
+    final unboundCharmCount = _chapter.unboundCounterCharmCount;
 
     const groupedKinds = [
       ArtifactKind.manaGem,
       ArtifactKind.bookmark,
-      ArtifactKind.deflectionRod,
+      ArtifactKind.rodOfSpreading,
     ];
     final slotsRemaining = _chapter.artifactSlotsRemaining;
 
@@ -1231,13 +1298,19 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
               onDecrement: () => _decrementArtifact(kind),
               onIncrement: () => _incrementArtifact(kind),
             ),
-        for (final idx in counterCharmIndices)
+        if (unboundCharmCount > 0)
+          _ArtifactGroupTile(
+            kind: ArtifactKind.counterCharm,
+            count: unboundCharmCount,
+            canIncrement: slotsRemaining > 0,
+            onDecrement: () => _decrementArtifact(ArtifactKind.counterCharm),
+            onIncrement: () => _incrementArtifact(ArtifactKind.counterCharm),
+          ),
+        for (final idx in boundCharmIndices)
           _CounterCharmTile(
             artifact: _chapter.artifacts[idx],
             onRemove: () => _removeCounterCharm(idx),
           ),
-        if (counterCharmIndices.isNotEmpty && slotsRemaining > 0)
-          _AddCounterCharmButton(onAdd: _addCounterCharm),
         if (_chapter.artifacts.isEmpty)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 6),
@@ -1669,34 +1742,6 @@ class _CounterCharmTile extends StatelessWidget {
   }
 }
 
-class _AddCounterCharmButton extends StatelessWidget {
-  const _AddCounterCharmButton({required this.onAdd});
-
-  final VoidCallback onAdd;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: OutlinedButton.icon(
-        icon: const Icon(Icons.add, size: 15),
-        label: const Text('Add Counter Charm'),
-        onPressed: onAdd,
-        style: OutlinedButton.styleFrom(
-          foregroundColor: kInkColor,
-          side: BorderSide(color: kInkColor.withValues(alpha: 0.3)),
-          padding: const EdgeInsets.symmetric(vertical: 10),
-          textStyle: const TextStyle(
-            fontFamily: 'serif',
-            letterSpacing: 0.5,
-            fontSize: 13,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 // ── Add artifact dialog ───────────────────────────────────────────────────────
 
 class _AddArtifactDialog extends StatelessWidget {
@@ -1727,16 +1772,16 @@ class _AddArtifactDialog extends StatelessWidget {
               onTap: () => Navigator.pop(context, ArtifactKind.bookmark),
             ),
             _ArtifactOption(
-              icon: Icons.shield_outlined,
-              label: 'Deflection Rod',
-              description: 'Nullify one turn of an incoming status effect',
-              onTap: () => Navigator.pop(context, ArtifactKind.deflectionRod),
+              icon: Icons.open_in_full,
+              label: 'Rod of Spreading',
+              description: 'Single use: +1 effect radius (or +1 minion size) on your next spell',
+              onTap: () => Navigator.pop(context, ArtifactKind.rodOfSpreading),
             ),
             _ArtifactOption(
               icon: Icons.block,
               label: 'Counter Charm',
               description:
-                  'Attune to a spell — counter it whenever your opponent casts it',
+                  'Bind it to a spell later, from that spell\'s menu in your library',
               onTap: () => Navigator.pop(context, ArtifactKind.counterCharm),
             ),
             const SizedBox(height: 4),
@@ -1811,134 +1856,6 @@ class _ArtifactOption extends StatelessWidget {
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-// ── Counter Charm attunement dialog ───────────────────────────────────────────
-
-class _CounterCharmAttunementDialog extends StatefulWidget {
-  const _CounterCharmAttunementDialog();
-
-  @override
-  State<_CounterCharmAttunementDialog> createState() =>
-      _CounterCharmAttunementDialogState();
-}
-
-class _CounterCharmAttunementDialogState
-    extends State<_CounterCharmAttunementDialog> {
-  late Future<List<SpellAsset>> _spellsFuture;
-
-  @override
-  void initState() {
-    super.initState();
-    _spellsFuture = SpellAsset.loadAll();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text(
-        'Attune Counter Charm',
-        style: TextStyle(fontFamily: 'serif', fontWeight: FontWeight.w600),
-      ),
-      contentPadding: const EdgeInsets.fromLTRB(0, 12, 0, 0),
-      content: SizedBox(
-        width: double.maxFinite,
-        child: FutureBuilder<List<SpellAsset>>(
-          future: _spellsFuture,
-          builder: (context, snap) {
-            if (snap.connectionState == ConnectionState.waiting) {
-              return const SizedBox(
-                height: 120,
-                child: Center(
-                  child: CircularProgressIndicator(color: kIlluminationGold),
-                ),
-              );
-            }
-            final spells = snap.data ?? [];
-            return ListView(
-              shrinkWrap: true,
-              children: [
-                _AttunementSectionLabel(label: 'CRAFTINGS'),
-                if (spells.isEmpty)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(24, 4, 24, 12),
-                    child: Text(
-                      'No spells inscribed yet.',
-                      style: manuscriptCaptionStyle(),
-                    ),
-                  )
-                else
-                  for (final spell in spells)
-                    ListTile(
-                      dense: true,
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 24),
-                      title: Text(
-                        spell.name.isNotEmpty ? spell.name : 'Unnamed Spell',
-                        style: const TextStyle(
-                          fontFamily: 'serif',
-                          fontSize: 14,
-                          color: kInkColor,
-                        ),
-                      ),
-                      subtitle: Text(
-                        'Gen ${spell.t}  ·  ♦ ${spell.manaCost}',
-                        style: manuscriptCaptionStyle()
-                            .copyWith(fontStyle: FontStyle.normal),
-                      ),
-                      onTap: () => Navigator.pop(context, spell),
-                    ),
-                _AttunementSectionLabel(label: 'SIGHTINGS'),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 4, 24, 12),
-                  child: Text(
-                    'Sightings will appear here after facing challengers.',
-                    style: manuscriptCaptionStyle(),
-                  ),
-                ),
-                _AttunementSectionLabel(label: 'LOANS'),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 4, 24, 12),
-                  child: Text(
-                    'Loaned spells will appear here.',
-                    style: manuscriptCaptionStyle(),
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
-      ],
-    );
-  }
-}
-
-class _AttunementSectionLabel extends StatelessWidget {
-  const _AttunementSectionLabel({required this.label});
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 12, 24, 4),
-      child: Text(
-        label,
-        style: const TextStyle(
-          fontFamily: 'serif',
-          fontSize: 10,
-          letterSpacing: 2,
-          fontWeight: FontWeight.w600,
-          color: kInkMutedColor,
         ),
       ),
     );

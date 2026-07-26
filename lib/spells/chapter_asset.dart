@@ -13,7 +13,13 @@ import 'package:path_provider/path_provider.dart';
 
 // ── Artifact loadout ──────────────────────────────────────────────────────────
 
-enum ArtifactKind { manaGem, bookmark, deflectionRod, counterCharm }
+// NOTE: the Air-typed slot is the Rod of Spreading (design v3.0 §Artifacts): a
+// one-shot consumable that adds +1 effective radius to the next spell's effects
+// (and one size rung to a summoned minion). It replaced the v2.4 "absorption /
+// deflection rod" whose status-nullify role now survives only through the
+// *summoned* deflectionTotem (Water-Earth/Earth). `deflectionRod` is kept below
+// only as a read-time JSON alias for any chapter persisted under the old name.
+enum ArtifactKind { manaGem, bookmark, rodOfSpreading, counterCharm }
 
 class ArtifactEntry {
   const ArtifactEntry({
@@ -25,13 +31,28 @@ class ArtifactEntry {
   final ArtifactKind kind;
 
   /// [counterCharm] only: Poseidon2(packed_grid) of the attuned spell's grid.
-  /// Triggers only when the opponent casts a spell with this grid commitment —
-  /// your own casts of the same grid are ignored.
+  /// Null means the charm is unbound (added to the chapter but not yet
+  /// attuned to a spell — see [ChapterAsset.bindFirstUnboundCounterCharm]).
+  /// Once bound, triggers on the first cast of a spell with this grid
+  /// commitment by any wizard in the match, including the charm's own owner.
   final String? targetCommitmentHex;
 
-  /// [counterCharm] only: display-only name recorded at attunement time.
+  /// [counterCharm] only: display-only name recorded at binding time.
   /// May become stale if the spell is later renamed or deleted.
   final String? targetSpellName;
+
+  bool get isUnboundCounterCharm =>
+      kind == ArtifactKind.counterCharm && targetCommitmentHex == null;
+
+  ArtifactEntry copyWith({
+    String? targetCommitmentHex,
+    String? targetSpellName,
+  }) =>
+      ArtifactEntry(
+        kind: kind,
+        targetCommitmentHex: targetCommitmentHex ?? this.targetCommitmentHex,
+        targetSpellName: targetSpellName ?? this.targetSpellName,
+      );
 
   Map<String, dynamic> toJson() => {
         'kind': kind.name,
@@ -41,10 +62,18 @@ class ArtifactEntry {
       };
 
   static ArtifactEntry fromJson(Map<String, dynamic> json) => ArtifactEntry(
-        kind: ArtifactKind.values.byName(json['kind'] as String),
+        kind: _kindFromName(json['kind'] as String),
         targetCommitmentHex: json['targetCommitmentHex'] as String?,
         targetSpellName: json['targetSpellName'] as String?,
       );
+
+  /// Reads an [ArtifactKind] name, aliasing the pre-v3.0 `deflectionRod` slot
+  /// name onto its replacement [ArtifactKind.rodOfSpreading] so chapters
+  /// persisted before the rename still load.
+  static ArtifactKind _kindFromName(String name) => switch (name) {
+        'deflectionRod' => ArtifactKind.rodOfSpreading,
+        _ => ArtifactKind.values.byName(name),
+      };
 }
 
 // ── Spell loadout ─────────────────────────────────────────────────────────────
@@ -84,6 +113,32 @@ class ChapterAsset {
   final List<ArtifactEntry> artifacts;
 
   int get artifactSlotsRemaining => maxArtifactSlots - artifacts.length;
+
+  int get unboundCounterCharmCount =>
+      artifacts.where((a) => a.isUnboundCounterCharm).length;
+
+  /// Binds the first unbound counter charm in [artifacts] to [commitmentHex]
+  /// / [spellName]. Returns the updated chapter, or `null` if there is no
+  /// unbound charm to bind (caller shows "No unbound charms available.").
+  ChapterAsset? bindFirstUnboundCounterCharm({
+    required String commitmentHex,
+    required String spellName,
+  }) {
+    final idx = artifacts.indexWhere((a) => a.isUnboundCounterCharm);
+    if (idx < 0) return null;
+    final updated = List<ArtifactEntry>.from(artifacts);
+    updated[idx] = updated[idx].copyWith(
+      targetCommitmentHex: commitmentHex,
+      targetSpellName: spellName,
+    );
+    return ChapterAsset(
+      id: id,
+      name: name,
+      createdAt: createdAt,
+      entries: entries,
+      artifacts: updated,
+    );
+  }
 
   ChapterAsset withEntry(ChapterEntry entry) => ChapterAsset(
         id: id,

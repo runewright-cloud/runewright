@@ -72,18 +72,32 @@ const Map<SummonPersonality, String> kSummonPersonalityLabel = {
   SummonPersonality.obedient: 'Obedient',
 };
 
-// ── Footprint geometry (Big / EEEE) ───────────────────────────────────────────
+// ── Footprint geometry (size ladder) ──────────────────────────────────────────
 
-/// The tiles a creature with [abilities] occupies when centered at [center].
-/// Non-Big creatures occupy a single tile. Big creatures occupy a
-/// deterministic 3-tile triangle: [center] plus its first two neighbors in
-/// [hexNeighbors] order (consecutive hex directions are 60° apart, so those
-/// two neighbors are themselves mutually adjacent — a true triangle, not an
-/// arbitrary pair).
-List<HexCoord> footprintFor(HexCoord center, Set<SummonAbility> abilities) {
-  if (!abilities.contains(SummonAbility.big)) return [center];
+/// The tiles a creature occupies when centered at [center], as a function of
+/// its size rung on the ladder **[1 tile → 3-tile triangle → 7-tile hex]**:
+///
+///   rung 0 → `[center]` (single tile)
+///   rung 1 → `[center]` + its first two neighbors: a deterministic 3-tile
+///            triangle (consecutive hex directions are 60° apart, so those two
+///            neighbors are mutually adjacent — a true triangle). This is the
+///            `big` (EEEE) creature's natural size.
+///   rung 2 → the full radius-1 hex: `[center]` + all six neighbors (7 tiles),
+///            the largest possible size.
+///
+/// The rung is `min((big ? 1 : 0) + sizeBonus, 2)`, so a Rod of Spreading
+/// ([sizeBonus] = 1) pushes a normal creature to the triangle and an already-Big
+/// one to the full hex, capped at 7 tiles (design v3.0 §Artifacts).
+List<HexCoord> footprintFor(
+  HexCoord center,
+  Set<SummonAbility> abilities, [
+  int sizeBonus = 0,
+]) {
+  final rung = ((abilities.contains(SummonAbility.big) ? 1 : 0) + sizeBonus).clamp(0, 2);
+  if (rung == 0) return [center];
   final ns = hexNeighbors(center);
-  return [center, ns[0], ns[1]];
+  if (rung == 1) return [center, ns[0], ns[1]];
+  return [center, ...ns];
 }
 
 // ── Minion ────────────────────────────────────────────────────────────────────
@@ -104,6 +118,7 @@ class Minion {
     Map<SpellAffinity, BarrierState>? barriers,
     this.actedThisTurn = false,
     this.forceCloseToAttack = false,
+    this.sizeBonus = 0,
   })  : abilities = abilities ?? const {},
         hp = hp ?? stats.maxHp,
         activeStatusEffects = activeStatusEffects ?? [],
@@ -142,10 +157,14 @@ class Minion {
   final List<StatusEffect> activeStatusEffects;
   final Map<SpellAffinity, BarrierState> barriers;
 
+  /// Extra size rungs granted at summon time by a Rod of Spreading (0 or 1).
+  /// Folds into the footprint ladder in [footprintFor]; see [occupiedTiles].
+  final int sizeBonus;
+
   bool get isAlive => hp > 0;
 
   /// Tiles this creature occupies. See [footprintFor].
-  List<HexCoord> get occupiedTiles => footprintFor(position, abilities);
+  List<HexCoord> get occupiedTiles => footprintFor(position, abilities, sizeBonus);
 
   /// Minimum hex distance from any of this creature's occupied tiles to [point].
   int distanceTo(HexCoord point) =>

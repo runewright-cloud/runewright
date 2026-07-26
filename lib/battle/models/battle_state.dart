@@ -269,7 +269,8 @@ class BattleState {
       buf.writeUint8(sortedMults.length);
       for (final entry in sortedMults) {
         buf.writeUint8(entry.key.index);
-        buf.writeUint8(entry.value);
+        buf.writeUint8(entry.value.multiplier);
+        buf.writeUint8(entry.value.remainingTurns);
       }
     }
 
@@ -285,7 +286,8 @@ class BattleState {
     }
 
     // Minions. Footprint (see Minion.occupiedTiles) is a pure function of
-    // position + abilities, so it doesn't need its own encoding here.
+    // position + abilities + sizeBonus (the Rod of Spreading size rung), so
+    // only sizeBonus needs encoding alongside them.
     final sortedMinions = (List<Minion>.from(minions)..sort((a, b) => a.id.compareTo(b.id)));
     buf.writeUint16(sortedMinions.length);
     for (final m in sortedMinions) {
@@ -306,6 +308,7 @@ class BattleState {
       }
       buf.writeUint16(abilityMask);
       buf.writeUint8(m.personality.index);
+      buf.writeUint8(m.sizeBonus);
     }
 
     // Tile effects
@@ -344,6 +347,7 @@ class BattleState {
       buf.writeBytes(p.commitment); // 32 bytes, opaque
       buf.writeUint8(p.isPotent ? 1 : 0);
       buf.writeUint8(p.isVelocity ? 1 : 0);
+      buf.writeUint8(p.isRodOfSpreading ? 1 : 0);
     }
 
     final sortedLinks = (List<ReflectionLink>.from(reflectionLinks)

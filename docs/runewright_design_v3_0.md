@@ -589,20 +589,24 @@ A parallel-to-recipes effect system based on hash-pattern scanning.
 Determined by the spell's overall dominant element (cumulative across all formulas):
 - Single-affinity spells: scan the hash for that element's patterns
 - Perfectly balanced spells (multiple elements equally dominant): eligible for *all* balanced elements' patterns simultaneously — the "wild magic specialist" archetype
-- **Void eligibility `[RESOLVED]`:** a spell inscribed with no formulas (no elemental affinity) is eligible for **void** effects. The review §4 exploit (zero-formula grids are the cheapest to produce) is **not** closed by the cost curve alone — the combinatorics let a grinder find strong triggers at 2–3 tiles / 13–16 mana (see Void Spell Mana Cost). It is closed instead by **capping the usable wild-magic tier by active tile count**: a cheap low-tile void can only fire the weakest bracket regardless of the pattern found, so power tracks tiles-paid by construction.
+- **Void eligibility `[RESOLVED]`:** Void effects entirely removed for now
 
 ### Trigger Patterns
 Scan the spell-hash hex string for two pattern types per element:
-- **Repeating numerals** (111, 222, AAAA): assigned per element, no overlap
+- **Repeating numerals** (For example 111, 222, AAAA): assigned per element, no overlap
 - **Ascending runs** (3456, F012, BCDE): F wraps to 0; first numeral must be the element's designated trigger
 
 ### Wild Magic Effects (intentionally short while core effects are playtested)
 Sequences continuing past the minimum 3 scale per the brackets.
 
-| Triggering Sequence | Void Effect | Fire Flavor | Earth Flavor | Water Flavor | Air Flavor |
-|---|---|---|---|---|---|
-| 000 | All adjacent non-player cell effects instantly vanish [+1 radius] | All spell effects next turn deal +1 fire damage [+1 per effect] | All adjacent cells become earth walls 2 turns [+1 turn] | All mana bars immediately fill | All players and minions teleported to random locations |
+| Triggering Sequence |Fire Flavor | Earth Flavor | Water Flavor | Air Flavor |
+|---|---|---|---|---|
+| 000 | Burning Hot - All spell effects next turn deal +1 fire damage [+1 damage per effect] | Mountains - All adjacent cells become earth walls 2 turns [+1 turn] | Mana Flood - All mana bars immediately fill | Zephyr - All players and minions teleported to random locations |
+| 111 |Spontaneous combustion - Each player has another [+1] bookmarked spell immediately go off without mana cost targeting a random in range tile |Chasm - A randomly drawn line bisects the battlefield.  It is impassible (without flying), and indestructible for 2[+1] turns, but has no bearing on targeting.| Glacier - Tiles without existing terrain all become Ice tiles for 2 [+1] turns, when moving onto ice a players continue moving that direction.| Updraft - All players gain flying for 2 [+1] turns.|
+|---|---|---|---|---|
+012345| Phoenix - all players gain "The next time they would die, the respawn with 1 hitpoint instead"|Statuesque - All players return to full health and mana each turn, the effect is lost if they move or cast a spell.|
 
+T
 > **`[TODO — playtest]` Wild-magic table is a stub** by design. When expanding, remember (review §6) that wild magic is *locally* optimal via seed words — a spell tuned for one community's seed is mistuned for another's, which is what makes traveling wizards mechanically real. Protect that property.
 >
 > **`[RESOLVED — Chaos column deleted]`** Chaos was a 13-state cell type the 2-state pivot removed, and nothing routed to it (eligibility goes only to the four element affinities or to void). Deleted rather than given a contrived trigger: a balanced spell already fires **up to four element wild-magic effects at once**, which is reward enough for perfect balance — no separate Chaos domain needed.

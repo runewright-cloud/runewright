@@ -573,6 +573,11 @@ bool _hasCustomArt(SpellAsset spell) =>
 /// see how much damage their creature has taken. Null (the default, and
 /// always the case for a library/hand card, which has no battlefield HP yet)
 /// shows just the max, as before.
+/// [countered] stamps a "COUNTERED" ribbon across the card and dims/desaturates
+/// it — battle_screen.dart's resolution reveal sets this for a cast a bound
+/// counter charm nullified (TurnLoop.ResolvedSpellEvent.wasCountered).
+/// [counteredByLabel], shown under the ribbon, names whose charm blocked it
+/// (e.g. "Blocked by your ward" / "Blocked by the opponent's ward").
 Future<void> showSpellCardFullscreen(
   BuildContext context,
   SpellAsset spell, {
@@ -580,6 +585,8 @@ Future<void> showSpellCardFullscreen(
   int? liveHp,
   Offset? growFrom,
   Offset? shrinkTo,
+  bool countered = false,
+  String? counteredByLabel,
 }) {
   return showDialog<void>(
     context: context,
@@ -598,6 +605,8 @@ Future<void> showSpellCardFullscreen(
       liveHp: liveHp,
       growFrom: growFrom,
       shrinkTo: shrinkTo,
+      countered: countered,
+      counteredByLabel: counteredByLabel,
     ),
   );
 }
@@ -617,6 +626,8 @@ class _FullscreenSpellCard extends StatefulWidget {
     this.liveHp,
     this.growFrom,
     this.shrinkTo,
+    this.countered = false,
+    this.counteredByLabel,
   });
 
   final SpellAsset spell;
@@ -634,6 +645,10 @@ class _FullscreenSpellCard extends StatefulWidget {
   /// Only used when [growFrom] is set (the resolution reveal); falls back to
   /// [growFrom] if null there.
   final Offset? shrinkTo;
+
+  /// See [showSpellCardFullscreen]'s doc comment.
+  final bool countered;
+  final String? counteredByLabel;
 
   @override
   State<_FullscreenSpellCard> createState() => _FullscreenSpellCardState();
@@ -760,13 +775,23 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
                     SizedBox(
                       width: w,
                       height: h,
-                      child: _CardFrame(
-                        spell: widget.spell,
-                        emblemPainter: widget.emblemPainter,
-                        showEmblem: _showEmblem,
-                        hasArt: _hasArt,
-                        fullArtFuture: _fullArtFuture,
-                        liveHp: widget.liveHp,
+                      child: Stack(
+                        children: [
+                          _CardFrame(
+                            spell: widget.spell,
+                            emblemPainter: widget.emblemPainter,
+                            showEmblem: _showEmblem,
+                            hasArt: _hasArt,
+                            fullArtFuture: _fullArtFuture,
+                            liveHp: widget.liveHp,
+                          ),
+                          if (widget.countered)
+                            Positioned.fill(
+                              child: _CounteredOverlay(
+                                sublabel: widget.counteredByLabel,
+                              ),
+                            ),
+                        ],
                       ),
                     ),
                     if (_hasArt) ...[
@@ -786,6 +811,66 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
               },
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Dims the card and stamps a rubric-red "COUNTERED" ribbon diagonally
+/// across it — battle_screen.dart's resolution reveal shows this over a
+/// spell a bound counter charm nullified. [sublabel] (e.g. "Blocked by your
+/// ward") renders under the ribbon when given.
+class _CounteredOverlay extends StatelessWidget {
+  const _CounteredOverlay({this.sublabel});
+
+  final String? sublabel;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRect(
+      child: Container(
+        color: kInkColor.withValues(alpha: 0.62),
+        alignment: Alignment.center,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Transform.rotate(
+              angle: -0.35,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
+                decoration: BoxDecoration(
+                  color: kRubricRed,
+                  border: Border.all(color: kParchmentColor, width: 2),
+                ),
+                child: Text(
+                  'COUNTERED',
+                  style: TextStyle(
+                    fontFamily: 'serif',
+                    fontWeight: FontWeight.w700,
+                    fontSize: 26,
+                    letterSpacing: 3,
+                    color: kParchmentColor,
+                    shadows: [
+                      Shadow(color: Colors.black.withValues(alpha: 0.6), blurRadius: 4),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            if (sublabel != null) ...[
+              const SizedBox(height: 14),
+              Text(
+                sublabel!,
+                style: const TextStyle(
+                  fontFamily: 'serif',
+                  fontSize: 14,
+                  letterSpacing: 0.5,
+                  color: kParchmentColor,
+                ),
+              ),
+            ],
+          ],
         ),
       ),
     );

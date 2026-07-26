@@ -17,7 +17,7 @@ import 'wizard_avatar.dart';
 AccoutrementKind _toAccoutrementKind(ArtifactKind kind) => switch (kind) {
       ArtifactKind.manaGem => AccoutrementKind.manaGem,
       ArtifactKind.bookmark => AccoutrementKind.bookmark,
-      ArtifactKind.deflectionRod => AccoutrementKind.absorptionRod,
+      ArtifactKind.rodOfSpreading => AccoutrementKind.rodOfSpreading,
       ArtifactKind.counterCharm => AccoutrementKind.counterCharm,
     };
 

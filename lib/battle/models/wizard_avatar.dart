@@ -41,6 +41,13 @@ enum AccoutrementKind {
   /// Mechanically identical to [absorptionRod]: halves timed effect durations
   /// from an incoming enemy spell, consuming this totem.
   deflectionTotem,
+
+  /// Air-typed loadout artifact (design v3.0 §Artifacts). One-shot: activated
+  /// before a cast to add +1 effective radius to that spell's effects (and one
+  /// size rung to a summoned minion), then consumed. Only one per spell.
+  /// Appended last so pre-existing AccoutrementKind indices — hashed into
+  /// BattleState.toCanonicalBytes() — don't shift.
+  rodOfSpreading,
 }
 
 class Accoutrement {
@@ -125,6 +132,28 @@ class StatusEffect {
   }
 }
 
+// ── PendingMultiplier (Air-Fire Bellows) ───────────────────────────────────────
+
+/// A queued Bellows amplification, always self-applied to the caster who cast
+/// it (never the spell's target tile). Consumed the moment a later formula —
+/// in the same spell, or in a spell cast on the immediately following turn —
+/// matches [targetElement] stored in [WizardAvatar.pendingEffectMultipliers]'s
+/// key. Expires (is removed by [WizardAvatar.tickStatusEffects]) if unused by
+/// the end of that following turn: cast turn + 1 turn to use it, 2 turns total.
+class PendingMultiplier {
+  PendingMultiplier({required this.multiplier, required this.remainingTurns});
+
+  /// 2 normally, 3 under potency.
+  final int multiplier;
+
+  int remainingTurns;
+
+  bool tick() {
+    if (remainingTurns > 0) remainingTurns--;
+    return remainingTurns > 0;
+  }
+}
+
 // ── WizardAvatar ──────────────────────────────────────────────────────────────
 
 /// Base values used for derived-stat calculations.
@@ -144,7 +173,7 @@ class WizardAvatar {
     List<StatusEffect>? activeStatusEffects,
     Map<SpellAffinity, BarrierState>? barriers,
     Map<SpellAffinity, int>? chainLengths,
-    Map<SpellAffinity, int>? pendingEffectMultipliers,
+    Map<SpellAffinity, PendingMultiplier>? pendingEffectMultipliers,
     this.activeChainElement,
   })  : accoutrements = accoutrements ?? [],
         activeStatusEffects = activeStatusEffects ?? [],
@@ -186,10 +215,13 @@ class WizardAvatar {
 
   // ── Pending effect multipliers (Air-Fire) ─────────────────────────────────
 
-  /// Element → multiplier (2 or 3). When the caster's next spell contains an
-  /// effect whose affinity matches a key here, that effect is amplified by the
-  /// stored value and the entry is consumed.
-  final Map<SpellAffinity, int> pendingEffectMultipliers;
+  /// Element → queued Bellows amplification. Always self-applied (never the
+  /// spell's target tile). When the caster's next matching-affinity effect
+  /// resolves — in the same spell (immediately) or a spell cast on the
+  /// following turn — it is amplified by the stored multiplier and the entry
+  /// is consumed. Unused entries expire via [tickStatusEffects] (2 turns
+  /// total: the cast turn plus one more to use it).
+  final Map<SpellAffinity, PendingMultiplier> pendingEffectMultipliers;
 
   // ── Derived stats from accoutrements ──────────────────────────────────────
 
@@ -204,6 +236,12 @@ class WizardAvatar {
       .where((a) =>
           a.kind == AccoutrementKind.absorptionRod ||
           a.kind == AccoutrementKind.deflectionTotem)
+      .length;
+
+  /// Rods of Spreading currently carried (each is consumed on use). A cast may
+  /// activate at most one; see TurnLoop's rod-consumption in the cast path.
+  int get rodOfSpreadingCount => accoutrements
+      .where((a) => a.kind == AccoutrementKind.rodOfSpreading)
       .length;
 
   // ── Derived stats from status effects ─────────────────────────────────────
@@ -353,6 +391,10 @@ class WizardAvatar {
       }
     }
     activeStatusEffects.removeWhere((e) => !e.tick());
+
+    // Bellows: an unused pending multiplier expires 2 turns after being cast
+    // (the cast turn plus one more turn to land a matching effect).
+    pendingEffectMultipliers.removeWhere((_, m) => !m.tick());
   }
 
   /// Ticks all barriers, handling collapse side-effects. Returns true if any
