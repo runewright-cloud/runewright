@@ -8,10 +8,15 @@
 // end through TurnLoop's real cast pipeline (SoloBattleSession: local
 // trusted-wire-formula path, mirroring summon_cast_test.dart's style).
 //
-// Bellows + its amplified effect are packed into a single multi-formula
-// spell so both formulas resolve within the same cast: the first formula's
-// application sets WizardAvatar.pendingEffectMultipliers before the second
-// formula is resolved (see TurnLoop._applySpell's per-formula loop).
+// 2026-07-27: Bellows now lands on whoever occupies the spell's target tile
+// (design doc: nearly every effect targets the tile, not automatically the
+// caster) rather than always self-applying. A Bellows-priming cast must
+// therefore target the caster's OWN tile to buff themselves, and since a
+// single cast has exactly one target tile, Bellows can no longer be packed
+// into the same cast as an enemy-targeted amplified effect -- each flavor
+// is now a separate self-targeted priming cast, followed by a second cast
+// (same turn's formula-order rule doesn't apply across turns) that lands
+// the amplified effect on the dummy.
 
 import 'dart:typed_data';
 
@@ -98,13 +103,23 @@ void main() {
     test('Air flavor: doubles the next Water-flavor effect (splash damage)', () async {
       // local (0,1) -> dummy (0,-1): distance 2, within baseSpellRange 3.
       final ctx = _setup(localPos: const HexCoord(0, 1), dummyPos: const HexCoord(0, -1));
-      final startHp = ctx.dummy.hp;
 
-      // Formula 1 [air,air,fire]: Air-flavor Bellows -> next Water effect x2.
-      // Formula 2 [water,fire,fire]: Water-flavor Damage (splash, base amount 2).
-      final spell = _spell(['air', 'air', 'fire', 'water', 'fire', 'fire']);
+      // Turn 1: Air-flavor Bellows, self-targeted (buffs the caster's own
+      // future Water-flavor effect).
       await ctx.loop.runTurn(TurnInput(
-        action: SpellCastAction(spell: spell, targetHex: ctx.dummy.position),
+        action: SpellCastAction(
+          spell: _spell(['air', 'air', 'fire']),
+          targetHex: ctx.local.position,
+        ),
+      ));
+
+      // Turn 2: Water-flavor Damage (splash, base amount 2), enemy-targeted.
+      final startHp = ctx.dummy.hp;
+      await ctx.loop.runTurn(TurnInput(
+        action: SpellCastAction(
+          spell: _spell(['water', 'fire', 'fire']),
+          targetHex: ctx.dummy.position,
+        ),
       ));
 
       expect(startHp - ctx.dummy.hp, 4,
@@ -114,27 +129,45 @@ void main() {
 
     test('Air flavor under Potency: triples the next Water-flavor effect', () async {
       final ctx = _setup(localPos: const HexCoord(0, 1), dummyPos: const HexCoord(0, -1));
-      final startHp = ctx.dummy.hp;
 
-      final spell = _spell(['air', 'air', 'fire', 'water', 'fire', 'fire']);
       await ctx.loop.runTurn(TurnInput(
-        action: SpellCastAction(spell: spell, targetHex: ctx.dummy.position, isPotent: true),
+        action: SpellCastAction(
+          spell: _spell(['air', 'air', 'fire']),
+          targetHex: ctx.local.position,
+          isPotent: true,
+        ),
+      ));
+
+      final startHp = ctx.dummy.hp;
+      await ctx.loop.runTurn(TurnInput(
+        action: SpellCastAction(
+          spell: _spell(['water', 'fire', 'fire']),
+          targetHex: ctx.dummy.position,
+          isPotent: true,
+        ),
       ));
 
       expect(startHp - ctx.dummy.hp, 9,
-          reason: 'potency raises splash damage 2->3 AND the multiplier 2->3 for the '
-              'whole spell; potent Bellows should triple potent splash (3) to 9');
+          reason: 'potency raises splash damage 2->3 AND the multiplier 2->3; '
+              'potent Bellows should triple potent splash (3) to 9');
     });
 
     test('Water flavor: doubles the next Earth-flavor effect (traversal damage)', () async {
       final ctx = _setup(localPos: const HexCoord(0, 1), dummyPos: const HexCoord(0, -1));
-      final startHp = ctx.dummy.hp;
 
-      // Formula 1 [water,air,fire]: Water-flavor Bellows -> next Earth effect x2.
-      // Formula 2 [earth,fire,fire]: Earth-flavor Damage (traversal, base amount 2).
-      final spell = _spell(['water', 'air', 'fire', 'earth', 'fire', 'fire']);
       await ctx.loop.runTurn(TurnInput(
-        action: SpellCastAction(spell: spell, targetHex: ctx.dummy.position),
+        action: SpellCastAction(
+          spell: _spell(['water', 'air', 'fire']),
+          targetHex: ctx.local.position,
+        ),
+      ));
+
+      final startHp = ctx.dummy.hp;
+      await ctx.loop.runTurn(TurnInput(
+        action: SpellCastAction(
+          spell: _spell(['earth', 'fire', 'fire']),
+          targetHex: ctx.dummy.position,
+        ),
       ));
 
       expect(startHp - ctx.dummy.hp, 4,
@@ -143,13 +176,20 @@ void main() {
 
     test('Earth flavor: doubles the next Fire-flavor effect (direct damage)', () async {
       final ctx = _setup(localPos: const HexCoord(0, 1), dummyPos: const HexCoord(0, -1));
-      final startHp = ctx.dummy.hp;
 
-      // Formula 1 [earth,air,fire]: Earth-flavor Bellows -> next Fire effect x2.
-      // Formula 2 [fire,fire,fire]: Fire-flavor Damage (direct, base amount 4).
-      final spell = _spell(['earth', 'air', 'fire', 'fire', 'fire', 'fire']);
       await ctx.loop.runTurn(TurnInput(
-        action: SpellCastAction(spell: spell, targetHex: ctx.dummy.position),
+        action: SpellCastAction(
+          spell: _spell(['earth', 'air', 'fire']),
+          targetHex: ctx.local.position,
+        ),
+      ));
+
+      final startHp = ctx.dummy.hp;
+      await ctx.loop.runTurn(TurnInput(
+        action: SpellCastAction(
+          spell: _spell(['fire', 'fire', 'fire']),
+          targetHex: ctx.dummy.position,
+        ),
       ));
 
       expect(startHp - ctx.dummy.hp, 8,
@@ -159,21 +199,28 @@ void main() {
     test('Fire flavor: doubles the next Air-flavor effect (knockback damage)', () async {
       // Small board, dummy pinned at the boundary directly away from the
       // caster: the knockback push lands out of bounds and aborts, so the
-      // dummy stays on the target tile for both applications (see
+      // dummy stays on the target tile for the amplified application (see
       // EffectApplicator._knockback's out-of-bounds fallback).
       final ctx = _setup(
         localPos: const HexCoord(0, 0),
         dummyPos: const HexCoord(0, 2),
         radius: 2,
       );
+
+      await ctx.loop.runTurn(TurnInput(
+        action: SpellCastAction(
+          spell: _spell(['fire', 'air', 'fire']),
+          targetHex: ctx.local.position,
+        ),
+      ));
+
       final startHp = ctx.dummy.hp;
       final startPos = ctx.dummy.position;
-
-      // Formula 1 [fire,air,fire]: Fire-flavor Bellows -> next Air effect x2.
-      // Formula 2 [air,fire,fire]: Air-flavor Damage (knockback, base amount 2).
-      final spell = _spell(['fire', 'air', 'fire', 'air', 'fire', 'fire']);
       await ctx.loop.runTurn(TurnInput(
-        action: SpellCastAction(spell: spell, targetHex: ctx.dummy.position),
+        action: SpellCastAction(
+          spell: _spell(['air', 'fire', 'fire']),
+          targetHex: ctx.dummy.position,
+        ),
       ));
 
       expect(ctx.dummy.position, startPos,
@@ -184,13 +231,23 @@ void main() {
 
     test('the multiplier only amplifies the next matching-affinity effect, not others', () async {
       final ctx = _setup(localPos: const HexCoord(0, 1), dummyPos: const HexCoord(0, -1));
-      final startHp = ctx.dummy.hp;
 
-      // Air-flavor Bellows targets Water, but the second formula here is a
-      // Fire-flavor direct-damage effect -- it must NOT be amplified.
-      final spell = _spell(['air', 'air', 'fire', 'fire', 'fire', 'fire']);
+      // Turn 1: Air-flavor Bellows (self-targeted, targets Water).
       await ctx.loop.runTurn(TurnInput(
-        action: SpellCastAction(spell: spell, targetHex: ctx.dummy.position),
+        action: SpellCastAction(
+          spell: _spell(['air', 'air', 'fire']),
+          targetHex: ctx.local.position,
+        ),
+      ));
+
+      // Turn 2: an unrelated Fire-flavor direct-damage cast -- must NOT be
+      // amplified by the still-pending Water-targeted multiplier.
+      final startHp = ctx.dummy.hp;
+      await ctx.loop.runTurn(TurnInput(
+        action: SpellCastAction(
+          spell: _spell(['fire', 'fire', 'fire']),
+          targetHex: ctx.dummy.position,
+        ),
       ));
 
       expect(startHp - ctx.dummy.hp, 4,
@@ -202,11 +259,11 @@ void main() {
         'is not amplified', () async {
       final ctx = _setup(localPos: const HexCoord(0, 1), dummyPos: const HexCoord(0, -1));
 
-      // Turn 1: Air-flavor Bellows only (targets Water, multiplier queued).
+      // Turn 1: Air-flavor Bellows only (self-targeted, targets Water, multiplier queued).
       await ctx.loop.runTurn(TurnInput(
         action: SpellCastAction(
           spell: _spell(['air', 'air', 'fire']),
-          targetHex: ctx.dummy.position,
+          targetHex: ctx.local.position,
         ),
       ));
 
@@ -238,11 +295,11 @@ void main() {
         'turn to spend it', () async {
       final ctx = _setup(localPos: const HexCoord(0, 1), dummyPos: const HexCoord(0, -1));
 
-      // Turn 1: Air-flavor Bellows only (targets Water, multiplier queued).
+      // Turn 1: Air-flavor Bellows only (self-targeted, targets Water, multiplier queued).
       await ctx.loop.runTurn(TurnInput(
         action: SpellCastAction(
           spell: _spell(['air', 'air', 'fire']),
-          targetHex: ctx.dummy.position,
+          targetHex: ctx.local.position,
         ),
       ));
 

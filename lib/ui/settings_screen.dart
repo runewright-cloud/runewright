@@ -11,6 +11,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../practice/vocal_tuning.dart';
+import 'credits_screen.dart';
 import 'widgets/vocal_strictness_slider.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -42,19 +43,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
       appBar: AppBar(title: const Text('Settings')),
       body: tuning == null
           ? const Center(child: CircularProgressIndicator())
-          : Padding(
+          : ListView(
               padding: const EdgeInsets.all(16),
-              child: Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: VocalStrictnessSlider(
-                    strictness: tuning.strictness,
-                    onChanged: (v) =>
-                        setState(() => _tuning = VocalTuning(v)),
-                    onChangeEnd: (v) => unawaited(VocalTuning(v).save()),
+              children: [
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: VocalStrictnessSlider(
+                      strictness: tuning.strictness,
+                      onChanged: (v) =>
+                          setState(() => _tuning = VocalTuning(v)),
+                      onChangeEnd: (v) => unawaited(VocalTuning(v).save()),
+                    ),
                   ),
                 ),
-              ),
+                const SizedBox(height: 12),
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.badge_outlined),
+                    title: const Text('Credits & Licences'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const CreditsScreen()),
+                    ),
+                  ),
+                ),
+              ],
             ),
     );
   }

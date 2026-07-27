@@ -26,6 +26,7 @@ import '../spells/supreme_tags.dart' show deriveSupremeTags;
 import '../main.dart' show GameScreen;
 import 'manuscript_theme.dart';
 import 'sigil_painter.dart';
+import 'spell_art_pack_screen.dart';
 import 'spell_card_painter.dart';
 import 'spell_test_lab_screen.dart' show kTestSpellNamePrefix;
 
@@ -94,6 +95,70 @@ Future<void> _setCustomArtOnSpell(
 Future<void> _clearCustomArtOnSpell(SpellAsset spell, VoidCallback onReload) async {
   await SpellArtStore.delete(spell.spellHashHex);
   await spell.withoutArt().save();
+  onReload();
+}
+
+/// Entry point for the "Set/Replace Custom Art" menu action
+/// (docs/SPELL_ART_PACK_PLAN.md Phase E): offers a choice between the
+/// built-in art pack and importing an image, then dispatches to whichever
+/// pipeline the player picked. Replaces the old direct jump into the file
+/// picker -- [_setCustomArtOnSpell] itself (the import pipeline) is
+/// untouched below.
+Future<void> _chooseSpellArt(
+  BuildContext context,
+  SpellAsset spell,
+  VoidCallback onReload,
+) async {
+  final choice = await showModalBottomSheet<_ArtChoice>(
+    context: context,
+    backgroundColor: kParchmentColor,
+    builder: (ctx) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            leading: const Icon(Icons.auto_awesome_outlined, color: kIlluminationGold),
+            title: const Text('Choose from Art Pack'),
+            onTap: () => Navigator.pop(ctx, _ArtChoice.pack),
+          ),
+          ListTile(
+            leading: const Icon(Icons.image_outlined),
+            title: const Text('Import an Image…'),
+            onTap: () => Navigator.pop(ctx, _ArtChoice.import),
+          ),
+        ],
+      ),
+    ),
+  );
+  if (!context.mounted || choice == null) return;
+  switch (choice) {
+    case _ArtChoice.pack:
+      await _choosePackArtOnSpell(context, spell, onReload);
+    case _ArtChoice.import:
+      await _setCustomArtOnSpell(context, spell, onReload);
+  }
+}
+
+enum _ArtChoice { pack, import }
+
+/// Runs the built-in-pack half of [_chooseSpellArt]: opens the picker
+/// (docs/SPELL_ART_PACK_PLAN.md Phase E-2/E-3), and on a selection, clears
+/// any previously imported blob (a pack pick supersedes it, mirroring
+/// [SpellAsset.withArt]'s symmetric behaviour the other direction) and
+/// stamps the pack pointer. No decode, no progress dialog, no failure path
+/// -- the bytes are already canonical and already in the asset bundle.
+Future<void> _choosePackArtOnSpell(
+  BuildContext context,
+  SpellAsset spell,
+  VoidCallback onReload,
+) async {
+  final packId = await pickSpellArtPackIcon(
+    context,
+    suggestedElement: suggestedElementFor(spell.formula),
+  );
+  if (packId == null) return; // player backed out without choosing
+  await SpellArtStore.delete(spell.spellHashHex);
+  await spell.withPackArt(packId: packId).save();
   onReload();
 }
 
@@ -333,7 +398,9 @@ class _CraftingsTabState extends State<_CraftingsTab>
     });
   }
 
-  void _reload() => setState(() => _spellsFuture = SpellAsset.loadAll());
+  void _reload() => setState(() {
+    _spellsFuture = SpellAsset.loadAll();
+  });
 
   void _viewSpell(SpellAsset spell) {
     Navigator.push(
@@ -347,8 +414,7 @@ class _CraftingsTabState extends State<_CraftingsTab>
     _reload();
   }
 
-  Future<void> _setCustomArt(SpellAsset spell) =>
-      _setCustomArtOnSpell(context, spell, _reload);
+  Future<void> _setCustomArt(SpellAsset spell) => _chooseSpellArt(context, spell, _reload);
 
   Future<void> _clearCustomArt(SpellAsset spell) => _clearCustomArtOnSpell(spell, _reload);
 
@@ -516,7 +582,9 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
     return all.where((s) => s.name.startsWith(kTestSpellNamePrefix)).toList();
   }
 
-  void _reload() => setState(() => _spellsFuture = _loadTestSpells());
+  void _reload() => setState(() {
+    _spellsFuture = _loadTestSpells();
+  });
 
   void _viewSpell(SpellAsset spell) {
     Navigator.push(
@@ -530,8 +598,7 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
     _reload();
   }
 
-  Future<void> _setCustomArt(SpellAsset spell) =>
-      _setCustomArtOnSpell(context, spell, _reload);
+  Future<void> _setCustomArt(SpellAsset spell) => _chooseSpellArt(context, spell, _reload);
 
   Future<void> _clearCustomArt(SpellAsset spell) => _clearCustomArtOnSpell(spell, _reload);
 
@@ -1980,7 +2047,9 @@ class _LoansTabState extends State<_LoansTab> with AutomaticKeepAliveClientMixin
     return entries;
   }
 
-  void _reload() => setState(() => _loansFuture = _loadUsableLoans());
+  void _reload() => setState(() {
+    _loansFuture = _loadUsableLoans();
+  });
 
   Future<void> _addToChapter(SpellAsset spell) async {
     final chapterId = widget.selectedChapterId;
@@ -2123,7 +2192,9 @@ class _SightingsTabState extends State<_SightingsTab> with AutomaticKeepAliveCli
     _sightingsFuture = SightingAsset.loadAll();
   }
 
-  void _reload() => setState(() => _sightingsFuture = SightingAsset.loadAll());
+  void _reload() => setState(() {
+    _sightingsFuture = SightingAsset.loadAll();
+  });
 
   /// Groups by opponent, each opponent's spells sorted most-recent first.
   Map<String, List<SightingAsset>> _groupByOpponent(List<SightingAsset> all) {

@@ -134,12 +134,14 @@ class StatusEffect {
 
 // ── PendingMultiplier (Air-Fire Bellows) ───────────────────────────────────────
 
-/// A queued Bellows amplification, always self-applied to the caster who cast
-/// it (never the spell's target tile). Consumed the moment a later formula —
-/// in the same spell, or in a spell cast on the immediately following turn —
-/// matches [targetElement] stored in [WizardAvatar.pendingEffectMultipliers]'s
-/// key. Expires (is removed by [WizardAvatar.tickStatusEffects]) if unused by
-/// the end of that following turn: cast turn + 1 turn to use it, 2 turns total.
+/// A queued Bellows amplification, landing on whoever occupies the spell's
+/// target tile (see EffectApplicator._applyMultiplierCycles) — not
+/// automatically the caster. Consumed the moment a later formula — in the
+/// same spell, or in a spell the *recipient* casts on the immediately
+/// following turn — matches [targetElement] stored in
+/// [WizardAvatar.pendingEffectMultipliers]'s key. Expires (is removed by
+/// [WizardAvatar.tickStatusEffects]) if unused by the end of that following
+/// turn: cast turn + 1 turn to use it, 2 turns total.
 class PendingMultiplier {
   PendingMultiplier({required this.multiplier, required this.remainingTurns});
 

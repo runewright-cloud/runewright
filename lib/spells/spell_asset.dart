@@ -14,11 +14,16 @@ import 'dart:typed_data';
 
 import 'package:path_provider/path_provider.dart';
 
+import 'spell_art_pack.dart' show kPainterlyPack;
+
 /// Where a spell's custom art (lib/spells/spell_art_store.dart) came from.
 /// P1 only ever writes [localImport]. [received]/[synced] are reserved for
 /// P2 (opponent art advertised in battle) and P3 (post-match sync) -- values,
 /// not behavior, so this enum doesn't have to change shape when those land.
-enum SpellArtSource { localImport, received, synced }
+/// [builtIn] (docs/SPELL_ART_PACK_PLAN.md) is a spell using an icon from a
+/// shipped art pack (lib/spells/spell_art_pack.dart) rather than an imported
+/// image -- its bytes live in the asset bundle, not [SpellArtStore].
+enum SpellArtSource { localImport, received, synced, builtIn }
 
 class SpellAsset {
   SpellAsset({
@@ -42,6 +47,7 @@ class SpellAsset {
     this.artHash,
     this.artSource,
     this.artUpdatedAt,
+    this.artPackId,
     this.gridWithheld = false,
   });
 
@@ -140,6 +146,14 @@ class SpellAsset {
   /// When [artHash] was last set. Null iff [artHash] is null.
   final DateTime? artUpdatedAt;
 
+  /// The [SpellArtPackEntry.id] this spell's art was set from, when
+  /// [artSource] is [SpellArtSource.builtIn]. Null otherwise. The pack's
+  /// bytes are looked up by this id (lib/spells/spell_art_pack.dart) rather
+  /// than by [spellHashHex] -- [SpellArtStore] is never touched for built-in
+  /// art. [artHash] is still set (copied from the pack manifest's sha256),
+  /// so Sync Art's integrity check needs no special case for pack art.
+  final String? artPackId;
+
   /// True iff [initialGrid] was deliberately redacted (stored empty) before
   /// this asset was handed to someone other than its creator -- the Trade
   /// loan case (docs/COMMUNE_TRADE_PLAN.md §2): the loanee gets proof bytes
@@ -169,6 +183,7 @@ class SpellAsset {
         if (artHash != null) 'artHash': artHash,
         if (artSource != null) 'artSource': artSource!.name,
         if (artUpdatedAt != null) 'artUpdatedAt': artUpdatedAt!.toIso8601String(),
+        if (artPackId != null) 'artPackId': artPackId,
         if (gridWithheld) 'gridWithheld': gridWithheld,
       };
 
@@ -201,6 +216,7 @@ class SpellAsset {
         artUpdatedAt: json['artUpdatedAt'] != null
             ? DateTime.parse(json['artUpdatedAt'] as String)
             : null,
+        artPackId: json['artPackId'] as String?,
         gridWithheld: (json['gridWithheld'] as bool?) ?? false,
       );
 
@@ -237,11 +253,15 @@ class SpellAsset {
         artHash: artHash,
         artSource: artSource,
         artUpdatedAt: artUpdatedAt,
+        artPackId: artPackId,
       );
 
   /// Returns a copy with custom-art metadata set to [hash]/[source], stamped
   /// with the current time. The art bytes themselves go to
   /// [SpellArtStore.save] separately -- this only updates the pointer.
+  /// Deliberately does not carry [artPackId] forward: importing an image
+  /// supersedes any previous built-in-pack selection, so switching to local
+  /// import clears the pack pointer rather than leaving it stale.
   SpellAsset withArt({required String hash, required SpellArtSource source}) => SpellAsset(
         id: id,
         createdAt: createdAt,
@@ -265,9 +285,48 @@ class SpellAsset {
         artUpdatedAt: DateTime.now().toUtc(),
       );
 
-  /// Returns a copy with custom-art metadata cleared -- the card reverts to
-  /// the commitmentHex-derived coat of arms. Does NOT delete the stored
-  /// blob; callers pair this with [SpellArtStore.delete].
+  /// Returns a copy with this spell's art set to the built-in pack entry
+  /// [packId] (docs/SPELL_ART_PACK_PLAN.md), stamped with the current time.
+  /// Mirrors [withArt] but for pack art: [artHash] is copied from the pack's
+  /// own manifest (so Sync Art's integrity check needs no special case for
+  /// built-in art -- see lib/trade/sync_art_session.dart), and no bytes go
+  /// to [SpellArtStore] -- the pack ships in the asset bundle already.
+  SpellAsset withPackArt({required String packId}) {
+    final entry = kPainterlyPack.firstWhere(
+      (e) => e.id == packId,
+      orElse: () => throw ArgumentError.value(packId, 'packId', 'not in kPainterlyPack'),
+    );
+    return SpellAsset(
+      id: id,
+      createdAt: createdAt,
+      tier: tier,
+      t: t,
+      ownerPubkeyHex: ownerPubkeyHex,
+      manaCost: manaCost,
+      segmentCount: segmentCount,
+      dotCount: dotCount,
+      initialGrid: initialGrid,
+      proofBytes: proofBytes,
+      name: name,
+      commitmentHex: commitmentHex,
+      spellHashHex: spellHashHex,
+      formula: formula,
+      supremeTags: supremeTags,
+      isSummon: isSummon,
+      summonPersonality: summonPersonality,
+      artHash: entry.sha256,
+      artSource: SpellArtSource.builtIn,
+      artUpdatedAt: DateTime.now().toUtc(),
+      artPackId: packId,
+    );
+  }
+
+  /// Returns a copy with custom-art metadata cleared (including any built-in
+  /// pack selection) -- the card reverts to the commitmentHex-derived coat
+  /// of arms. Does NOT delete anything from [SpellArtStore]; callers pair
+  /// this with [SpellArtStore.delete] when the cleared art was a local
+  /// import (a no-op if it was pack art, since pack art was never stored
+  /// there).
   SpellAsset withoutArt() => SpellAsset(
         id: id,
         createdAt: createdAt,
@@ -294,6 +353,12 @@ class SpellAsset {
   /// zero-knowledge and don't leak the grid), but the grid itself never
   /// leaves this device. See docs/COMMUNE_TRADE_PLAN.md §2 and
   /// lib/trade/trade_session.dart.
+  ///
+  /// Carries art metadata through (fixed alongside the artPackId addition,
+  /// docs/SPELL_ART_PACK_PLAN.md Phase C -- this previously dropped
+  /// artHash/artSource/artUpdatedAt silently, since this method predates the
+  /// custom-art feature and was never updated when those fields were added;
+  /// a loaned spell with custom art lost its art on the wire).
   SpellAsset withGridWithheld() => SpellAsset(
         id: id,
         createdAt: createdAt,
@@ -312,6 +377,10 @@ class SpellAsset {
         supremeTags: supremeTags,
         isSummon: isSummon,
         summonPersonality: summonPersonality,
+        artHash: artHash,
+        artSource: artSource,
+        artUpdatedAt: artUpdatedAt,
+        artPackId: artPackId,
         gridWithheld: true,
       );
 

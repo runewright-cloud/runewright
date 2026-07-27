@@ -27,6 +27,7 @@ import 'package:cryptography/cryptography.dart';
 import '../identity/identity.dart';
 import '../protocol/transport.dart';
 import '../spells/sighting_asset.dart';
+import '../spells/spell_art_resolver.dart';
 import '../spells/spell_art_store.dart';
 import '../spells/spell_asset.dart';
 import 'sync_art_wire.dart';
@@ -210,8 +211,8 @@ class SyncArtSession {
         continue; // they already have our current art
       }
 
-      final full = await SpellArtStore.loadFull(candidate.spellHashHex);
-      final thumb = await SpellArtStore.loadThumb(candidate.spellHashHex);
+      final full = await resolveSpellArtFull(candidate);
+      final thumb = await resolveSpellArtThumb(candidate);
       if (full == null || thumb == null) {
         continue; // artHash pointer with no blob -- shouldn't happen, skip defensively
       }

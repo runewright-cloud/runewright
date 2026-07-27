@@ -437,9 +437,11 @@ void main() {
 
       // Cast fireSpell: deck is empty (3 spells, bookmarkCount 3), so the
       // hand shrinks to {earthA, earthB} and wither(1) picks one of them.
+      // Self-targeted: FuelTransmutation lands on whoever occupies the
+      // target tile (2026-07-27), not automatically the caster.
       await runTurnExpectingSuccess(
         (caster: pair.caster, verifier: pair.verifier),
-        SpellCastAction(spell: fireSpell, targetHex: const HexCoord(1, 0)),
+        SpellCastAction(spell: fireSpell, targetHex: const HexCoord(0, 0)),
       );
 
       final aWithered = pair.caster.isHandSpellWithered(earthA);
@@ -472,7 +474,7 @@ void main() {
       // shrinks the hand to just the (now-reactivating) withered position.
       await runTurnExpectingSuccess(
         (caster: pair.caster, verifier: pair.verifier),
-        SpellCastAction(spell: safe, targetHex: const HexCoord(1, 0)),
+        SpellCastAction(spell: safe, targetHex: const HexCoord(0, 0)),
       );
       expect(pair.caster.isHandSpellWithered(withered), isFalse,
           reason: 'reactivate should have cleared the withered flag');
@@ -483,7 +485,7 @@ void main() {
       // previously-withered position.
       await runTurnExpectingSuccess(
         (caster: pair.caster, verifier: pair.verifier),
-        SpellCastAction(spell: withered, targetHex: const HexCoord(1, 0)),
+        SpellCastAction(spell: withered, targetHex: const HexCoord(0, 0)),
       );
       expect(pair.verifier.lastResolvedSpells, hasLength(1));
       expect(
@@ -509,9 +511,11 @@ void main() {
         (caster: pair.caster, verifier: pair.verifier),
         PassAction(),
       );
+      // Self-targeted: FuelTransmutation lands on whoever occupies the
+      // target tile (2026-07-27), not automatically the caster.
       await runTurnExpectingSuccess(
         (caster: pair.caster, verifier: pair.verifier),
-        SpellCastAction(spell: fireSpell, targetHex: const HexCoord(1, 0)),
+        SpellCastAction(spell: fireSpell, targetHex: const HexCoord(0, 0)),
       );
       expect(pair.caster.isHandSpellWithered(filler), isTrue);
 

@@ -23,6 +23,12 @@ migrate_working_dir/
 # is commented out by default.
 #.vscode/
 
+# Raw third-party art sources (unpacked OpenGameArt archives). Never vendored --
+# docs/SPELL_ART_PACK_PLAN.md D-2: regenerate assets/art_pack/ from these via
+# scripts/build_art_pack.py rather than committing 33 MB of source PNGs. The
+# derived assets/art_pack/ directory IS tracked and is not covered by this rule.
+/assets/art/
+
 # Flutter/Dart/Pub related
 **/doc/api/
 **/ios/Flutter/.last_build_id

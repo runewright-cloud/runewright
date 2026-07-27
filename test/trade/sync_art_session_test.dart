@@ -16,6 +16,7 @@ import 'package:rune_duel/identity/identity.dart';
 import 'package:rune_duel/protocol/in_memory_transport.dart';
 import 'package:rune_duel/protocol/transport.dart';
 import 'package:rune_duel/spells/sighting_asset.dart';
+import 'package:rune_duel/spells/spell_art_pack.dart';
 import 'package:rune_duel/spells/spell_art_store.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
 import 'package:rune_duel/src/rust/frb_generated.dart';
@@ -148,6 +149,54 @@ void main() {
 
     final savedFull = await SpellArtStore.loadFull(reloaded.id);
     expect(savedFull, equals(fullBytes));
+  });
+
+  test(
+      'sync() delivers built-in pack art from the true owner to a sighter, materialising it '
+      'from the asset bundle rather than SpellArtStore', () async {
+    final alice = await Identity.ephemeral();
+    final bob = await Identity.ephemeral();
+    final bobPubkeyHex = await bob.ownerPubkeyHex();
+
+    // Bob owns the spell natively and set built-in pack art for it -- no
+    // SpellArtStore entry exists for it, per docs/SPELL_ART_PACK_PLAN.md
+    // Phase C (only the resolver, not the store, knows about pack art).
+    final entry = kPainterlyPack.first;
+    final bobSpell =
+        ownedSpell(id: 'bob1', ownerPubkeyHex: bobPubkeyHex).withPackArt(packId: entry.id);
+    await bobSpell.save();
+
+    final aliceSighting = await SightingAsset.record(
+      opponentPubkeyHex: bobPubkeyHex,
+      commitmentHex: commitmentHex,
+      spellName: 'Ember Wake',
+      t: 5,
+      tier: 12,
+      manaCost: 10,
+    );
+    expect(aliceSighting.artHash, isNull);
+
+    final (aliceSession, bobSession) = await pairedSessions(alice, bob);
+    final aliceResultFuture = aliceSession.sync(ourIdentity: alice);
+    final bobResultFuture = bobSession.sync(ourIdentity: bob);
+    final aliceResult = await aliceResultFuture;
+    final bobResult = await bobResultFuture;
+
+    expect(bobResult.sent, hasLength(1));
+    expect(bobResult.sent.single.success, isTrue);
+    expect(aliceResult.received, hasLength(1));
+    expect(aliceResult.received.single.success, isTrue);
+
+    // The receiver always saves synced bytes into SpellArtStore keyed by
+    // sighting id, regardless of what the sender's own art source was (plan
+    // §6: no wire format change, no receiver change) -- so this is a real
+    // integrity-check pass over materialised pack bytes, not a special case.
+    final reloaded = (await SightingAsset.loadAll()).single;
+    expect(reloaded.artHash, equals(entry.sha256));
+    expect(reloaded.artSource, equals(SpellArtSource.synced));
+    final savedFull = await SpellArtStore.loadFull(reloaded.id);
+    expect(savedFull, isNotNull);
+    expect(savedFull!.length, entry.bytes);
   });
 
   test('sync() is bidirectional in a single call', () async {

@@ -1,0 +1,4036 @@
+{
+  "name": "Painterly Spell Icons",
+  "author": "J. W. Bjerk (eleazzaar)",
+  "sourceUrls": [
+    "https://opengameart.org/content/painterly-spell-icons-part-1",
+    "https://opengameart.org/content/painterly-spell-icons-part-2",
+    "https://opengameart.org/content/painterly-spell-icons-part-3",
+    "https://opengameart.org/content/painterly-spell-icons-part-4"
+  ],
+  "licence": "CC BY-SA 4.0",
+  "licenceUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+  "attribution": "J. W. Bjerk (eleazzaar) -- www.jwbjerk.com/art -- find this and other open art at: http://opengameart.org",
+  "modifications": "Re-encoded from 256x256 PNG to 256x256 lossy WebP (quality=82, method=6), RGB (every source icon is fully opaque -- no source PNG has meaningful transparency, verified programmatically before this pack was built). No resizing, no cropping, no recolouring, no compositing, no pixel-level editing. Filenames preserved verbatim.",
+  "icons": [
+    {
+      "id": "air-burst-air-1",
+      "asset": "assets/art_pack/painterly/air-burst-air-1.webp",
+      "subject": "air-burst",
+      "colour": "air",
+      "level": 1,
+      "element": "air",
+      "sha256": "5dd62290bd6ae35654a479514a9fd0c87373c99548e2e20262c1a3e308bb5411",
+      "bytes": 5476
+    },
+    {
+      "id": "air-burst-air-2",
+      "asset": "assets/art_pack/painterly/air-burst-air-2.webp",
+      "subject": "air-burst",
+      "colour": "air",
+      "level": 2,
+      "element": "air",
+      "sha256": "193238139a7fb212418dcd9f9b44175604d232c7502ba4aa93c0a675df5a5755",
+      "bytes": 7932
+    },
+    {
+      "id": "air-burst-air-3",
+      "asset": "assets/art_pack/painterly/air-burst-air-3.webp",
+      "subject": "air-burst",
+      "colour": "air",
+      "level": 3,
+      "element": "air",
+      "sha256": "96a3eebed6b928d0807a0b3d3ba8d05b07fbb09e91e09a0a2415b25569391d74",
+      "bytes": 8956
+    },
+    {
+      "id": "air-burst-jade-1",
+      "asset": "assets/art_pack/painterly/air-burst-jade-1.webp",
+      "subject": "air-burst",
+      "colour": "jade",
+      "level": 1,
+      "element": "air",
+      "sha256": "2f70f201c43075ef3785de480dfdd9f18fc745f0e68fe3136b87fd1a9a8bac22",
+      "bytes": 5360
+    },
+    {
+      "id": "air-burst-jade-2",
+      "asset": "assets/art_pack/painterly/air-burst-jade-2.webp",
+      "subject": "air-burst",
+      "colour": "jade",
+      "level": 2,
+      "element": "air",
+      "sha256": "72b5d28dbb63708a0e78b46d6321e33ba6833656177a0d9d4eaa1c3cd16b7644",
+      "bytes": 7020
+    },
+    {
+      "id": "air-burst-jade-3",
+      "asset": "assets/art_pack/painterly/air-burst-jade-3.webp",
+      "subject": "air-burst",
+      "colour": "jade",
+      "level": 3,
+      "element": "air",
+      "sha256": "10c219b1d53e597da8bc21e4c2202be15c70a4a8ab883b2a5e6212bffc45296c",
+      "bytes": 8544
+    },
+    {
+      "id": "air-burst-magenta-1",
+      "asset": "assets/art_pack/painterly/air-burst-magenta-1.webp",
+      "subject": "air-burst",
+      "colour": "magenta",
+      "level": 1,
+      "element": "air",
+      "sha256": "cd1e7feeb6de04d198210aa7ed24f987dd57a2912ef8c4e45949639cf6f28ccd",
+      "bytes": 6146
+    },
+    {
+      "id": "air-burst-magenta-2",
+      "asset": "assets/art_pack/painterly/air-burst-magenta-2.webp",
+      "subject": "air-burst",
+      "colour": "magenta",
+      "level": 2,
+      "element": "air",
+      "sha256": "2aa7f62806f7c43ad178759abe62a5d8645d7a7913f88669b5d9451758a7c1b0",
+      "bytes": 8558
+    },
+    {
+      "id": "air-burst-magenta-3",
+      "asset": "assets/art_pack/painterly/air-burst-magenta-3.webp",
+      "subject": "air-burst",
+      "colour": "magenta",
+      "level": 3,
+      "element": "air",
+      "sha256": "90c3eebf2b062699832e78f1a23b57d62a3d32319551bc59e8f7d6fd103989d9",
+      "bytes": 9772
+    },
+    {
+      "id": "air-burst-sky-1",
+      "asset": "assets/art_pack/painterly/air-burst-sky-1.webp",
+      "subject": "air-burst",
+      "colour": "sky",
+      "level": 1,
+      "element": "air",
+      "sha256": "f84841790b32b4b5bcc306f2c2879282c7690d7e4418dbb202372617aba87779",
+      "bytes": 5368
+    },
+    {
+      "id": "air-burst-sky-2",
+      "asset": "assets/art_pack/painterly/air-burst-sky-2.webp",
+      "subject": "air-burst",
+      "colour": "sky",
+      "level": 2,
+      "element": "air",
+      "sha256": "5d725c4281aed3337257f99ab93f4fbf1b438395935b78149329878f48e72ee9",
+      "bytes": 8016
+    },
+    {
+      "id": "air-burst-sky-3",
+      "asset": "assets/art_pack/painterly/air-burst-sky-3.webp",
+      "subject": "air-burst",
+      "colour": "sky",
+      "level": 3,
+      "element": "air",
+      "sha256": "e3b8faa7215190b316a2faac273953149e0034f23d4328d0185286e4d9acda7a",
+      "bytes": 9426
+    },
+    {
+      "id": "beam-acid-1",
+      "asset": "assets/art_pack/painterly/beam-acid-1.webp",
+      "subject": "beam",
+      "colour": "acid",
+      "level": 1,
+      "element": "earth",
+      "sha256": "b5f714057051eb93f21ebb2bdf3d5b270c9f5d607a06e70d85c63d6353be4b99",
+      "bytes": 3552
+    },
+    {
+      "id": "beam-acid-2",
+      "asset": "assets/art_pack/painterly/beam-acid-2.webp",
+      "subject": "beam",
+      "colour": "acid",
+      "level": 2,
+      "element": "earth",
+      "sha256": "7d8e3e8bbd7fc06c557bd29e217e94f1a8e5a9ddffcda353ae6eec359e79d2ca",
+      "bytes": 5000
+    },
+    {
+      "id": "beam-acid-3",
+      "asset": "assets/art_pack/painterly/beam-acid-3.webp",
+      "subject": "beam",
+      "colour": "acid",
+      "level": 3,
+      "element": "earth",
+      "sha256": "82dc65275f0478d6ddc8c4cff6aa8cb8b9274bcadfa2a361e2fe94a87c2d5900",
+      "bytes": 5216
+    },
+    {
+      "id": "beam-blue-1",
+      "asset": "assets/art_pack/painterly/beam-blue-1.webp",
+      "subject": "beam",
+      "colour": "blue",
+      "level": 1,
+      "element": "water",
+      "sha256": "14a8e4942e80b661597ebb8bd24a9376c69a3e099322549c7e99129bf165b34e",
+      "bytes": 3564
+    },
+    {
+      "id": "beam-blue-2",
+      "asset": "assets/art_pack/painterly/beam-blue-2.webp",
+      "subject": "beam",
+      "colour": "blue",
+      "level": 2,
+      "element": "water",
+      "sha256": "61bfa40d7b51435be9cecf922aa8bdabdee99453d8f75089ff87ebac725cff1d",
+      "bytes": 5118
+    },
+    {
+      "id": "beam-blue-3",
+      "asset": "assets/art_pack/painterly/beam-blue-3.webp",
+      "subject": "beam",
+      "colour": "blue",
+      "level": 3,
+      "element": "water",
+      "sha256": "9693e379501dabae6c30b0cb7a81f5b8946468cb2d37a85d812c4a07a2fb81ed",
+      "bytes": 5562
+    },
+    {
+      "id": "beam-eerie-1",
+      "asset": "assets/art_pack/painterly/beam-eerie-1.webp",
+      "subject": "beam",
+      "colour": "eerie",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "123904ea5338e7e9c6479e38d50658e37f615e7f5415170e0046566e8d26f844",
+      "bytes": 3132
+    },
+    {
+      "id": "beam-eerie-2",
+      "asset": "assets/art_pack/painterly/beam-eerie-2.webp",
+      "subject": "beam",
+      "colour": "eerie",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "9a1c0adfa467bcd149cf338ba084250f8377b9a8fac6f5acdc7f8e184c9581aa",
+      "bytes": 4434
+    },
+    {
+      "id": "beam-eerie-3",
+      "asset": "assets/art_pack/painterly/beam-eerie-3.webp",
+      "subject": "beam",
+      "colour": "eerie",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "1525b3cccb8144c21eb494513f231117cc7a4ec7cfebe027052dbd0a4a521c36",
+      "bytes": 4700
+    },
+    {
+      "id": "beam-jade-1",
+      "asset": "assets/art_pack/painterly/beam-jade-1.webp",
+      "subject": "beam",
+      "colour": "jade",
+      "level": 1,
+      "element": "earth",
+      "sha256": "79551b835405f9fc16a40e343d1e02364f9b255cf16c54e5eed87f42863d49d8",
+      "bytes": 3550
+    },
+    {
+      "id": "beam-jade-2",
+      "asset": "assets/art_pack/painterly/beam-jade-2.webp",
+      "subject": "beam",
+      "colour": "jade",
+      "level": 2,
+      "element": "earth",
+      "sha256": "60bbc92ceaac429bbc0b7e46bc8761dbbda075185ff8112659431ab18683679c",
+      "bytes": 5102
+    },
+    {
+      "id": "beam-jade-3",
+      "asset": "assets/art_pack/painterly/beam-jade-3.webp",
+      "subject": "beam",
+      "colour": "jade",
+      "level": 3,
+      "element": "earth",
+      "sha256": "54b19ebdc3e2d3c8eff2e1137ee1977f257bb01da7893409fd12faf512516a17",
+      "bytes": 5244
+    },
+    {
+      "id": "beam-magenta-1",
+      "asset": "assets/art_pack/painterly/beam-magenta-1.webp",
+      "subject": "beam",
+      "colour": "magenta",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "891f9ab73ca95f1a7265fb84fe70bcf083211f6c7d8882d0b1647422a8f24683",
+      "bytes": 2754
+    },
+    {
+      "id": "beam-magenta-2",
+      "asset": "assets/art_pack/painterly/beam-magenta-2.webp",
+      "subject": "beam",
+      "colour": "magenta",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "cb2491cda50ba5155d1c73ba63e5a2971b97031ef96c7f28b4867a3b19e375af",
+      "bytes": 4092
+    },
+    {
+      "id": "beam-magenta-3",
+      "asset": "assets/art_pack/painterly/beam-magenta-3.webp",
+      "subject": "beam",
+      "colour": "magenta",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "251dd47addae65d12f2f4c7e568348f3553e31b33ac09498a27e7df30f7dbc21",
+      "bytes": 4552
+    },
+    {
+      "id": "beam-orange-1",
+      "asset": "assets/art_pack/painterly/beam-orange-1.webp",
+      "subject": "beam",
+      "colour": "orange",
+      "level": 1,
+      "element": "fire",
+      "sha256": "21528180370796d8c49b26b8e91e7587e1c32eb5a1e6637b9fa3db0e350abed9",
+      "bytes": 3262
+    },
+    {
+      "id": "beam-orange-2",
+      "asset": "assets/art_pack/painterly/beam-orange-2.webp",
+      "subject": "beam",
+      "colour": "orange",
+      "level": 2,
+      "element": "fire",
+      "sha256": "dbd6d57bacaaac3ca6bff81fc151b6bbe4454167cf00247fdff4471eb69908ec",
+      "bytes": 4802
+    },
+    {
+      "id": "beam-orange-3",
+      "asset": "assets/art_pack/painterly/beam-orange-3.webp",
+      "subject": "beam",
+      "colour": "orange",
+      "level": 3,
+      "element": "fire",
+      "sha256": "713971bc8b6a321af15f416631bcaf022038c0f094529ea289104848f0113d69",
+      "bytes": 4892
+    },
+    {
+      "id": "beam-red-1",
+      "asset": "assets/art_pack/painterly/beam-red-1.webp",
+      "subject": "beam",
+      "colour": "red",
+      "level": 1,
+      "element": "fire",
+      "sha256": "fb95471069e3f2d087ccaf143c3d8e33728bb66a3183a941af58693d2e8d669b",
+      "bytes": 3244
+    },
+    {
+      "id": "beam-red-2",
+      "asset": "assets/art_pack/painterly/beam-red-2.webp",
+      "subject": "beam",
+      "colour": "red",
+      "level": 2,
+      "element": "fire",
+      "sha256": "7d99785a3be7cc06da64b92994aa264d5e958090f8a8c8a8b9c3b0a1de909141",
+      "bytes": 4786
+    },
+    {
+      "id": "beam-red-3",
+      "asset": "assets/art_pack/painterly/beam-red-3.webp",
+      "subject": "beam",
+      "colour": "red",
+      "level": 3,
+      "element": "fire",
+      "sha256": "4ef4296d8b527f65f3eb8eea10b737e9c0fa9934d7741f3b6cc742d4883bddcb",
+      "bytes": 5094
+    },
+    {
+      "id": "beam-royal-1",
+      "asset": "assets/art_pack/painterly/beam-royal-1.webp",
+      "subject": "beam",
+      "colour": "royal",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "a0aea7037b27a4e448093de4722503be12d447f5d2545e2339ecae939abbb411",
+      "bytes": 3868
+    },
+    {
+      "id": "beam-royal-2",
+      "asset": "assets/art_pack/painterly/beam-royal-2.webp",
+      "subject": "beam",
+      "colour": "royal",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "a5fe6d5e7df81c95aaee1f3a6136309a5e4f19fb3c30bba04f4e67961e9223fe",
+      "bytes": 5314
+    },
+    {
+      "id": "beam-royal-3",
+      "asset": "assets/art_pack/painterly/beam-royal-3.webp",
+      "subject": "beam",
+      "colour": "royal",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "68ede406778dd18ce9b3ec0565a4a07c42493169f8b7c1d099dd7d13a3840244",
+      "bytes": 5306
+    },
+    {
+      "id": "beam-sky-1",
+      "asset": "assets/art_pack/painterly/beam-sky-1.webp",
+      "subject": "beam",
+      "colour": "sky",
+      "level": 1,
+      "element": "water",
+      "sha256": "05b1c68569801a1d66cbe7db2456faa953f0051047e8e526738866590a4cca6e",
+      "bytes": 3582
+    },
+    {
+      "id": "beam-sky-2",
+      "asset": "assets/art_pack/painterly/beam-sky-2.webp",
+      "subject": "beam",
+      "colour": "sky",
+      "level": 2,
+      "element": "water",
+      "sha256": "cdf52ffa8401e097005949d16b1ff57fa39b7b336bec7f048ceefbaee398d99f",
+      "bytes": 4350
+    },
+    {
+      "id": "beam-sky-3",
+      "asset": "assets/art_pack/painterly/beam-sky-3.webp",
+      "subject": "beam",
+      "colour": "sky",
+      "level": 3,
+      "element": "water",
+      "sha256": "259cf22b99f21ce480d397f9fc07512850f780203ac42bf78fc4dbe5b0284964",
+      "bytes": 4300
+    },
+    {
+      "id": "enchant-acid-1",
+      "asset": "assets/art_pack/painterly/enchant-acid-1.webp",
+      "subject": "enchant",
+      "colour": "acid",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "8c8581f8d4c0e4616dcfdc34a6ae74466231fcf71a18c2e99b7c025e0fcd7bc5",
+      "bytes": 4772
+    },
+    {
+      "id": "enchant-acid-2",
+      "asset": "assets/art_pack/painterly/enchant-acid-2.webp",
+      "subject": "enchant",
+      "colour": "acid",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "420fa6b891d88e8db43d5b2d4d15918e851e836f2d3abe2eda4f96a6c3df3f50",
+      "bytes": 6894
+    },
+    {
+      "id": "enchant-acid-3",
+      "asset": "assets/art_pack/painterly/enchant-acid-3.webp",
+      "subject": "enchant",
+      "colour": "acid",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "228f3bdc82db146fa55133fd39200167627338d7ad2a3cfaa4bbed2329aa5cf1",
+      "bytes": 11274
+    },
+    {
+      "id": "enchant-blue-1",
+      "asset": "assets/art_pack/painterly/enchant-blue-1.webp",
+      "subject": "enchant",
+      "colour": "blue",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "0a282cf1f6697feaf55ad2c75efa20ee6d76e0f8b061d6ebeaf062fffa1836a0",
+      "bytes": 4756
+    },
+    {
+      "id": "enchant-blue-2",
+      "asset": "assets/art_pack/painterly/enchant-blue-2.webp",
+      "subject": "enchant",
+      "colour": "blue",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "fb40b7022db5c2aa70e06082d6b56ebb0d3332842e8ac8b2e4cbe0e94540b866",
+      "bytes": 6592
+    },
+    {
+      "id": "enchant-blue-3",
+      "asset": "assets/art_pack/painterly/enchant-blue-3.webp",
+      "subject": "enchant",
+      "colour": "blue",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "70c68d0c09ce66d2b538c1b52d4f28e38ebf205311b13ef611cbdf001cd13602",
+      "bytes": 10630
+    },
+    {
+      "id": "enchant-eerie-1",
+      "asset": "assets/art_pack/painterly/enchant-eerie-1.webp",
+      "subject": "enchant",
+      "colour": "eerie",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "56121a676813554b7a8eb1190ea09949c5eb89e023911d384c3c28c296d2fffb",
+      "bytes": 4110
+    },
+    {
+      "id": "enchant-eerie-2",
+      "asset": "assets/art_pack/painterly/enchant-eerie-2.webp",
+      "subject": "enchant",
+      "colour": "eerie",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "882622155e545afc1663f74bde37c94a91c5b203559ec19060ba5e127a088681",
+      "bytes": 5806
+    },
+    {
+      "id": "enchant-eerie-3",
+      "asset": "assets/art_pack/painterly/enchant-eerie-3.webp",
+      "subject": "enchant",
+      "colour": "eerie",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "fce56b60385d03b02ba226f5561b989b2266b6a88ae7d7cb7547cce6214c657e",
+      "bytes": 10028
+    },
+    {
+      "id": "enchant-jade-1",
+      "asset": "assets/art_pack/painterly/enchant-jade-1.webp",
+      "subject": "enchant",
+      "colour": "jade",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "a94dc99e52797ca95ded47cb3b8758a9fe88f477561cf736267a60e0c93f1ce2",
+      "bytes": 4540
+    },
+    {
+      "id": "enchant-jade-2",
+      "asset": "assets/art_pack/painterly/enchant-jade-2.webp",
+      "subject": "enchant",
+      "colour": "jade",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "490d6f77ff262720365ac871876312ccb5c655713507a46d16f66df11cf723a4",
+      "bytes": 6492
+    },
+    {
+      "id": "enchant-jade-3",
+      "asset": "assets/art_pack/painterly/enchant-jade-3.webp",
+      "subject": "enchant",
+      "colour": "jade",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "631386532f4fa0713118b25f278f40b539d751efa89397351b03fc2e7541a15e",
+      "bytes": 10208
+    },
+    {
+      "id": "enchant-magenta-1",
+      "asset": "assets/art_pack/painterly/enchant-magenta-1.webp",
+      "subject": "enchant",
+      "colour": "magenta",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "48c4268b8aa87f0bb4c0918728b75e55d593d0c364909138c819a73d166867cc",
+      "bytes": 4118
+    },
+    {
+      "id": "enchant-magenta-2",
+      "asset": "assets/art_pack/painterly/enchant-magenta-2.webp",
+      "subject": "enchant",
+      "colour": "magenta",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "69ef0cd8b8565fa84a5e35de9a705ca426681e52feb31fb45a1c2a9de31c7413",
+      "bytes": 5700
+    },
+    {
+      "id": "enchant-magenta-3",
+      "asset": "assets/art_pack/painterly/enchant-magenta-3.webp",
+      "subject": "enchant",
+      "colour": "magenta",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "262e0576922464cc94789ef86e8d9bf29e848f8b269357df2b26e211ac5e3b2d",
+      "bytes": 8706
+    },
+    {
+      "id": "enchant-orange-1",
+      "asset": "assets/art_pack/painterly/enchant-orange-1.webp",
+      "subject": "enchant",
+      "colour": "orange",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "b8ee8f5b901a2754535bd9f96d65f1f12bc640ff99ceb82920c91f4cbed269f4",
+      "bytes": 4560
+    },
+    {
+      "id": "enchant-orange-2",
+      "asset": "assets/art_pack/painterly/enchant-orange-2.webp",
+      "subject": "enchant",
+      "colour": "orange",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "3890c4d6c2701350a5d1a1e538c03f679f47c20f48cce84b1b97161eb7f3d2f9",
+      "bytes": 6498
+    },
+    {
+      "id": "enchant-orange-3",
+      "asset": "assets/art_pack/painterly/enchant-orange-3.webp",
+      "subject": "enchant",
+      "colour": "orange",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "63e0748045c81206e37f1b4676cfd9066fcfdf485a3f4f74712cc2cc206ed44e",
+      "bytes": 10334
+    },
+    {
+      "id": "enchant-red-1",
+      "asset": "assets/art_pack/painterly/enchant-red-1.webp",
+      "subject": "enchant",
+      "colour": "red",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "8325993f640e31c2fb4fb3375859bd14f4f2d2dff22bf76c53ce1d583a6409c0",
+      "bytes": 3708
+    },
+    {
+      "id": "enchant-red-2",
+      "asset": "assets/art_pack/painterly/enchant-red-2.webp",
+      "subject": "enchant",
+      "colour": "red",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "44e0bdf0a8debfe77647f104ba69fed071fc497140cf176ab254025b992f7ef3",
+      "bytes": 6256
+    },
+    {
+      "id": "enchant-red-3",
+      "asset": "assets/art_pack/painterly/enchant-red-3.webp",
+      "subject": "enchant",
+      "colour": "red",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "f6ce89af9ef8f1c34d98f56e4c03e934287349483c7c624e7ca90ca1ea60bf0e",
+      "bytes": 10190
+    },
+    {
+      "id": "enchant-royal-1",
+      "asset": "assets/art_pack/painterly/enchant-royal-1.webp",
+      "subject": "enchant",
+      "colour": "royal",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "8840fcf638a2017b711c08378be32ab46f797788c4797e88715dc0f07a280203",
+      "bytes": 6356
+    },
+    {
+      "id": "enchant-royal-2",
+      "asset": "assets/art_pack/painterly/enchant-royal-2.webp",
+      "subject": "enchant",
+      "colour": "royal",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "b598a3af6c8761c1bce03b876a51c9cbe9350efd23aabf069f7d448615df37cc",
+      "bytes": 7058
+    },
+    {
+      "id": "enchant-royal-3",
+      "asset": "assets/art_pack/painterly/enchant-royal-3.webp",
+      "subject": "enchant",
+      "colour": "royal",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "09e3ac22754ba0638d426655a4f7f4064aa169a2d7c806f1f2457dc2fe5461dd",
+      "bytes": 11460
+    },
+    {
+      "id": "enchant-sky-1",
+      "asset": "assets/art_pack/painterly/enchant-sky-1.webp",
+      "subject": "enchant",
+      "colour": "sky",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "22f13015e9729dd36f0059428fe27d22607b8e059bddf3e3fdafc05bb8abd862",
+      "bytes": 5350
+    },
+    {
+      "id": "enchant-sky-2",
+      "asset": "assets/art_pack/painterly/enchant-sky-2.webp",
+      "subject": "enchant",
+      "colour": "sky",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "d0761764c89ef7a101bc098d978aa11106b87bd86ed9ced2cac23e90edd7a914",
+      "bytes": 6348
+    },
+    {
+      "id": "enchant-sky-3",
+      "asset": "assets/art_pack/painterly/enchant-sky-3.webp",
+      "subject": "enchant",
+      "colour": "sky",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "261df634e0ce72bb9e8a4ad031af8a2fa19b00fb16ccfbb4186770489b73e0fd",
+      "bytes": 9916
+    },
+    {
+      "id": "evil-eye-eerie-1",
+      "asset": "assets/art_pack/painterly/evil-eye-eerie-1.webp",
+      "subject": "evil-eye",
+      "colour": "eerie",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "73617fb2fa261aad2d3669ab5ef86f528c18a96339333c3851ac86d2ff3fa169",
+      "bytes": 4300
+    },
+    {
+      "id": "evil-eye-eerie-2",
+      "asset": "assets/art_pack/painterly/evil-eye-eerie-2.webp",
+      "subject": "evil-eye",
+      "colour": "eerie",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "8a845ea57a16ed350b375f22e7aa41aa60502015322088e5824d4d2c29bcc131",
+      "bytes": 6436
+    },
+    {
+      "id": "evil-eye-eerie-3",
+      "asset": "assets/art_pack/painterly/evil-eye-eerie-3.webp",
+      "subject": "evil-eye",
+      "colour": "eerie",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "51019cf2d32466c514ebc5f831b0ae2a4ad28438c608c832baf98ba6fdd661f2",
+      "bytes": 8982
+    },
+    {
+      "id": "evil-eye-red-1",
+      "asset": "assets/art_pack/painterly/evil-eye-red-1.webp",
+      "subject": "evil-eye",
+      "colour": "red",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "4f040e8bada0512112beec75833df73dfcecd507da8e8ec777ec1a64596476b6",
+      "bytes": 4852
+    },
+    {
+      "id": "evil-eye-red-2",
+      "asset": "assets/art_pack/painterly/evil-eye-red-2.webp",
+      "subject": "evil-eye",
+      "colour": "red",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "268540b2873ec47309e2f32a5def069659acf103fe77555b513211820d78ab07",
+      "bytes": 7124
+    },
+    {
+      "id": "evil-eye-red-3",
+      "asset": "assets/art_pack/painterly/evil-eye-red-3.webp",
+      "subject": "evil-eye",
+      "colour": "red",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "5ff85d56ac9459825e759fb66cecbf66fcfdb41e384a235ca0cf3389d98de542",
+      "bytes": 9936
+    },
+    {
+      "id": "explosion-magenta-1",
+      "asset": "assets/art_pack/painterly/explosion-magenta-1.webp",
+      "subject": "explosion",
+      "colour": "magenta",
+      "level": 1,
+      "element": "fire",
+      "sha256": "2b253e3084bedf4c4aa84bd51050c1d50af6179825bdb23a36afbd16f8c4c0a0",
+      "bytes": 7506
+    },
+    {
+      "id": "explosion-magenta-2",
+      "asset": "assets/art_pack/painterly/explosion-magenta-2.webp",
+      "subject": "explosion",
+      "colour": "magenta",
+      "level": 2,
+      "element": "fire",
+      "sha256": "7ada731d8430f7cce995760dcb290f54865dd34159f691b69f61ebf863ba17e2",
+      "bytes": 12116
+    },
+    {
+      "id": "explosion-magenta-3",
+      "asset": "assets/art_pack/painterly/explosion-magenta-3.webp",
+      "subject": "explosion",
+      "colour": "magenta",
+      "level": 3,
+      "element": "fire",
+      "sha256": "4b523202d5da81e6757004a4d87c828fbb749f8fb43d6338c86f9113bc40737b",
+      "bytes": 8128
+    },
+    {
+      "id": "explosion-orange-1",
+      "asset": "assets/art_pack/painterly/explosion-orange-1.webp",
+      "subject": "explosion",
+      "colour": "orange",
+      "level": 1,
+      "element": "fire",
+      "sha256": "f0353d510c7a39135cfd50142c9067830acb4ec4279d7b7c98298b5836212925",
+      "bytes": 5062
+    },
+    {
+      "id": "explosion-orange-2",
+      "asset": "assets/art_pack/painterly/explosion-orange-2.webp",
+      "subject": "explosion",
+      "colour": "orange",
+      "level": 2,
+      "element": "fire",
+      "sha256": "e9bdea6a99f503499784b226c3d4fdba31963efd761a6241a8efa59738d50ccc",
+      "bytes": 10514
+    },
+    {
+      "id": "explosion-orange-3",
+      "asset": "assets/art_pack/painterly/explosion-orange-3.webp",
+      "subject": "explosion",
+      "colour": "orange",
+      "level": 3,
+      "element": "fire",
+      "sha256": "5c51540f4d4e4b6ca47979b1b5263aada81283558ddcc0b6dfa7dd340ac372b5",
+      "bytes": 9086
+    },
+    {
+      "id": "explosion-red-1",
+      "asset": "assets/art_pack/painterly/explosion-red-1.webp",
+      "subject": "explosion",
+      "colour": "red",
+      "level": 1,
+      "element": "fire",
+      "sha256": "20f5d5c6d3fbdb77f591587a855743e512c435befb651c1dc74d079620d9a31b",
+      "bytes": 4232
+    },
+    {
+      "id": "explosion-red-2",
+      "asset": "assets/art_pack/painterly/explosion-red-2.webp",
+      "subject": "explosion",
+      "colour": "red",
+      "level": 2,
+      "element": "fire",
+      "sha256": "07669919b37a699c15123012ba05c361ead8371b47009916b5df348b9cca2724",
+      "bytes": 8954
+    },
+    {
+      "id": "explosion-red-3",
+      "asset": "assets/art_pack/painterly/explosion-red-3.webp",
+      "subject": "explosion",
+      "colour": "red",
+      "level": 3,
+      "element": "fire",
+      "sha256": "1283ae995338ceee15339688dcd90ee94058559e7c9a9b114f42ef43f23fe085",
+      "bytes": 8732
+    },
+    {
+      "id": "explosion-royal-1",
+      "asset": "assets/art_pack/painterly/explosion-royal-1.webp",
+      "subject": "explosion",
+      "colour": "royal",
+      "level": 1,
+      "element": "fire",
+      "sha256": "10fd5424cbd72a59e1db74c4d0ba58260e65b7cb942d8e9efe04945e058c8e30",
+      "bytes": 8044
+    },
+    {
+      "id": "explosion-royal-2",
+      "asset": "assets/art_pack/painterly/explosion-royal-2.webp",
+      "subject": "explosion",
+      "colour": "royal",
+      "level": 2,
+      "element": "fire",
+      "sha256": "7594a4e534d1b5afb1e834b0e1cf7d4c34846498930eed5ebd4440f5ac1e6fda",
+      "bytes": 12646
+    },
+    {
+      "id": "explosion-royal-3",
+      "asset": "assets/art_pack/painterly/explosion-royal-3.webp",
+      "subject": "explosion",
+      "colour": "royal",
+      "level": 3,
+      "element": "fire",
+      "sha256": "d736168e8a18d8c32405d7273a943822434e05d207d9a878bbf5ee015f4f4dc3",
+      "bytes": 9076
+    },
+    {
+      "id": "explosion-sky-1",
+      "asset": "assets/art_pack/painterly/explosion-sky-1.webp",
+      "subject": "explosion",
+      "colour": "sky",
+      "level": 1,
+      "element": "fire",
+      "sha256": "9afb2ef7cef92f48b96e93a198e2117b940c2e7a19ce39cf1135a63e2bd0ad88",
+      "bytes": 6098
+    },
+    {
+      "id": "explosion-sky-2",
+      "asset": "assets/art_pack/painterly/explosion-sky-2.webp",
+      "subject": "explosion",
+      "colour": "sky",
+      "level": 2,
+      "element": "fire",
+      "sha256": "37b2b51f841ecd26a72a2ac7bde3b2d5e68dc6be9baa4ef086ca09ad2cfaadb6",
+      "bytes": 12126
+    },
+    {
+      "id": "explosion-sky-3",
+      "asset": "assets/art_pack/painterly/explosion-sky-3.webp",
+      "subject": "explosion",
+      "colour": "sky",
+      "level": 3,
+      "element": "fire",
+      "sha256": "04bcbaa1701d8464488440b69206ed02a2709eebf5be61e39f76ee9d50d89552",
+      "bytes": 7584
+    },
+    {
+      "id": "fire-arrows-1",
+      "asset": "assets/art_pack/painterly/fire-arrows-1.webp",
+      "subject": "fire-arrows",
+      "colour": null,
+      "level": 1,
+      "element": "fire",
+      "sha256": "0458dc2e66f425c62176afd5b0d7eaa3a14b717dd5b23b9f479656183239282c",
+      "bytes": 5030
+    },
+    {
+      "id": "fire-arrows-2",
+      "asset": "assets/art_pack/painterly/fire-arrows-2.webp",
+      "subject": "fire-arrows",
+      "colour": null,
+      "level": 2,
+      "element": "fire",
+      "sha256": "34330e1979ae442b5a98ac62d529da59cfdaa4776ff79882cd82dc3cb55a0e71",
+      "bytes": 7494
+    },
+    {
+      "id": "fire-arrows-3",
+      "asset": "assets/art_pack/painterly/fire-arrows-3.webp",
+      "subject": "fire-arrows",
+      "colour": null,
+      "level": 3,
+      "element": "fire",
+      "sha256": "0fe3d25f39e30b14af7d6ef6ae8ad004756dc8d01e2fa203874f50fd6eafb968",
+      "bytes": 9868
+    },
+    {
+      "id": "fire-arrows-jade-1",
+      "asset": "assets/art_pack/painterly/fire-arrows-jade-1.webp",
+      "subject": "fire-arrows",
+      "colour": "jade",
+      "level": 1,
+      "element": "fire",
+      "sha256": "df772ce14f478f6b7f55dd7b4d1e8ba1112451230efdb918cc9ced6790733390",
+      "bytes": 5418
+    },
+    {
+      "id": "fire-arrows-jade-2",
+      "asset": "assets/art_pack/painterly/fire-arrows-jade-2.webp",
+      "subject": "fire-arrows",
+      "colour": "jade",
+      "level": 2,
+      "element": "fire",
+      "sha256": "54803b3194be53b3aa85135ce9b16f59773b21b60e81529d1ca8d1b020bf76fb",
+      "bytes": 7718
+    },
+    {
+      "id": "fire-arrows-jade-3",
+      "asset": "assets/art_pack/painterly/fire-arrows-jade-3.webp",
+      "subject": "fire-arrows",
+      "colour": "jade",
+      "level": 3,
+      "element": "fire",
+      "sha256": "b194edcca34919a6a23a06a6ecd66df2cfaf0a2620a3b0dde44c592e6463f68d",
+      "bytes": 9986
+    },
+    {
+      "id": "fire-arrows-magenta-1",
+      "asset": "assets/art_pack/painterly/fire-arrows-magenta-1.webp",
+      "subject": "fire-arrows",
+      "colour": "magenta",
+      "level": 1,
+      "element": "fire",
+      "sha256": "02183817ead0ee17351a379d9bfef4a1458e9a2e606c7e2b5908ac3b9d4ba780",
+      "bytes": 5354
+    },
+    {
+      "id": "fire-arrows-magenta-2",
+      "asset": "assets/art_pack/painterly/fire-arrows-magenta-2.webp",
+      "subject": "fire-arrows",
+      "colour": "magenta",
+      "level": 2,
+      "element": "fire",
+      "sha256": "8bbdcb46b611bb87ee725c2eca0805b2e963c77940d0e718280397eed43c75fe",
+      "bytes": 7600
+    },
+    {
+      "id": "fire-arrows-magenta-3",
+      "asset": "assets/art_pack/painterly/fire-arrows-magenta-3.webp",
+      "subject": "fire-arrows",
+      "colour": "magenta",
+      "level": 3,
+      "element": "fire",
+      "sha256": "f5c33a8f2d8f939f8f4a0786050f01fbb4599fb056c89628e33866ccf43df092",
+      "bytes": 9622
+    },
+    {
+      "id": "fire-arrows-royal-1",
+      "asset": "assets/art_pack/painterly/fire-arrows-royal-1.webp",
+      "subject": "fire-arrows",
+      "colour": "royal",
+      "level": 1,
+      "element": "fire",
+      "sha256": "79812cd88411503b6d0bee9ee20bcadd7219a168bb7ab16d319dc3c06bc6ef9b",
+      "bytes": 5938
+    },
+    {
+      "id": "fire-arrows-royal-2",
+      "asset": "assets/art_pack/painterly/fire-arrows-royal-2.webp",
+      "subject": "fire-arrows",
+      "colour": "royal",
+      "level": 2,
+      "element": "fire",
+      "sha256": "d38a9cc7afac65c9184f7448491eef07038d38a21b20b74e3fe03d929e1cfd81",
+      "bytes": 8182
+    },
+    {
+      "id": "fire-arrows-royal-3",
+      "asset": "assets/art_pack/painterly/fire-arrows-royal-3.webp",
+      "subject": "fire-arrows",
+      "colour": "royal",
+      "level": 3,
+      "element": "fire",
+      "sha256": "11139bc04a2c463cffea42f119fb2bfab87bae72e43a85dd6e55a9a8572b84bb",
+      "bytes": 10498
+    },
+    {
+      "id": "fire-arrows-sky-1",
+      "asset": "assets/art_pack/painterly/fire-arrows-sky-1.webp",
+      "subject": "fire-arrows",
+      "colour": "sky",
+      "level": 1,
+      "element": "fire",
+      "sha256": "f3cb38efc241915b4fac76f3738281a2e2f1c4d107c1652b6edb7e15cf4ad792",
+      "bytes": 4892
+    },
+    {
+      "id": "fire-arrows-sky-2",
+      "asset": "assets/art_pack/painterly/fire-arrows-sky-2.webp",
+      "subject": "fire-arrows",
+      "colour": "sky",
+      "level": 2,
+      "element": "fire",
+      "sha256": "eeb0b35a5a311bbc41599798bb498538a833d4ef1ba42279be0a8182527fefe9",
+      "bytes": 7012
+    },
+    {
+      "id": "fire-arrows-sky-3",
+      "asset": "assets/art_pack/painterly/fire-arrows-sky-3.webp",
+      "subject": "fire-arrows",
+      "colour": "sky",
+      "level": 3,
+      "element": "fire",
+      "sha256": "5fc34a3dc8b0e144a2253ada6939acab0e83a846cdd103e4b50c74d43a2de0fe",
+      "bytes": 9446
+    },
+    {
+      "id": "fireball-acid-1",
+      "asset": "assets/art_pack/painterly/fireball-acid-1.webp",
+      "subject": "fireball",
+      "colour": "acid",
+      "level": 1,
+      "element": "fire",
+      "sha256": "df8d9ce85ba44106362673764a324431b8535decea437855223caad2732fe428",
+      "bytes": 4784
+    },
+    {
+      "id": "fireball-acid-2",
+      "asset": "assets/art_pack/painterly/fireball-acid-2.webp",
+      "subject": "fireball",
+      "colour": "acid",
+      "level": 2,
+      "element": "fire",
+      "sha256": "26789ecee11cbd3f5103eebd2e39c0ebac91231f2ce6ac0832a629a232098102",
+      "bytes": 6652
+    },
+    {
+      "id": "fireball-acid-3",
+      "asset": "assets/art_pack/painterly/fireball-acid-3.webp",
+      "subject": "fireball",
+      "colour": "acid",
+      "level": 3,
+      "element": "fire",
+      "sha256": "c07642313f836209335b5d44692722091f447c020947362753dffcc034815225",
+      "bytes": 8450
+    },
+    {
+      "id": "fireball-eerie-1",
+      "asset": "assets/art_pack/painterly/fireball-eerie-1.webp",
+      "subject": "fireball",
+      "colour": "eerie",
+      "level": 1,
+      "element": "fire",
+      "sha256": "fe332c566ae04fd7bf9af269ae029e3ef3a04e9c2e3d3bc0a7de13ca19f94eae",
+      "bytes": 4274
+    },
+    {
+      "id": "fireball-eerie-2",
+      "asset": "assets/art_pack/painterly/fireball-eerie-2.webp",
+      "subject": "fireball",
+      "colour": "eerie",
+      "level": 2,
+      "element": "fire",
+      "sha256": "d6705408cc8ee8668638f84b4fbbbc329e68816494c728281e9d2b9a690173c8",
+      "bytes": 5746
+    },
+    {
+      "id": "fireball-eerie-3",
+      "asset": "assets/art_pack/painterly/fireball-eerie-3.webp",
+      "subject": "fireball",
+      "colour": "eerie",
+      "level": 3,
+      "element": "fire",
+      "sha256": "079fd441ce55b6eb18ec37439a8adbbd5bf8d44d228ef860665cb7738f53d878",
+      "bytes": 7590
+    },
+    {
+      "id": "fireball-red-1",
+      "asset": "assets/art_pack/painterly/fireball-red-1.webp",
+      "subject": "fireball",
+      "colour": "red",
+      "level": 1,
+      "element": "fire",
+      "sha256": "ecd6cab956c41730cbb3f69881771208ae2f715e21e24c4b2877840db4825b5c",
+      "bytes": 4526
+    },
+    {
+      "id": "fireball-red-2",
+      "asset": "assets/art_pack/painterly/fireball-red-2.webp",
+      "subject": "fireball",
+      "colour": "red",
+      "level": 2,
+      "element": "fire",
+      "sha256": "44aa6736c0c6d43e0212897517bd7fd00bcb99f6394b8e0030604f8f82d5740d",
+      "bytes": 6314
+    },
+    {
+      "id": "fireball-red-3",
+      "asset": "assets/art_pack/painterly/fireball-red-3.webp",
+      "subject": "fireball",
+      "colour": "red",
+      "level": 3,
+      "element": "fire",
+      "sha256": "59df94d8acc0058951dbd9b5c476aa12b0de3bf697febe25e1964118067e77ac",
+      "bytes": 8184
+    },
+    {
+      "id": "fireball-sky-1",
+      "asset": "assets/art_pack/painterly/fireball-sky-1.webp",
+      "subject": "fireball",
+      "colour": "sky",
+      "level": 1,
+      "element": "fire",
+      "sha256": "1576da8eb40e91018937ec40f2a7d9f16e4090c405888e59a04b579fe4dbeb1c",
+      "bytes": 3948
+    },
+    {
+      "id": "fireball-sky-2",
+      "asset": "assets/art_pack/painterly/fireball-sky-2.webp",
+      "subject": "fireball",
+      "colour": "sky",
+      "level": 2,
+      "element": "fire",
+      "sha256": "f19f5f94da0308f5af9b8a5cb032eb3713928b6d8186379b40590d531c0fe103",
+      "bytes": 5310
+    },
+    {
+      "id": "fireball-sky-3",
+      "asset": "assets/art_pack/painterly/fireball-sky-3.webp",
+      "subject": "fireball",
+      "colour": "sky",
+      "level": 3,
+      "element": "fire",
+      "sha256": "1d8b35a12933cc8a873e197a51075063b845926a554c4f7933c9d34ecb34f7a8",
+      "bytes": 6988
+    },
+    {
+      "id": "fog-acid-1",
+      "asset": "assets/art_pack/painterly/fog-acid-1.webp",
+      "subject": "fog",
+      "colour": "acid",
+      "level": 1,
+      "element": "water",
+      "sha256": "15b20a53eb6c3b7dcc4aad9de007f19e35f9b3d67b7d202c0f97abb9cc5ce03b",
+      "bytes": 3692
+    },
+    {
+      "id": "fog-acid-2",
+      "asset": "assets/art_pack/painterly/fog-acid-2.webp",
+      "subject": "fog",
+      "colour": "acid",
+      "level": 2,
+      "element": "water",
+      "sha256": "6bd59c33fbd50903fa83e8fd4e1a126ece9cf0af9dd59d984f770d9c8732762a",
+      "bytes": 5846
+    },
+    {
+      "id": "fog-acid-3",
+      "asset": "assets/art_pack/painterly/fog-acid-3.webp",
+      "subject": "fog",
+      "colour": "acid",
+      "level": 3,
+      "element": "water",
+      "sha256": "1b7d5281ef7db4e43128b042a42a54cc69648763ab648534fa8f7b7465611ef2",
+      "bytes": 10078
+    },
+    {
+      "id": "fog-air-1",
+      "asset": "assets/art_pack/painterly/fog-air-1.webp",
+      "subject": "fog",
+      "colour": "air",
+      "level": 1,
+      "element": "air",
+      "sha256": "80b43d126bdd9d5169783527482b31ff1796e59b45648047c3234512ad8de1ee",
+      "bytes": 3304
+    },
+    {
+      "id": "fog-air-2",
+      "asset": "assets/art_pack/painterly/fog-air-2.webp",
+      "subject": "fog",
+      "colour": "air",
+      "level": 2,
+      "element": "air",
+      "sha256": "dbb0382c8fc7f001cc78dca420e52085a7725c35c9ff69310f1744e55c9b5cce",
+      "bytes": 4708
+    },
+    {
+      "id": "fog-air-3",
+      "asset": "assets/art_pack/painterly/fog-air-3.webp",
+      "subject": "fog",
+      "colour": "air",
+      "level": 3,
+      "element": "air",
+      "sha256": "112f89954e5541c1091a4e68c0a24e249ed6fb7d1f7aebf040437e38cb539e4d",
+      "bytes": 7550
+    },
+    {
+      "id": "fog-blue-1",
+      "asset": "assets/art_pack/painterly/fog-blue-1.webp",
+      "subject": "fog",
+      "colour": "blue",
+      "level": 1,
+      "element": "water",
+      "sha256": "200e485d260957f49f06bde6a1f4a5c9b4717e2393aeb79e6bd4c9f666938764",
+      "bytes": 3832
+    },
+    {
+      "id": "fog-blue-2",
+      "asset": "assets/art_pack/painterly/fog-blue-2.webp",
+      "subject": "fog",
+      "colour": "blue",
+      "level": 2,
+      "element": "water",
+      "sha256": "06a829c2faf85c92e0c6d17e146c034cd17063dbefb31bfdd949e9db1ff4cd0c",
+      "bytes": 5748
+    },
+    {
+      "id": "fog-blue-3",
+      "asset": "assets/art_pack/painterly/fog-blue-3.webp",
+      "subject": "fog",
+      "colour": "blue",
+      "level": 3,
+      "element": "water",
+      "sha256": "d57f378a68523f942fb6c0c4d41c561744d7a4da2472870e193da3a869c3d918",
+      "bytes": 8814
+    },
+    {
+      "id": "fog-magenta-1",
+      "asset": "assets/art_pack/painterly/fog-magenta-1.webp",
+      "subject": "fog",
+      "colour": "magenta",
+      "level": 1,
+      "element": "water",
+      "sha256": "c15163eeb2287542cb3c37b1f534df703a3102fbdd8dea36d5ab9db0f71cc1c8",
+      "bytes": 3606
+    },
+    {
+      "id": "fog-magenta-2",
+      "asset": "assets/art_pack/painterly/fog-magenta-2.webp",
+      "subject": "fog",
+      "colour": "magenta",
+      "level": 2,
+      "element": "water",
+      "sha256": "2141d102b3e1c37507146710c85d3dfee024d653887f5269578defa1949a19a0",
+      "bytes": 5230
+    },
+    {
+      "id": "fog-magenta-3",
+      "asset": "assets/art_pack/painterly/fog-magenta-3.webp",
+      "subject": "fog",
+      "colour": "magenta",
+      "level": 3,
+      "element": "water",
+      "sha256": "2b8a4c5777291b4cf3c9e9c092b2f040a5d41075c525c173865d11803199608d",
+      "bytes": 8554
+    },
+    {
+      "id": "fog-orange-1",
+      "asset": "assets/art_pack/painterly/fog-orange-1.webp",
+      "subject": "fog",
+      "colour": "orange",
+      "level": 1,
+      "element": "water",
+      "sha256": "e934a9ad2361e290ef79cdab3a848f11f43c5813dd9347c1d943fe9e8605b7a9",
+      "bytes": 3072
+    },
+    {
+      "id": "fog-orange-2",
+      "asset": "assets/art_pack/painterly/fog-orange-2.webp",
+      "subject": "fog",
+      "colour": "orange",
+      "level": 2,
+      "element": "water",
+      "sha256": "cd43cff7760162691682fa96ec56523b7ddb412843e7f3346b63de24f77897d2",
+      "bytes": 5546
+    },
+    {
+      "id": "fog-orange-3",
+      "asset": "assets/art_pack/painterly/fog-orange-3.webp",
+      "subject": "fog",
+      "colour": "orange",
+      "level": 3,
+      "element": "water",
+      "sha256": "33f2b6e3f587b33349e5a52448321d4c8771ca68777ea8369092d7edcef78913",
+      "bytes": 10822
+    },
+    {
+      "id": "fog-sky-1",
+      "asset": "assets/art_pack/painterly/fog-sky-1.webp",
+      "subject": "fog",
+      "colour": "sky",
+      "level": 1,
+      "element": "water",
+      "sha256": "1552bbd8153c9e5e8ab5692f9918fc526f1a0aa67c00eb52cb357c3242e5ea66",
+      "bytes": 3034
+    },
+    {
+      "id": "fog-sky-2",
+      "asset": "assets/art_pack/painterly/fog-sky-2.webp",
+      "subject": "fog",
+      "colour": "sky",
+      "level": 2,
+      "element": "water",
+      "sha256": "2932e0c3d48468a29dc160118e79901830d343a9cdda55a0c3d0c9bb0ba77cee",
+      "bytes": 4606
+    },
+    {
+      "id": "fog-sky-3",
+      "asset": "assets/art_pack/painterly/fog-sky-3.webp",
+      "subject": "fog",
+      "colour": "sky",
+      "level": 3,
+      "element": "water",
+      "sha256": "ca7348616105507b9a100ab91b39df8b6d38c791aaaec50e452a4dbce69cc6bf",
+      "bytes": 8082
+    },
+    {
+      "id": "fog-water-air-1",
+      "asset": "assets/art_pack/painterly/fog-water-air-1.webp",
+      "subject": "fog",
+      "colour": "water-air",
+      "level": 1,
+      "element": "water",
+      "sha256": "d8bca26465d1db99ccdcba6f8017b59dca5f32fd6dd7a0481e4a924db782fbe8",
+      "bytes": 2718
+    },
+    {
+      "id": "fog-water-air-2",
+      "asset": "assets/art_pack/painterly/fog-water-air-2.webp",
+      "subject": "fog",
+      "colour": "water-air",
+      "level": 2,
+      "element": "water",
+      "sha256": "d57937ce523a913f0bfe708da4293158732a71823deaa4503e1f279cca4b35fb",
+      "bytes": 3594
+    },
+    {
+      "id": "fog-water-air-3",
+      "asset": "assets/art_pack/painterly/fog-water-air-3.webp",
+      "subject": "fog",
+      "colour": "water-air",
+      "level": 3,
+      "element": "water",
+      "sha256": "64eadd828315d5b977ce42cb17fff7b49d1aeef29849c7daf1c7d6baf6298b74",
+      "bytes": 6170
+    },
+    {
+      "id": "haste-fire-1",
+      "asset": "assets/art_pack/painterly/haste-fire-1.webp",
+      "subject": "haste",
+      "colour": "fire",
+      "level": 1,
+      "element": "fire",
+      "sha256": "a15754b0a431343af95d38ccc1545674d7b0f46ab1201b9ff6890501b4445b64",
+      "bytes": 4714
+    },
+    {
+      "id": "haste-fire-2",
+      "asset": "assets/art_pack/painterly/haste-fire-2.webp",
+      "subject": "haste",
+      "colour": "fire",
+      "level": 2,
+      "element": "fire",
+      "sha256": "f166a40eb7a0725a81f64922814a6641e5e52d61dbe30c38306fa1fc33e01069",
+      "bytes": 8786
+    },
+    {
+      "id": "haste-fire-3",
+      "asset": "assets/art_pack/painterly/haste-fire-3.webp",
+      "subject": "haste",
+      "colour": "fire",
+      "level": 3,
+      "element": "fire",
+      "sha256": "a3b1be148b10bd0a96d4658fd665ba3a0928201c99d5e847c1e34388868dc6a5",
+      "bytes": 12788
+    },
+    {
+      "id": "haste-royal-1",
+      "asset": "assets/art_pack/painterly/haste-royal-1.webp",
+      "subject": "haste",
+      "colour": "royal",
+      "level": 1,
+      "element": "air",
+      "sha256": "8756d61260666b0cb8d2f880374fbe10b3f33637a885538a1a2c2916a1cc2615",
+      "bytes": 6370
+    },
+    {
+      "id": "haste-royal-2",
+      "asset": "assets/art_pack/painterly/haste-royal-2.webp",
+      "subject": "haste",
+      "colour": "royal",
+      "level": 2,
+      "element": "air",
+      "sha256": "9641ae6437c7436deaa73049458039d0f22960b420db77a0517ce550253d2247",
+      "bytes": 10802
+    },
+    {
+      "id": "haste-royal-3",
+      "asset": "assets/art_pack/painterly/haste-royal-3.webp",
+      "subject": "haste",
+      "colour": "royal",
+      "level": 3,
+      "element": "air",
+      "sha256": "299c2b143336a3f7fea18d8b722062c7f9d905f70ed4d188a7f8017d1b27d3d0",
+      "bytes": 14402
+    },
+    {
+      "id": "haste-sky-1",
+      "asset": "assets/art_pack/painterly/haste-sky-1.webp",
+      "subject": "haste",
+      "colour": "sky",
+      "level": 1,
+      "element": "air",
+      "sha256": "5351ec64e2cd9224c44b4919a90ace1fcd94a9104b0ccb1e26d0857dafbfeed0",
+      "bytes": 4998
+    },
+    {
+      "id": "haste-sky-2",
+      "asset": "assets/art_pack/painterly/haste-sky-2.webp",
+      "subject": "haste",
+      "colour": "sky",
+      "level": 2,
+      "element": "air",
+      "sha256": "6b28a2197ef451e4160319723a543f276f7e282eea6c45847d633ad6583d65c2",
+      "bytes": 8774
+    },
+    {
+      "id": "haste-sky-3",
+      "asset": "assets/art_pack/painterly/haste-sky-3.webp",
+      "subject": "haste",
+      "colour": "sky",
+      "level": 3,
+      "element": "air",
+      "sha256": "4ad73e0e3f5ff701f7f83904332fd83458b7f0bdf48ad288e72e065d500d5a06",
+      "bytes": 12032
+    },
+    {
+      "id": "heal-jade-1",
+      "asset": "assets/art_pack/painterly/heal-jade-1.webp",
+      "subject": "heal",
+      "colour": "jade",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "1b04049cfdd3fdcd41d1ded10d2a01c3f2018a131666ca4e632def11a93440a8",
+      "bytes": 5094
+    },
+    {
+      "id": "heal-jade-2",
+      "asset": "assets/art_pack/painterly/heal-jade-2.webp",
+      "subject": "heal",
+      "colour": "jade",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "e19c9717d9fbf742b48b65755c7a3e36a499cea46dd883307481a7a9c9dd9d73",
+      "bytes": 7786
+    },
+    {
+      "id": "heal-jade-3",
+      "asset": "assets/art_pack/painterly/heal-jade-3.webp",
+      "subject": "heal",
+      "colour": "jade",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "7ecbd30413bb2749d07df0a2644a89ddc16ad5d4677ceaf73d96449e7d3a0961",
+      "bytes": 8974
+    },
+    {
+      "id": "heal-royal-1",
+      "asset": "assets/art_pack/painterly/heal-royal-1.webp",
+      "subject": "heal",
+      "colour": "royal",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "792fb8c7d3bb03f0d1d0be65e152f3aadcb048864ab347dd3b37e874f0660340",
+      "bytes": 5810
+    },
+    {
+      "id": "heal-royal-2",
+      "asset": "assets/art_pack/painterly/heal-royal-2.webp",
+      "subject": "heal",
+      "colour": "royal",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "9216cc69c7b0f3244db79e1b6bad463e2426f611c37d010651f183f0879d851d",
+      "bytes": 7864
+    },
+    {
+      "id": "heal-royal-3",
+      "asset": "assets/art_pack/painterly/heal-royal-3.webp",
+      "subject": "heal",
+      "colour": "royal",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "8a9e665a1298d3406834c6e5a5467d312fa62265f207151b0e3e49d903e6612d",
+      "bytes": 9316
+    },
+    {
+      "id": "heal-sky-1",
+      "asset": "assets/art_pack/painterly/heal-sky-1.webp",
+      "subject": "heal",
+      "colour": "sky",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "6ba055b0625092b9eb345d2213ba8cdef6f04bc3c99670e54aa8589dab28f302",
+      "bytes": 4326
+    },
+    {
+      "id": "heal-sky-2",
+      "asset": "assets/art_pack/painterly/heal-sky-2.webp",
+      "subject": "heal",
+      "colour": "sky",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "bc79f6ef7e1c041c52ea60cccb883244c891940da79f91d080375b1771b8b8a9",
+      "bytes": 7064
+    },
+    {
+      "id": "heal-sky-3",
+      "asset": "assets/art_pack/painterly/heal-sky-3.webp",
+      "subject": "heal",
+      "colour": "sky",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "14367b39d320812942de1a1dda6ee864c073ab5f7046131c3d3f6c11b7b1b836",
+      "bytes": 8356
+    },
+    {
+      "id": "horror-acid-1",
+      "asset": "assets/art_pack/painterly/horror-acid-1.webp",
+      "subject": "horror",
+      "colour": "acid",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "f85335e72d9e5e40f1e13fb6caaaed640f1f9f3ba8f01ddb3e6d87c3701170cf",
+      "bytes": 4186
+    },
+    {
+      "id": "horror-acid-2",
+      "asset": "assets/art_pack/painterly/horror-acid-2.webp",
+      "subject": "horror",
+      "colour": "acid",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "b79a622a9d17b52ad8e717badbbc2e6860641c123ee6579ea974bda03754c028",
+      "bytes": 6058
+    },
+    {
+      "id": "horror-acid-3",
+      "asset": "assets/art_pack/painterly/horror-acid-3.webp",
+      "subject": "horror",
+      "colour": "acid",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "c7c4c457f28cbc2eee530db7e0ee602e8559bb60d7610b9a79ef72d7055eefd4",
+      "bytes": 8994
+    },
+    {
+      "id": "horror-eerie-1",
+      "asset": "assets/art_pack/painterly/horror-eerie-1.webp",
+      "subject": "horror",
+      "colour": "eerie",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "052c63ca2aba127cfc484c6d56799ef5c05fcdffb9c2aba30caf0d4bd49855e2",
+      "bytes": 4428
+    },
+    {
+      "id": "horror-eerie-2",
+      "asset": "assets/art_pack/painterly/horror-eerie-2.webp",
+      "subject": "horror",
+      "colour": "eerie",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "40a9ec5582c74b9372b9e8b10bb6c165befc41724b31d6ee12315a9b08737b87",
+      "bytes": 6224
+    },
+    {
+      "id": "horror-eerie-3",
+      "asset": "assets/art_pack/painterly/horror-eerie-3.webp",
+      "subject": "horror",
+      "colour": "eerie",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "f0091a4a1389e6ab386443c3d873afa68a2e1252b3e6107c734f0c37089bc087",
+      "bytes": 9082
+    },
+    {
+      "id": "horror-red-1",
+      "asset": "assets/art_pack/painterly/horror-red-1.webp",
+      "subject": "horror",
+      "colour": "red",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "279e8e9d358da9c9699bfc2df1672e4f011f902eabb31fe60d459fe50010900f",
+      "bytes": 3960
+    },
+    {
+      "id": "horror-red-2",
+      "asset": "assets/art_pack/painterly/horror-red-2.webp",
+      "subject": "horror",
+      "colour": "red",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "b424e8e21ecef93d1a6e6537d4a36d9528f3079378ab62e44643d5554996e9dd",
+      "bytes": 5702
+    },
+    {
+      "id": "horror-red-3",
+      "asset": "assets/art_pack/painterly/horror-red-3.webp",
+      "subject": "horror",
+      "colour": "red",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "d0ad4126c04103b33361540b348d1f3cd4c8b518e2ee0bdc8b558a9ec6004e3c",
+      "bytes": 8776
+    },
+    {
+      "id": "ice-blue-1",
+      "asset": "assets/art_pack/painterly/ice-blue-1.webp",
+      "subject": "ice",
+      "colour": "blue",
+      "level": 1,
+      "element": "water",
+      "sha256": "da05ddbf0df014fe055571b1e72c04baa7829230956bd135c3ce0068568e0c3a",
+      "bytes": 5716
+    },
+    {
+      "id": "ice-blue-2",
+      "asset": "assets/art_pack/painterly/ice-blue-2.webp",
+      "subject": "ice",
+      "colour": "blue",
+      "level": 2,
+      "element": "water",
+      "sha256": "f8fe9dabbb1e527ee11205b438623126cf2c626f1e42e45b4bcf998f22dc96b5",
+      "bytes": 9318
+    },
+    {
+      "id": "ice-blue-3",
+      "asset": "assets/art_pack/painterly/ice-blue-3.webp",
+      "subject": "ice",
+      "colour": "blue",
+      "level": 3,
+      "element": "water",
+      "sha256": "70c636d0159255a0d03d459f97b890534022f76590e977a8492fea2588407147",
+      "bytes": 11546
+    },
+    {
+      "id": "ice-jade-1",
+      "asset": "assets/art_pack/painterly/ice-jade-1.webp",
+      "subject": "ice",
+      "colour": "jade",
+      "level": 1,
+      "element": "water",
+      "sha256": "cce517ccf4302879a6d9b49aca46c2b7d0f395bb59dc0e442a1861359f1240c6",
+      "bytes": 5536
+    },
+    {
+      "id": "ice-jade-2",
+      "asset": "assets/art_pack/painterly/ice-jade-2.webp",
+      "subject": "ice",
+      "colour": "jade",
+      "level": 2,
+      "element": "water",
+      "sha256": "79bc5a3495e981b1f8b9ca2ce8b57b8801d1af02a9901a799a32642464daf29d",
+      "bytes": 9004
+    },
+    {
+      "id": "ice-jade-3",
+      "asset": "assets/art_pack/painterly/ice-jade-3.webp",
+      "subject": "ice",
+      "colour": "jade",
+      "level": 3,
+      "element": "water",
+      "sha256": "058e22f3a37b2cd6f3c370e3a45dfc618eecd9b89f6e46057ddebf5ac8d13ddc",
+      "bytes": 11110
+    },
+    {
+      "id": "ice-sky-1",
+      "asset": "assets/art_pack/painterly/ice-sky-1.webp",
+      "subject": "ice",
+      "colour": "sky",
+      "level": 1,
+      "element": "water",
+      "sha256": "dc1d5329c9feb5accf1c446bd4e64559ac827ca285340e617416cf5a42a0c7a4",
+      "bytes": 4918
+    },
+    {
+      "id": "ice-sky-2",
+      "asset": "assets/art_pack/painterly/ice-sky-2.webp",
+      "subject": "ice",
+      "colour": "sky",
+      "level": 2,
+      "element": "water",
+      "sha256": "a2f5ca805d804b386a02fb708e5ed3db8ea256b8f2b3f568f1c2a5ab8058398e",
+      "bytes": 8170
+    },
+    {
+      "id": "ice-sky-3",
+      "asset": "assets/art_pack/painterly/ice-sky-3.webp",
+      "subject": "ice",
+      "colour": "sky",
+      "level": 3,
+      "element": "water",
+      "sha256": "55182a7aa93ea2d3be15845cdf5a5bc5b14c012b0590fb7476a911653403c54c",
+      "bytes": 10144
+    },
+    {
+      "id": "leaf-acid-1",
+      "asset": "assets/art_pack/painterly/leaf-acid-1.webp",
+      "subject": "leaf",
+      "colour": "acid",
+      "level": 1,
+      "element": "earth",
+      "sha256": "db708bb4019a3c1c7b2c566bf453db8f3f3d0c019b216c75cfaf6e66a402f22e",
+      "bytes": 5690
+    },
+    {
+      "id": "leaf-acid-2",
+      "asset": "assets/art_pack/painterly/leaf-acid-2.webp",
+      "subject": "leaf",
+      "colour": "acid",
+      "level": 2,
+      "element": "earth",
+      "sha256": "7aecea60af549f822bd62c4069bc24068dd67a5ee72ac2aab05695a5182a96d5",
+      "bytes": 11414
+    },
+    {
+      "id": "leaf-acid-3",
+      "asset": "assets/art_pack/painterly/leaf-acid-3.webp",
+      "subject": "leaf",
+      "colour": "acid",
+      "level": 3,
+      "element": "earth",
+      "sha256": "d37cea2abfe08d683a3da900d7e2f4c1b01f0668ea9bc7abde04d3ceb9244cb8",
+      "bytes": 15056
+    },
+    {
+      "id": "leaf-jade-1",
+      "asset": "assets/art_pack/painterly/leaf-jade-1.webp",
+      "subject": "leaf",
+      "colour": "jade",
+      "level": 1,
+      "element": "earth",
+      "sha256": "4dacfe1cda743350283906f69fd45911742835d355e6ecf4c865f948bd692eaf",
+      "bytes": 4652
+    },
+    {
+      "id": "leaf-jade-2",
+      "asset": "assets/art_pack/painterly/leaf-jade-2.webp",
+      "subject": "leaf",
+      "colour": "jade",
+      "level": 2,
+      "element": "earth",
+      "sha256": "7463559294326af774c5853fb9ab09c1077be0b2b87ec98ab294555e533a59b1",
+      "bytes": 10052
+    },
+    {
+      "id": "leaf-jade-3",
+      "asset": "assets/art_pack/painterly/leaf-jade-3.webp",
+      "subject": "leaf",
+      "colour": "jade",
+      "level": 3,
+      "element": "earth",
+      "sha256": "848c4e94f69ae2d80f2286c43677aedb3567a4d12c86e197ae92b681a15d0826",
+      "bytes": 14048
+    },
+    {
+      "id": "leaf-orange-1",
+      "asset": "assets/art_pack/painterly/leaf-orange-1.webp",
+      "subject": "leaf",
+      "colour": "orange",
+      "level": 1,
+      "element": "earth",
+      "sha256": "01cd13a1b6cabdf52b6bf79331319b7d52b6f5e693e193dbc178aa58a81160c4",
+      "bytes": 4594
+    },
+    {
+      "id": "leaf-orange-2",
+      "asset": "assets/art_pack/painterly/leaf-orange-2.webp",
+      "subject": "leaf",
+      "colour": "orange",
+      "level": 2,
+      "element": "earth",
+      "sha256": "da2a608f46ee11193fd0cfa1ea9deab21e703a64bd5e8dc991d8117f00e6aebe",
+      "bytes": 10640
+    },
+    {
+      "id": "leaf-orange-3",
+      "asset": "assets/art_pack/painterly/leaf-orange-3.webp",
+      "subject": "leaf",
+      "colour": "orange",
+      "level": 3,
+      "element": "earth",
+      "sha256": "2491ca6880cc9dd324c4fef09819d019ab4198fe381895bda7223b9652e1ca05",
+      "bytes": 13880
+    },
+    {
+      "id": "leaf-royal-1",
+      "asset": "assets/art_pack/painterly/leaf-royal-1.webp",
+      "subject": "leaf",
+      "colour": "royal",
+      "level": 1,
+      "element": "earth",
+      "sha256": "a80c40412a76e2b593f19967dafe1950631053c0a2e39d9cd8e0f46fd78d8ffa",
+      "bytes": 6712
+    },
+    {
+      "id": "leaf-royal-2",
+      "asset": "assets/art_pack/painterly/leaf-royal-2.webp",
+      "subject": "leaf",
+      "colour": "royal",
+      "level": 2,
+      "element": "earth",
+      "sha256": "fedf5a411178a42f7003c92d1dc130c827ef9a06e6a250e159d632f82cd956c4",
+      "bytes": 12322
+    },
+    {
+      "id": "leaf-royal-3",
+      "asset": "assets/art_pack/painterly/leaf-royal-3.webp",
+      "subject": "leaf",
+      "colour": "royal",
+      "level": 3,
+      "element": "earth",
+      "sha256": "7b067d85cc8920df2dd70fffc134bbeeff78630a1901e51333e71384d30c84b6",
+      "bytes": 14172
+    },
+    {
+      "id": "light-air-fire-1",
+      "asset": "assets/art_pack/painterly/light-air-fire-1.webp",
+      "subject": "light",
+      "colour": "air-fire",
+      "level": 1,
+      "element": "air",
+      "sha256": "77900b3add0c0add57572bfb7b3d3e6934eff7c7b787ee9fcd82c5bec724033d",
+      "bytes": 3750
+    },
+    {
+      "id": "light-air-fire-2",
+      "asset": "assets/art_pack/painterly/light-air-fire-2.webp",
+      "subject": "light",
+      "colour": "air-fire",
+      "level": 2,
+      "element": "air",
+      "sha256": "c26d90b052c4831db608eb3c97d1c0b98fcac669108f452d38db086030f743ec",
+      "bytes": 4088
+    },
+    {
+      "id": "light-air-fire-3",
+      "asset": "assets/art_pack/painterly/light-air-fire-3.webp",
+      "subject": "light",
+      "colour": "air-fire",
+      "level": 3,
+      "element": "air",
+      "sha256": "25f65d5652c639e44033c9382e8b148d7eb5282c5bae8d877e22d70ee5895e9f",
+      "bytes": 5530
+    },
+    {
+      "id": "light-blue-1",
+      "asset": "assets/art_pack/painterly/light-blue-1.webp",
+      "subject": "light",
+      "colour": "blue",
+      "level": 1,
+      "element": "water",
+      "sha256": "0e349a903f16153a133ae1f886c6bae365d56f52e171c2409f19dc22328a07da",
+      "bytes": 4088
+    },
+    {
+      "id": "light-blue-2",
+      "asset": "assets/art_pack/painterly/light-blue-2.webp",
+      "subject": "light",
+      "colour": "blue",
+      "level": 2,
+      "element": "water",
+      "sha256": "f587d1a081b8ba78af60a3c9880242f9aa6dbea9911b91633a0ea73d07f48070",
+      "bytes": 3866
+    },
+    {
+      "id": "light-blue-3",
+      "asset": "assets/art_pack/painterly/light-blue-3.webp",
+      "subject": "light",
+      "colour": "blue",
+      "level": 3,
+      "element": "water",
+      "sha256": "fb2a9209348e4425ea6ef6d100b4cf8af97c73bb3fbd7490766df605c0e6c8ac",
+      "bytes": 5150
+    },
+    {
+      "id": "light-eerie-1",
+      "asset": "assets/art_pack/painterly/light-eerie-1.webp",
+      "subject": "light",
+      "colour": "eerie",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "e96def9a124007c444aa3003913ea6127f33961dc0182f27137aacc7cf69e96f",
+      "bytes": 3484
+    },
+    {
+      "id": "light-eerie-2",
+      "asset": "assets/art_pack/painterly/light-eerie-2.webp",
+      "subject": "light",
+      "colour": "eerie",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "672ee373b54e8fe62bdde3c9462f2f1e0e5d17b4ae3eb019946f9c79f8f18fc8",
+      "bytes": 3584
+    },
+    {
+      "id": "light-eerie-3",
+      "asset": "assets/art_pack/painterly/light-eerie-3.webp",
+      "subject": "light",
+      "colour": "eerie",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "3d27f30d732571b64980b7f176d19a7a5574b38941094083db884b26bdc608fc",
+      "bytes": 5210
+    },
+    {
+      "id": "light-jade-1",
+      "asset": "assets/art_pack/painterly/light-jade-1.webp",
+      "subject": "light",
+      "colour": "jade",
+      "level": 1,
+      "element": "earth",
+      "sha256": "57ed06aa58946611f063d74ca829d9e52fe9a4418f1499862bb2f503efd69dad",
+      "bytes": 4168
+    },
+    {
+      "id": "light-jade-2",
+      "asset": "assets/art_pack/painterly/light-jade-2.webp",
+      "subject": "light",
+      "colour": "jade",
+      "level": 2,
+      "element": "earth",
+      "sha256": "56a3b299852573411c991a3263bab02d289e900cb43ee4c291d0774f720b26a9",
+      "bytes": 3904
+    },
+    {
+      "id": "light-jade-3",
+      "asset": "assets/art_pack/painterly/light-jade-3.webp",
+      "subject": "light",
+      "colour": "jade",
+      "level": 3,
+      "element": "earth",
+      "sha256": "a5f71952d404a9278685788bde0cf1563cb4a58d0bab84aecac2c109bd7f2fe3",
+      "bytes": 5070
+    },
+    {
+      "id": "light-magenta-1",
+      "asset": "assets/art_pack/painterly/light-magenta-1.webp",
+      "subject": "light",
+      "colour": "magenta",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "c609029d9449625f7a6fab130975886ee16ee6a106164e54c16f059830bbcd36",
+      "bytes": 4128
+    },
+    {
+      "id": "light-magenta-2",
+      "asset": "assets/art_pack/painterly/light-magenta-2.webp",
+      "subject": "light",
+      "colour": "magenta",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "2377d9596f3984423b4ef3c021641891ab970119a7fef6be05726ef6453d7510",
+      "bytes": 3772
+    },
+    {
+      "id": "light-magenta-3",
+      "asset": "assets/art_pack/painterly/light-magenta-3.webp",
+      "subject": "light",
+      "colour": "magenta",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "8cc78be8b41380e68185e95eded8bd55ab03998fee4555044f29a698287d9558",
+      "bytes": 4864
+    },
+    {
+      "id": "light-royal-1",
+      "asset": "assets/art_pack/painterly/light-royal-1.webp",
+      "subject": "light",
+      "colour": "royal",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "b0bd4fced93fdfd94a24a394dbef29e2bac24d31ccb1440115bd9a29b5a3e263",
+      "bytes": 4192
+    },
+    {
+      "id": "light-royal-2",
+      "asset": "assets/art_pack/painterly/light-royal-2.webp",
+      "subject": "light",
+      "colour": "royal",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "68cfec7c64233367043699051afdf5f4dbc289049d74b7d9bd49c58cc6bcc440",
+      "bytes": 4162
+    },
+    {
+      "id": "light-royal-3",
+      "asset": "assets/art_pack/painterly/light-royal-3.webp",
+      "subject": "light",
+      "colour": "royal",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "2481a3ca2823eee93ad0a89167e7a92f0d8a67db7c657cf03bc69d639078802b",
+      "bytes": 5700
+    },
+    {
+      "id": "light-sky-1",
+      "asset": "assets/art_pack/painterly/light-sky-1.webp",
+      "subject": "light",
+      "colour": "sky",
+      "level": 1,
+      "element": "water",
+      "sha256": "186fe09450162956b2321cd8a8cca0440f57e357561d6dd5d708f64b1fbbcf31",
+      "bytes": 3798
+    },
+    {
+      "id": "light-sky-2",
+      "asset": "assets/art_pack/painterly/light-sky-2.webp",
+      "subject": "light",
+      "colour": "sky",
+      "level": 2,
+      "element": "water",
+      "sha256": "d1ed83fc05aa7b817044960a53f522178ee103eef2fef2bb2ad364d70414471c",
+      "bytes": 3354
+    },
+    {
+      "id": "light-sky-3",
+      "asset": "assets/art_pack/painterly/light-sky-3.webp",
+      "subject": "light",
+      "colour": "sky",
+      "level": 3,
+      "element": "water",
+      "sha256": "09d917583674f9c07676f896461a6a99916a2f94d792bdbe436d213c08ac87cd",
+      "bytes": 4104
+    },
+    {
+      "id": "lighting-acid-1",
+      "asset": "assets/art_pack/painterly/lighting-acid-1.webp",
+      "subject": "lighting",
+      "colour": "acid",
+      "level": 1,
+      "element": "air",
+      "sha256": "36bf04117894c1c80d0b2ebf269361642d71821e5ba4f6f1eb2e698e5250dd03",
+      "bytes": 5940
+    },
+    {
+      "id": "lighting-acid-2",
+      "asset": "assets/art_pack/painterly/lighting-acid-2.webp",
+      "subject": "lighting",
+      "colour": "acid",
+      "level": 2,
+      "element": "air",
+      "sha256": "64dd2761bc8bb889f0c39e06af2d37469e42e8436f693855ec1231a538f2e834",
+      "bytes": 9038
+    },
+    {
+      "id": "lighting-acid-3",
+      "asset": "assets/art_pack/painterly/lighting-acid-3.webp",
+      "subject": "lighting",
+      "colour": "acid",
+      "level": 3,
+      "element": "air",
+      "sha256": "c7c4c20be65990c4ebfc85dfc89f8cad73ff25d5e5069f9b4d97b50b32f1b713",
+      "bytes": 11844
+    },
+    {
+      "id": "lighting-eerie-1",
+      "asset": "assets/art_pack/painterly/lighting-eerie-1.webp",
+      "subject": "lighting",
+      "colour": "eerie",
+      "level": 1,
+      "element": "air",
+      "sha256": "1f51dc941ff6e01359567a3c342b41cffa758a2694dab6df567bb3e833d1b6af",
+      "bytes": 5858
+    },
+    {
+      "id": "lighting-eerie-2",
+      "asset": "assets/art_pack/painterly/lighting-eerie-2.webp",
+      "subject": "lighting",
+      "colour": "eerie",
+      "level": 2,
+      "element": "air",
+      "sha256": "37ae9f5d4f29acb99448d96f010663629a122edfda8b21d2a8da51d7bce3e9ee",
+      "bytes": 8848
+    },
+    {
+      "id": "lighting-eerie-3",
+      "asset": "assets/art_pack/painterly/lighting-eerie-3.webp",
+      "subject": "lighting",
+      "colour": "eerie",
+      "level": 3,
+      "element": "air",
+      "sha256": "52d699619cf427ff487e982a9e3ef5fa126b39ef2719d89c21ce7f66d6a8c83f",
+      "bytes": 11162
+    },
+    {
+      "id": "lighting-fire-1",
+      "asset": "assets/art_pack/painterly/lighting-fire-1.webp",
+      "subject": "lighting",
+      "colour": "fire",
+      "level": 1,
+      "element": "fire",
+      "sha256": "a27fe582153cb6d557e1401e11c7018249cb2a6df758b3b0dd9476b3cf79a2ff",
+      "bytes": 4838
+    },
+    {
+      "id": "lighting-fire-2",
+      "asset": "assets/art_pack/painterly/lighting-fire-2.webp",
+      "subject": "lighting",
+      "colour": "fire",
+      "level": 2,
+      "element": "fire",
+      "sha256": "3e76602f1c55f4e6d96cc194abc58d0d89011bae02638e303d20282a3363729f",
+      "bytes": 8522
+    },
+    {
+      "id": "lighting-fire-3",
+      "asset": "assets/art_pack/painterly/lighting-fire-3.webp",
+      "subject": "lighting",
+      "colour": "fire",
+      "level": 3,
+      "element": "fire",
+      "sha256": "80b78eed21d7b96f0f14e7ac9dd66c81870e43a716dfac4a00c52522409b91c3",
+      "bytes": 11474
+    },
+    {
+      "id": "lighting-royal-1",
+      "asset": "assets/art_pack/painterly/lighting-royal-1.webp",
+      "subject": "lighting",
+      "colour": "royal",
+      "level": 1,
+      "element": "air",
+      "sha256": "8c8a3ae9b1903c8f119985247b163a5d7571137287a2651d71867de4f3edde15",
+      "bytes": 6468
+    },
+    {
+      "id": "lighting-royal-2",
+      "asset": "assets/art_pack/painterly/lighting-royal-2.webp",
+      "subject": "lighting",
+      "colour": "royal",
+      "level": 2,
+      "element": "air",
+      "sha256": "e28ade3ff2a2aff22260a809ed350b4648be1193c6df06595e2fa0f6f39b839e",
+      "bytes": 9548
+    },
+    {
+      "id": "lighting-royal-3",
+      "asset": "assets/art_pack/painterly/lighting-royal-3.webp",
+      "subject": "lighting",
+      "colour": "royal",
+      "level": 3,
+      "element": "air",
+      "sha256": "40a3f828058421a68f435b05a68cd2b21817a4405e4bdf06a7713b0b2f882d5a",
+      "bytes": 12234
+    },
+    {
+      "id": "lighting-sky-1",
+      "asset": "assets/art_pack/painterly/lighting-sky-1.webp",
+      "subject": "lighting",
+      "colour": "sky",
+      "level": 1,
+      "element": "air",
+      "sha256": "ebc1654260bb0a90f63cad2463c1672200e237d6626cfdf004c5070453588c6b",
+      "bytes": 5414
+    },
+    {
+      "id": "lighting-sky-2",
+      "asset": "assets/art_pack/painterly/lighting-sky-2.webp",
+      "subject": "lighting",
+      "colour": "sky",
+      "level": 2,
+      "element": "air",
+      "sha256": "49ab11cfcee25b259764c4cfde17a82632d92beb181c1b8a794aba326cc53d52",
+      "bytes": 8492
+    },
+    {
+      "id": "lighting-sky-3",
+      "asset": "assets/art_pack/painterly/lighting-sky-3.webp",
+      "subject": "lighting",
+      "colour": "sky",
+      "level": 3,
+      "element": "air",
+      "sha256": "f6f3b0914759fdffd7ce70352ff29990cfbf43a393f2f182ee335163b6009401",
+      "bytes": 10776
+    },
+    {
+      "id": "lightning-blue-1",
+      "asset": "assets/art_pack/painterly/lightning-blue-1.webp",
+      "subject": "lightning",
+      "colour": "blue",
+      "level": 1,
+      "element": "air",
+      "sha256": "c8995bac49f6021abb67befb28a8a715a211680ffe4fd4aa29077b7cfe69fdf4",
+      "bytes": 6480
+    },
+    {
+      "id": "lightning-blue-2",
+      "asset": "assets/art_pack/painterly/lightning-blue-2.webp",
+      "subject": "lightning",
+      "colour": "blue",
+      "level": 2,
+      "element": "air",
+      "sha256": "bf188af2544aa812b356d71584fca1db6c255d7f84ba44d9d6a3ee7f64d50bb6",
+      "bytes": 10340
+    },
+    {
+      "id": "lightning-blue-3",
+      "asset": "assets/art_pack/painterly/lightning-blue-3.webp",
+      "subject": "lightning",
+      "colour": "blue",
+      "level": 3,
+      "element": "air",
+      "sha256": "2cbb8af5499c42759c757f5c20a927762c0bab77bad2927f1ae210b489119546",
+      "bytes": 13454
+    },
+    {
+      "id": "lightning-jade-1",
+      "asset": "assets/art_pack/painterly/lightning-jade-1.webp",
+      "subject": "lightning",
+      "colour": "jade",
+      "level": 1,
+      "element": "air",
+      "sha256": "fe9a46ee2b02e42d36c6da24595c8c2544e7592398f483f354295b2a8fd276fb",
+      "bytes": 6000
+    },
+    {
+      "id": "lightning-jade-2",
+      "asset": "assets/art_pack/painterly/lightning-jade-2.webp",
+      "subject": "lightning",
+      "colour": "jade",
+      "level": 2,
+      "element": "air",
+      "sha256": "9c5d44dbba4bf6fdea101f60c875792919e0def0a48576a8c31baf81a2ad2f2c",
+      "bytes": 8910
+    },
+    {
+      "id": "lightning-jade-3",
+      "asset": "assets/art_pack/painterly/lightning-jade-3.webp",
+      "subject": "lightning",
+      "colour": "jade",
+      "level": 3,
+      "element": "air",
+      "sha256": "bfb27dfda2e171b6969a9276cd7c09b53b2c0af367ea00228efdbfbc611ba34c",
+      "bytes": 11514
+    },
+    {
+      "id": "lightning-magenta-1",
+      "asset": "assets/art_pack/painterly/lightning-magenta-1.webp",
+      "subject": "lightning",
+      "colour": "magenta",
+      "level": 1,
+      "element": "air",
+      "sha256": "7cd0db881f8e88bf6a0238dbfc03c447d5c0352c10b0c63a7bd5e7afb41b6bdd",
+      "bytes": 4766
+    },
+    {
+      "id": "lightning-magenta-2",
+      "asset": "assets/art_pack/painterly/lightning-magenta-2.webp",
+      "subject": "lightning",
+      "colour": "magenta",
+      "level": 2,
+      "element": "air",
+      "sha256": "fb56288f317fa45133d049e43493ebd0a71f44083de5eda44391ea5b63b7e81e",
+      "bytes": 7462
+    },
+    {
+      "id": "lightning-magenta-3",
+      "asset": "assets/art_pack/painterly/lightning-magenta-3.webp",
+      "subject": "lightning",
+      "colour": "magenta",
+      "level": 3,
+      "element": "air",
+      "sha256": "d5f9a82eb20313437b6b2dfe0055ead235b3476eee9f800aac9810d5adfe1184",
+      "bytes": 9646
+    },
+    {
+      "id": "lightning-orange-1",
+      "asset": "assets/art_pack/painterly/lightning-orange-1.webp",
+      "subject": "lightning",
+      "colour": "orange",
+      "level": 1,
+      "element": "air",
+      "sha256": "a965be6e1ab732d3b5e052af1396e7d52495769d34da71cc4900f9a62d0ea683",
+      "bytes": 5146
+    },
+    {
+      "id": "lightning-orange-2",
+      "asset": "assets/art_pack/painterly/lightning-orange-2.webp",
+      "subject": "lightning",
+      "colour": "orange",
+      "level": 2,
+      "element": "air",
+      "sha256": "58dc2e09807ecdbb8e360a3677ab1e442f16352852958134700271bd1d904495",
+      "bytes": 8752
+    },
+    {
+      "id": "lightning-orange-3",
+      "asset": "assets/art_pack/painterly/lightning-orange-3.webp",
+      "subject": "lightning",
+      "colour": "orange",
+      "level": 3,
+      "element": "air",
+      "sha256": "984ebd05aa65dae174df96d71f01b344cd85a16bf1b2d1ac7f279063528192af",
+      "bytes": 11400
+    },
+    {
+      "id": "link-blue-1",
+      "asset": "assets/art_pack/painterly/link-blue-1.webp",
+      "subject": "link",
+      "colour": "blue",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "e3f4500b66aa5ef65f24c6adb7541c48bd129e67ae94bb6269770c2ac8b5498f",
+      "bytes": 5618
+    },
+    {
+      "id": "link-blue-2",
+      "asset": "assets/art_pack/painterly/link-blue-2.webp",
+      "subject": "link",
+      "colour": "blue",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "7c0c9d6ed5d9f9813eaca71e357836621b42144058d65e86a627aeb42a0eca50",
+      "bytes": 7232
+    },
+    {
+      "id": "link-blue-3",
+      "asset": "assets/art_pack/painterly/link-blue-3.webp",
+      "subject": "link",
+      "colour": "blue",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "427b118d4c7b766890107b56723162658ac9f850e47c3e7f001c2ed41e45c9fd",
+      "bytes": 8592
+    },
+    {
+      "id": "link-eerie-1",
+      "asset": "assets/art_pack/painterly/link-eerie-1.webp",
+      "subject": "link",
+      "colour": "eerie",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "521aa6f183864b1f2b4cab0d4499becf0e605f2ec0d4632abca53a1bd1267d85",
+      "bytes": 5170
+    },
+    {
+      "id": "link-eerie-2",
+      "asset": "assets/art_pack/painterly/link-eerie-2.webp",
+      "subject": "link",
+      "colour": "eerie",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "079fc22a113d5d8d5f6c2b29b02a03656da784e06686e1dffaddec22bca46b6d",
+      "bytes": 6584
+    },
+    {
+      "id": "link-eerie-3",
+      "asset": "assets/art_pack/painterly/link-eerie-3.webp",
+      "subject": "link",
+      "colour": "eerie",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "555aabb0e2644084c6f9ed4c48f41d88419a75d554f54257000000d76997e061",
+      "bytes": 8284
+    },
+    {
+      "id": "link-royal-1",
+      "asset": "assets/art_pack/painterly/link-royal-1.webp",
+      "subject": "link",
+      "colour": "royal",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "2fe5457d99b57c9812738b37a2704b2fad0831a59cae2c0a7ef5c3a1a2cdfdfa",
+      "bytes": 5312
+    },
+    {
+      "id": "link-royal-2",
+      "asset": "assets/art_pack/painterly/link-royal-2.webp",
+      "subject": "link",
+      "colour": "royal",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "e7b3ee2d094addd931708cf14b83b8de9d31f6985176082dbb850a37bac870e2",
+      "bytes": 6950
+    },
+    {
+      "id": "link-royal-3",
+      "asset": "assets/art_pack/painterly/link-royal-3.webp",
+      "subject": "link",
+      "colour": "royal",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "b7b43476573202120fb29bcbf28d98cd232ecef1e4cd6b115ca5cfa6d46d9157",
+      "bytes": 8624
+    },
+    {
+      "id": "link-spirit-1",
+      "asset": "assets/art_pack/painterly/link-spirit-1.webp",
+      "subject": "link",
+      "colour": "spirit",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "2c04aa9746dbc6bc48c39f25fbf1db8acf7c07aa63c06f81a5a76ff5df28b0b2",
+      "bytes": 4542
+    },
+    {
+      "id": "link-spirit-2",
+      "asset": "assets/art_pack/painterly/link-spirit-2.webp",
+      "subject": "link",
+      "colour": "spirit",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "b6679fcfdf1819325009b3887581da77de236524825cbcf3ed2ff028946001f1",
+      "bytes": 5734
+    },
+    {
+      "id": "link-spirit-3",
+      "asset": "assets/art_pack/painterly/link-spirit-3.webp",
+      "subject": "link",
+      "colour": "spirit",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "1ef4ab91021c70b6e65de2f59d0729b61e2bcc2c0bd69cdb3e073872bf92167d",
+      "bytes": 7086
+    },
+    {
+      "id": "needles-acid-1",
+      "asset": "assets/art_pack/painterly/needles-acid-1.webp",
+      "subject": "needles",
+      "colour": "acid",
+      "level": 1,
+      "element": "earth",
+      "sha256": "7572a755b38783604da0c7cb682d459fdacda907f32318e6361ff2a4c164a3a9",
+      "bytes": 7486
+    },
+    {
+      "id": "needles-acid-2",
+      "asset": "assets/art_pack/painterly/needles-acid-2.webp",
+      "subject": "needles",
+      "colour": "acid",
+      "level": 2,
+      "element": "earth",
+      "sha256": "3c3babc0e0dab6b81a869cb191a0f12f4aef6332107c2d510774bb6b835dca0f",
+      "bytes": 10012
+    },
+    {
+      "id": "needles-acid-3",
+      "asset": "assets/art_pack/painterly/needles-acid-3.webp",
+      "subject": "needles",
+      "colour": "acid",
+      "level": 3,
+      "element": "earth",
+      "sha256": "605f729d4fc4c8c7844f665c497b2f59b6a186fd8cbf7a0f11b783d0df522815",
+      "bytes": 10934
+    },
+    {
+      "id": "needles-blue-1",
+      "asset": "assets/art_pack/painterly/needles-blue-1.webp",
+      "subject": "needles",
+      "colour": "blue",
+      "level": 1,
+      "element": "water",
+      "sha256": "a18dac45be8cf103f92a08986ac0576c8f88e0b7ca0df2b53251443e7d6dee38",
+      "bytes": 7774
+    },
+    {
+      "id": "needles-blue-2",
+      "asset": "assets/art_pack/painterly/needles-blue-2.webp",
+      "subject": "needles",
+      "colour": "blue",
+      "level": 2,
+      "element": "water",
+      "sha256": "fff464c4165780208ff20243ddcda8525169db711596ee4782e4fd6794677925",
+      "bytes": 10102
+    },
+    {
+      "id": "needles-blue-3",
+      "asset": "assets/art_pack/painterly/needles-blue-3.webp",
+      "subject": "needles",
+      "colour": "blue",
+      "level": 3,
+      "element": "water",
+      "sha256": "d9508ee5aeeb93c38e0047a09a38a6b9c54a008271a844a2dfa3866bb6776801",
+      "bytes": 10086
+    },
+    {
+      "id": "needles-fire-1",
+      "asset": "assets/art_pack/painterly/needles-fire-1.webp",
+      "subject": "needles",
+      "colour": "fire",
+      "level": 1,
+      "element": "fire",
+      "sha256": "6b55748cf73e0efc57abcd30606968cabc0fb654a0b6b6ceff88ec5858982a43",
+      "bytes": 6940
+    },
+    {
+      "id": "needles-fire-2",
+      "asset": "assets/art_pack/painterly/needles-fire-2.webp",
+      "subject": "needles",
+      "colour": "fire",
+      "level": 2,
+      "element": "fire",
+      "sha256": "cf34471699ccf9de8eaedb663506125f135b53ab1f15b372915cf0b2c816be76",
+      "bytes": 9918
+    },
+    {
+      "id": "needles-fire-3",
+      "asset": "assets/art_pack/painterly/needles-fire-3.webp",
+      "subject": "needles",
+      "colour": "fire",
+      "level": 3,
+      "element": "fire",
+      "sha256": "a768386987bb7957c26f3823f1d479c8525e24f1d1c0c6c5c95f174b791a8268",
+      "bytes": 10398
+    },
+    {
+      "id": "needles-royal-1",
+      "asset": "assets/art_pack/painterly/needles-royal-1.webp",
+      "subject": "needles",
+      "colour": "royal",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "1011db38cb9e4fbe4836b0c2ac8df3d13cbe0bbcc0341fb8d8c4ec3ec086b054",
+      "bytes": 8102
+    },
+    {
+      "id": "needles-royal-2",
+      "asset": "assets/art_pack/painterly/needles-royal-2.webp",
+      "subject": "needles",
+      "colour": "royal",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "292191fa3e3351affeea89d6184372c049a402c533531f792424fe9e9dec8370",
+      "bytes": 10236
+    },
+    {
+      "id": "needles-royal-3",
+      "asset": "assets/art_pack/painterly/needles-royal-3.webp",
+      "subject": "needles",
+      "colour": "royal",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "701bef2f146accbf82cf68a87d13263564f73eb7f4fc9fdf3a7735c51b7c2f8a",
+      "bytes": 10802
+    },
+    {
+      "id": "needles-sky-1",
+      "asset": "assets/art_pack/painterly/needles-sky-1.webp",
+      "subject": "needles",
+      "colour": "sky",
+      "level": 1,
+      "element": "water",
+      "sha256": "4dc749132ea29a3ce90ff5da777008c9330c294e7bdf379260e21a3734b5e87d",
+      "bytes": 6788
+    },
+    {
+      "id": "needles-sky-2",
+      "asset": "assets/art_pack/painterly/needles-sky-2.webp",
+      "subject": "needles",
+      "colour": "sky",
+      "level": 2,
+      "element": "water",
+      "sha256": "45ea98ea61afe65f2cee075cd4c7e808aba0bf65a5e4fdc8a853d57be01d6e0b",
+      "bytes": 9604
+    },
+    {
+      "id": "needles-sky-3",
+      "asset": "assets/art_pack/painterly/needles-sky-3.webp",
+      "subject": "needles",
+      "colour": "sky",
+      "level": 3,
+      "element": "water",
+      "sha256": "21ffaf9657fdcfde9752c804bd45d7622c9bd6c4a28d3b14a6aa3b55a8f02006",
+      "bytes": 8928
+    },
+    {
+      "id": "protect-acid-1",
+      "asset": "assets/art_pack/painterly/protect-acid-1.webp",
+      "subject": "protect",
+      "colour": "acid",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "f4fc0259d6bc90f59c6c88f4fc1441515aa1a22cbcd3e323060f6d58247b0a5a",
+      "bytes": 7688
+    },
+    {
+      "id": "protect-acid-2",
+      "asset": "assets/art_pack/painterly/protect-acid-2.webp",
+      "subject": "protect",
+      "colour": "acid",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "174d68134337c62757fd3df6f7c6b36f72e489c49f0783cdff80910d0815058f",
+      "bytes": 8950
+    },
+    {
+      "id": "protect-acid-3",
+      "asset": "assets/art_pack/painterly/protect-acid-3.webp",
+      "subject": "protect",
+      "colour": "acid",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "bcfa684297a05917089a6ba020efd03bb89d8224e3916a71d73a50c0134df4ff",
+      "bytes": 11470
+    },
+    {
+      "id": "protect-blue-1",
+      "asset": "assets/art_pack/painterly/protect-blue-1.webp",
+      "subject": "protect",
+      "colour": "blue",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "0617a1bf641294b94ea5cd611e9ec951e044a87f0cef641cdf7938522650fa81",
+      "bytes": 7146
+    },
+    {
+      "id": "protect-blue-2",
+      "asset": "assets/art_pack/painterly/protect-blue-2.webp",
+      "subject": "protect",
+      "colour": "blue",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "65674ca0e9c1fe93cace01ea7fdfa83e50a7d6186c721a46df2e8ff80b4b0797",
+      "bytes": 8312
+    },
+    {
+      "id": "protect-blue-3",
+      "asset": "assets/art_pack/painterly/protect-blue-3.webp",
+      "subject": "protect",
+      "colour": "blue",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "60b43f281463bd4ef8b6fd0340fc6615505fe9a1bdc33b2e03be4bc434c2208b",
+      "bytes": 10856
+    },
+    {
+      "id": "protect-eerie-1",
+      "asset": "assets/art_pack/painterly/protect-eerie-1.webp",
+      "subject": "protect",
+      "colour": "eerie",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "2a203bf2e54dc5f449622a8124f5bc801b167d046f99b0a93249d5cc50236226",
+      "bytes": 6404
+    },
+    {
+      "id": "protect-eerie-2",
+      "asset": "assets/art_pack/painterly/protect-eerie-2.webp",
+      "subject": "protect",
+      "colour": "eerie",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "c834ff8077fef083c8245f701d3ac53a0f0a343b81a635afcf276a94b19918b1",
+      "bytes": 7782
+    },
+    {
+      "id": "protect-eerie-3",
+      "asset": "assets/art_pack/painterly/protect-eerie-3.webp",
+      "subject": "protect",
+      "colour": "eerie",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "38e60e503742f29ee727dfd19996ab26284ca86308aeb579536fca23ede12a6c",
+      "bytes": 10174
+    },
+    {
+      "id": "protect-jade-1",
+      "asset": "assets/art_pack/painterly/protect-jade-1.webp",
+      "subject": "protect",
+      "colour": "jade",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "1734e7497ef0e67ce851c4aaf5be9dc1392c55098a863296ba7722352a984f3c",
+      "bytes": 6926
+    },
+    {
+      "id": "protect-jade-2",
+      "asset": "assets/art_pack/painterly/protect-jade-2.webp",
+      "subject": "protect",
+      "colour": "jade",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "c1937f00870c96d6074793c63b76860082e5eee942992fae293a6d28032c3496",
+      "bytes": 8378
+    },
+    {
+      "id": "protect-jade-3",
+      "asset": "assets/art_pack/painterly/protect-jade-3.webp",
+      "subject": "protect",
+      "colour": "jade",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "355209ed7a8527f45dd36aa422a908ff5f4b01b4eb1ea3a1c26c64519d29af5a",
+      "bytes": 10762
+    },
+    {
+      "id": "protect-magenta-1",
+      "asset": "assets/art_pack/painterly/protect-magenta-1.webp",
+      "subject": "protect",
+      "colour": "magenta",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "caadd88038beeeda3ea19cd5c81e818b2ffaf14fa8a1e0ba3099e08bf952841d",
+      "bytes": 5788
+    },
+    {
+      "id": "protect-magenta-2",
+      "asset": "assets/art_pack/painterly/protect-magenta-2.webp",
+      "subject": "protect",
+      "colour": "magenta",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "8cd646d41da166135efcb3f9ffb46480d19c8bc17ef64a09579c05a727d6e898",
+      "bytes": 7198
+    },
+    {
+      "id": "protect-magenta-3",
+      "asset": "assets/art_pack/painterly/protect-magenta-3.webp",
+      "subject": "protect",
+      "colour": "magenta",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "9397f761f4ea06960d6bc4af61dc1227e194fc719e8cce8d8f7b692d969541a6",
+      "bytes": 9484
+    },
+    {
+      "id": "protect-orange-1",
+      "asset": "assets/art_pack/painterly/protect-orange-1.webp",
+      "subject": "protect",
+      "colour": "orange",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "d88c1407b6d845ae93395e7ab865a779922b225446f01579fd915d4ab794aa88",
+      "bytes": 7030
+    },
+    {
+      "id": "protect-orange-2",
+      "asset": "assets/art_pack/painterly/protect-orange-2.webp",
+      "subject": "protect",
+      "colour": "orange",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "92cef3b92eb14ccdd8428edbba2c369dc14f2c7a3d871459448857c155fe75bf",
+      "bytes": 8530
+    },
+    {
+      "id": "protect-orange-3",
+      "asset": "assets/art_pack/painterly/protect-orange-3.webp",
+      "subject": "protect",
+      "colour": "orange",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "5fc457ead15108047d542bf83195f2cf0d737e421a8d7849196d7439587dc8f2",
+      "bytes": 10662
+    },
+    {
+      "id": "protect-red-1",
+      "asset": "assets/art_pack/painterly/protect-red-1.webp",
+      "subject": "protect",
+      "colour": "red",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "843a7345a774e9fd8c6052644477cfabbf503b0a7cf9c774c3ba32a5682355f5",
+      "bytes": 6576
+    },
+    {
+      "id": "protect-red-2",
+      "asset": "assets/art_pack/painterly/protect-red-2.webp",
+      "subject": "protect",
+      "colour": "red",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "e28b1ed46e95508096715adbbff7ed1dcc11faa87465ad06705005cfe8d60a4c",
+      "bytes": 8130
+    },
+    {
+      "id": "protect-red-3",
+      "asset": "assets/art_pack/painterly/protect-red-3.webp",
+      "subject": "protect",
+      "colour": "red",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "0293d85b8fb3228fe3d59849816b879496aa20916f350b403adbd14f5b122796",
+      "bytes": 10856
+    },
+    {
+      "id": "protect-royal-1",
+      "asset": "assets/art_pack/painterly/protect-royal-1.webp",
+      "subject": "protect",
+      "colour": "royal",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "7b8c3f9891437f1a58118324060bf1afbc7caf305f146c708431da410b6a7c09",
+      "bytes": 8102
+    },
+    {
+      "id": "protect-royal-2",
+      "asset": "assets/art_pack/painterly/protect-royal-2.webp",
+      "subject": "protect",
+      "colour": "royal",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "1ed304ed25b705c9dd2183c9a7fc2e4305ea979c85317a157d5f2acc6e36001d",
+      "bytes": 9362
+    },
+    {
+      "id": "protect-royal-3",
+      "asset": "assets/art_pack/painterly/protect-royal-3.webp",
+      "subject": "protect",
+      "colour": "royal",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "bdb180d0da0775a06872addfba73cdbeb20bcd9b3d9a11079b4c3ce737069620",
+      "bytes": 11764
+    },
+    {
+      "id": "protect-sky-1",
+      "asset": "assets/art_pack/painterly/protect-sky-1.webp",
+      "subject": "protect",
+      "colour": "sky",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "d27ef6f5c2a609c9acdb035194692f71df3911104f72c4fe0cb0997b5e388a7b",
+      "bytes": 7536
+    },
+    {
+      "id": "protect-sky-2",
+      "asset": "assets/art_pack/painterly/protect-sky-2.webp",
+      "subject": "protect",
+      "colour": "sky",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "a4cce28d3052a73268ff0b153005a9ef872ff04737090da1bc2386c5ba5458eb",
+      "bytes": 8430
+    },
+    {
+      "id": "protect-sky-3",
+      "asset": "assets/art_pack/painterly/protect-sky-3.webp",
+      "subject": "protect",
+      "colour": "sky",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "727a84ca35ffa5da73e7069ff7a630d317a24db5066d56529a4cc13a870115c9",
+      "bytes": 10272
+    },
+    {
+      "id": "rip-acid-1",
+      "asset": "assets/art_pack/painterly/rip-acid-1.webp",
+      "subject": "rip",
+      "colour": "acid",
+      "level": 1,
+      "element": "earth",
+      "sha256": "9718b2ceb36695b2d2080d6b325069cb5420699633d9714778d06b2e8b8320a6",
+      "bytes": 4814
+    },
+    {
+      "id": "rip-acid-2",
+      "asset": "assets/art_pack/painterly/rip-acid-2.webp",
+      "subject": "rip",
+      "colour": "acid",
+      "level": 2,
+      "element": "earth",
+      "sha256": "4d59f10cda5492e5d3721b0fbe023154133d5be255beec69d45cd6678c45a660",
+      "bytes": 8044
+    },
+    {
+      "id": "rip-acid-3",
+      "asset": "assets/art_pack/painterly/rip-acid-3.webp",
+      "subject": "rip",
+      "colour": "acid",
+      "level": 3,
+      "element": "earth",
+      "sha256": "b0a1b692269eec00a6170f58dfdec397d92edef39ddc981a2e1f638c36d65f18",
+      "bytes": 8660
+    },
+    {
+      "id": "rip-jade-1",
+      "asset": "assets/art_pack/painterly/rip-jade-1.webp",
+      "subject": "rip",
+      "colour": "jade",
+      "level": 1,
+      "element": "earth",
+      "sha256": "aaf4299981627d82d8d5d33013db661660b60c6aaa6dd29070de98c54e03d292",
+      "bytes": 5286
+    },
+    {
+      "id": "rip-jade-2",
+      "asset": "assets/art_pack/painterly/rip-jade-2.webp",
+      "subject": "rip",
+      "colour": "jade",
+      "level": 2,
+      "element": "earth",
+      "sha256": "86cc3fc43540f7641fd6e1ca4e64e53e15f39ecb91cc0769a0640c124fdb4a00",
+      "bytes": 8466
+    },
+    {
+      "id": "rip-jade-3",
+      "asset": "assets/art_pack/painterly/rip-jade-3.webp",
+      "subject": "rip",
+      "colour": "jade",
+      "level": 3,
+      "element": "earth",
+      "sha256": "39b017f3ac012ebca31a50f9ed4d57d115ca402537c14b19b7e5bf763615750d",
+      "bytes": 8726
+    },
+    {
+      "id": "rip-magenta-1",
+      "asset": "assets/art_pack/painterly/rip-magenta-1.webp",
+      "subject": "rip",
+      "colour": "magenta",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "c8974a57aa0108aac713a11fdafcfe3f772d6af1cb33a4ac7d29a55564cc06f6",
+      "bytes": 5330
+    },
+    {
+      "id": "rip-magenta-2",
+      "asset": "assets/art_pack/painterly/rip-magenta-2.webp",
+      "subject": "rip",
+      "colour": "magenta",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "a82af920570d095ec4289be3c98f331e42b5868f4e00dc55a3b43f839279b5a0",
+      "bytes": 8542
+    },
+    {
+      "id": "rip-magenta-3",
+      "asset": "assets/art_pack/painterly/rip-magenta-3.webp",
+      "subject": "rip",
+      "colour": "magenta",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "c5988369da86e18d370df901e4fc5f9821555a3ba51dcc93add7ef2e38cc960a",
+      "bytes": 8734
+    },
+    {
+      "id": "rip-sky-1",
+      "asset": "assets/art_pack/painterly/rip-sky-1.webp",
+      "subject": "rip",
+      "colour": "sky",
+      "level": 1,
+      "element": "water",
+      "sha256": "83f3523e3a0e17448b3d47aea4d9c2792234b992ca79766d2e28517492e9614a",
+      "bytes": 5190
+    },
+    {
+      "id": "rip-sky-2",
+      "asset": "assets/art_pack/painterly/rip-sky-2.webp",
+      "subject": "rip",
+      "colour": "sky",
+      "level": 2,
+      "element": "water",
+      "sha256": "46b208263083a0e0bbc437412c90803f1f23571b99ad1e2a682132e20686b634",
+      "bytes": 8286
+    },
+    {
+      "id": "rip-sky-3",
+      "asset": "assets/art_pack/painterly/rip-sky-3.webp",
+      "subject": "rip",
+      "colour": "sky",
+      "level": 3,
+      "element": "water",
+      "sha256": "330c875a3649c13251b5b9c6a02ea3d625dde50efbdd77326bc8491d6613faa1",
+      "bytes": 8708
+    },
+    {
+      "id": "rip-water-1",
+      "asset": "assets/art_pack/painterly/rip-water-1.webp",
+      "subject": "rip",
+      "colour": "water",
+      "level": 1,
+      "element": "water",
+      "sha256": "39b34fe427f1d91e9e25e11fc8260f28d5373f75c6bc458c92c8aa2ed87f00d6",
+      "bytes": 5452
+    },
+    {
+      "id": "rip-water-2",
+      "asset": "assets/art_pack/painterly/rip-water-2.webp",
+      "subject": "rip",
+      "colour": "water",
+      "level": 2,
+      "element": "water",
+      "sha256": "e5d16b1758278977b82744cd6f8a10147a388f0d47f33bfd1f468a6edfe399f1",
+      "bytes": 8828
+    },
+    {
+      "id": "rip-water-3",
+      "asset": "assets/art_pack/painterly/rip-water-3.webp",
+      "subject": "rip",
+      "colour": "water",
+      "level": 3,
+      "element": "water",
+      "sha256": "feffffeee8fd36eccf5168c9f5e6bed695513b6227e8a6f6814039ee80c8d2e6",
+      "bytes": 9038
+    },
+    {
+      "id": "rock-acid-1",
+      "asset": "assets/art_pack/painterly/rock-acid-1.webp",
+      "subject": "rock",
+      "colour": "acid",
+      "level": 1,
+      "element": "earth",
+      "sha256": "510dc878894ba922fc39aa27cc35f8d463b5634f8dd674880e26cb1a0702c997",
+      "bytes": 3214
+    },
+    {
+      "id": "rock-acid-2",
+      "asset": "assets/art_pack/painterly/rock-acid-2.webp",
+      "subject": "rock",
+      "colour": "acid",
+      "level": 2,
+      "element": "earth",
+      "sha256": "65ab66f1ca0522cc0740c50c61c29d7c8596343a3911fe021019158913da61af",
+      "bytes": 6830
+    },
+    {
+      "id": "rock-acid-3",
+      "asset": "assets/art_pack/painterly/rock-acid-3.webp",
+      "subject": "rock",
+      "colour": "acid",
+      "level": 3,
+      "element": "earth",
+      "sha256": "a451879bf4ce9a4876357760678a59fb787a5082020895fbb275306c30dda5d8",
+      "bytes": 10652
+    },
+    {
+      "id": "rock-orange-1",
+      "asset": "assets/art_pack/painterly/rock-orange-1.webp",
+      "subject": "rock",
+      "colour": "orange",
+      "level": 1,
+      "element": "earth",
+      "sha256": "1c78eaa85ef5b7052e9ec14c1232415954a3ddec4119e0f0cad86fbc907d191a",
+      "bytes": 2984
+    },
+    {
+      "id": "rock-orange-2",
+      "asset": "assets/art_pack/painterly/rock-orange-2.webp",
+      "subject": "rock",
+      "colour": "orange",
+      "level": 2,
+      "element": "earth",
+      "sha256": "0023165925c6f39761b2d703e1ae2741033af9b6e66ad56e8dfd7cb09b725747",
+      "bytes": 6366
+    },
+    {
+      "id": "rock-orange-3",
+      "asset": "assets/art_pack/painterly/rock-orange-3.webp",
+      "subject": "rock",
+      "colour": "orange",
+      "level": 3,
+      "element": "earth",
+      "sha256": "d9d480ab569b607760bc2500e05862bc0abe234cc8821f451e6116f0c525e1e2",
+      "bytes": 10390
+    },
+    {
+      "id": "rock-plain-1",
+      "asset": "assets/art_pack/painterly/rock-plain-1.webp",
+      "subject": "rock",
+      "colour": "plain",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "b64de01d9507f1e9a89e81de927fa91b8cd60737df45c9558ddf911fe82bcd5a",
+      "bytes": 1954
+    },
+    {
+      "id": "rock-plain-2",
+      "asset": "assets/art_pack/painterly/rock-plain-2.webp",
+      "subject": "rock",
+      "colour": "plain",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "d9a76aad57545b40aaf7def9c0297c4b4c6e6e481301e7dfdc4cda5d47996ca0",
+      "bytes": 4080
+    },
+    {
+      "id": "rock-plain-3",
+      "asset": "assets/art_pack/painterly/rock-plain-3.webp",
+      "subject": "rock",
+      "colour": "plain",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "65e692a3ae4f522b6d2990b262598acfbf2085965bf1368aeead556fcb47a2af",
+      "bytes": 6028
+    },
+    {
+      "id": "rock-royal-1",
+      "asset": "assets/art_pack/painterly/rock-royal-1.webp",
+      "subject": "rock",
+      "colour": "royal",
+      "level": 1,
+      "element": "earth",
+      "sha256": "1163024a08dc4940c7936009020b9593eeb91c61ee36b184a68e57838ba43ad8",
+      "bytes": 3688
+    },
+    {
+      "id": "rock-royal-2",
+      "asset": "assets/art_pack/painterly/rock-royal-2.webp",
+      "subject": "rock",
+      "colour": "royal",
+      "level": 2,
+      "element": "earth",
+      "sha256": "7bbe941d4b892f2f296249d195eb30522132cd2a6fa0f1b985d38eddf7e1711f",
+      "bytes": 7338
+    },
+    {
+      "id": "rock-royal-3",
+      "asset": "assets/art_pack/painterly/rock-royal-3.webp",
+      "subject": "rock",
+      "colour": "royal",
+      "level": 3,
+      "element": "earth",
+      "sha256": "308496a3265928ab536c90dadadcb8ed0ac63296c27c0106d138350ceb9fcc99",
+      "bytes": 10658
+    },
+    {
+      "id": "rock-sky-1",
+      "asset": "assets/art_pack/painterly/rock-sky-1.webp",
+      "subject": "rock",
+      "colour": "sky",
+      "level": 1,
+      "element": "earth",
+      "sha256": "2ab75cc7ac737d6f7dcc6adf6eb97737dbaedb184d544c8d2738066dd35bd343",
+      "bytes": 3158
+    },
+    {
+      "id": "rock-sky-2",
+      "asset": "assets/art_pack/painterly/rock-sky-2.webp",
+      "subject": "rock",
+      "colour": "sky",
+      "level": 2,
+      "element": "earth",
+      "sha256": "fd02334cef055cc76d9cb374a7b99ae9031f8773e55b2e9cd1209d10c919aeae",
+      "bytes": 6372
+    },
+    {
+      "id": "rock-sky-3",
+      "asset": "assets/art_pack/painterly/rock-sky-3.webp",
+      "subject": "rock",
+      "colour": "sky",
+      "level": 3,
+      "element": "earth",
+      "sha256": "6f5cd24c55dd7347a3396bfad0e4fe0fe2809968dfd700a221c8e51f2ffba1a2",
+      "bytes": 9926
+    },
+    {
+      "id": "runes-blue-1",
+      "asset": "assets/art_pack/painterly/runes-blue-1.webp",
+      "subject": "runes",
+      "colour": "blue",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "9825749c2c3d673fc902bc5dfe46fdab60992e6998ae7a4744da7b3edbc1c23c",
+      "bytes": 8766
+    },
+    {
+      "id": "runes-blue-2",
+      "asset": "assets/art_pack/painterly/runes-blue-2.webp",
+      "subject": "runes",
+      "colour": "blue",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "da1cbe623ab0f1abc69b22a7b0fc9ac938276be5b0e0b88935835bf5cd5413aa",
+      "bytes": 14044
+    },
+    {
+      "id": "runes-blue-3",
+      "asset": "assets/art_pack/painterly/runes-blue-3.webp",
+      "subject": "runes",
+      "colour": "blue",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "bd7c3103b8ea2d8ed16cbfa953a9bd5847b7e5422dec2b5d76b7d72692e76718",
+      "bytes": 17008
+    },
+    {
+      "id": "runes-magenta-1",
+      "asset": "assets/art_pack/painterly/runes-magenta-1.webp",
+      "subject": "runes",
+      "colour": "magenta",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "822977703aa5d7c4e48444133c2e460ad8fe8294919b2804ac37ce18d8670bca",
+      "bytes": 5304
+    },
+    {
+      "id": "runes-magenta-2",
+      "asset": "assets/art_pack/painterly/runes-magenta-2.webp",
+      "subject": "runes",
+      "colour": "magenta",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "9ab02badb398a24700fe6f67bf2f9ca50f7c31b5f19abbff7f7614bb1c63f11e",
+      "bytes": 9014
+    },
+    {
+      "id": "runes-magenta-3",
+      "asset": "assets/art_pack/painterly/runes-magenta-3.webp",
+      "subject": "runes",
+      "colour": "magenta",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "41433f765c11be174930dda31f30c588affe633a3fbb4abbc21a14e83bf69e76",
+      "bytes": 13332
+    },
+    {
+      "id": "runes-orange-1",
+      "asset": "assets/art_pack/painterly/runes-orange-1.webp",
+      "subject": "runes",
+      "colour": "orange",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "3a308dc6657e71b71ba893aba4773dd1c9f50a40e4b02e23ac92b7853335b5fb",
+      "bytes": 6526
+    },
+    {
+      "id": "runes-orange-2",
+      "asset": "assets/art_pack/painterly/runes-orange-2.webp",
+      "subject": "runes",
+      "colour": "orange",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "74f54cc47c7673f0912318a03ec43c08f6d0006b1bf5a3fea041ef04240dc3e9",
+      "bytes": 11714
+    },
+    {
+      "id": "runes-orange-3",
+      "asset": "assets/art_pack/painterly/runes-orange-3.webp",
+      "subject": "runes",
+      "colour": "orange",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "5cb79a6ace6df0f11c10d255d79c97b4be846b504b933028c244be3122229486",
+      "bytes": 17066
+    },
+    {
+      "id": "runes-royal-1",
+      "asset": "assets/art_pack/painterly/runes-royal-1.webp",
+      "subject": "runes",
+      "colour": "royal",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "8a2a71557ad98517128d1d3d8355f888ee3e4417a0e7e38a33c840e6c9c7c54d",
+      "bytes": 9268
+    },
+    {
+      "id": "runes-royal-2",
+      "asset": "assets/art_pack/painterly/runes-royal-2.webp",
+      "subject": "runes",
+      "colour": "royal",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "00fb3a1f94a081f5edd21112834a82dfe7d9e7f7d45bdb9a9ad10975dc40a008",
+      "bytes": 14236
+    },
+    {
+      "id": "runes-royal-3",
+      "asset": "assets/art_pack/painterly/runes-royal-3.webp",
+      "subject": "runes",
+      "colour": "royal",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "c8034f4ad03ccd6d20ed92e52cf6e8444bc421c12ce69c71b0e434c5ea76678b",
+      "bytes": 17832
+    },
+    {
+      "id": "shielding-acid-1",
+      "asset": "assets/art_pack/painterly/shielding-acid-1.webp",
+      "subject": "shielding",
+      "colour": "acid",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "c8afabc837849e669e033888e68a1aaa1f4229be81d4abf9e4805ceabae6d7a0",
+      "bytes": 5406
+    },
+    {
+      "id": "shielding-acid-2",
+      "asset": "assets/art_pack/painterly/shielding-acid-2.webp",
+      "subject": "shielding",
+      "colour": "acid",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "e0a5b45b7aa20f2d1b2d5d77299754c0219f86857202f0024998638ba75c9402",
+      "bytes": 8490
+    },
+    {
+      "id": "shielding-acid-3",
+      "asset": "assets/art_pack/painterly/shielding-acid-3.webp",
+      "subject": "shielding",
+      "colour": "acid",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "7ca0c41beddbe8063909bc57ccc0679e88514c401c5bcca89682363fe6084fef",
+      "bytes": 14134
+    },
+    {
+      "id": "shielding-eerie-1",
+      "asset": "assets/art_pack/painterly/shielding-eerie-1.webp",
+      "subject": "shielding",
+      "colour": "eerie",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "20344797ae31d5143ff691e1e1a56617c8f4080ab613fdb2cfc40e38401c09c4",
+      "bytes": 5044
+    },
+    {
+      "id": "shielding-eerie-2",
+      "asset": "assets/art_pack/painterly/shielding-eerie-2.webp",
+      "subject": "shielding",
+      "colour": "eerie",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "c2e53616010d85c14533ae49b0a25aff1cfa0f249f70cf1cd1f77d5b1fe54845",
+      "bytes": 8000
+    },
+    {
+      "id": "shielding-eerie-3",
+      "asset": "assets/art_pack/painterly/shielding-eerie-3.webp",
+      "subject": "shielding",
+      "colour": "eerie",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "f801182e92264e21ae61cb8cb9cf6fdae92caca4bf2e780cff85dc83899ee3f8",
+      "bytes": 11228
+    },
+    {
+      "id": "shielding-fire-1",
+      "asset": "assets/art_pack/painterly/shielding-fire-1.webp",
+      "subject": "shielding",
+      "colour": "fire",
+      "level": 1,
+      "element": "fire",
+      "sha256": "b228e3faea6cc413a72a06f7b555f481b65234af4539405176c544a8a1763799",
+      "bytes": 4488
+    },
+    {
+      "id": "shielding-fire-2",
+      "asset": "assets/art_pack/painterly/shielding-fire-2.webp",
+      "subject": "shielding",
+      "colour": "fire",
+      "level": 2,
+      "element": "fire",
+      "sha256": "d77e27bb0c47af0212b1a164983243428f68403cb0165c1080fb8213cc34fa9a",
+      "bytes": 7364
+    },
+    {
+      "id": "shielding-fire-3",
+      "asset": "assets/art_pack/painterly/shielding-fire-3.webp",
+      "subject": "shielding",
+      "colour": "fire",
+      "level": 3,
+      "element": "fire",
+      "sha256": "015c11eeff1267eff4fb31c604f13f33fce283ff67b1f38bda81b1daf2daf1e0",
+      "bytes": 14106
+    },
+    {
+      "id": "shielding-spirit-1",
+      "asset": "assets/art_pack/painterly/shielding-spirit-1.webp",
+      "subject": "shielding",
+      "colour": "spirit",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "a7be94b69da33ff36764a1f61ef12d544684d4459b2c51694923a6247387d6d7",
+      "bytes": 4312
+    },
+    {
+      "id": "shielding-spirit-2",
+      "asset": "assets/art_pack/painterly/shielding-spirit-2.webp",
+      "subject": "shielding",
+      "colour": "spirit",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "cf3f24bb9a38c0c58fdd091377e9b35e1fc8e17d503333bb825794fbb6bcaa00",
+      "bytes": 6082
+    },
+    {
+      "id": "shielding-spirit-3",
+      "asset": "assets/art_pack/painterly/shielding-spirit-3.webp",
+      "subject": "shielding",
+      "colour": "spirit",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "a1209f6a33d07d2b7dc18b03ca4060ca2cc542383259d37ed00c945bfc80f1ef",
+      "bytes": 9038
+    },
+    {
+      "id": "slice-acid-1",
+      "asset": "assets/art_pack/painterly/slice-acid-1.webp",
+      "subject": "slice",
+      "colour": "acid",
+      "level": 1,
+      "element": "earth",
+      "sha256": "359ffaf85d3c8b0dc49f688a10af85a07d21e40f048e7fe9be11019837ef7d64",
+      "bytes": 5210
+    },
+    {
+      "id": "slice-acid-2",
+      "asset": "assets/art_pack/painterly/slice-acid-2.webp",
+      "subject": "slice",
+      "colour": "acid",
+      "level": 2,
+      "element": "earth",
+      "sha256": "944b0f8e71ada5dc03784808f57cfa7505cc66ea3e63f46b7928e37ec7526161",
+      "bytes": 6300
+    },
+    {
+      "id": "slice-acid-3",
+      "asset": "assets/art_pack/painterly/slice-acid-3.webp",
+      "subject": "slice",
+      "colour": "acid",
+      "level": 3,
+      "element": "earth",
+      "sha256": "d29e7b5de3ce563da92c78550cf2a864381c637a60eca5c32eebc059ffc194e7",
+      "bytes": 9214
+    },
+    {
+      "id": "slice-orange-1",
+      "asset": "assets/art_pack/painterly/slice-orange-1.webp",
+      "subject": "slice",
+      "colour": "orange",
+      "level": 1,
+      "element": "fire",
+      "sha256": "0ced12e4bc50ffd4e963717a3e06d4c5df23af6e999d81656c56924b61099706",
+      "bytes": 5154
+    },
+    {
+      "id": "slice-orange-2",
+      "asset": "assets/art_pack/painterly/slice-orange-2.webp",
+      "subject": "slice",
+      "colour": "orange",
+      "level": 2,
+      "element": "fire",
+      "sha256": "2b5300243f4a43a200519d27d935875f6094925d08956bb595c021c326cc61b9",
+      "bytes": 6900
+    },
+    {
+      "id": "slice-orange-3",
+      "asset": "assets/art_pack/painterly/slice-orange-3.webp",
+      "subject": "slice",
+      "colour": "orange",
+      "level": 3,
+      "element": "fire",
+      "sha256": "aeb20f26117f6d4ff47eb3469a0aad47db2be9c4dc64a64ab8c571b83c1c11e8",
+      "bytes": 10896
+    },
+    {
+      "id": "slice-sky-1",
+      "asset": "assets/art_pack/painterly/slice-sky-1.webp",
+      "subject": "slice",
+      "colour": "sky",
+      "level": 1,
+      "element": "water",
+      "sha256": "4104bf24030921680e84c92e644c7b5b7289add8650df272c0f553d17682f0f1",
+      "bytes": 5448
+    },
+    {
+      "id": "slice-sky-2",
+      "asset": "assets/art_pack/painterly/slice-sky-2.webp",
+      "subject": "slice",
+      "colour": "sky",
+      "level": 2,
+      "element": "water",
+      "sha256": "21ec8e00558ce8ed124acf65f32e57fae625229994460c012f72b4f535cdf833",
+      "bytes": 6888
+    },
+    {
+      "id": "slice-sky-3",
+      "asset": "assets/art_pack/painterly/slice-sky-3.webp",
+      "subject": "slice",
+      "colour": "sky",
+      "level": 3,
+      "element": "water",
+      "sha256": "ec0ba024b8a85e3fdd117cd3b7074346ab0db89f790e690e6cb05a6380a4c0ad",
+      "bytes": 9536
+    },
+    {
+      "id": "slice-spirit-1",
+      "asset": "assets/art_pack/painterly/slice-spirit-1.webp",
+      "subject": "slice",
+      "colour": "spirit",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "821ad905b4898fbfe69036b3c6dc64a16abb4d4264063b6f6f27a681d30b88ef",
+      "bytes": 4918
+    },
+    {
+      "id": "slice-spirit-2",
+      "asset": "assets/art_pack/painterly/slice-spirit-2.webp",
+      "subject": "slice",
+      "colour": "spirit",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "811cee0829142cbbbd1567b0276a803373b8e5a1efb02452229f574281efdab9",
+      "bytes": 6048
+    },
+    {
+      "id": "slice-spirit-3",
+      "asset": "assets/art_pack/painterly/slice-spirit-3.webp",
+      "subject": "slice",
+      "colour": "spirit",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "f3103034384d77b0bd6e8185c083b02dda00a82b06ad0e8a9531ef8987323768",
+      "bytes": 8710
+    },
+    {
+      "id": "vines-acid-1",
+      "asset": "assets/art_pack/painterly/vines-acid-1.webp",
+      "subject": "vines",
+      "colour": "acid",
+      "level": 1,
+      "element": "earth",
+      "sha256": "7041247b489b88d63e5b45fafa51238d2fd7401050cd8b1f31f4f107bae3e9c1",
+      "bytes": 5538
+    },
+    {
+      "id": "vines-acid-2",
+      "asset": "assets/art_pack/painterly/vines-acid-2.webp",
+      "subject": "vines",
+      "colour": "acid",
+      "level": 2,
+      "element": "earth",
+      "sha256": "71cc403995eb8d158e61a614cde0ae13d8cfc2ff6afcbb8849bf72d3ab9e3c50",
+      "bytes": 8356
+    },
+    {
+      "id": "vines-acid-3",
+      "asset": "assets/art_pack/painterly/vines-acid-3.webp",
+      "subject": "vines",
+      "colour": "acid",
+      "level": 3,
+      "element": "earth",
+      "sha256": "1ca88a547c21d6d119428430eb84fd14b18d594b08d1a549820c7e3ef9c4eba4",
+      "bytes": 12874
+    },
+    {
+      "id": "vines-eerie-1",
+      "asset": "assets/art_pack/painterly/vines-eerie-1.webp",
+      "subject": "vines",
+      "colour": "eerie",
+      "level": 1,
+      "element": "earth",
+      "sha256": "9b75fe14c28c13c2660c9bfd51a1198fec4e5e693687971732f58fa22ace4476",
+      "bytes": 6030
+    },
+    {
+      "id": "vines-eerie-2",
+      "asset": "assets/art_pack/painterly/vines-eerie-2.webp",
+      "subject": "vines",
+      "colour": "eerie",
+      "level": 2,
+      "element": "earth",
+      "sha256": "a37a682653587e8a367f7a64b7c3b317ccf8d82d507a6866267dff47dc35e613",
+      "bytes": 8970
+    },
+    {
+      "id": "vines-eerie-3",
+      "asset": "assets/art_pack/painterly/vines-eerie-3.webp",
+      "subject": "vines",
+      "colour": "eerie",
+      "level": 3,
+      "element": "earth",
+      "sha256": "22aaed5d45c5b5315ab2836ce0b5e9e0fea0130ba238a38fd447b54409bfec42",
+      "bytes": 13300
+    },
+    {
+      "id": "vines-jade-1",
+      "asset": "assets/art_pack/painterly/vines-jade-1.webp",
+      "subject": "vines",
+      "colour": "jade",
+      "level": 1,
+      "element": "earth",
+      "sha256": "fc7ab74157a2ad13b1d79b59dd8a773a6619ccdb37f5553c381dfdd0ea96892c",
+      "bytes": 5948
+    },
+    {
+      "id": "vines-jade-2",
+      "asset": "assets/art_pack/painterly/vines-jade-2.webp",
+      "subject": "vines",
+      "colour": "jade",
+      "level": 2,
+      "element": "earth",
+      "sha256": "c1af782c757363e7e080939084a924230d3e62a76b05ac5783fdbc1b71c0b9f3",
+      "bytes": 9026
+    },
+    {
+      "id": "vines-jade-3",
+      "asset": "assets/art_pack/painterly/vines-jade-3.webp",
+      "subject": "vines",
+      "colour": "jade",
+      "level": 3,
+      "element": "earth",
+      "sha256": "ecbb1ac445e517bb9a914897db83835cd7b65b971f04fe2489ca5748caac1cc7",
+      "bytes": 13488
+    },
+    {
+      "id": "vines-plain-1",
+      "asset": "assets/art_pack/painterly/vines-plain-1.webp",
+      "subject": "vines",
+      "colour": "plain",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "80fdeb64efe67bcfb46f7d1da4492f4a796483b031b25a0a5fb3e51141ddcf78",
+      "bytes": 4802
+    },
+    {
+      "id": "vines-plain-2",
+      "asset": "assets/art_pack/painterly/vines-plain-2.webp",
+      "subject": "vines",
+      "colour": "plain",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "476d03994900c83046db298b7ae20ff88b828cd4ebdd7bbcc423a73d9242d103",
+      "bytes": 6312
+    },
+    {
+      "id": "vines-plain-3",
+      "asset": "assets/art_pack/painterly/vines-plain-3.webp",
+      "subject": "vines",
+      "colour": "plain",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "28efcf5a9e026151e4b72fae88c4556ef74728698790e0574cd5952390d1cfdd",
+      "bytes": 10058
+    },
+    {
+      "id": "wild-acid-1",
+      "asset": "assets/art_pack/painterly/wild-acid-1.webp",
+      "subject": "wild",
+      "colour": "acid",
+      "level": 1,
+      "element": "earth",
+      "sha256": "ac0945cb459dba51b30596f3820f22a6fd9255be6e22a164e2b851c8ee6a20e4",
+      "bytes": 6126
+    },
+    {
+      "id": "wild-acid-2",
+      "asset": "assets/art_pack/painterly/wild-acid-2.webp",
+      "subject": "wild",
+      "colour": "acid",
+      "level": 2,
+      "element": "earth",
+      "sha256": "eb89876d29e7de4f4a9e13f13469afd120c29a02dc9fbf49b760e06f97d698b9",
+      "bytes": 7718
+    },
+    {
+      "id": "wild-acid-3",
+      "asset": "assets/art_pack/painterly/wild-acid-3.webp",
+      "subject": "wild",
+      "colour": "acid",
+      "level": 3,
+      "element": "earth",
+      "sha256": "7158f2ce9269238023c60493e3fad4af6748f4113af7f3048249de71653212f2",
+      "bytes": 8478
+    },
+    {
+      "id": "wild-eerie-1",
+      "asset": "assets/art_pack/painterly/wild-eerie-1.webp",
+      "subject": "wild",
+      "colour": "eerie",
+      "level": 1,
+      "element": "neutral",
+      "sha256": "22d0ebde31c6528b990deba4c89445718a19601b0ab7b217e00ec910876ccf94",
+      "bytes": 6476
+    },
+    {
+      "id": "wild-eerie-2",
+      "asset": "assets/art_pack/painterly/wild-eerie-2.webp",
+      "subject": "wild",
+      "colour": "eerie",
+      "level": 2,
+      "element": "neutral",
+      "sha256": "138850018c0a86e9ad6e10cd1351a91deafa5768a3d6fc4c0d65a0f402fc0c08",
+      "bytes": 7462
+    },
+    {
+      "id": "wild-eerie-3",
+      "asset": "assets/art_pack/painterly/wild-eerie-3.webp",
+      "subject": "wild",
+      "colour": "eerie",
+      "level": 3,
+      "element": "neutral",
+      "sha256": "8d3f32ed0ad9818829be4ad428e6f6c034591f761ae5ba9c2c52c69e47a7f58b",
+      "bytes": 7870
+    },
+    {
+      "id": "wild-jade-1",
+      "asset": "assets/art_pack/painterly/wild-jade-1.webp",
+      "subject": "wild",
+      "colour": "jade",
+      "level": 1,
+      "element": "earth",
+      "sha256": "e5eac931a39d7d99c09063e775611af0a33fb0316e76293340a94d230e0119c0",
+      "bytes": 6652
+    },
+    {
+      "id": "wild-jade-2",
+      "asset": "assets/art_pack/painterly/wild-jade-2.webp",
+      "subject": "wild",
+      "colour": "jade",
+      "level": 2,
+      "element": "earth",
+      "sha256": "169ee007696cac822413c57f08d1e0ac5cf893c70bdbba17fd61af022c7ec6cb",
+      "bytes": 7664
+    },
+    {
+      "id": "wild-jade-3",
+      "asset": "assets/art_pack/painterly/wild-jade-3.webp",
+      "subject": "wild",
+      "colour": "jade",
+      "level": 3,
+      "element": "earth",
+      "sha256": "7f84193e5cd62c8385fe304e61786cc0f312fecce7122feb57ebf62adff292e9",
+      "bytes": 8072
+    },
+    {
+      "id": "wild-orange-1",
+      "asset": "assets/art_pack/painterly/wild-orange-1.webp",
+      "subject": "wild",
+      "colour": "orange",
+      "level": 1,
+      "element": "fire",
+      "sha256": "4fde22cc81fa90f6d9865ff1011db987d2b7f5d04d7fd39dd77f75763caf3436",
+      "bytes": 4834
+    },
+    {
+      "id": "wild-orange-2",
+      "asset": "assets/art_pack/painterly/wild-orange-2.webp",
+      "subject": "wild",
+      "colour": "orange",
+      "level": 2,
+      "element": "fire",
+      "sha256": "1b7dd633a3357670ad72289de5d04e242d6d1dd154a6d4c60c008bbe6a44c6c2",
+      "bytes": 6768
+    },
+    {
+      "id": "wild-orange-3",
+      "asset": "assets/art_pack/painterly/wild-orange-3.webp",
+      "subject": "wild",
+      "colour": "orange",
+      "level": 3,
+      "element": "fire",
+      "sha256": "25335147dddf9b40dbb9ccf603da4ac5ae83656d1219e82d01ce690dfcdb8f83",
+      "bytes": 8110
+    },
+    {
+      "id": "wind-blue-1",
+      "asset": "assets/art_pack/painterly/wind-blue-1.webp",
+      "subject": "wind",
+      "colour": "blue",
+      "level": 1,
+      "element": "air",
+      "sha256": "b68de2fe0e556318d81dfc982d228ebb118627fad9becbd6a1688d5950a82426",
+      "bytes": 4700
+    },
+    {
+      "id": "wind-blue-2",
+      "asset": "assets/art_pack/painterly/wind-blue-2.webp",
+      "subject": "wind",
+      "colour": "blue",
+      "level": 2,
+      "element": "air",
+      "sha256": "5a88392c055273cd3083997be87954ceabb3701eebdb0859a7ae8ec29bfa4267",
+      "bytes": 6928
+    },
+    {
+      "id": "wind-blue-3",
+      "asset": "assets/art_pack/painterly/wind-blue-3.webp",
+      "subject": "wind",
+      "colour": "blue",
+      "level": 3,
+      "element": "air",
+      "sha256": "896d2e6289f9300df176b6e744b39f5cb9c8ad19c259e547dfc5c0205e366402",
+      "bytes": 9054
+    },
+    {
+      "id": "wind-grasp-acid-1",
+      "asset": "assets/art_pack/painterly/wind-grasp-acid-1.webp",
+      "subject": "wind-grasp",
+      "colour": "acid",
+      "level": 1,
+      "element": "air",
+      "sha256": "65b71a578376aedba024811a666408c19623ce79885183c3f61076ce773d28be",
+      "bytes": 5016
+    },
+    {
+      "id": "wind-grasp-acid-2",
+      "asset": "assets/art_pack/painterly/wind-grasp-acid-2.webp",
+      "subject": "wind-grasp",
+      "colour": "acid",
+      "level": 2,
+      "element": "air",
+      "sha256": "3ccab1e45fd7ff33390d07203355562aaa131260994eedb0fcb26224c825b369",
+      "bytes": 5954
+    },
+    {
+      "id": "wind-grasp-acid-3",
+      "asset": "assets/art_pack/painterly/wind-grasp-acid-3.webp",
+      "subject": "wind-grasp",
+      "colour": "acid",
+      "level": 3,
+      "element": "air",
+      "sha256": "ae493bdaf78abc40de028c37c48133a51d1f267fae83d5429792472fb4fe9db0",
+      "bytes": 10796
+    },
+    {
+      "id": "wind-grasp-air-1",
+      "asset": "assets/art_pack/painterly/wind-grasp-air-1.webp",
+      "subject": "wind-grasp",
+      "colour": "air",
+      "level": 1,
+      "element": "air",
+      "sha256": "94f2fda4dfc09f3be68f06e4e8056a483d36504d5d6859fb000b26fc7bfd4ac2",
+      "bytes": 4560
+    },
+    {
+      "id": "wind-grasp-air-2",
+      "asset": "assets/art_pack/painterly/wind-grasp-air-2.webp",
+      "subject": "wind-grasp",
+      "colour": "air",
+      "level": 2,
+      "element": "air",
+      "sha256": "afa334b9c6ae682ea08ec6b82e853331e447c8e9254b3deeeeac1f808d7722de",
+      "bytes": 5196
+    },
+    {
+      "id": "wind-grasp-air-3",
+      "asset": "assets/art_pack/painterly/wind-grasp-air-3.webp",
+      "subject": "wind-grasp",
+      "colour": "air",
+      "level": 3,
+      "element": "air",
+      "sha256": "dc6340afbd82abcda1abe1225dd1274b5a934a0ec007f6fc88855d96e8bcc774",
+      "bytes": 9054
+    },
+    {
+      "id": "wind-grasp-eerie-1",
+      "asset": "assets/art_pack/painterly/wind-grasp-eerie-1.webp",
+      "subject": "wind-grasp",
+      "colour": "eerie",
+      "level": 1,
+      "element": "air",
+      "sha256": "1bbe21de60d1932b264bce59f175160574a4e126b8b908e297221337dc8871e8",
+      "bytes": 5302
+    },
+    {
+      "id": "wind-grasp-eerie-2",
+      "asset": "assets/art_pack/painterly/wind-grasp-eerie-2.webp",
+      "subject": "wind-grasp",
+      "colour": "eerie",
+      "level": 2,
+      "element": "air",
+      "sha256": "78b4eab1f7c0c1d44610a4fc0ee64ffa7fafd629b68cbd8f33bc2d086ca42d10",
+      "bytes": 5578
+    },
+    {
+      "id": "wind-grasp-eerie-3",
+      "asset": "assets/art_pack/painterly/wind-grasp-eerie-3.webp",
+      "subject": "wind-grasp",
+      "colour": "eerie",
+      "level": 3,
+      "element": "air",
+      "sha256": "0a8553edd60179d2385a453ea4ddd4a70a16a7652a14b84fb15f81de4ceff19a",
+      "bytes": 9966
+    },
+    {
+      "id": "wind-grasp-magenta-1",
+      "asset": "assets/art_pack/painterly/wind-grasp-magenta-1.webp",
+      "subject": "wind-grasp",
+      "colour": "magenta",
+      "level": 1,
+      "element": "air",
+      "sha256": "ef7297ec6e30993a3dbb95465c10120245feaa26c2d20a95fd7ea208b4b682b0",
+      "bytes": 5218
+    },
+    {
+      "id": "wind-grasp-magenta-2",
+      "asset": "assets/art_pack/painterly/wind-grasp-magenta-2.webp",
+      "subject": "wind-grasp",
+      "colour": "magenta",
+      "level": 2,
+      "element": "air",
+      "sha256": "a64f91790c41e30bba2ae880db03b034443f9027ac2747c036427c96699e30f0",
+      "bytes": 5572
+    },
+    {
+      "id": "wind-grasp-magenta-3",
+      "asset": "assets/art_pack/painterly/wind-grasp-magenta-3.webp",
+      "subject": "wind-grasp",
+      "colour": "magenta",
+      "level": 3,
+      "element": "air",
+      "sha256": "b16ff60bb2ed5f04f1dbc8f95e7de5cdf11852b4c851a53a88a03139e44d8a57",
+      "bytes": 9404
+    },
+    {
+      "id": "wind-grasp-sky-1",
+      "asset": "assets/art_pack/painterly/wind-grasp-sky-1.webp",
+      "subject": "wind-grasp",
+      "colour": "sky",
+      "level": 1,
+      "element": "air",
+      "sha256": "bb9fcc0778ed9f6f712bdc4a92d89d2732b634a417b9b6f82c3b49611dc40d06",
+      "bytes": 4498
+    },
+    {
+      "id": "wind-grasp-sky-2",
+      "asset": "assets/art_pack/painterly/wind-grasp-sky-2.webp",
+      "subject": "wind-grasp",
+      "colour": "sky",
+      "level": 2,
+      "element": "air",
+      "sha256": "e402cf478cd6cdd18dc5d212114d1e7dbc6d746c9e8277fc3ad2c596f35d8c37",
+      "bytes": 5126
+    },
+    {
+      "id": "wind-grasp-sky-3",
+      "asset": "assets/art_pack/painterly/wind-grasp-sky-3.webp",
+      "subject": "wind-grasp",
+      "colour": "sky",
+      "level": 3,
+      "element": "air",
+      "sha256": "c1c4ff8d5ef4845f7545fc866c5d864858c17ac5c203bae3abc78edeff94d6d8",
+      "bytes": 9696
+    },
+    {
+      "id": "wind-magenta-1",
+      "asset": "assets/art_pack/painterly/wind-magenta-1.webp",
+      "subject": "wind",
+      "colour": "magenta",
+      "level": 1,
+      "element": "air",
+      "sha256": "6bb356ae72befc3205178ca4d2b83da20d8121a412882dd3bb52f9045cf3af8e",
+      "bytes": 4946
+    },
+    {
+      "id": "wind-magenta-2",
+      "asset": "assets/art_pack/painterly/wind-magenta-2.webp",
+      "subject": "wind",
+      "colour": "magenta",
+      "level": 2,
+      "element": "air",
+      "sha256": "0d5ec23301bff2e959119010f6e8ad967447355dd3dfb46b2a2de8507cb10e51",
+      "bytes": 6792
+    },
+    {
+      "id": "wind-magenta-3",
+      "asset": "assets/art_pack/painterly/wind-magenta-3.webp",
+      "subject": "wind",
+      "colour": "magenta",
+      "level": 3,
+      "element": "air",
+      "sha256": "3be2447f5f955626b32f94c86bca27b20f0792108198eb695b1196d8285ab568",
+      "bytes": 8512
+    },
+    {
+      "id": "wind-red-1",
+      "asset": "assets/art_pack/painterly/wind-red-1.webp",
+      "subject": "wind",
+      "colour": "red",
+      "level": 1,
+      "element": "air",
+      "sha256": "bb24f28bcca1d9336aca58d63a8b28e15c6a58d310ea38f3f879996617c09aca",
+      "bytes": 4404
+    },
+    {
+      "id": "wind-red-2",
+      "asset": "assets/art_pack/painterly/wind-red-2.webp",
+      "subject": "wind",
+      "colour": "red",
+      "level": 2,
+      "element": "air",
+      "sha256": "21415af3543aa439344c856507538615aa38244629e51743a072c5f5e1c5d220",
+      "bytes": 6442
+    },
+    {
+      "id": "wind-red-3",
+      "asset": "assets/art_pack/painterly/wind-red-3.webp",
+      "subject": "wind",
+      "colour": "red",
+      "level": 3,
+      "element": "air",
+      "sha256": "a89d792b00fcab5b269af0e028d85800b03c67863b036c61b93e27646eff2c4c",
+      "bytes": 8970
+    },
+    {
+      "id": "wind-sky-1",
+      "asset": "assets/art_pack/painterly/wind-sky-1.webp",
+      "subject": "wind",
+      "colour": "sky",
+      "level": 1,
+      "element": "air",
+      "sha256": "24d3b0231e5018cc201441e27a0757925651684d14e3d16334675f6db17ed204",
+      "bytes": 4284
+    },
+    {
+      "id": "wind-sky-2",
+      "asset": "assets/art_pack/painterly/wind-sky-2.webp",
+      "subject": "wind",
+      "colour": "sky",
+      "level": 2,
+      "element": "air",
+      "sha256": "0233fca51b4685cf0d33b4915b9c4d242569d58b34a08c7902d5b6d973b39f59",
+      "bytes": 6002
+    },
+    {
+      "id": "wind-sky-3",
+      "asset": "assets/art_pack/painterly/wind-sky-3.webp",
+      "subject": "wind",
+      "colour": "sky",
+      "level": 3,
+      "element": "air",
+      "sha256": "09cab19059c7c48b93a907b791658c40d6bc3110619ade9b1f8650ffe12b7bab",
+      "bytes": 8238
+    }
+  ]
+}

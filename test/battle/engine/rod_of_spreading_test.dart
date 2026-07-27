@@ -236,10 +236,13 @@ void main() {
       final state = _state(avatars: [caster]);
       final before = caster.manaGemsEquipped;
 
+      // Self-targeted: ArtifactsInteraction's summon flavors land on
+      // whoever occupies the target tile (2026-07-27), not automatically
+      // the caster.
       EffectApplicator.apply(_ctx(
         state: state,
         caster: caster,
-        targetTile: const HexCoord(2, 0),
+        targetTile: caster.position,
         effect: const ArtifactsInteractionEffect(
             affinity: SpellAffinity.water, count: 2), // summon 2 mana gems
         effectiveRadiusBonus: 1,

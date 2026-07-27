@@ -130,11 +130,12 @@ class EffectApplicator {
   ///      knockback damage, status-effect interactions, terrain summons) are
   ///      re-applied once per tile of the wall-blocked disc around the target
   ///      (Earth ImpassableTile walls block the spread; design v3.0 §Artifacts).
-  ///   3. Everything else is left single-target: self-buffs (barrier, quick,
-  ///      penetrating…) and caster-mutating meta effects (chain, artifact
-  ///      summons, divination…) have no spatial radius, and re-running them per
-  ///      tile would wrongly multiply a self-effect. [_isSpreadableAtTiles]
-  ///      names exactly the case-2 set — audit it when a new effect kind lands.
+  ///   3. Everything else is left single-target: caster self-buffs (barrier,
+  ///      quick, penetrating…) and meta effects that land on whoever occupies
+  ///      the one target tile (chain, haymaker priming, Bellows…) have no
+  ///      spatial radius, and re-running them per tile would wrongly multiply
+  ///      a single-recipient effect. [_isSpreadableAtTiles] names exactly the
+  ///      case-2 set — audit it when a new effect kind lands.
   static void apply(ApplyContext ctx) {
     final bonus = ctx.effectiveRadiusBonus;
     final effect = ctx.descriptor.spellEffect;
@@ -340,16 +341,20 @@ class EffectApplicator {
 
   static void _applyBarrier(ApplyContext ctx, BarrierEffect e) {
     final affinity = ctx.descriptor.affinity;
-    // Barriers are self-buffs: applied to the caster.
-    ctx.caster.barriers[affinity] = BarrierState(
-      element: affinity,
-      hp: e.hp,
-      maxHp: e.hp,
-      remainingTurns: e.durationTurns,
-      fireAura: e.fireAura,
-      manaRegenBonusPct: e.manaRegenBonusPct,
-      freeMoveOnCollapse: e.freeMoveOnCollapse,
-    );
+    // Lands on whoever occupies the target tile -- self-target your own
+    // tile to armor yourself; an ally's tile to armor them instead.
+    for (final av in _avatarsAt(ctx.state, ctx.targetTile)) {
+      if (_prepareForHit(av, ctx) == null) continue; // redirected onto an illusion decoy
+      av.barriers[affinity] = BarrierState(
+        element: affinity,
+        hp: e.hp,
+        maxHp: e.hp,
+        remainingTurns: e.durationTurns,
+        fireAura: e.fireAura,
+        manaRegenBonusPct: e.manaRegenBonusPct,
+        freeMoveOnCollapse: e.freeMoveOnCollapse,
+      );
+    }
   }
 
   // ── Reflections (Water-Water) ─────────────────────────────────────────────
@@ -378,15 +383,26 @@ class EffectApplicator {
 
   static void _applySpeedManipulation(ApplyContext ctx, SpeedManipulationEffect e) {
     if (e.highMobility) {
-      // Self-buff on caster.
-      _addStatus(ctx.caster, StatusEffectId.highMobility, {'freeExtraTiles': e.freeExtraTiles}, ctx);
+      // Lands on whoever occupies the target tile -- self-target to grant
+      // yourself the ability.
+      for (final av in _avatarsAt(ctx.state, ctx.targetTile)) {
+        if (_prepareForHit(av, ctx) == null) continue; // redirected onto an illusion decoy
+        _addStatus(av, StatusEffectId.highMobility, {'freeExtraTiles': e.freeExtraTiles}, ctx);
+      }
       return;
     }
     if (e.highLiquidity) {
-      _addStatus(ctx.caster, StatusEffectId.highLiquidity, {'freeExtraTiles': e.freeExtraTiles}, ctx);
+      for (final av in _avatarsAt(ctx.state, ctx.targetTile)) {
+        if (_prepareForHit(av, ctx) == null) continue;
+        _addStatus(av, StatusEffectId.highLiquidity, {'freeExtraTiles': e.freeExtraTiles}, ctx);
+      }
       return;
     }
-    // Speed delta affects the target (Earth debuff) or caster (Air buff).
+    // Speed delta always affects whoever occupies the target tile (both
+    // Earth's debuff and Air's buff already set affectsTarget: true in
+    // effect_resolver.dart); [ctx.caster] is unreachable dead-code fallback
+    // kept only because SpeedManipulationEffect's affectsTarget field is a
+    // general mechanism, not because any current flavor uses it.
     final targets = e.affectsTarget
         ? _avatarsAt(ctx.state, ctx.targetTile)
         : [ctx.caster];
@@ -483,7 +499,14 @@ class EffectApplicator {
       return;
     }
     if (e.isQuickEffect) {
-      _addStatusWithDuration(ctx.caster, StatusEffectId.quick, {}, e.durationTurns, ctx);
+      // Mirrors the isSlugEffect branch above: lands on whoever occupies
+      // the target tile, not automatically the caster.
+      final targets = _avatarsAt(ctx.state, ctx.targetTile);
+      for (final av in targets) {
+        final half = _prepareForHit(av, ctx);
+        if (half == null) continue; // redirected onto an illusion decoy
+        _addStatusWithDuration(av, StatusEffectId.quick, {}, _dur(e.durationTurns, half));
+      }
       return;
     }
     if (e.nextSpellCostMultiplier > 1) {
@@ -532,9 +555,16 @@ class EffectApplicator {
 
   static void _applyRangeModification(ApplyContext ctx, RangeModificationEffect e) {
     if (e.penetrating) {
-      _addStatusWithDuration(ctx.caster, StatusEffectId.penetrating, {
-        'penetrationDamage': e.penetrationDamage,
-      }, e.durationTurns, ctx);
+      // Lands on whoever occupies the target tile -- self-target to grant
+      // yourself the ability.
+      final targets = _avatarsAt(ctx.state, ctx.targetTile);
+      for (final av in targets) {
+        final half = _prepareForHit(av, ctx);
+        if (half == null) continue; // redirected onto an illusion decoy
+        _addStatusWithDuration(av, StatusEffectId.penetrating, {
+          'penetrationDamage': e.penetrationDamage,
+        }, _dur(e.durationTurns, half));
+      }
       return;
     }
     if (e.turbulent) {
@@ -562,56 +592,64 @@ class EffectApplicator {
   // ── Fuel Transmutation (Water-Fire) ───────────────────────────────────────
 
   static void _applyFuelTransmutation(ApplyContext ctx, FuelTransmutationEffect e) {
-    switch (e.affinity) {
-      case SpellAffinity.fire:
-        _witherHandPositions(ctx, e.witherSpellCount);
-        for (var i = 0; i < e.gainArtifactCount; i++) {
-          const pool = [
-            AccoutrementKind.manaGem,
-            AccoutrementKind.bookmark,
-            AccoutrementKind.deflectionTotem,
-          ];
-          final kind = pool[ctx.rng.nextInt(pool.length)];
-          ctx.caster.accoutrements.add(Accoutrement(id: _uid(ctx, 'ft'), kind: kind));
-          if (kind == AccoutrementKind.manaGem) {
-            ctx.caster.maxMana = ctx.caster.maxManaFromGems;
+    // Every flavor is a resource trade against whoever occupies the target
+    // tile -- self-target to spend/gain your own resources; an ally's tile
+    // to spend/gain theirs instead.
+    final targets = _avatarsAt(ctx.state, ctx.targetTile);
+    for (final av in targets) {
+      if (_prepareForHit(av, ctx) == null) continue; // redirected onto an illusion decoy
+      switch (e.affinity) {
+        case SpellAffinity.fire:
+          _witherHandPositions(ctx, av, e.witherSpellCount);
+          for (var i = 0; i < e.gainArtifactCount; i++) {
+            const pool = [
+              AccoutrementKind.manaGem,
+              AccoutrementKind.bookmark,
+              AccoutrementKind.deflectionTotem,
+            ];
+            final kind = pool[ctx.rng.nextInt(pool.length)];
+            av.accoutrements.add(Accoutrement(id: _uid(ctx, 'ft'), kind: kind));
+            if (kind == AccoutrementKind.manaGem) {
+              av.maxMana = av.maxManaFromGems;
+            }
           }
-        }
 
-      case SpellAffinity.earth:
-        ctx.caster.absorbDamage(e.burnLife);
-        _reactivateHandPositions(ctx, e.reactivateSpellCount);
+        case SpellAffinity.earth:
+          av.absorbDamage(e.burnLife);
+          _reactivateHandPositions(ctx, av, e.reactivateSpellCount);
 
-      case SpellAffinity.water:
-        ctx.caster.mana = (ctx.caster.mana - e.burnMana).clamp(0, ctx.caster.maxMana);
-        ctx.caster.hp += e.gainLife;
+        case SpellAffinity.water:
+          av.mana = (av.mana - e.burnMana).clamp(0, av.maxMana);
+          av.hp += e.gainLife;
 
-      case SpellAffinity.air:
-        final burnable = ctx.caster.accoutrements.where((a) => !a.isCoreGem).toList();
-        var burned = 0;
-        while (burned < e.burnArtifactCount && burnable.isNotEmpty) {
-          final idx = ctx.rng.nextInt(burnable.length);
-          final target = burnable.removeAt(idx);
-          ctx.caster.accoutrements.remove(target);
-          burned++;
-        }
-        ctx.caster.mana = (ctx.caster.mana + e.gainMana).clamp(0, ctx.caster.maxMana);
+        case SpellAffinity.air:
+          final burnable = av.accoutrements.where((a) => !a.isCoreGem).toList();
+          var burned = 0;
+          while (burned < e.burnArtifactCount && burnable.isNotEmpty) {
+            final idx = ctx.rng.nextInt(burnable.length);
+            final burnTarget = burnable.removeAt(idx);
+            av.accoutrements.remove(burnTarget);
+            burned++;
+          }
+          av.mana = (av.mana + e.gainMana).clamp(0, av.maxMana);
+      }
     }
   }
 
   /// Fire flavor: withers up to [count] random in-hand, not-already-withered
-  /// positions for [ctx.caster] (SPELL_DRAW_WIRING_PLAN.md §9). No-ops if
-  /// draw state isn't available (see [ApplyContext.drawSchedules]/
-  /// [ApplyContext.witherRng]'s doc comments) or the caster has none in hand.
+  /// positions for [affected] (SPELL_DRAW_WIRING_PLAN.md §9) -- the avatar
+  /// occupying the spell's target tile, not necessarily the caster. No-ops
+  /// if draw state isn't available (see [ApplyContext.drawSchedules]/
+  /// [ApplyContext.witherRng]'s doc comments) or [affected] has none in hand.
   /// Picks without replacement from a shrinking pool, same technique as the
   /// Air flavor's burnable-accoutrement selection above — deterministic
   /// given [ApplyContext.witherRng].
-  static void _witherHandPositions(ApplyContext ctx, int count) {
+  static void _witherHandPositions(ApplyContext ctx, WizardAvatar affected, int count) {
     final schedules = ctx.drawSchedules;
     final rng = ctx.witherRng;
     if (schedules == null || rng == null || count <= 0) return;
-    final casterId = ctx.caster.playerId;
-    final schedule = schedules[casterId];
+    final playerId = affected.playerId;
+    final schedule = schedules[playerId];
     if (schedule == null) return;
     final pool = schedule.hand.where((p) => !schedule.withered.contains(p)).toList();
     final chosen = <int>[];
@@ -619,19 +657,19 @@ class EffectApplicator {
       chosen.add(pool.removeAt(rng.nextInt(pool.length)));
     }
     if (chosen.isNotEmpty) {
-      schedules[casterId] = schedule.witherPositions(chosen);
+      schedules[playerId] = schedule.witherPositions(chosen);
     }
   }
 
   /// Earth flavor: clears the withered flag on up to [count] random withered
-  /// positions for [ctx.caster]. Mirrors [_witherHandPositions]; see its doc
+  /// positions for [affected]. Mirrors [_witherHandPositions]; see its doc
   /// comment for the no-op conditions and selection technique.
-  static void _reactivateHandPositions(ApplyContext ctx, int count) {
+  static void _reactivateHandPositions(ApplyContext ctx, WizardAvatar affected, int count) {
     final schedules = ctx.drawSchedules;
     final rng = ctx.witherRng;
     if (schedules == null || rng == null || count <= 0) return;
-    final casterId = ctx.caster.playerId;
-    final schedule = schedules[casterId];
+    final playerId = affected.playerId;
+    final schedule = schedules[playerId];
     if (schedule == null) return;
     final pool = schedule.withered.toList();
     final chosen = <int>[];
@@ -639,7 +677,7 @@ class EffectApplicator {
       chosen.add(pool.removeAt(rng.nextInt(pool.length)));
     }
     if (chosen.isNotEmpty) {
-      schedules[casterId] = schedule.reactivatePositions(chosen);
+      schedules[playerId] = schedule.reactivatePositions(chosen);
     }
   }
 
@@ -671,32 +709,43 @@ class EffectApplicator {
         }
 
       case SpellAffinity.earth:
-        // Summon deflection totem(s) for caster.
-        for (var i = 0; i < e.count; i++) {
-          ctx.caster.accoutrements.add(Accoutrement(
-            id: _uid(ctx, 'dt'),
-            kind: AccoutrementKind.deflectionTotem,
-          ));
+        // Summon deflection totem(s) for whoever occupies the target tile --
+        // self-target to gift yourself the artifact; an ally's tile to gift
+        // them instead.
+        for (final av in _avatarsAt(ctx.state, ctx.targetTile)) {
+          if (_prepareForHit(av, ctx) == null) continue; // redirected onto an illusion decoy
+          for (var i = 0; i < e.count; i++) {
+            av.accoutrements.add(Accoutrement(
+              id: _uid(ctx, 'dt'),
+              kind: AccoutrementKind.deflectionTotem,
+            ));
+          }
         }
 
       case SpellAffinity.water:
-        // Summon mana gem(s) for caster.
-        for (var i = 0; i < e.count; i++) {
-          ctx.caster.accoutrements.add(Accoutrement(
-            id: _uid(ctx, 'mg'),
-            kind: AccoutrementKind.manaGem,
-          ));
-          // Update caster's max mana to reflect new gem.
-          ctx.caster.maxMana = ctx.caster.maxManaFromGems;
+        // Summon mana gem(s) for whoever occupies the target tile.
+        for (final av in _avatarsAt(ctx.state, ctx.targetTile)) {
+          if (_prepareForHit(av, ctx) == null) continue;
+          for (var i = 0; i < e.count; i++) {
+            av.accoutrements.add(Accoutrement(
+              id: _uid(ctx, 'mg'),
+              kind: AccoutrementKind.manaGem,
+            ));
+            // Update max mana to reflect the new gem.
+            av.maxMana = av.maxManaFromGems;
+          }
         }
 
       case SpellAffinity.air:
-        // Summon bookmark(s) for caster.
-        for (var i = 0; i < e.count; i++) {
-          ctx.caster.accoutrements.add(Accoutrement(
-            id: _uid(ctx, 'bm'),
-            kind: AccoutrementKind.bookmark,
-          ));
+        // Summon bookmark(s) for whoever occupies the target tile.
+        for (final av in _avatarsAt(ctx.state, ctx.targetTile)) {
+          if (_prepareForHit(av, ctx) == null) continue;
+          for (var i = 0; i < e.count; i++) {
+            av.accoutrements.add(Accoutrement(
+              id: _uid(ctx, 'bm'),
+              kind: AccoutrementKind.bookmark,
+            ));
+          }
         }
     }
   }
@@ -865,31 +914,47 @@ class EffectApplicator {
   // ── Multiplier Cycles (Air-Fire) ──────────────────────────────────────────
 
   static void _applyMultiplierCycles(ApplyContext ctx, MultiplierCyclesEffect e) {
-    // Always self-applied to the caster (never ctx.targetTile). Consumed by
-    // TurnLoop.castSpell the next time the caster resolves a formula of
-    // targetElement affinity -- immediately if one follows later in this same
+    // Lands on whoever occupies the target tile, like nearly every spell
+    // effect -- not automatically the caster (2026-07-27: this used to be a
+    // hardcoded self-buff; trying it as tile-targeted like everything else).
+    // Consumed the next time WHOEVER RECEIVED IT resolves a formula of
+    // targetElement affinity -- immediately if one follows later in the same
     // spell, otherwise on a spell cast next turn -- which applies that
     // formula's effect this many times instead of once. Expires unused after
     // 2 turns total; see WizardAvatar.tickStatusEffects.
-    ctx.caster.pendingEffectMultipliers[e.targetElement] =
+    final targets = _avatarsAt(ctx.state, ctx.targetTile);
+    if (targets.isEmpty) return;
+    targets.first.pendingEffectMultipliers[e.targetElement] =
         PendingMultiplier(multiplier: e.multiplier, remainingTurns: 2);
   }
 
   // ── Haymaker Interaction (Air-Earth) ─────────────────────────────────────
 
+  /// Primes a future melee punch with a bonus (design doc "melee attacks":
+  /// "Spell effects (Air-Earth row) can empower a melee attack with
+  /// bonuses"). Lands on whoever occupies the target tile, like nearly every
+  /// spell effect -- not automatically the caster, so buffing your own next
+  /// haymaker requires targeting your own tile (and an opponent fast enough
+  /// to reach that tile first, or scrying it, can take the buff instead).
+  /// [TurnLoop._applyHaymaker] later reads these off whoever actually throws
+  /// the punch, so this only needs to get the status onto the right avatar
+  /// now -- consumption doesn't care who that ends up being.
   static void _applyHaymakerInteraction(ApplyContext ctx, HaymakerInteractionEffect e) {
+    final targets = _avatarsAt(ctx.state, ctx.targetTile);
+    if (targets.isEmpty) return;
+    final affected = targets.first;
     if (e.doTStackIncrement > 0) {
-      _addStatusWithDuration(ctx.caster, StatusEffectId.haymakerDot,
+      _addStatusWithDuration(affected, StatusEffectId.haymakerDot,
           {'doTStackIncrement': e.doTStackIncrement}, e.durationTurns, ctx);
     }
     if (e.slowsTarget) {
-      _addStatusWithDuration(ctx.caster, StatusEffectId.haymakerSlow, {}, e.durationTurns, ctx);
+      _addStatusWithDuration(affected, StatusEffectId.haymakerSlow, {}, e.durationTurns, ctx);
     }
     if (e.drainTargetStatus) {
-      _addStatusWithDuration(ctx.caster, StatusEffectId.haymakerStatusDrain, {}, e.durationTurns, ctx);
+      _addStatusWithDuration(affected, StatusEffectId.haymakerStatusDrain, {}, e.durationTurns, ctx);
     }
     if (e.distanceBonusDamage) {
-      _addStatusWithDuration(ctx.caster, StatusEffectId.haymakerDistanceBonus, {}, e.durationTurns, ctx);
+      _addStatusWithDuration(affected, StatusEffectId.haymakerDistanceBonus, {}, e.durationTurns, ctx);
     }
   }
 

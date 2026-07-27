@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:rune_duel/spells/spell_art_pack.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
 
 import 'fake_path_provider.dart';
@@ -87,6 +88,58 @@ void main() {
     expect(restored.artHash, isNull);
   });
 
+  test(
+      'withPackArt() sets artHash/artSource/artPackId from the pack entry, leaving other '
+      'fields unchanged', () {
+    final original = sample();
+    final entry = kPainterlyPack.first;
+    final withPack = original.withPackArt(packId: entry.id);
+
+    expect(withPack.artHash, equals(entry.sha256));
+    expect(withPack.artSource, equals(SpellArtSource.builtIn));
+    expect(withPack.artPackId, equals(entry.id));
+    expect(withPack.artUpdatedAt, isNotNull);
+    expect(withPack.id, equals(original.id));
+    expect(withPack.spellHashHex, equals(original.spellHashHex));
+
+    final restored = SpellAsset.fromJson(withPack.toJson());
+    expect(restored.artHash, equals(entry.sha256));
+    expect(restored.artSource, equals(SpellArtSource.builtIn));
+    expect(restored.artPackId, equals(entry.id));
+    expect(restored.artUpdatedAt, equals(withPack.artUpdatedAt));
+  });
+
+  test('withPackArt() throws for an id not in kPainterlyPack', () {
+    expect(() => sample().withPackArt(packId: 'not-a-real-id'), throwsArgumentError);
+  });
+
+  test('withArt() clears a previous artPackId (import supersedes pack selection)', () {
+    final withPack = sample().withPackArt(packId: kPainterlyPack.first.id);
+    final withImport = withPack.withArt(hash: '0xdeadbeef', source: SpellArtSource.localImport);
+
+    expect(withImport.artPackId, isNull);
+    expect(withImport.artHash, equals('0xdeadbeef'));
+    expect(withImport.artSource, equals(SpellArtSource.localImport));
+  });
+
+  test('withoutArt() clears artPackId along with the rest of the art metadata', () {
+    final withPack = sample().withPackArt(packId: kPainterlyPack.first.id);
+    final cleared = withPack.withoutArt();
+
+    expect(cleared.artHash, isNull);
+    expect(cleared.artSource, isNull);
+    expect(cleared.artPackId, isNull);
+  });
+
+  test('a spell JSON predating artPackId (no such key) still loads, with artPackId null', () {
+    final original = sample().withArt(hash: '0xdeadbeef', source: SpellArtSource.localImport);
+    final legacyJson = original.toJson()..remove('artPackId');
+
+    final restored = SpellAsset.fromJson(legacyJson);
+    expect(restored.artPackId, isNull);
+    expect(restored.artHash, equals('0xdeadbeef'));
+  });
+
   test('gridWithheld defaults to false and round-trips', () {
     final original = sample();
     expect(original.gridWithheld, isFalse);
@@ -113,6 +166,18 @@ void main() {
     final restored = SpellAsset.fromJson(redacted.toJson());
     expect(restored.gridWithheld, isTrue);
     expect(restored.initialGrid, isEmpty);
+  });
+
+  test('withGridWithheld() preserves art metadata (regression: this previously dropped '
+      'artHash/artSource/artUpdatedAt silently -- a loaned spell with custom art lost its '
+      'art on the wire)', () {
+    final withPack = sample().withPackArt(packId: kPainterlyPack.first.id);
+    final redacted = withPack.withGridWithheld();
+
+    expect(redacted.artHash, equals(withPack.artHash));
+    expect(redacted.artSource, equals(SpellArtSource.builtIn));
+    expect(redacted.artPackId, equals(withPack.artPackId));
+    expect(redacted.artUpdatedAt, equals(withPack.artUpdatedAt));
   });
 
   test('save() writes a JSON file under <docs>/spells/<id>.json', () async {

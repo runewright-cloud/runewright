@@ -24,7 +24,7 @@ import 'package:flutter/material.dart';
 import '../battle/models/creature_spec.dart';
 import '../battle/models/effect_kind.dart';
 import '../engine/border_zone.dart';
-import '../spells/spell_art_store.dart';
+import '../spells/spell_art_resolver.dart';
 import '../spells/spell_asset.dart';
 import 'manuscript_theme.dart';
 import 'sigil_painter.dart';
@@ -551,12 +551,17 @@ SpellCardPainter _painterFor(SpellAsset spell) => SpellCardPainter(
   symbols: elementSymbolsFor(spell.formula, spell.t),
 );
 
-/// True iff [spell] has custom art to look up in [SpellArtStore]. Both the
-/// hash pointer and a non-empty key must be present -- the latter guards
-/// against pre-P1 spells that somehow round-tripped a stray artHash with no
-/// spellHashHex (shouldn't happen, but the store key would be meaningless).
-bool _hasCustomArt(SpellAsset spell) =>
-    spell.artHash != null && spell.spellHashHex.isNotEmpty;
+/// True iff [spell] has custom art to resolve (spell_art_resolver.dart).
+/// Source-aware: built-in pack art is keyed by [SpellAsset.artPackId], not
+/// [SpellAsset.spellHashHex] (the [SpellArtStore] key), so the two sources
+/// need different presence checks. Guards against a spell that somehow
+/// round-tripped a stray artHash with no matching key for its source
+/// (shouldn't happen, but the key would be meaningless).
+bool _hasCustomArt(SpellAsset spell) {
+  if (spell.artHash == null) return false;
+  if (spell.artSource == SpellArtSource.builtIn) return spell.artPackId != null;
+  return spell.spellHashHex.isNotEmpty;
+}
 
 /// Opens a full-screen overlay of [spell]'s card art, dismissed by tapping
 /// anywhere. Exposed publicly so callers that need a custom gesture mapping
@@ -669,7 +674,7 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
   void initState() {
     super.initState();
     if (_hasArt) {
-      _fullArtFuture = SpellArtStore.loadFull(widget.spell.spellHashHex);
+      _fullArtFuture = resolveSpellArtFull(widget.spell);
     }
     _intro = AnimationController(
       vsync: this,
@@ -1094,9 +1099,10 @@ class _CardFrame extends StatelessWidget {
 /// ([SpellAsset.t]), split across elements by the spell's effect affinities.
 ///
 /// If [SpellAsset.artHash] is set, the small thumbnail shows the player's
-/// imported custom art instead (loaded from [SpellArtStore]) while it's
-/// available, falling back to the coat of arms while loading or on a store
-/// miss. Tapping always opens a full-screen overlay; when custom art is set,
+/// custom art instead (an imported image or a built-in pack icon, resolved
+/// via spell_art_resolver.dart) while it's available, falling back to the
+/// coat of arms while loading or on a resolver miss. Tapping always opens a
+/// full-screen overlay; when custom art is set,
 /// that overlay is a two-layer flip (see [_FullscreenSpellCard]) so the true
 /// emblem stays reachable.
 class SpellCardWidget extends StatefulWidget {
@@ -1140,7 +1146,7 @@ class _SpellCardWidgetState extends State<SpellCardWidget> {
 
   Future<Uint8List?> _loadThumb() {
     if (!_hasCustomArt(widget.spell)) return Future.value(null);
-    return SpellArtStore.loadThumb(widget.spell.spellHashHex);
+    return resolveSpellArtThumb(widget.spell);
   }
 
   @override

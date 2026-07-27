@@ -188,7 +188,7 @@ const Map<String, String> _kStatusLabel = {
   StatusEffectId.statusDormant: 'Dormant',
   StatusEffectId.haymakerDot: 'Burning',
   StatusEffectId.haymakerSlow: 'Slowed',
-  StatusEffectId.haymakerStatusDrain: 'Drained',
+  StatusEffectId.haymakerStatusDrain: 'Draining Hits',
   StatusEffectId.haymakerDistanceBonus: 'Charging',
   StatusEffectId.revealCounterCharms: 'See Charms',
   StatusEffectId.revealSpells: 'See Spells',

@@ -152,3 +152,29 @@ cross-check redundant). Given CLAUDE.md's note that `RULESET_VERSION` is
 "now 3" while `MatchConfig.rulesetVersion` defaults to `2`, this seems worth
 a deliberate look before the next ruleset bump — not urgent, but flagging so
 it doesn't get lost.
+
+---
+
+## 7. Sync Art's `_receiveAndSaveBundle` has no size cap on received art
+
+**File:** `lib/trade/sync_art_session.dart`.
+
+Found while wiring the built-in spell art pack through Sync Art
+(`docs/SPELL_ART_PACK_PLAN.md` Phase C/D). `_receiveAndSaveBundle` decodes
+whatever `fullBase64`/`thumbBase64` a peer sends and, after the SHA-256
+integrity check against the claimed `artHash` passes, saves it straight to
+`SpellArtStore` — with no upper bound on decoded byte size. Contrast
+`spell_art_import.dart`'s local-import path, which enforces
+`kSpellArtMaxImportBytes` (8 MB) *before* decoding untrusted bytes.
+
+A peer that controls both the art bytes and the `artHash` it claims for them
+(trivial — it's their own hash to compute) can pass the integrity check with
+an arbitrarily large payload, so this isn't a spoofing risk, just an
+unbounded-allocation one: a malicious or buggy peer could send a very large
+`fullBase64` string and force this device to base64-decode and persist it.
+
+**Not touched here** — pre-existing, orthogonal to the art-pack work that
+surfaced it, and Sync Art already requires a completed pairing handshake
+(not reachable by an arbitrary unpaired peer). Worth a size-cap check
+mirroring `kSpellArtMaxImportBytes` before decoding, next time this file is
+touched for other reasons.

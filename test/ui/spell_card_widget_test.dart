@@ -10,6 +10,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:rune_duel/spells/spell_art_pack.dart';
 import 'package:rune_duel/spells/spell_art_store.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
 import 'package:rune_duel/ui/spell_card_painter.dart';
@@ -89,6 +90,26 @@ void main() {
       await tester.pumpAndSettle();
     });
 
+    expect(find.byType(Image), findsOneWidget);
+  });
+
+  testWidgets(
+      'spell with built-in pack art renders it without touching SpellArtStore '
+      '(docs/SPELL_ART_PACK_PLAN.md Phase C)', (tester) async {
+    final entry = kPainterlyPack.first;
+    final spell = _sample().withPackArt(packId: entry.id);
+
+    await tester.runAsync(() async {
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(body: SpellCardWidget(spell: spell)),
+      ));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await tester.pumpAndSettle();
+    });
+
+    // No SpellArtStore.save() was ever called for this spell, so a store
+    // miss (null) would have fallen back to CustomPaint -- Image rendering
+    // proves the resolver took the built-in-pack branch, not the store one.
     expect(find.byType(Image), findsOneWidget);
   });
 
