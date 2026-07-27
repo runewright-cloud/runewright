@@ -184,6 +184,7 @@ const Map<String, String> _kStatusLabel = {
   StatusEffectId.blind: 'Blind',
   StatusEffectId.chainFast: 'Chain+',
   StatusEffectId.chainSlow: 'Chain−',
+  StatusEffectId.chainSurcharge: 'Cursed Chain',
   StatusEffectId.statusDormant: 'Dormant',
   StatusEffectId.haymakerDot: 'Burning',
   StatusEffectId.haymakerSlow: 'Slowed',
@@ -2651,8 +2652,58 @@ class _PlayerHud extends StatelessWidget {
             barColor: const Color(0xFF2B4D8C),
             labelColor: const Color(0xFF8AACED),
           ),
+          if (avatar.activeChainElement != null) ...[
+            const SizedBox(height: 4),
+            _ChainIndicator(avatar: avatar),
+          ],
         ],
       ),
+    );
+  }
+}
+
+/// Shows the local wizard's active chain casting element, length, and
+/// current cost multiplier (design doc §Chain Discount System) -- otherwise
+/// the discount driving the whole mana economy decays invisibly. Only
+/// rendered while a chain is active ([WizardAvatar.activeChainElement] is
+/// non-null); [WizardAvatar.chainCostMultiplier] with the active element as
+/// its own pure affinity gives exactly the multiplier the wizard's next
+/// matching cast would receive.
+class _ChainIndicator extends StatelessWidget {
+  const _ChainIndicator({required this.avatar});
+
+  final WizardAvatar avatar;
+
+  @override
+  Widget build(BuildContext context) {
+    final element = avatar.activeChainElement!;
+    final color = BattlefieldPainter.colorForAffinity(element);
+    // chainLength is never negative (see WizardAvatar.chainLengths), so this
+    // is always a discount, never a surcharge -- the Air-flavor curse is a
+    // separate one-shot chainSurcharge status effect, already surfaced via
+    // the ordinary status-badge row.
+    final discountPct = ((1.0 - avatar.chainCostMultiplier(element)) * 100).round();
+    final name = element.name;
+    final label =
+        '${name[0].toUpperCase()}${name.substring(1)} ×${avatar.chainLength} (−$discountPct%)';
+
+    return Row(
+      children: [
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 6),
+        Text(
+          label,
+          style: TextStyle(
+            fontFamily: 'serif',
+            fontSize: 10,
+            color: color,
+          ),
+        ),
+      ],
     );
   }
 }

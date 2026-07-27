@@ -2423,12 +2423,12 @@ class TurnLoop {
   }) {
     // design doc "Summons": a summon-mode spell's element sequence is read
     // as a creature instead of being resolved as incantation effects.
-    // Bypasses EffectResolver/EffectApplicator and the chain-discount system
-    // entirely -- summoning is "instead of creating spell effect
-    // incantations", not a 17th effect kind.
+    // Bypasses EffectResolver/EffectApplicator entirely -- summoning is
+    // "instead of creating spell effect incantations", not a 17th effect
+    // kind. It still builds/spends the chain like any other spell (R4).
     if (spell.isSummon) {
       final sequence = certElementSequence ?? _elementSequence(spell);
-      return _castSummon(
+      final minion = _castSummon(
         actor,
         targetHex,
         sequence,
@@ -2437,6 +2437,8 @@ class TurnLoop {
         rng,
         rodRequested: rodRequested,
       );
+      _updateChainState(actor, spell, certElementSequence: sequence);
+      return minion;
     }
 
     // TODO(B-1): null certFormulas means either a local spell (trusted wire
@@ -2634,37 +2636,63 @@ class TurnLoop {
     return preferred; // fallback: stack anyway
   }
 
+  /// Advances/breaks [actor]'s chain following this cast. [spell.isSummon]
+  /// spells build the chain like any other spell (design doc R4), keyed on
+  /// the creature's derived affinity ([CreatureSpec.fromElements] — always a
+  /// single element, so a summon is always pure) rather than
+  /// [certFormulas]/[_parsedFormulas]; [certElementSequence] is the
+  /// certified element sequence for a peer's summon (mirrors [_castSummon]'s
+  /// own certified/wire split).
   void _updateChainState(
     WizardAvatar actor,
     SpellAsset spell, {
     List<ParsedFormula>? certFormulas,
+    List<BorderZone>? certElementSequence,
   }) {
-    final formulas = certFormulas ?? _parsedFormulas(spell);
-    if (formulas.isEmpty) return;
+    final castAffinity = spell.isSummon
+        ? CreatureSpec.fromElements(
+            certElementSequence ?? _elementSequence(spell),
+          )?.affinity
+        : _pureAffinityOf(certFormulas ?? _parsedFormulas(spell));
 
-    final castAffinity = spellAffinityFromZone(formulas.first.affinity);
+    if (castAffinity == null) {
+      // Hybrid spell (2+ distinct formula affinities), or the degenerate
+      // empty-sequence summon edge case: breaks the chain outright, same as
+      // any off-alignment action (design doc R3 — purity is the whole
+      // rule).
+      actor.chainLengths.clear();
+      actor.activeChainElement = null;
+      return;
+    }
+
     if (actor.activeChainElement == castAffinity) {
-      // Continuing the chain — increment length.
+      // Continuing the chain — advance by one whole cast (2 half-credits),
+      // scaled by chainFast/chainSlow (chainAccumulationMultiplier: 2.0/0.5).
       final multiplier = actor.chainAccumulationMultiplier;
-      final increment = multiplier >= 2.0 ? 2 : 1;
+      final credits = (2 * multiplier).round();
       actor.chainLengths[castAffinity] =
-          (actor.chainLengths[castAffinity] ?? 0) + increment;
+          (actor.chainLengths[castAffinity] ?? 0) + credits;
     } else {
       // Break the old chain; start a new one for this affinity.
+      actor.chainLengths.clear();
       actor.activeChainElement = castAffinity;
-      actor.chainLengths[castAffinity] = 1;
+      actor.chainLengths[castAffinity] = 2;
     }
   }
 
+  /// Regresses [actor]'s active chain by 2 whole casts (4 half-credits),
+  /// floored at 0 (design doc R7 — inaction is a gentler decay, never a
+  /// penalty). Called for Pass/Dash/Meditate and any cast that resolves to
+  /// nothing (fizzle, counter-charm).
   void _regressChain(WizardAvatar actor) {
     final el = actor.activeChainElement;
     if (el == null) return;
-    final current = actor.chainLengths[el] ?? 0;
-    if (current > 1) {
-      actor.chainLengths[el] = current - 1;
-    } else {
+    final next = (actor.chainLengths[el] ?? 0) - 4;
+    if (next <= 0) {
       actor.chainLengths.remove(el);
       actor.activeChainElement = null;
+    } else {
+      actor.chainLengths[el] = next;
     }
   }
 
@@ -3981,8 +4009,8 @@ class TurnLoop {
     // effect resolution. Stored here; read by _resolveActions → _applySpell.
     final certFormulas = TrajectoryParser.parse(outputs).formulas;
     certifiedPeerFormulas[spell.commitmentHex] = certFormulas;
-    certifiedPeerElementSequences[spell.commitmentHex] =
-        TrajectoryParser.certifiedElementSequence(outputs);
+    final certElementSequence = TrajectoryParser.certifiedElementSequence(outputs);
+    certifiedPeerElementSequences[spell.commitmentHex] = certElementSequence;
     // Retained for Sightings capture (docs/SIGHTINGS_PLAN.md §2/§4) — the
     // clean bestiary base cost, independent of this cast's modifiers. Read
     // by battle_screen.dart's capture hook after runTurn returns.
@@ -4095,6 +4123,8 @@ class TurnLoop {
         peerAvatar,
         vocalScore: vocalScore,
         isEfficiency: claimsEfficiency,
+        isSummon: spell.isSummon,
+        certElementSequence: certElementSequence,
       );
       if (peerAvatar.mana < verifiedCost) {
         session.sendForfeit('insufficient_mana_for_spell');
@@ -4147,19 +4177,29 @@ class TurnLoop {
     WizardAvatar caster, {
     VocalScore? vocalScore,
     bool isEfficiency = false,
+    bool isSummon = false,
+    List<BorderZone>? certElementSequence,
   }) {
     // 1. Certified base + growth.
     var cost = _certifiedBaseManaCost(outputs, certFormulas);
 
-    // 2. Chain discount from certified formulas.
-    final chainEl = caster.activeChainElement;
-    if (chainEl != null && certFormulas.isNotEmpty) {
-      final matching = certFormulas
-          .where((f) => spellAffinityFromZone(f.affinity) == chainEl)
-          .length;
-      final alignFraction = matching / certFormulas.length;
-      final discount = caster.chainDiscountMultiplier(alignFraction);
-      cost = (cost * (1.0 - discount)).ceil();
+    // 2. Chain: a pending chainSurcharge (potent Air-flavor Chain
+    // Interaction) overrides the ordinary chain lookup entirely for this one
+    // cast, regardless of affinity — consumed here so it doesn't also fire
+    // in _updateChainState's normal advancement afterward.
+    final surchargeIdx = caster.activeStatusEffects.indexWhere(
+      (fx) => fx.effectTypeId == StatusEffectId.chainSurcharge,
+    );
+    if (surchargeIdx >= 0) {
+      cost = (cost * pow(0.9, -1)).ceil();
+      caster.activeStatusEffects.removeAt(surchargeIdx);
+    } else {
+      final pureAffinity = isSummon
+          ? CreatureSpec.fromElements(
+              certElementSequence ?? const [],
+            )?.affinity
+          : _pureAffinityOf(certFormulas);
+      cost = (cost * caster.chainCostMultiplier(pureAffinity)).ceil();
     }
 
     // 3. Efficiency (Water) loadout enhancement: −1/3 mana cost. [isEfficiency]
@@ -4216,16 +4256,22 @@ class TurnLoop {
   }) {
     var cost = spell.manaCost;
 
-    // Chain discount.
-    final formulas = _parsedFormulas(spell);
-    final chainEl = caster.activeChainElement;
-    if (chainEl != null && formulas.isNotEmpty) {
-      final matching = formulas
-          .where((f) => spellAffinityFromZone(f.affinity) == chainEl)
-          .length;
-      final alignFraction = matching / formulas.length;
-      final discount = caster.chainDiscountMultiplier(alignFraction);
-      cost = (cost * (1.0 - discount)).ceil();
+    // Chain: a pending chainSurcharge (potent Air-flavor Chain Interaction)
+    // overrides the ordinary chain lookup for this one cast, regardless of
+    // affinity — mirrors _certifiedManaCost's step 2, same relative
+    // position. Consumed here so it doesn't also fire in _updateChainState's
+    // normal advancement afterward.
+    final surchargeIdx = caster.activeStatusEffects.indexWhere(
+      (fx) => fx.effectTypeId == StatusEffectId.chainSurcharge,
+    );
+    if (surchargeIdx >= 0) {
+      cost = (cost * pow(0.9, -1)).ceil();
+      caster.activeStatusEffects.removeAt(surchargeIdx);
+    } else {
+      final pureAffinity = spell.isSummon
+          ? CreatureSpec.fromElements(_elementSequence(spell))?.affinity
+          : _pureAffinityOf(_parsedFormulas(spell));
+      cost = (cost * caster.chainCostMultiplier(pureAffinity)).ceil();
     }
 
     // Efficiency (Water) loadout enhancement: −1/3 mana cost. Applied after
@@ -4451,6 +4497,21 @@ class TurnLoop {
       );
     }
     return formulas;
+  }
+
+  /// The single affinity shared by every formula in [formulas], for chain
+  /// discount/advancement purposes -- null if [formulas] is empty or spans
+  /// more than one distinct first-element (a hybrid spell, discount-
+  /// ineligible per design doc's Chain Discount System). Used identically
+  /// by [_updateChainState] and [_spellManaCost]/[_certifiedManaCost] so
+  /// "pure" can't drift between the advancement and discount paths.
+  static SpellAffinity? _pureAffinityOf(List<ParsedFormula> formulas) {
+    if (formulas.isEmpty) return null;
+    final first = spellAffinityFromZone(formulas.first.affinity);
+    for (final f in formulas.skip(1)) {
+      if (spellAffinityFromZone(f.affinity) != first) return null;
+    }
+    return first;
   }
 
   static BorderZone? _zoneFromName(String name) => switch (name.toLowerCase()) {

@@ -419,37 +419,55 @@ class EffectApplicator {
       final targets = _avatarsAt(ctx.state, ctx.targetTile);
       if (targets.isNotEmpty) {
         final target = targets.first;
-        // Inherit target's chain state, overwriting own.
+        // Water flavor explicitly reads FROM the target and writes TO the
+        // caster ("you gain all chain status of the affected target") --
+        // the one flavor that doesn't affect the target tile's occupant.
         ctx.caster.activeChainElement = target.activeChainElement;
         ctx.caster.chainLengths.clear();
         ctx.caster.chainLengths.addAll(target.chainLengths);
         if (e.chainTransferBonus > 0 && ctx.caster.activeChainElement != null) {
           final el = ctx.caster.activeChainElement!;
-          ctx.caster.chainLengths[el] = (ctx.caster.chainLengths[el] ?? 0) + e.chainTransferBonus;
+          // chainTransferBonus is in whole casts (+1 under potency);
+          // chainLengths stores half-credits.
+          ctx.caster.chainLengths[el] =
+              (ctx.caster.chainLengths[el] ?? 0) + e.chainTransferBonus * 2;
         }
       }
       return;
     }
+
+    // Every other flavor affects whoever occupies the target tile, like
+    // nearly every spell effect in this game -- "Chain Interaction" isn't
+    // special-cased to hit the caster. A self-cast (own tile targeted)
+    // buffs the caster; an enemy-targeted cast curses/debuffs them instead.
+    final targets = _avatarsAt(ctx.state, ctx.targetTile);
+    if (targets.isEmpty) return;
+    final affected = targets.first;
+
     if (e.setAllChainsToNegative) {
+      // Base and potent both clear the target's chain outright ("all chain
+      // bonuses removed").
+      affected.chainLengths.clear();
+      affected.activeChainElement = null;
       if (e.negativeValue < 0) {
-        // Potent: set all chains to negative value.
-        for (final el in SpellAffinity.values) {
-          ctx.caster.chainLengths[el] = e.negativeValue;
-        }
-        ctx.caster.activeChainElement = null;
-      } else {
-        // Base: clear all chains.
-        ctx.caster.chainLengths.clear();
-        ctx.caster.activeChainElement = null;
+        // Potent: additionally curse the target's very next spell cast --
+        // charged as if their chain length were -1, regardless of that
+        // spell's own affinity. Normal chain building resumes starting
+        // with that same cast (see StatusEffectId.chainSurcharge).
+        // remainingTurns=2 mirrors nextSpellCostDouble: survives this
+        // turn's tick, applies to the next cast.
+        _addStatusWithDuration(
+            affected, StatusEffectId.chainSurcharge, const {}, 2, ctx);
       }
       return;
     }
+
     // Fire: chain accrues faster / Earth: chain accrues slower.
     final pct = (e.chainAccumulationMultiplier * 100).round();
     final typeId = e.chainAccumulationMultiplier >= 1.0
         ? StatusEffectId.chainFast
         : StatusEffectId.chainSlow;
-    _addStatusWithDuration(ctx.caster, typeId, {'chainAccMultiplierPct': pct}, e.durationTurns, ctx);
+    _addStatusWithDuration(affected, typeId, {'chainAccMultiplierPct': pct}, e.durationTurns, ctx);
   }
 
   // ── Spell Interaction (Fire-Air) ──────────────────────────────────────────

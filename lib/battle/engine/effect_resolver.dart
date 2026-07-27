@@ -141,11 +141,14 @@ class EffectResolver {
           transferChainFromTarget: true,
           chainTransferBonus: p ? 1 : 0,
         ),
-      // Base: clear all chains. Potent: set all chains to −1 (cost multiplier).
+      // Base: clear all chains. Potent: additionally curse the next cast
+      // (chainSurcharge). Both brackets take the "clear" path in
+      // EffectApplicator._applyChainInteraction -- setAllChainsToNegative is
+      // the dispatch flag for that whole branch, not just the potent half.
       (SpellAffinity.air, EffectKind.chainInteraction) =>
         ChainInteractionEffect(
           affinity: SpellAffinity.air,
-          setAllChainsToNegative: p,
+          setAllChainsToNegative: true,
           negativeValue: p ? -1 : 0,
         ),
 

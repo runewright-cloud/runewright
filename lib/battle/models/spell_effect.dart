@@ -214,6 +214,10 @@ class ChainInteractionEffect extends SpellEffect {
   /// Under potency: +1 to the chain length inherited from the target.
   final int chainTransferBonus;
 
+  /// Air flavor's dispatch flag: clears the target's chain outright. Always
+  /// true for Air (both potency brackets); [negativeValue] is what
+  /// distinguishes base (0, plain clear) from potent (-1, clear + curse the
+  /// target's next cast — see StatusEffectId.chainSurcharge).
   final bool setAllChainsToNegative;
   final int negativeValue;
 }

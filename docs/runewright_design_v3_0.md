@@ -621,31 +621,64 @@ The wild-magic specialist build (perfectly balanced elements, maximum trigger el
 
 ## Chain Discount System
 
-Each pure element tracks an independent chain counter. Casting sequential spells of the same affinity accumulates a mana discount.
+Only **one** discount chain is active at a time (single active element, not a per-element
+independent counter). Casting sequential **pure**-affinity spells of the same element
+accumulates a mana discount.
+
+### `[RESOLVED — simplified 2026-07-26]` Hybrid chaining deferred
+
+The system is deliberately simplified from an earlier fractional-credit draft: **hybrid
+spells (spanning more than one distinct formula affinity) are never discount-eligible, and
+casting one breaks the chain to 0** — purity is the whole rule, whether the spell is a
+net-new element or a mix of several. Fractional/partial-alignment credit is cut, not just
+unimplemented; revisit only if playtest surfaces demand for a hybrid-chaining variant.
 
 ### Chain Advancement `[RESOLVED — action breaks, inaction regresses]`
-- **Pure-affinity spell aligned with active chain:** chain advances by 1, discount applies fully.
-- **Hybrid-affinity spell partially aligned:** chain advances by the alignment fraction (fractional credits accumulate toward the next integer).
-- **Casting a spell with *zero* overlap with the active chain → the chain *breaks* entirely (resets to 0).** A hard cost, deliberately: a high-utility off-alignment spell should hurt your chain to cast.
-- **Taking *no* chain action that turn (no spell, or a melee attack) → the chain *regresses by 2*** (a gentler decay for inaction, not a full reset).
+- **Pure-affinity spell aligned with the active chain:** chain advances by 1, discount
+  applies fully (using the chain length *before* this cast — the first cast of a chain pays
+  full price; the discount kicks in on the second and later).
+- **Pure-affinity spell of a *different* element than the active chain:** the old chain
+  breaks to 0; the new element becomes active at length 1 (no discount on this cast).
+- **Hybrid-affinity spell (any mix of formula affinities):** the chain breaks to 0 and no
+  element is active afterward, regardless of overlap with the old chain.
+- **Summon spells build and spend the chain like any other spell** — a summon's chain
+  affinity is its derived creature affinity (the CA's most-common formula element,
+  first-appearance tiebreak — see Summons), which is always a single element.
+- **Taking *no* chain action that turn (no spell, or a melee attack) → the chain *regresses
+  by 2*, floored at 0** (a gentler decay for inaction, not a full reset).
 
-> **`[RESOLVED — v2.3 review §10]` The overlap is fixed:** the v2.3 doc had a non-aligned *cast* triggering both "break" and "regress by 2." The rule is now **action breaks, inaction regresses** — casting something off-alignment is an active choice with a hard consequence (full reset); merely failing to advance (idle turn / melee attack) only nudges it down by 2. Distinct events, distinct penalties.
-
+> **`[RESOLVED — v2.3 review §10]` The overlap is fixed:** the v2.3 doc had a non-aligned
+> *cast* triggering both "break" and "regress by 2." The rule is now **action breaks,
+> inaction regresses** — casting something off-alignment (or hybrid) is an active choice
+> with a hard consequence (full reset); merely failing to advance (idle turn / melee attack)
+> only nudges it down by 2, and never below 0. Distinct events, distinct penalties.
 
 ### Discount Formula
-```
-discount = (0.9 ^ chain_length) × (fraction of spell's formulas aligned with active chain element)
-```
-Examples (chain length 5): pure fire on fire chain `0.9^5 × 1.0 = 59%`; fire-fire-water (2/3) `≈ 39%`; fire-water-air (1/3) `≈ 19%`.
 
-| Chain length | Pure discount | 50%-aligned hybrid |
+```
+cost_multiplier = 0.9 ^ chain_length
+```
+
+i.e. `discount = 1 − 0.9 ^ chain_length`. This is a **cost multiplier**, always ≥ 0, applied
+alongside the other per-cast multipliers (Efficiency ×⅔, sorcerer vocal quality,
+`nextSpellCostDouble`) — all such modifiers **compose multiplicatively, never additively**,
+in a fixed order (base → chain → Efficiency → sorcerer → cost-double).
+
+Example: pure fire on a fire chain at length 5 costs `0.9^5 ≈ 59%` of base — a 41% discount.
+
+| Chain length | Cost multiplier | Discount |
 |---|---|---|
-| 1 | 10% | 5% |
-| 3 | 27% | 14% |
-| 5 | 41% | 20% |
-| 10 | 65% | 33% |
+| 1 | 0.90 | 10% |
+| 3 | 0.73 | 27% |
+| 5 | 0.59 | 41% |
+| 10 | 0.35 | 65% |
 
-This rewards specialization while still letting hybrid mages benefit partially.
+**`[RESOLVED]` Negative chain length is reserved for the Air-flavor Chain Interaction effect
+only** ("all chain bonuses removed [all chains set to −1: mana cost increased instead of
+decreased]" — see the effect table). Ordinary regression floors at 0 and never goes negative
+on its own; only that one effect can push a chain to −1, at which point
+`0.9^-1 ≈ 1.11` — an ~11% surcharge, exactly as the effect table intends. The price itself
+never goes negative; only the exponent can.
 
 ---
 

@@ -209,9 +209,31 @@ class WizardAvatar {
 
   SpellAffinity? activeChainElement;
 
-  /// Per-element chain lengths. Can be negative (Fire-Water/Air effect sets
-  /// chains to −1, making the discount formula a cost multiplier instead).
+  /// Chain length in **half-credits**, always ≥ 0 — a normal advance is +2,
+  /// `chainFast` (200% rate) is +4, `chainSlow` (50% rate) is +1, so the slow
+  /// effect isn't a no-op despite chain length itself always being a whole
+  /// number of casts. Effective chain length is `credits ~/ 2`. Regression
+  /// floors at 0 (see [TurnLoop._regressChain]).
+  ///
+  /// Only [activeChainElement]'s entry is ever "live" (only one chain is
+  /// active at a time — see design doc's 2026-07-26 simplification); other
+  /// entries can briefly exist mid-transfer (Fire-Water/Water Chain
+  /// Interaction copies an opponent's whole map) but are otherwise unused.
+  ///
+  /// The Fire-Water/Air Chain Interaction effect's "−1 chain length"
+  /// surcharge does **not** live here — a stored negative value has no
+  /// element to attach to once the effect also clears [activeChainElement].
+  /// It's instead a one-shot [StatusEffectId.chainSurcharge] consumed on the
+  /// wizard's next cast (see [TurnLoop._spellManaCost]).
   final Map<SpellAffinity, int> chainLengths;
+
+  /// Effective chain length (whole casts) for [activeChainElement], or 0 if
+  /// no chain is active.
+  int get chainLength {
+    final el = activeChainElement;
+    if (el == null) return 0;
+    return (chainLengths[el] ?? 0) ~/ 2;
+  }
 
   // ── Pending effect multipliers (Air-Fire) ─────────────────────────────────
 
@@ -361,19 +383,22 @@ class WizardAvatar {
 
   // ── Chain discount ────────────────────────────────────────────────────────
 
-  /// Mana discount multiplier for a spell with [alignmentFraction] of its
-  /// formulas aligned with the active chain element.
+  /// Mana cost multiplier for casting a spell whose single pure affinity is
+  /// [pureAffinity] (null for a hybrid spell — never discount-eligible, see
+  /// design doc's 2026-07-26 simplification).
   ///
-  /// Returns a value in (0, 1) for a discount (positive chain length),
-  /// returns >1 for a cost increase (negative chain length).
-  /// Returns 0 (no discount) when there is no active chain.
-  double chainDiscountMultiplier(double alignmentFraction) {
-    final el = activeChainElement;
-    if (el == null || alignmentFraction == 0) return 0;
-    final length = chainLengths[el] ?? 0;
-    if (length == 0) return 0;
-    // 0.9^length: negative length gives >1 (cost increase as designed).
-    return pow(0.9, length).toDouble() * alignmentFraction;
+  /// Returns `0.9 ^ chainLength` (always in `(0, 1]`, since [chainLength] is
+  /// never negative) when [pureAffinity] matches the active chain element.
+  /// Returns `1.0` (no effect) otherwise — no active chain, a hybrid spell,
+  /// or a pure spell of a different element. This is a cost *multiplier*,
+  /// meant to compose multiplicatively with Efficiency / sorcerer /
+  /// cost-double, never additively.
+  ///
+  /// The Air-flavor Chain Interaction surcharge is *not* expressed through
+  /// this getter — see [chainLengths]'s doc comment.
+  double chainCostMultiplier(SpellAffinity? pureAffinity) {
+    if (pureAffinity == null || activeChainElement != pureAffinity) return 1.0;
+    return pow(0.9, chainLength).toDouble();
   }
 
   // ── Status effect lifecycle ────────────────────────────────────────────────

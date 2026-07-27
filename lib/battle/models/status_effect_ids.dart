@@ -59,6 +59,15 @@ abstract final class StatusEffectId {
   static const chainFast = 'chainFast';
   static const chainSlow = 'chainSlow';
 
+  // Potent Air-flavor Chain Interaction: the next spell cast (any affinity,
+  // whether or not it matches an active chain) is charged as if the chain
+  // length were -1 (a ~11% surcharge), regardless of the target's actual
+  // chain state (which the same effect clears to 0 on landing). Consumed on
+  // that next cast; ordinary chain building resumes starting with it. No
+  // modifiers -- the -1 length is fixed, mirrors nextSpellCostDouble's
+  // consume-on-next-cast pattern.
+  static const chainSurcharge = 'chainSurcharge';
+
   // ── Status meta ───────────────────────────────────────────────────────────
   // statusDormant: all other status effects on this avatar do not tick.
   static const statusDormant = 'statusDormant';
