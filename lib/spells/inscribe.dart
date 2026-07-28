@@ -97,7 +97,6 @@ Future<SpellAsset> inscribeSpell({
   List<String> formula = const [],
   List<String> supremeTags = const [],
   bool isSummon = false,
-  String summonPersonality = 'aggressive',
 }) async {
   final tier = tierForSteps(steps);
   if (tier == null) {
@@ -181,7 +180,6 @@ Future<SpellAsset> inscribeSpell({
     formula: formula,
     supremeTags: supremeTags,
     isSummon: isSummon,
-    summonPersonality: summonPersonality,
   );
   await asset.save();
   return asset;

@@ -41,4 +41,70 @@ void main() {
       }
     });
   });
+
+  group('proveMembershipAt', () {
+    test('matches proveMembership exactly when there are no duplicate leaves', () {
+      final hexes = List.generate(7, (i) => '0x${i.toRadixString(16).padLeft(64, '0')}');
+      final root = BookCommitment.computeRoot(hexes);
+      final sorted = List<String>.from(hexes)..sort();
+      for (var idx = 0; idx < sorted.length; idx++) {
+        final byPosition = BookCommitment.proveMembershipAt(hexes, idx)!;
+        final byHex = BookCommitment.proveMembership(hexes, sorted[idx])!;
+        expect(byPosition.leafHex, equals(byHex.leafHex));
+        expect(byPosition.siblings, equals(byHex.siblings));
+        expect(byPosition.directions, equals(byHex.directions));
+        expect(byPosition.root, equals(root));
+        expect(byPosition.verify(), isTrue);
+      }
+    });
+
+    test('out-of-range index returns null', () {
+      final hexes = List.generate(4, (i) => '0x${i.toRadixString(16).padLeft(64, '0')}');
+      expect(BookCommitment.proveMembershipAt(hexes, -1), isNull);
+      expect(BookCommitment.proveMembershipAt(hexes, hexes.length), isNull);
+    });
+
+    test(
+      'duplicate leaves (docs/BASIC_SPELLS_PLAN.md §7): each occurrence gets its own '
+      'leafIndex and verifies against the shared root, unlike proveMembership which '
+      'always collapses onto the first occurrence',
+      () {
+        // Three copies of one Basic spell's commitment, sorted adjacent to
+        // each other by construction (equal strings sort together).
+        final dup = '0xaa'.padRight(66, '0');
+        final hexes = [
+          '0x01'.padRight(66, '0'),
+          dup,
+          dup,
+          dup,
+          '0xff'.padRight(66, '0'),
+        ];
+        final root = BookCommitment.computeRoot(hexes);
+        final sorted = List<String>.from(hexes)..sort();
+        final dupIndices = [
+          for (var i = 0; i < sorted.length; i++)
+            if (sorted[i] == dup) i,
+        ];
+        expect(dupIndices.length, 3, reason: 'sanity: 3 copies present in the sorted list');
+
+        // proveMembership can only ever prove the FIRST duplicate occurrence.
+        final byHex = BookCommitment.proveMembership(hexes, dup)!;
+        expect(byHex.leafIndex, equals(dupIndices.first));
+
+        // proveMembershipAt proves each occurrence independently — this is
+        // what a duplicate-safe cast (identified by hand SLOT, not by
+        // commitment) needs.
+        final proofs = dupIndices
+            .map((idx) => BookCommitment.proveMembershipAt(hexes, idx)!)
+            .toList();
+        for (var i = 0; i < proofs.length; i++) {
+          expect(proofs[i].leafIndex, equals(dupIndices[i]));
+          expect(proofs[i].root, equals(root));
+          expect(proofs[i].verify(), isTrue);
+        }
+        // Distinct positions, even though the leaf VALUE is identical.
+        expect(proofs.map((p) => p.leafIndex).toSet().length, 3);
+      },
+    );
+  });
 }

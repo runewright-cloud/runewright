@@ -14,7 +14,6 @@ import 'engine/stepper.dart';
 import 'battle/models/creature_spec.dart'
     show CreatureSpec, SummonAbility, summonSummaryLabel;
 import 'battle/models/effect_kind.dart' show formulaTripletKind;
-import 'battle/models/minion.dart' show SummonPersonality, kSummonPersonalityLabel;
 import 'identity/identity.dart';
 import 'spells/inscribe.dart';
 import 'spells/recipe_book.dart';
@@ -116,11 +115,11 @@ class _GameScreenState extends State<GameScreen>
 
   // Rune Craft mode: whether the next inscription reads this grid's element
   // sequence as an incantation effect (default) or a summoned creature (see
-  // CreatureSpec.fromElements) -- design doc "Summons". Personality is only
-  // meaningful when _isSummonMode is true; picked in _SpellNameDialog at
-  // inscribe time (design doc "Personalities": glyph-assigned, permanent).
+  // CreatureSpec.fromElements) -- design doc "Summons". Personality (design
+  // doc "Personalities") is no longer chosen here -- it's picked per-chapter
+  // when the summon is added to a Chapter, not at inscribe time (see
+  // library_screen.dart's _pickSummonPersonality).
   bool _isSummonMode = false;
-  SummonPersonality _summonPersonality = SummonPersonality.aggressive;
 
   // How many of _formulaTracker.formulas we've already reported to the
   // RecipeBook -- lets _recordNewFormulas() process only newly-completed
@@ -163,10 +162,6 @@ class _GameScreenState extends State<GameScreen>
     final spell = widget.loadedSpell;
     if (spell != null) {
       _isSummonMode = spell.isSummon;
-      _summonPersonality = SummonPersonality.values.firstWhere(
-        (p) => p.name == spell.summonPersonality,
-        orElse: () => SummonPersonality.aggressive,
-      );
       _initialGrid = HexGrid.fromPackedState(spell.initialGrid, _radius);
       _grid = _initialGrid!.copy();
       _rules = CARules.neutral;
@@ -386,7 +381,6 @@ class _GameScreenState extends State<GameScreen>
       _recordedAbilities.clear();
       _supremeElements.clear();
       _isSummonMode = false;
-      _summonPersonality = SummonPersonality.aggressive;
     });
   }
 
@@ -458,18 +452,15 @@ class _GameScreenState extends State<GameScreen>
   Future<void> _inscribe() async {
     if (!_canInscribe) return;
 
-    // Prompt for the spell name (and, in Summon mode, a personality) before
-    // starting the non-cancellable prove.
+    // Prompt for the spell name before starting the non-cancellable prove.
+    // Personality (Summon mode) is no longer chosen here -- see
+    // library_screen.dart's per-chapter personality picker.
     final details = await showDialog<_InscribeDetails>(
       context: context,
-      builder: (_) => _SpellNameDialog(
-        isSummon: _isSummonMode,
-        initialPersonality: _summonPersonality,
-      ),
+      builder: (_) => _SpellNameDialog(isSummon: _isSummonMode),
     );
     if (details == null || !mounted) return;
     final spellName = details.name;
-    _summonPersonality = details.personality;
 
     final initialGrid = _initialGrid!;
     final steps = _grid.stepCount;
@@ -501,7 +492,6 @@ class _GameScreenState extends State<GameScreen>
         formula: _formulaTracker.committed.map((z) => z.name).toList(),
         supremeTags: _supremeElements.toList(),
         isSummon: _isSummonMode,
-        summonPersonality: _summonPersonality.name,
         loadCircuitJson: rootBundle.loadString,
         loadVkBytes: (path) async => (await rootBundle.load(path)).buffer.asUint8List(),
         onProgress: (message) => status.value = message,
@@ -817,21 +807,19 @@ class _InscribingDialog extends StatelessWidget {
   }
 }
 
-/// Result of [_SpellNameDialog]: the chosen name, plus (meaningfully, only
-/// when [_SpellNameDialog.isSummon]) the personality glyph to bind. Always
-/// populated -- callers ignore [personality] for incantation-mode spells
-/// rather than dealing with a nullable field.
+/// Result of [_SpellNameDialog]: the chosen name. Personality (Summon mode)
+/// is no longer picked at inscribe time -- see library_screen.dart's
+/// per-chapter personality picker, which binds it when the summon is added
+/// to a Chapter instead.
 class _InscribeDetails {
-  const _InscribeDetails({required this.name, required this.personality});
+  const _InscribeDetails({required this.name});
   final String name;
-  final SummonPersonality personality;
 }
 
 class _SpellNameDialog extends StatefulWidget {
-  const _SpellNameDialog({required this.isSummon, required this.initialPersonality});
+  const _SpellNameDialog({required this.isSummon});
 
   final bool isSummon;
-  final SummonPersonality initialPersonality;
 
   @override
   State<_SpellNameDialog> createState() => _SpellNameDialogState();
@@ -840,7 +828,6 @@ class _SpellNameDialog extends StatefulWidget {
 class _SpellNameDialogState extends State<_SpellNameDialog> {
   final _ctrl = TextEditingController();
   bool _isEmpty = true;
-  late SummonPersonality _personality = widget.initialPersonality;
 
   @override
   void dispose() {
@@ -851,7 +838,7 @@ class _SpellNameDialogState extends State<_SpellNameDialog> {
   void _submit() {
     final name = _ctrl.text.trim();
     if (name.isNotEmpty) {
-      Navigator.of(context).pop(_InscribeDetails(name: name, personality: _personality));
+      Navigator.of(context).pop(_InscribeDetails(name: name));
     }
   }
 
@@ -859,43 +846,13 @@ class _SpellNameDialogState extends State<_SpellNameDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text(widget.isSummon ? 'Name Your Summon' : 'Name Your Spell'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          TextField(
-            controller: _ctrl,
-            autofocus: true,
-            decoration: const InputDecoration(hintText: 'Spell name'),
-            textCapitalization: TextCapitalization.words,
-            onChanged: (v) => setState(() => _isEmpty = v.trim().isEmpty),
-            onSubmitted: (_) => _submit(),
-          ),
-          if (widget.isSummon) ...[
-            const SizedBox(height: 16),
-            const Text(
-              'Personality',
-              style: TextStyle(fontSize: 12, letterSpacing: 0.5, color: Colors.black54),
-            ),
-            const SizedBox(height: 6),
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              // obedient is excluded here: it's a seam only this pass (no
-              // manual-control UI exists yet) — see SummonPersonality.obedient's
-              // doc comment. Don't let it be picked until that's built.
-              children: SummonPersonality.values
-                  .where((p) => p != SummonPersonality.obedient)
-                  .map((p) {
-                return ChoiceChip(
-                  label: Text(kSummonPersonalityLabel[p]!),
-                  selected: _personality == p,
-                  onSelected: (_) => setState(() => _personality = p),
-                );
-              }).toList(),
-            ),
-          ],
-        ],
+      content: TextField(
+        controller: _ctrl,
+        autofocus: true,
+        decoration: const InputDecoration(hintText: 'Spell name'),
+        textCapitalization: TextCapitalization.words,
+        onChanged: (v) => setState(() => _isEmpty = v.trim().isEmpty),
+        onSubmitted: (_) => _submit(),
       ),
       actions: [
         TextButton(

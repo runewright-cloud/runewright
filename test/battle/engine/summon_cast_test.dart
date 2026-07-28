@@ -275,6 +275,146 @@ void main() {
         lastDist = dist;
       }
     });
+
+    test('evasive creature holds its ideal attack range -- closing in when too far, '
+        'backing off when too close, then stopping either way', () async {
+      // range = floor(water/3) = 2, move = floor(air/2) = 2, hp = 2 (needs
+      // earth to survive -- no minimum stat floor), damage 0 (no fire --
+      // this test is purely about positioning, not combat).
+      const formula = [
+        'water', 'water', 'water', 'water', 'water', 'water',
+        'air', 'air', 'air', 'air',
+        'earth', 'earth',
+      ];
+
+      // Sub-scenario A: spawns far away (distance 6 > range 2) and should
+      // close the gap two tiles a turn until it reaches range, then stop.
+      final approachCtx = _setup(
+        localPos: const HexCoord(0, 9),
+        dummyPos: const HexCoord(0, 0),
+        radius: 10,
+      );
+      await approachCtx.loop.runTurn(TurnInput(
+        action: SpellCastAction(
+          spell: _summonSpell(formula: formula, summonPersonality: 'evasive'),
+          targetHex: const HexCoord(6, 0),
+        ),
+      ));
+      expect(approachCtx.state.minions.single.distanceTo(approachCtx.dummy.position), 4,
+          reason: 'closed 2 tiles (its move speed) on the cast turn\'s own action');
+
+      await approachCtx.loop.runTurn(TurnInput(action: PassAction()));
+      expect(approachCtx.state.minions.single.distanceTo(approachCtx.dummy.position), 2,
+          reason: 'closed the remaining gap down to exactly its ideal attack range');
+
+      await approachCtx.loop.runTurn(TurnInput(action: PassAction()));
+      expect(approachCtx.state.minions.single.distanceTo(approachCtx.dummy.position), 2,
+          reason: 'holds at ideal range -- does not keep closing in once it can already act');
+
+      // Sub-scenario B: spawns too close (distance 1 < range 2) and should
+      // back away to exactly ideal range, then stop (not keep fleeing with
+      // whatever move budget is left over).
+      final retreatCtx = _setup(
+        localPos: const HexCoord(0, 9),
+        dummyPos: const HexCoord(0, 0),
+        radius: 10,
+      );
+      await retreatCtx.loop.runTurn(TurnInput(
+        action: SpellCastAction(
+          spell: _summonSpell(formula: formula, summonPersonality: 'evasive'),
+          targetHex: const HexCoord(1, 0),
+        ),
+      ));
+      expect(retreatCtx.state.minions.single.distanceTo(retreatCtx.dummy.position), 2,
+          reason: 'backed off from a too-close spawn to exactly its ideal attack range');
+
+      await retreatCtx.loop.runTurn(TurnInput(action: PassAction()));
+      expect(retreatCtx.state.minions.single.distanceTo(retreatCtx.dummy.position), 2,
+          reason: 'holds at ideal range rather than continuing to flee');
+    });
+
+    test('protective creature interposes between its owner and the nearest threat, '
+        'rather than beelining for the threat from its own position', () async {
+      // Owner (local) and dummy sit 6 tiles apart along the q axis, so the
+      // interpose tile protective's AI should aim for -- one step from the
+      // owner toward the threat -- is deterministically (1, 0).
+      final ctx = _setup(
+        localPos: const HexCoord(0, 0),
+        dummyPos: const HexCoord(6, 0),
+        radius: 10,
+      );
+      const interposeTile = HexCoord(1, 0);
+      // Spawn well off to the side (not on the owner-dummy line) so heading
+      // for the interpose tile is clearly distinguishable from heading
+      // straight at the dummy from the creature's own position.
+      const spawnTile = HexCoord(0, 6);
+      // move = floor(air/2) = 4 -- covers the distance-6 gap to the
+      // interpose tile in two actions (4, then the remaining 2). hp = 2
+      // (earth, no minimum stat floor); no fire/water, so damage/range are
+      // both irrelevant -- this test is purely about where it walks.
+      final spell = _summonSpell(
+        formula: const ['air', 'air', 'air', 'air', 'air', 'air', 'air', 'air', 'earth', 'earth'],
+        summonPersonality: 'protective',
+      );
+
+      await ctx.loop.runTurn(TurnInput(
+        action: SpellCastAction(spell: spell, targetHex: spawnTile),
+      ));
+      expect(ctx.state.minions.single.distanceTo(interposeTile), 2,
+          reason: 'closed 4 tiles (its move speed) toward the interpose point, not the dummy');
+
+      await ctx.loop.runTurn(TurnInput(action: PassAction()));
+      expect(ctx.state.minions.single.position, interposeTile,
+          reason: 'arrived exactly at the tile between its owner and the threat');
+
+      await ctx.loop.runTurn(TurnInput(action: PassAction()));
+      expect(ctx.state.minions.single.position, interposeTile,
+          reason: 'holds the interpose position once there');
+    });
+
+    test('tactical creature targets the lowest-effective-HP enemy over a much nearer, '
+        'much healthier one', () async {
+      final ctx = _setup(
+        localPos: const HexCoord(0, -2),
+        dummyPos: const HexCoord(0, 1), // one tile from the spawn point, full HP
+        radius: 10,
+      );
+      // A second enemy, far from the spawn point but at much lower HP. Its
+      // maxHp of 5 stays below the dummy's 24 even multiplied by the
+      // largest possible resistance-tier factor (2x), so which affinity it
+      // has can't change which target tactical AI should prefer.
+      final weakMinion = Minion(
+        id: 'weak-minion',
+        ownerId: 'dummy',
+        teamId: 'foe',
+        position: const HexCoord(4, 0),
+        affinity: SpellAffinity.water,
+        stats: const MinionStats(maxHp: 5, damage: 0, moveSpeed: 0, attackRange: 0),
+        elementSequence: const [],
+      );
+      ctx.state.minions.add(weakMinion);
+
+      // fire=4 -> damage 2, air=4 -> move 2, water=3 -> range 1,
+      // earth=2 -> hp 2 (no minimum stat floor).
+      final spell = _summonSpell(
+        formula: const [
+          'fire', 'fire', 'fire', 'fire',
+          'air', 'air', 'air', 'air',
+          'water', 'water', 'water',
+          'earth', 'earth',
+        ],
+        summonPersonality: 'tactical',
+      );
+      await ctx.loop.runTurn(TurnInput(
+        action: SpellCastAction(spell: spell, targetHex: const HexCoord(0, 0)),
+      ));
+      await ctx.loop.runTurn(TurnInput(action: PassAction()));
+
+      expect(weakMinion.hp, lessThan(5),
+          reason: 'tactical creature closed on and attacked the far, low-HP minion');
+      expect(ctx.dummy.hp, 24,
+          reason: 'the adjacent, full-HP dummy was never approached or attacked');
+    });
   });
 
   group('resistance wheel applies to creature-vs-creature combat', () {

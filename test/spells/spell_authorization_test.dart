@@ -10,6 +10,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rune_duel/identity/identity.dart';
+import 'package:rune_duel/spells/basic_spells.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
 import 'package:rune_duel/spells/spell_authorization.dart';
 import 'package:rune_duel/spells/spell_permission.dart';
@@ -146,6 +147,34 @@ void main() {
     expect(await localIdentityMayUse(spell, outsider, now: DateTime.utc(2026, 7, 19)), isFalse);
   });
 
+  // ── Basic spell exemption ───────────────────────────────────────────────────
+  //
+  // docs/BASIC_SPELLS_PLAN.md: the five shipped starter spells are
+  // authorized for everyone regardless of the owner_pubkey their bundled
+  // proof carries (that pubkey belongs to whoever originally inscribed and
+  // shipped them, not the player using them).
+
+  test('a stranger may use a bundled Basic spell with no permission at all', () async {
+    final firebolt = kBasicSpells.firstWhere((e) => e.slug == 'basic_firebolt');
+    final spell = SpellAsset(
+      id: firebolt.slug,
+      createdAt: DateTime.utc(2026, 7, 27),
+      tier: 12,
+      t: firebolt.t,
+      ownerPubkeyHex: '0x${'9' * 64}', // some other player's dev key, not this identity's
+      manaCost: 13,
+      segmentCount: 2,
+      dotCount: 0,
+      initialGrid: List<int>.filled(469, 0),
+      proofBytes: Uint8List.fromList([1, 2, 3]),
+      name: firebolt.name,
+      commitmentHex: firebolt.commitmentHex,
+      spellHashHex: firebolt.spellHashHex,
+    );
+    final stranger = await Identity.ephemeral();
+    expect(await localIdentityMayUse(spell, stranger), isTrue);
+  });
+
   // ── castingPlayerMayUse — the battle cast-authorization gate ────────────────
   //
   // Same authorization rule as localIdentityMayUse, but driven by proof-derived
@@ -163,6 +192,7 @@ void main() {
         await castingPlayerMayUse(
           spellOwnerPubkeyHex: ownerPubkeyHex,
           commitmentHex: '0xaabbcc',
+          t: 5,
           castingPlayerPubkeyHex: ownerPubkeyHex,
           permissions: const [],
         ),
@@ -179,6 +209,7 @@ void main() {
         await castingPlayerMayUse(
           spellOwnerPubkeyHex: ownerPubkeyHex,
           commitmentHex: '0xaabbcc',
+          t: 5,
           castingPlayerPubkeyHex: casterPubkeyHex,
           permissions: const [],
         ),
@@ -205,6 +236,7 @@ void main() {
         await castingPlayerMayUse(
           spellOwnerPubkeyHex: spell.ownerPubkeyHex,
           commitmentHex: spell.commitmentHex,
+          t: 5,
           castingPlayerPubkeyHex: casterPubkeyHex,
           permissions: [perm],
         ),
@@ -234,6 +266,7 @@ void main() {
         await castingPlayerMayUse(
           spellOwnerPubkeyHex: spell.ownerPubkeyHex,
           commitmentHex: spell.commitmentHex,
+          t: 5,
           castingPlayerPubkeyHex: casterPubkeyHex,
           permissions: [perm],
         ),
@@ -261,6 +294,7 @@ void main() {
         await castingPlayerMayUse(
           spellOwnerPubkeyHex: spell.ownerPubkeyHex,
           commitmentHex: spell.commitmentHex,
+          t: 5,
           castingPlayerPubkeyHex: impostorPubkeyHex,
           permissions: [perm],
         ),
@@ -295,6 +329,7 @@ void main() {
         await castingPlayerMayUse(
           spellOwnerPubkeyHex: spell.ownerPubkeyHex,
           commitmentHex: spell.commitmentHex,
+          t: 5,
           castingPlayerPubkeyHex: casterPubkeyHex,
           permissions: [forged],
         ),
@@ -320,11 +355,79 @@ void main() {
         await castingPlayerMayUse(
           spellOwnerPubkeyHex: spell.ownerPubkeyHex,
           commitmentHex: '0x99887766', // valid hex, but ≠ spell.commitmentHex
+          t: 5,
           castingPlayerPubkeyHex: casterPubkeyHex,
           permissions: [perm],
         ),
         isFalse,
       );
     });
+
+    // ── Basic spell exemption — the trust-boundary-critical cases ──────────
+
+    test('a peer with no grant may cast a Basic spell (its own owner_pubkey, unauthenticated)', () async {
+      final firebolt = kBasicSpells.firstWhere((e) => e.slug == 'basic_firebolt');
+      final caster = await Identity.ephemeral();
+      final casterPubkeyHex = await caster.ownerPubkeyHex();
+
+      expect(
+        await castingPlayerMayUse(
+          // The bundled proof's real owner — some other player's dev key,
+          // never this caster's.
+          spellOwnerPubkeyHex: '0x${'9' * 64}',
+          commitmentHex: firebolt.commitmentHex,
+          t: firebolt.t,
+          castingPlayerPubkeyHex: casterPubkeyHex,
+          permissions: const [],
+        ),
+        isTrue,
+      );
+    });
+
+    test('a Basic grid at the WRONG T (i.e. NOT the certified proof output) is not exempt', () async {
+      final firebolt = kBasicSpells.firstWhere((e) => e.slug == 'basic_firebolt');
+      final caster = await Identity.ephemeral();
+      final casterPubkeyHex = await caster.ownerPubkeyHex();
+
+      expect(
+        await castingPlayerMayUse(
+          spellOwnerPubkeyHex: '0x${'9' * 64}',
+          commitmentHex: firebolt.commitmentHex,
+          t: firebolt.t + 1, // a real proof at this T would never be Basic Firebolt
+          castingPlayerPubkeyHex: casterPubkeyHex,
+          permissions: const [],
+        ),
+        isFalse,
+      );
+    });
+
+    test(
+      'a peer cannot bypass authorization by claiming a non-Basic proof is Basic '
+      '(commitmentHex/t MUST come from verified proof outputs, never a wire claim)',
+      () async {
+        // This is the exact attack the Basic exemption must not enable: a
+        // peer casts a spell they neither own nor hold a grant for, whose
+        // REAL verified proof commitment/T is some arbitrary foreign grid —
+        // not one of the five registered Basic pairs. If a caller ever wired
+        // this check to an unverified, peer-supplied "this is Basic" claim
+        // instead of the verified proof's own commitment/T, this is the case
+        // that would start passing.
+        final owner = await Identity.ephemeral();
+        final caster = await Identity.ephemeral();
+        final ownerPubkeyHex = await owner.ownerPubkeyHex();
+        final casterPubkeyHex = await caster.ownerPubkeyHex();
+
+        expect(
+          await castingPlayerMayUse(
+            spellOwnerPubkeyHex: ownerPubkeyHex,
+            commitmentHex: '0xdeadbeef', // NOT one of kBasicSpells' commitments
+            t: 5,
+            castingPlayerPubkeyHex: casterPubkeyHex,
+            permissions: const [],
+          ),
+          isFalse,
+        );
+      },
+    );
   });
 }

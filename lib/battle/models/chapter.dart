@@ -54,7 +54,14 @@ class Chapter {
     final byId = {for (final s in all) s.id: s};
 
     final resolved = asset.entries
-        .map((e) => byId[e.spellId])
+        .map((e) {
+          final spell = byId[e.spellId];
+          if (spell == null) return null;
+          // design doc "Personalities": bind the per-chapter-entry glyph
+          // chosen when this spell was added here, not at inscription.
+          final personality = e.summonPersonality;
+          return personality != null ? spell.withSummonPersonality(personality) : spell;
+        })
         .whereType<SpellAsset>()
         .toList()
       ..sort((a, b) => a.commitmentHex.compareTo(b.commitmentHex));

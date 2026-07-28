@@ -10,8 +10,10 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../identity/identity.dart';
 import '../practice/vocal_tuning.dart';
 import 'credits_screen.dart';
+import 'onboarding/onboarding_landing_screen.dart';
 import 'widgets/vocal_strictness_slider.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -67,6 +69,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       context,
                       MaterialPageRoute(builder: (_) => const CreditsScreen()),
                     ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.warning_amber_outlined),
+                    title: const Text('DEBUG: Reset Identity'),
+                    onTap: () async {
+                      await Identity.deleteOnDevice();
+                      if (!context.mounted) return;
+                      Navigator.of(context).pushAndRemoveUntil(
+                        MaterialPageRoute(
+                            builder: (_) => const OnboardingLandingScreen()),
+                        (route) => false,
+                      );
+                    },
                   ),
                 ),
               ],

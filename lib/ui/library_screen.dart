@@ -15,6 +15,9 @@ import '../identity/identity.dart';
 import '../identity/key_packing.dart';
 import '../battle/models/creature_spec.dart' show summonSummaryFromFormula;
 import '../battle/models/effect_kind.dart' show formulaEffectLabels;
+import '../battle/models/minion.dart' show SummonPersonality, kSummonPersonalityLabel;
+import '../spells/basic_spell_seed.dart' show seedBasicSpells;
+import '../spells/basic_spells.dart' show isBasicSpell;
 import '../spells/chapter_asset.dart';
 import '../spells/sighting_asset.dart';
 import '../spells/spell_art_import.dart';
@@ -245,11 +248,30 @@ class LibraryScreen extends StatefulWidget {
 class _LibraryScreenState extends State<LibraryScreen> {
   String? _selectedChapterId;
   List<ChapterAsset> _chapters = [];
+  final _craftingsKey = GlobalKey<_CraftingsTabState>();
 
   @override
   void initState() {
     super.initState();
     _loadChapters();
+  }
+
+  /// Re-adds any of the five shipped Basic spells (docs/BASIC_SPELLS_PLAN.md)
+  /// currently missing from the library — the counterpart to letting a
+  /// player delete one and have it stay gone on a normal launch.
+  Future<void> _restoreBasicSpells() async {
+    final restored = await seedBasicSpells(force: true);
+    _craftingsKey.currentState?._reload();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          restored == 0
+              ? 'All Basic spells are already in your grimoire.'
+              : 'Restored $restored Basic spell${restored == 1 ? '' : 's'}.',
+        ),
+      ),
+    );
   }
 
   Future<void> _loadChapters() async {
@@ -290,6 +312,20 @@ class _LibraryScreenState extends State<LibraryScreen> {
             'LIBRARY',
             style: manuscriptHeaderStyle(fontSize: 20, color: kParchmentColor),
           ),
+          actions: [
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.more_vert),
+              onSelected: (value) {
+                if (value == 'restore_basics') _restoreBasicSpells();
+              },
+              itemBuilder: (context) => const [
+                PopupMenuItem(
+                  value: 'restore_basics',
+                  child: Text('Restore basic spells'),
+                ),
+              ],
+            ),
+          ],
           bottom: TabBar(
             labelStyle: const TextStyle(
               fontFamily: 'serif',
@@ -319,6 +355,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         body: TabBarView(
           children: [
             _CraftingsTab(
+              key: _craftingsKey,
               selectedChapterId: _selectedChapterId,
               onChaptersChanged: _loadChapters,
             ),
@@ -348,6 +385,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
 class _CraftingsTab extends StatefulWidget {
   const _CraftingsTab({
+    super.key,
     required this.selectedChapterId,
     required this.onChaptersChanged,
   });
@@ -444,8 +482,10 @@ class _CraftingsTabState extends State<_CraftingsTab>
     final chapter = await ChapterAsset.loadById(chapterId);
     if (chapter == null || !mounted) return;
 
-    // Reject if any existing chapter entry shares the same grid commitment.
-    if (effectiveSpell.commitmentHex.isNotEmpty) {
+    // Reject if any existing chapter entry shares the same grid commitment —
+    // UNLESS this is a shipped Basic spell (docs/BASIC_SPELLS_PLAN.md), which
+    // may be added any number of times.
+    if (effectiveSpell.commitmentHex.isNotEmpty && !isBasicSpell(effectiveSpell)) {
       final allSpells = await SpellAsset.loadAll();
       final byId = {for (final s in allSpells) s.id: s};
       final chapterCommitments = chapter.entries
@@ -464,8 +504,19 @@ class _CraftingsTabState extends State<_CraftingsTab>
       }
     }
 
+    // design doc "Personalities": pick the battlefield-behavior glyph now,
+    // at add-to-chapter time, rather than at inscription. Cancelling aborts
+    // the add entirely, same as declining to name a spell used to abort
+    // inscription.
+    String? personality;
+    if (effectiveSpell.isSummon) {
+      if (!mounted) return;
+      personality = await pickSummonPersonality(context, effectiveSpell.name);
+      if (personality == null || !mounted) return;
+    }
+
     final updated = chapter.withEntry(
-      ChapterEntry(spellId: effectiveSpell.id),
+      ChapterEntry(spellId: effectiveSpell.id, summonPersonality: personality),
     );
     await updated.save();
     widget.onChaptersChanged();
@@ -624,6 +675,16 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
     var chapter = await ChapterAsset.loadById(chapterId);
     if (chapter == null || !mounted) return;
 
+    // design doc "Personalities": only the single-spell case (the per-card
+    // "add" button reusing this method, per its doc comment) prompts for a
+    // personality -- a true batch "Add All" would mean one dialog per
+    // summon, which isn't a reasonable flow, so those default to aggressive.
+    String? singlePersonality;
+    if (spells.length == 1 && spells.single.isSummon) {
+      singlePersonality = await pickSummonPersonality(context, spells.single.name);
+      if (singlePersonality == null || !mounted) return;
+    }
+
     final allSpells = await SpellAsset.loadAll();
     final byId = {for (final s in allSpells) s.id: s};
     final seenCommitments = chapter.entries
@@ -634,11 +695,18 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
     var added = 0;
     var skipped = 0;
     for (final spell in spells) {
-      if (spell.commitmentHex.isNotEmpty && seenCommitments.contains(spell.commitmentHex)) {
+      if (spell.commitmentHex.isNotEmpty &&
+          seenCommitments.contains(spell.commitmentHex) &&
+          !isBasicSpell(spell)) {
         skipped++;
         continue;
       }
-      chapter = chapter!.withEntry(ChapterEntry(spellId: spell.id));
+      chapter = chapter!.withEntry(ChapterEntry(
+        spellId: spell.id,
+        summonPersonality: spell.isSummon
+            ? (singlePersonality ?? SummonPersonality.aggressive.name)
+            : null,
+      ));
       if (spell.commitmentHex.isNotEmpty) seenCommitments.add(spell.commitmentHex);
       added++;
     }
@@ -754,6 +822,12 @@ class _SpellCard extends StatelessWidget {
   final Uint8List? creatorKeyBytes;
 
   bool get _isKin => kinSiblings > 1;
+
+  /// True for one of the five shipped starter spells (docs/BASIC_SPELLS_PLAN.md).
+  /// These ship with every install under a dev owner_pubkey that is NOT this
+  /// player's — the creator sigil (below) would otherwise falsely imply the
+  /// player inscribed it, so it's suppressed and replaced with a plain label.
+  bool get _isBasic => isBasicSpell(spell);
 
   String get _displayName =>
       spell.name.isNotEmpty ? spell.name : 'Unnamed Spell';
@@ -909,7 +983,25 @@ class _SpellCard extends StatelessWidget {
                     ],
                     const SizedBox(height: 2),
                     Text(_date, style: manuscriptCaptionStyle()),
-                    if (creatorKeyBytes != null ||
+                    if (_isBasic) ...[
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.auto_awesome_outlined,
+                            size: 14,
+                            color: kIlluminationGold.withValues(alpha: 0.8),
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Basic starter spell',
+                            style: manuscriptCaptionStyle(
+                              color: kInkColor.withValues(alpha: 0.6),
+                            ).copyWith(fontStyle: FontStyle.normal),
+                          ),
+                        ],
+                      ),
+                    ] else if (creatorKeyBytes != null ||
                         (wizardName != null && wizardName!.isNotEmpty)) ...[
                       const SizedBox(height: 4),
                       Row(
@@ -1985,6 +2077,71 @@ class _NameInputDialogState extends State<_NameInputDialog> {
   }
 }
 
+// ── Summon personality dialog (shared) ────────────────────────────────────────
+//
+// design doc "Personalities": the battlefield-behavior glyph a summon spell
+// fights with is now chosen here, when the spell is added to a Chapter --
+// not at inscription (see main.dart's _SpellNameDialog, which used to own
+// this picker). Shared by the Craftings and Loans tabs' _addToChapter and
+// the Tests tab's _addAllToChapter (single-spell case only).
+
+/// Shows the personality picker for [spellName] and returns the chosen
+/// SummonPersonality's enum name, or null if the player cancelled (callers
+/// should abort the add-to-chapter entirely in that case, same as declining
+/// to name a spell used to abort inscription).
+Future<String?> pickSummonPersonality(BuildContext context, String spellName) {
+  return showDialog<String>(
+    context: context,
+    builder: (_) => _SummonPersonalityDialog(spellName: spellName),
+  );
+}
+
+class _SummonPersonalityDialog extends StatefulWidget {
+  const _SummonPersonalityDialog({required this.spellName});
+
+  final String spellName;
+
+  @override
+  State<_SummonPersonalityDialog> createState() => _SummonPersonalityDialogState();
+}
+
+class _SummonPersonalityDialogState extends State<_SummonPersonalityDialog> {
+  SummonPersonality _personality = SummonPersonality.aggressive;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Personality for "${widget.spellName}"'),
+      content: Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        // obedient is excluded here: it's a seam only this pass (no
+        // manual-control UI exists yet) — see SummonPersonality.obedient's
+        // doc comment. Don't let it be picked until that's built.
+        children: SummonPersonality.values
+            .where((p) => p != SummonPersonality.obedient)
+            .map((p) {
+          return ChoiceChip(
+            label: Text(kSummonPersonalityLabel[p]!),
+            selected: _personality == p,
+            onSelected: (_) => setState(() => _personality = p),
+          );
+        }).toList(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(_personality.name),
+          child: const Text('Add to Chapter'),
+        ),
+      ],
+    );
+  }
+}
+
 // ── Loans tab ────────────────────────────────────────────────────────────────
 //
 // Spells another wizard has loaned to this identity via Commune/Trade
@@ -2069,7 +2226,16 @@ class _LoansTabState extends State<_LoansTab> with AutomaticKeepAliveClientMixin
       );
       return;
     }
-    final updated = chapter.withEntry(ChapterEntry(spellId: spell.id));
+    // design doc "Personalities": pick the battlefield-behavior glyph now,
+    // at add-to-chapter time, rather than at inscription.
+    String? personality;
+    if (spell.isSummon) {
+      personality = await pickSummonPersonality(context, spell.name);
+      if (personality == null || !mounted) return;
+    }
+    final updated = chapter.withEntry(
+      ChapterEntry(spellId: spell.id, summonPersonality: personality),
+    );
     await updated.save();
     widget.onChaptersChanged();
     if (mounted) {

@@ -167,6 +167,31 @@ if (peerOwnerPubkeyHex != null) {
 Gate on `peerOwnerPubkeyHex != null` so solo/test (where it's null, like
 `verifyProof`) is unaffected.
 
+### 4a. Basic-spell exemption (added 2026-07-27, docs/BASIC_SPELLS_PLAN.md)
+
+The five shipped starter spells (`lib/spells/basic_spells.dart`) ship with every
+install under a fixed dev `owner_pubkey` — not any individual player's. Without an
+exemption, `castingPlayerMayUse` would forfeit the match the first time ANY player
+other than that dev key cast one. `isBasicGridAndT(commitmentHex, t)` — checked
+against the caster's own **verified** proof outputs, never a wire-supplied claim —
+short-circuits both `localIdentityMayUse` and `castingPlayerMayUse` to `true` before
+the ownership/permission checks run. This does not weaken the trust model: the proof
+still must verify, and `ruleset_version`/mana/geometry are still fully certified —
+only the "owner == caster" requirement is waived, and only for five grids that are
+deliberately public.
+
+**A second, independent guard needed the same treatment.** `_seenPeerCommitments`
+("Kin-stacking" — a peer forfeits on casting the same `commitmentHex` twice in a
+match) predates this feature and assumed a chapter could hold at most one copy of any
+grid (the library UI enforced that). Unlimited copies of a Basic spell breaks that
+assumption outright: casting a second copy is now legitimate. The check
+(`_verifyPeerSpellCast` in `turn_loop.dart`) was moved to run **after** proof
+verification so it can key `isBasicGridAndT` off verified `outputs.commitmentHex`/
+`outputs.t` rather than the untrusted wire value, and skips the forfeit only for a
+Basic match — a non-Basic spell still forfeits on a second cast of the same grid,
+unchanged. See `test/battle/engine/basic_spell_duplicate_chapter_test.dart` for both
+the positive (Basic, exempt) and negative (non-Basic, still forfeits) cases.
+
 ---
 
 ## 5. Phase C — loan-permission exchange

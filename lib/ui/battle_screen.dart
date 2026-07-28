@@ -306,6 +306,13 @@ class _BattleScreenState extends State<BattleScreen>
   // Turn interaction state — two phases: action then movement.
   _InputPhase _phase = _InputPhase.action;
   SpellAsset? _selectedSpell;
+
+  /// The hand slot [_selectedSpell] was selected from — the only
+  /// duplicate-safe identity for a card when the hand holds several copies
+  /// of the same Basic spell's grid (docs/BASIC_SPELLS_PLAN.md §7). Carried
+  /// into SpellCastAction/MysterySpellCastAction.handIndex so TurnLoop can
+  /// prove membership for the SPECIFIC copy cast, not just "a" copy.
+  int? _selectedHandIndex;
   HexCoord? _targetHex; // spell target (action phase)
   TurnAction? _pendingAction;
   List<HexCoord> _movePath = const []; // movement path (movement phase)
@@ -583,14 +590,22 @@ class _BattleScreenState extends State<BattleScreen>
     final all = await SpellAsset.loadAll();
     if (!mounted) return;
     final byId = {for (final s in all) s.id: s};
-    final loaded = widget.chapter.entries.map((e) => byId[e.spellId]).toList();
 
     // Backfill supremeTags for spells added to a chapter before this
     // eligibility tracking existed, so the cast-time enhancement picker
     // sees correct eligibility even for older chapters — mirrors
-    // library_screen.dart's _addToChapter backfill.
+    // library_screen.dart's _addToChapter backfill. Also binds each entry's
+    // chapter-chosen personality glyph (design doc "Personalities") onto its
+    // resolved SpellAsset — the entry, not the underlying spell, is the
+    // source of truth now that personality is picked per-chapter-add rather
+    // than at inscription (see ChapterEntry.summonPersonality).
     final resolved = <SpellAsset?>[];
-    for (final spell in loaded) {
+    for (final entry in widget.chapter.entries) {
+      var spell = byId[entry.spellId];
+      final personality = entry.summonPersonality;
+      if (spell != null && personality != null) {
+        spell = spell.withSummonPersonality(personality);
+      }
       if (spell != null &&
           spell.supremeTags.isEmpty &&
           spell.initialGrid.isNotEmpty) {
@@ -707,6 +722,7 @@ class _BattleScreenState extends State<BattleScreen>
   void _resetTurn() {
     _phase = _InputPhase.action;
     _selectedSpell = null;
+    _selectedHandIndex = null;
     _targetHex = null;
     _pendingAction = null;
     _movePath = const [];
@@ -778,12 +794,22 @@ class _BattleScreenState extends State<BattleScreen>
 
   // ── Action phase ─────────────────────────────────────────────────────────────
 
-  void _selectSpell(SpellAsset spell) {
+  /// [handIndex] is [spell]'s position in [_handSpells] — the slot tapped in
+  /// the hand strip, not derived from [spell] itself, since a hand may hold
+  /// several copies of the same Basic spell's grid (docs/BASIC_SPELLS_PLAN.md
+  /// §7) and only the slot disambiguates which copy this is.
+  void _selectSpell(int handIndex, SpellAsset spell) {
     if (_isBusy || _phase != _InputPhase.action) return;
-    if (_loop.isHandSpellWithered(spell)) return; // §9: withered, not castable
+    if (_loop.isHandSlotWithered(handIndex)) return; // §9: withered, not castable
     setState(() {
-      _selectedSpell = _selectedSpell?.id == spell.id ? null : spell;
-      if (_selectedSpell == null) _targetHex = null;
+      if (_selectedHandIndex == handIndex) {
+        _selectedSpell = null;
+        _selectedHandIndex = null;
+        _targetHex = null;
+      } else {
+        _selectedSpell = spell;
+        _selectedHandIndex = handIndex;
+      }
       _selectedEnhancement = null;
       _mysteryDelay = 0;
       _useRodOfSpreading = false;
@@ -890,6 +916,7 @@ class _BattleScreenState extends State<BattleScreen>
           isEfficiency: isEfficiency,
           isRodOfSpreading: useRod,
           conveyorDirection: conveyorDirection,
+          handIndex: _selectedHandIndex,
         ),
       );
       return;
@@ -966,6 +993,7 @@ class _BattleScreenState extends State<BattleScreen>
         isRodOfSpreading: useRod,
         vocalScore: vocalScore,
         conveyorDirection: conveyorDirection,
+        handIndex: _selectedHandIndex,
       ),
     );
   }
@@ -1040,6 +1068,7 @@ class _BattleScreenState extends State<BattleScreen>
           immediateTarget: isImmediate ? target : null,
           immediateNonce: isImmediate ? nonce : null,
           isRodOfSpreading: _useRodOfSpreading && _localOwnsRod,
+          handIndex: _selectedHandIndex,
         ),
       );
       return;
@@ -1068,6 +1097,7 @@ class _BattleScreenState extends State<BattleScreen>
         immediateNonce: isImmediate ? nonce : null,
         isRodOfSpreading: _useRodOfSpreading && _localOwnsRod,
         vocalScore: vocalScore,
+        handIndex: _selectedHandIndex,
       ),
     );
   }
@@ -1854,10 +1884,10 @@ class _BattleScreenState extends State<BattleScreen>
           // calls out as a nice-to-have.
           _SpellBook(
             spells: _handSpells,
-            selectedId: _selectedSpell?.id,
+            selectedIndex: _selectedHandIndex,
             onSelect: _selectSpell,
             onView: (spell) => showSpellCardFullscreen(context, spell),
-            isWithered: _loop.isHandSpellWithered,
+            isWithered: (index, _) => _loop.isHandSlotWithered(index),
             deckCount: _loop.localSpellDraw?.remaining.length,
           ),
         ],
@@ -2854,23 +2884,29 @@ class _ArtifactChip extends StatelessWidget {
 class _SpellBook extends StatelessWidget {
   const _SpellBook({
     required this.spells,
-    required this.selectedId,
+    required this.selectedIndex,
     required this.onSelect,
     required this.onView,
     this.isWithered = _neverWithered,
     this.deckCount,
   });
 
-  static bool _neverWithered(SpellAsset spell) => false;
+  static bool _neverWithered(int index, SpellAsset spell) => false;
 
   final List<SpellAsset?> spells;
-  final String? selectedId;
-  final void Function(SpellAsset) onSelect;
+
+  /// Index into [spells] of the currently-selected card, not its
+  /// commitmentHex/id — a chapter may hold several copies of the same Basic
+  /// spell's grid (docs/BASIC_SPELLS_PLAN.md §7), so only the SLOT
+  /// distinguishes which copy is selected.
+  final int? selectedIndex;
+  final void Function(int index, SpellAsset spell) onSelect;
   final void Function(SpellAsset) onView;
 
-  /// §9: a withered hand card renders greyed and refuses taps. Defaults to
-  /// "never withered" for callers that don't track wither state.
-  final bool Function(SpellAsset) isWithered;
+  /// §9: a withered hand card renders greyed and refuses taps. Indexed by
+  /// slot (like [selectedIndex]) for the same duplicate-safety reason.
+  /// Defaults to "never withered" for callers that don't track wither state.
+  final bool Function(int index, SpellAsset spell) isWithered;
 
   /// Remaining deck size (SPELL_DRAW_WIRING_PLAN.md §5's HUD readout). Null
   /// hides the counter (e.g. before the opening deal has run).
@@ -2899,12 +2935,12 @@ class _SpellBook extends StatelessWidget {
                   itemBuilder: (_, i) {
                     final spell = spells[i];
                     if (spell == null) return const SizedBox(width: 6);
-                    final selected = spell.id == selectedId;
-                    final withered = isWithered(spell);
+                    final selected = i == selectedIndex;
+                    final withered = isWithered(i, spell);
                     return Padding(
                       padding: const EdgeInsets.only(right: 8),
                       child: GestureDetector(
-                        onTap: withered ? null : () => onSelect(spell),
+                        onTap: withered ? null : () => onSelect(i, spell),
                         onLongPress: () => onView(spell),
                         child: Opacity(
                           opacity: withered ? 0.35 : 1.0,

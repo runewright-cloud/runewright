@@ -230,4 +230,26 @@ void main() {
     final all = await SpellAsset.loadAll();
     expect(all, isEmpty);
   });
+
+  test('summonPersonality defaults to aggressive', () {
+    expect(sample().summonPersonality, equals('aggressive'));
+  });
+
+  test('withSummonPersonality() overrides only summonPersonality, leaving everything else '
+      '(including art metadata) unchanged -- used to bind the per-chapter-entry glyph '
+      '(design doc "Personalities") rather than at inscription', () {
+    final original =
+        sample().withPackArt(packId: kPainterlyPack.first.id).withGridWithheld();
+    final rebound = original.withSummonPersonality('evasive');
+
+    expect(rebound.summonPersonality, equals('evasive'));
+    expect(rebound.id, equals(original.id));
+    expect(rebound.name, equals(original.name));
+    expect(rebound.artHash, equals(original.artHash));
+    expect(rebound.artPackId, equals(original.artPackId));
+    expect(rebound.gridWithheld, isTrue);
+
+    final restored = SpellAsset.fromJson(rebound.toJson());
+    expect(restored.summonPersonality, equals('evasive'));
+  });
 }

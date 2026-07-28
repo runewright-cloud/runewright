@@ -169,6 +169,28 @@ void main() {
     });
   });
 
+  group('ChapterEntry.summonPersonality', () {
+    test('defaults to null (use the spell\'s own default)', () {
+      const entry = ChapterEntry(spellId: 'spell-1');
+      expect(entry.summonPersonality, isNull);
+      expect(entry.toJson().containsKey('summonPersonality'), isFalse);
+    });
+
+    test('toJson/fromJson round-trips a chosen personality', () {
+      const entry = ChapterEntry(spellId: 'spell-1', summonPersonality: 'evasive');
+      final restored = ChapterEntry.fromJson(entry.toJson());
+
+      expect(restored.spellId, equals('spell-1'));
+      expect(restored.summonPersonality, equals('evasive'));
+    });
+
+    test('a legacy entry JSON predating this field (no such key) still loads, with '
+        'summonPersonality null', () {
+      final restored = ChapterEntry.fromJson({'spellId': 'spell-1'});
+      expect(restored.summonPersonality, isNull);
+    });
+  });
+
   group('ChapterAsset persistence', () {
     test('save/loadById round-trips unbound and bound charms', () async {
       final chapter = sample(artifacts: const [

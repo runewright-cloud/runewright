@@ -1,5 +1,67 @@
 # M4 — Findings Log (live, updated per milestone)
 
+## Basic Spells (shipped starter spells + unlimited chapter copies) (2026-07-27)
+
+Built per `docs/BASIC_SPELLS_PLAN.md`. Two real bugs found while implementing
+"a chapter may hold unlimited copies of a Basic spell," neither anticipated
+by the plan — both were boundary bugs (the plan's own guiding principle:
+"when behavior surprises you, suspect the boundary, not the math").
+
+### Trap: a second guard forbids re-casting the same grid, unrelated to chapter dedup
+
+`TurnLoop._verifyPeerSpellCast` has a "Kin-stacking" check
+(`_seenPeerCommitments`) that forfeits the match if a peer casts the same
+`commitmentHex` twice in one match. It predates this feature and quietly
+assumed a chapter could hold at most one copy of any grid (the ONLY thing
+enforcing that was a UI guard in `library_screen.dart`). Removing the UI
+guard for Basic spells without touching this check means casting a SECOND
+copy of any Basic spell forfeits the match — found via a widget test that
+hung for exactly 30s (`Future.wait` doesn't fail fast when one side of a
+paired exchange throws and the other is left awaiting a reply that never
+comes; see "Trap" below). Fixed by exempting `isBasicGridAndT` matches, and
+by moving the check to run AFTER proof verification so it keys off VERIFIED
+`outputs.commitmentHex`/`.t` rather than the untrusted wire value — same
+trust-boundary discipline as the ownership exemption. See
+`docs/BATTLE_AUTH_PLAN.md` §4a. Confirmed scoped correctly: a non-Basic
+duplicate-commitment cast still forfeits
+(`test/battle/engine/basic_spell_duplicate_chapter_test.dart`).
+
+### Trap: `Future.wait` on a paired caster/verifier exchange hangs, not throws, when only one side errors
+
+`TurnLoop.runTurn` pairs are driven with
+`Future.wait([caster.runTurn(...), verifier.runTurn(...)])` throughout the
+test suite. When the verifier's side legitimately throws (a forfeit), the
+caster's side is left awaiting a protocol reply the verifier never sends —
+and `Future.wait`'s default (`eagerError: false`) waits for BOTH futures to
+complete before surfacing anything, so the whole test hangs at the 30s
+default timeout instead of failing fast with the real error. Diagnosed by
+attaching `.then/.catchError` with `print` to each side individually rather
+than trusting `Future.wait`. Any NEW test that expects one side of a paired
+exchange to reject must either use `eagerError: true`, or (cleaner) leave
+the side that's expected to hang un-awaited via `unawaited(future.catchError(...))`
+and assert only on the side that's supposed to throw — see the second test
+in `basic_spell_duplicate_chapter_test.dart` for the pattern.
+
+### Trap: a seeding side-effect in `AppRoot` can strand the router on its spinner
+
+`AppRoot` now runs `seedBasicSpells()` (calls `path_provider` +
+`rootBundle`) alongside `Identity.exists()` (secure storage only) on every
+launch. Widget tests that exercise `AppRoot`/onboarding
+(`test/ui/onboarding_flow_drive_test.dart`) never needed a `path_provider`
+mock before and don't have one — `getApplicationDocumentsDirectory()` inside
+an unguarded `Future.wait` turned into an unhandled Future error, which left
+the `FutureBuilder` at `!snapshot.hasData` forever (never `hasError`
+specifically — just never resolves), and `pumpAndSettle` timed out. Fixed by
+making the seed call fire-and-forget with its own `.catchError` swallowing
+any failure (`unawaited(seedBasicSpells().catchError((_) => 0))`) — seeding
+is a nice-to-have that must never gate routing to the menu or onboarding.
+General lesson: any side effect added to a router/gate widget's startup
+Future needs its own error boundary, independent of whatever the router
+actually depends on — don't let `Future.wait` silently couple an optional
+side effect's failure mode to a load-bearing check.
+
+---
+
 ## Practice Mode — multi-exemplar scoring, playtest strictness dial, English trainer voice (2026-07-22)
 
 Follow-up to 2026-07-21's `ventus` swap. On-device testing surfaced a new

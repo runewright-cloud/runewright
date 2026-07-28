@@ -14,6 +14,12 @@
 //     water drop (water), a whirlwind (air), a rock (earth). A spell of a
 //     single affinity shows all-identical symbols; mixed affinities split the
 //     count by the effect ratio (see [elementSymbolsFor]).
+//
+// The fullscreen trading card (_CardFrame) additionally shows a dominance-tags
+// strip across its top: the same four element glyphs, small and in a fixed
+// row, colored where SpellAsset.supremeTags was achieved and dimmed where not
+// — signaling which cast-time enhancement (Potency/Velocity/Efficiency/
+// Mystery) this spell is eligible for. See _DominanceTagsStrip.
 
 import 'dart:async' show Timer;
 import 'dart:math' as math;
@@ -53,6 +59,17 @@ const Map<String, String> _kElementDisplayName = {
   'air': 'Air',
   'water': 'Water',
   'earth': 'Earth',
+};
+
+/// Cast-time enhancement each element's supreme dominance unlocks — mirrors
+/// the mapping documented in casting_enhancements.dart (Fire=Potency,
+/// Air=Velocity, Water=Efficiency, Earth=Mystery). Used to label the card's
+/// dominance-tags strip.
+const Map<String, String> _kCastingStyleName = {
+  'fire': 'Potency',
+  'air': 'Velocity',
+  'water': 'Efficiency',
+  'earth': 'Mystery',
 };
 
 const Map<SpellAffinity, String> _kSpellAffinityName = {
@@ -418,119 +435,135 @@ class SpellCardPainter extends CustomPainter {
     Offset center,
     double r,
     String element,
-  ) {
-    final path = _elementIconPath(element, r);
-    canvas.save();
-    canvas.translate(center.dx, center.dy);
-    canvas.drawPath(path, Paint()..color = _elementColor(element));
-    canvas.drawPath(
-      path,
-      Paint()
-        ..color = kInkColor
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = math.max(0.5, r * 0.11)
-        ..strokeJoin = StrokeJoin.round,
-    );
-    canvas.restore();
-  }
+  ) => paintElementIcon(canvas, center, r, element);
+}
 
-  /// Element glyph centered at the origin, sized to roughly fill radius [r].
-  Path _elementIconPath(String element, double r) {
-    final u = r * 0.92;
-    switch (element) {
-      case 'fire':
-        return _flame(u);
-      case 'water':
-        return _drop(u);
-      case 'air':
-        return _whirlwind(u);
-      case 'earth':
-        return _rock(u);
-      default:
-        return Path()
-          ..addOval(Rect.fromCircle(center: Offset.zero, radius: u * 0.7));
-    }
+/// Element glyph centered at the origin, sized to roughly fill radius [r].
+/// Module-level (rather than a [SpellCardPainter] method) so the small
+/// dominance-tags badges on the fullscreen card can reuse the same shapes.
+Path _elementIconPath(String element, double r) {
+  final u = r * 0.92;
+  switch (element) {
+    case 'fire':
+      return _flame(u);
+    case 'water':
+      return _drop(u);
+    case 'air':
+      return _whirlwind(u);
+    case 'earth':
+      return _rock(u);
+    default:
+      return Path()
+        ..addOval(Rect.fromCircle(center: Offset.zero, radius: u * 0.7));
   }
+}
 
-  // A flame: a bulbous base rising to a tall curling tip, with a side lick —
-  // deliberately asymmetric so it never reads as the water drop.
-  Path _flame(double u) {
-    final p = Path();
-    p.moveTo(0.0, u); // bottom center
-    // right side rising
-    p.cubicTo(0.62 * u, 0.78 * u, 0.66 * u, 0.15 * u, 0.40 * u, -0.18 * u);
-    // main tongue curling up, leaning left over the top
-    p.cubicTo(0.26 * u, -0.42 * u, 0.10 * u, -0.52 * u, 0.16 * u, -0.82 * u);
-    p.cubicTo(0.19 * u, -1.02 * u, -0.02 * u, -1.04 * u, -0.08 * u, -0.80 * u);
-    // dip between main tongue and the side lick
-    p.cubicTo(-0.13 * u, -0.56 * u, -0.22 * u, -0.5 * u, -0.36 * u, -0.52 * u);
-    // side lick flicking out to the left
-    p.cubicTo(-0.24 * u, -0.36 * u, -0.44 * u, -0.28 * u, -0.52 * u, -0.30 * u);
-    p.cubicTo(-0.44 * u, -0.04 * u, -0.62 * u, 0.22 * u, -0.50 * u, 0.52 * u);
-    p.cubicTo(-0.42 * u, 0.80 * u, -0.22 * u, 0.90 * u, 0.0, u);
-    p.close();
-    return p;
-  }
+/// Paints [element]'s glyph (fill + ink outline) centered at [center] with
+/// radius [r]. [opacity] fades a not-yet-achieved dominance badge without
+/// changing its shape or color identity.
+void paintElementIcon(
+  Canvas canvas,
+  Offset center,
+  double r,
+  String element, {
+  double opacity = 1.0,
+}) {
+  final path = _elementIconPath(element, r);
+  canvas.save();
+  canvas.translate(center.dx, center.dy);
+  canvas.drawPath(
+    path,
+    Paint()..color = _elementColor(element).withValues(alpha: opacity),
+  );
+  canvas.drawPath(
+    path,
+    Paint()
+      ..color = kInkColor.withValues(alpha: opacity)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = math.max(0.5, r * 0.11)
+      ..strokeJoin = StrokeJoin.round,
+  );
+  canvas.restore();
+}
 
-  // A water drop: a symmetric teardrop, round bottom, pointed top.
-  Path _drop(double u) {
-    final p = Path();
-    p.moveTo(0, -u);
-    p.cubicTo(0.62 * u, -0.15 * u, 0.66 * u, 0.5 * u, 0.30 * u, 0.8 * u);
-    p.cubicTo(0.12 * u, 0.96 * u, -0.12 * u, 0.96 * u, -0.30 * u, 0.8 * u);
-    p.cubicTo(-0.66 * u, 0.5 * u, -0.62 * u, -0.15 * u, 0, -u);
-    p.close();
-    // highlight glint
-    p.moveTo(-0.12 * u, 0.28 * u);
-    p.cubicTo(-0.34 * u, 0.28 * u, -0.34 * u, 0.6 * u, -0.12 * u, 0.62 * u);
-    p.cubicTo(-0.02 * u, 0.5 * u, -0.02 * u, 0.36 * u, -0.12 * u, 0.28 * u);
-    p.close();
-    p.fillType = PathFillType.evenOdd;
-    return p;
-  }
+// A flame: a bulbous base rising to a tall curling tip, with a side lick —
+// deliberately asymmetric so it never reads as the water drop.
+Path _flame(double u) {
+  final p = Path();
+  p.moveTo(0.0, u); // bottom center
+  // right side rising
+  p.cubicTo(0.62 * u, 0.78 * u, 0.66 * u, 0.15 * u, 0.40 * u, -0.18 * u);
+  // main tongue curling up, leaning left over the top
+  p.cubicTo(0.26 * u, -0.42 * u, 0.10 * u, -0.52 * u, 0.16 * u, -0.82 * u);
+  p.cubicTo(0.19 * u, -1.02 * u, -0.02 * u, -1.04 * u, -0.08 * u, -0.80 * u);
+  // dip between main tongue and the side lick
+  p.cubicTo(-0.13 * u, -0.56 * u, -0.22 * u, -0.5 * u, -0.36 * u, -0.52 * u);
+  // side lick flicking out to the left
+  p.cubicTo(-0.24 * u, -0.36 * u, -0.44 * u, -0.28 * u, -0.52 * u, -0.30 * u);
+  p.cubicTo(-0.44 * u, -0.04 * u, -0.62 * u, 0.22 * u, -0.50 * u, 0.52 * u);
+  p.cubicTo(-0.42 * u, 0.80 * u, -0.22 * u, 0.90 * u, 0.0, u);
+  p.close();
+  return p;
+}
 
-  // A whirlwind: a funnel (wide top, narrow foot) with swept swirl lines.
-  Path _whirlwind(double u) {
-    final p = Path();
-    // funnel outline
-    p.moveTo(-0.9 * u, -0.85 * u);
-    p.cubicTo(0.1 * u, -1.05 * u, 0.95 * u, -0.7 * u, 0.78 * u, -0.5 * u);
-    p.cubicTo(0.55 * u, -0.28 * u, -0.35 * u, -0.42 * u, 0.28 * u, -0.15 * u);
-    p.cubicTo(0.6 * u, 0.02 * u, -0.1 * u, 0.05 * u, 0.32 * u, 0.28 * u);
-    p.cubicTo(0.55 * u, 0.42 * u, 0.05 * u, 0.5 * u, 0.16 * u, 0.72 * u);
-    p.cubicTo(0.24 * u, 0.9 * u, -0.05 * u, u, -0.12 * u, u);
-    p.cubicTo(-0.35 * u, 0.9 * u, -0.2 * u, 0.62 * u, -0.5 * u, 0.42 * u);
-    p.cubicTo(-0.85 * u, 0.18 * u, -0.2 * u, 0.12 * u, -0.7 * u, -0.12 * u);
-    p.cubicTo(-1.0 * u, -0.32 * u, -0.35 * u, -0.4 * u, -0.9 * u, -0.62 * u);
-    p.close();
-    return p;
-  }
+// A water drop: a symmetric teardrop, round bottom, pointed top.
+Path _drop(double u) {
+  final p = Path();
+  p.moveTo(0, -u);
+  p.cubicTo(0.62 * u, -0.15 * u, 0.66 * u, 0.5 * u, 0.30 * u, 0.8 * u);
+  p.cubicTo(0.12 * u, 0.96 * u, -0.12 * u, 0.96 * u, -0.30 * u, 0.8 * u);
+  p.cubicTo(-0.66 * u, 0.5 * u, -0.62 * u, -0.15 * u, 0, -u);
+  p.close();
+  // highlight glint
+  p.moveTo(-0.12 * u, 0.28 * u);
+  p.cubicTo(-0.34 * u, 0.28 * u, -0.34 * u, 0.6 * u, -0.12 * u, 0.62 * u);
+  p.cubicTo(-0.02 * u, 0.5 * u, -0.02 * u, 0.36 * u, -0.12 * u, 0.28 * u);
+  p.close();
+  p.fillType = PathFillType.evenOdd;
+  return p;
+}
 
-  // A rock: an irregular faceted boulder with an internal facet crease.
-  Path _rock(double u) {
-    final p = Path();
-    p.moveTo(-0.85 * u, 0.15 * u);
-    p.lineTo(-0.5 * u, -0.55 * u);
-    p.lineTo(0.15 * u, -0.8 * u);
-    p.lineTo(0.7 * u, -0.4 * u);
-    p.lineTo(0.9 * u, 0.25 * u);
-    p.lineTo(0.5 * u, 0.8 * u);
-    p.lineTo(-0.35 * u, 0.82 * u);
-    p.lineTo(-0.8 * u, 0.45 * u);
-    p.close();
-    // facet creases (drawn as thin sub-paths; even-odd keeps them as cuts)
-    p.moveTo(0.15 * u, -0.8 * u);
-    p.lineTo(0.02 * u, 0.0 * u);
-    p.lineTo(0.5 * u, 0.8 * u);
-    p.lineTo(0.42 * u, 0.02 * u);
-    p.close();
-    p.moveTo(0.02 * u, 0.0 * u);
-    p.lineTo(-0.8 * u, 0.45 * u);
-    p.lineTo(-0.34 * u, 0.06 * u);
-    p.close();
-    p.fillType = PathFillType.evenOdd;
-    return p;
-  }
+// A whirlwind: a funnel (wide top, narrow foot) with swept swirl lines.
+Path _whirlwind(double u) {
+  final p = Path();
+  // funnel outline
+  p.moveTo(-0.9 * u, -0.85 * u);
+  p.cubicTo(0.1 * u, -1.05 * u, 0.95 * u, -0.7 * u, 0.78 * u, -0.5 * u);
+  p.cubicTo(0.55 * u, -0.28 * u, -0.35 * u, -0.42 * u, 0.28 * u, -0.15 * u);
+  p.cubicTo(0.6 * u, 0.02 * u, -0.1 * u, 0.05 * u, 0.32 * u, 0.28 * u);
+  p.cubicTo(0.55 * u, 0.42 * u, 0.05 * u, 0.5 * u, 0.16 * u, 0.72 * u);
+  p.cubicTo(0.24 * u, 0.9 * u, -0.05 * u, u, -0.12 * u, u);
+  p.cubicTo(-0.35 * u, 0.9 * u, -0.2 * u, 0.62 * u, -0.5 * u, 0.42 * u);
+  p.cubicTo(-0.85 * u, 0.18 * u, -0.2 * u, 0.12 * u, -0.7 * u, -0.12 * u);
+  p.cubicTo(-1.0 * u, -0.32 * u, -0.35 * u, -0.4 * u, -0.9 * u, -0.62 * u);
+  p.close();
+  return p;
+}
+
+// A rock: an irregular faceted boulder with an internal facet crease.
+Path _rock(double u) {
+  final p = Path();
+  p.moveTo(-0.85 * u, 0.15 * u);
+  p.lineTo(-0.5 * u, -0.55 * u);
+  p.lineTo(0.15 * u, -0.8 * u);
+  p.lineTo(0.7 * u, -0.4 * u);
+  p.lineTo(0.9 * u, 0.25 * u);
+  p.lineTo(0.5 * u, 0.8 * u);
+  p.lineTo(-0.35 * u, 0.82 * u);
+  p.lineTo(-0.8 * u, 0.45 * u);
+  p.close();
+  // facet creases (drawn as thin sub-paths; even-odd keeps them as cuts)
+  p.moveTo(0.15 * u, -0.8 * u);
+  p.lineTo(0.02 * u, 0.0 * u);
+  p.lineTo(0.5 * u, 0.8 * u);
+  p.lineTo(0.42 * u, 0.02 * u);
+  p.close();
+  p.moveTo(0.02 * u, 0.0 * u);
+  p.lineTo(-0.8 * u, 0.45 * u);
+  p.lineTo(-0.34 * u, 0.06 * u);
+  p.close();
+  p.fillType = PathFillType.evenOdd;
+  return p;
 }
 
 // ── SpellCardWidget ───────────────────────────────────────────────────────────
@@ -660,11 +693,13 @@ class _FullscreenSpellCard extends StatefulWidget {
 }
 
 class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   bool _showEmblem = false;
+  bool _prevShowEmblem = false;
   Future<Uint8List?>? _fullArtFuture;
   Timer? _autoDismissTimer;
   late final AnimationController _intro;
+  late final AnimationController _flip;
   bool _exiting = false;
 
   bool get _hasArt => _hasCustomArt(widget.spell);
@@ -679,6 +714,14 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
     _intro = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1020),
+    );
+    // Idle at 1.0 (fully showing whichever face _showEmblem points at); a
+    // toggle replays it from 0 so the art window rotates like a little card
+    // flipping over. See _CardFrame._artWindow for the two-face math.
+    _flip = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 420),
+      value: 1.0,
     );
     // Grow out of the hit point when we have one; otherwise present instantly
     // (manual card views keep their original, un-animated appearance).
@@ -697,7 +740,19 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
   void dispose() {
     _autoDismissTimer?.cancel();
     _intro.dispose();
+    _flip.dispose();
     super.dispose();
+  }
+
+  /// Flips the art window between custom art and the true sigil. Ignored
+  /// mid-flip so a fast double-swipe can't desync [_prevShowEmblem].
+  void _toggleEmblem() {
+    if (_flip.isAnimating) return;
+    setState(() {
+      _prevShowEmblem = _showEmblem;
+      _showEmblem = !_showEmblem;
+    });
+    _flip.forward(from: 0.0);
   }
 
   /// Dismisses the card. For a resolution-reveal card (animated), it first
@@ -752,9 +807,7 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: _dismiss,
-      onHorizontalDragEnd: _hasArt
-          ? (_) => setState(() => _showEmblem = !_showEmblem)
-          : null,
+      onHorizontalDragEnd: _hasArt ? (_) => _toggleEmblem() : null,
       behavior: HitTestBehavior.opaque,
       child: Dialog.fullscreen(
         backgroundColor: Colors.transparent,
@@ -782,13 +835,18 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
                       height: h,
                       child: Stack(
                         children: [
-                          _CardFrame(
-                            spell: widget.spell,
-                            emblemPainter: widget.emblemPainter,
-                            showEmblem: _showEmblem,
-                            hasArt: _hasArt,
-                            fullArtFuture: _fullArtFuture,
-                            liveHp: widget.liveHp,
+                          AnimatedBuilder(
+                            animation: _flip,
+                            builder: (_, _) => _CardFrame(
+                              spell: widget.spell,
+                              emblemPainter: widget.emblemPainter,
+                              showEmblem: _showEmblem,
+                              prevShowEmblem: _prevShowEmblem,
+                              flipT: _flip.value,
+                              hasArt: _hasArt,
+                              fullArtFuture: _fullArtFuture,
+                              liveHp: widget.liveHp,
+                            ),
                           ),
                           if (widget.countered)
                             Positioned.fill(
@@ -882,15 +940,100 @@ class _CounteredOverlay extends StatelessWidget {
   }
 }
 
+/// A row of four small elemental badges across the top of the fullscreen
+/// card, one per BorderZone, showing which supreme-dominance tags [SpellAsset
+/// .supremeTags] achieved (colored) versus not (dimmed) — and thus which
+/// cast-time enhancement (Potency/Velocity/Efficiency/Mystery, see
+/// casting_enhancements.dart) this spell is eligible for in battle. Always
+/// shows all four so a player can see the full space of casting styles, not
+/// just the ones this spell happens to unlock.
+class _DominanceTagsStrip extends StatelessWidget {
+  const _DominanceTagsStrip({required this.supremeTags});
+
+  final List<String> supremeTags;
+
+  @override
+  Widget build(BuildContext context) {
+    final achieved = supremeTags.map((e) => e.toLowerCase()).toSet();
+    return Container(
+      width: double.infinity,
+      color: kParchmentPanelColor,
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          for (final e in _elementOrder) ...[
+            if (e != _elementOrder.first) const SizedBox(width: 12),
+            Tooltip(
+              message: _tooltipFor(e, achieved.contains(e)),
+              child: SizedBox(
+                width: 15,
+                height: 15,
+                child: CustomPaint(
+                  painter: _ElementBadgePainter(
+                    element: e,
+                    achieved: achieved.contains(e),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  String _tooltipFor(String element, bool achieved) {
+    final name = _kElementDisplayName[element]!;
+    final style = _kCastingStyleName[element]!;
+    return achieved ? '$name — $style (eligible)' : '$name — $style (not achieved)';
+  }
+}
+
+/// Paints a single small element glyph for [_DominanceTagsStrip], full
+/// strength when [achieved] and faded when not — reuses the same icon paths
+/// as the emblem's effect-affinity ring ([paintElementIcon]) so the glyph
+/// vocabulary stays consistent across the card, even though this row encodes
+/// a different fact (dominance eligibility, not effect counts).
+class _ElementBadgePainter extends CustomPainter {
+  const _ElementBadgePainter({required this.element, required this.achieved});
+
+  final String element;
+  final bool achieved;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final r = math.min(size.width, size.height) / 2 * 0.92;
+    paintElementIcon(
+      canvas,
+      Offset(size.width / 2, size.height / 2),
+      r,
+      element,
+      opacity: achieved ? 1.0 : 0.25,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _ElementBadgePainter old) =>
+      old.element != element || old.achieved != achieved;
+}
+
 /// The MTG/Pokémon-style trading-card frame: a gradient border (keyed to the
 /// spell's elemental affinity mix, see [frameGradient]) around an art window,
 /// a type line, and a rules-text box listing incantation effects or, for
 /// summons, stats and abilities.
+///
+/// When [hasArt], this is one face of a physical card that flips over: the
+/// front (custom art + title/type/rules, built by this class) and the back
+/// (just the true coat of arms centered on parchment, see [_CardBack]) rotate
+/// as a single rigid rectangle — see [build]'s 0 → π mapping.
 class _CardFrame extends StatelessWidget {
   const _CardFrame({
     required this.spell,
     required this.emblemPainter,
     required this.showEmblem,
+    this.prevShowEmblem = false,
+    this.flipT = 1.0,
     required this.hasArt,
     required this.fullArtFuture,
     this.liveHp,
@@ -898,7 +1041,23 @@ class _CardFrame extends StatelessWidget {
 
   final SpellAsset spell;
   final SpellCardPainter emblemPainter;
+
+  /// True → the back (coat of arms) is the face this flip is settling on (or
+  /// has already settled on, at rest). False → the front (custom art).
   final bool showEmblem;
+
+  /// Which face was showing before the in-progress flip started. Only
+  /// consulted while [flipT] < 0.5, i.e. before the card has rotated edge-on
+  /// to swap faces.
+  final bool prevShowEmblem;
+
+  /// 0 → 1 progress of the current flip (1 = at rest on [showEmblem]). Maps
+  /// to a 0 → π rotation of the whole card: the first half rotates
+  /// [prevShowEmblem]'s face away, the second half rotates [showEmblem]'s
+  /// face in, so it reads as one continuous card turning over rather than a
+  /// cross-fade.
+  final double flipT;
+
   final bool hasArt;
   final Future<Uint8List?>? fullArtFuture;
 
@@ -908,36 +1067,55 @@ class _CardFrame extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(7),
-      decoration: BoxDecoration(
-        gradient: cardFrameGradient(spell),
-        borderRadius: BorderRadius.circular(14),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.5),
-            blurRadius: 16,
-            offset: const Offset(0, 6),
-          ),
-        ],
-      ),
-      child: Container(
-        decoration: BoxDecoration(
-          color: kParchmentColor,
-          borderRadius: BorderRadius.circular(9),
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: Column(
-          children: [
-            _titleBar(),
-            AspectRatio(aspectRatio: 1, child: _artWindow()),
-            _typeLineBar(),
-            Expanded(child: _rulesBox()),
-          ],
-        ),
-      ),
+    final angle = flipT * math.pi;
+    final onFrontHalf = angle < math.pi / 2;
+    final faceIsBack = onFrontHalf ? prevShowEmblem : showEmblem;
+    // The back half is pre-rotated by -π so it arrives right-side-up instead
+    // of mirrored when it swings past the edge-on midpoint.
+    final faceAngle = onFrontHalf ? angle : angle - math.pi;
+    return Transform(
+      alignment: Alignment.center,
+      transform: Matrix4.identity()
+        ..setEntry(3, 2, 0.0015)
+        ..rotateY(faceAngle),
+      child: _shell(faceIsBack ? _CardBack(emblemPainter: emblemPainter) : _frontContent()),
     );
   }
+
+  /// The gradient border + parchment interior shared by both faces — the
+  /// rigid "card" that rotates, regardless of which content it holds.
+  Widget _shell(Widget child) => Container(
+    padding: const EdgeInsets.all(7),
+    decoration: BoxDecoration(
+      gradient: cardFrameGradient(spell),
+      borderRadius: BorderRadius.circular(14),
+      boxShadow: [
+        BoxShadow(
+          color: Colors.black.withValues(alpha: 0.5),
+          blurRadius: 16,
+          offset: const Offset(0, 6),
+        ),
+      ],
+    ),
+    child: Container(
+      decoration: BoxDecoration(
+        color: kParchmentColor,
+        borderRadius: BorderRadius.circular(9),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: child,
+    ),
+  );
+
+  Widget _frontContent() => Column(
+    children: [
+      _DominanceTagsStrip(supremeTags: spell.supremeTags),
+      _titleBar(),
+      AspectRatio(aspectRatio: 1, child: _artWindow()),
+      _typeLineBar(),
+      Expanded(child: _rulesBox()),
+    ],
+  );
 
   Widget _titleBar() => Container(
     color: kInkColor,
@@ -971,8 +1149,12 @@ class _CardFrame extends StatelessWidget {
     ),
   );
 
+  /// The front's art window. Always the custom art (falling back to the
+  /// emblem while it loads, or always for a no-art spell) — the true emblem
+  /// itself now lives full-size on [_CardBack], reached by flipping the
+  /// whole card rather than swapping this window's content.
   Widget _artWindow() {
-    if (!hasArt || showEmblem) return CustomPaint(painter: emblemPainter);
+    if (!hasArt) return CustomPaint(painter: emblemPainter);
     return FutureBuilder<Uint8List?>(
       future: fullArtFuture,
       builder: (context, snap) {
@@ -1090,6 +1272,30 @@ class _CardFrame extends StatelessWidget {
       ],
     ),
   );
+}
+
+/// The back of a flipped spell card: the true coat of arms (with its own
+/// gold frame + elemental ring, painted by [emblemPainter]), centered on the
+/// same parchment interior [_CardFrame] uses for its front. This is the
+/// anti-spoof guarantee (CLAUDE.md custom-art invariant 3) made physical —
+/// the true emblem is always one flip away, never just hidden.
+class _CardBack extends StatelessWidget {
+  const _CardBack({required this.emblemPainter});
+
+  final SpellCardPainter emblemPainter;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: FractionallySizedBox(
+        widthFactor: 0.86,
+        child: AspectRatio(
+          aspectRatio: 1,
+          child: CustomPaint(painter: emblemPainter),
+        ),
+      ),
+    );
+  }
 }
 
 /// Default card art for a [SpellAsset].

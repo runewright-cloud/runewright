@@ -104,6 +104,7 @@ import 'package:crypto/crypto.dart' show sha256;
 import 'package:cryptography/cryptography.dart';
 import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
+import 'package:rune_duel/spells/basic_spells.dart' show isBasicGridAndT;
 import 'package:rune_duel/spells/spell_asset.dart';
 import 'package:rune_duel/spells/spell_authorization.dart';
 import 'package:rune_duel/spells/spell_permission.dart';
@@ -211,6 +212,7 @@ class SpellCastAction extends TurnAction {
     this.vocalScore,
     this.conveyorDirection,
     this.delayedOriginHex,
+    this.handIndex,
   });
 
   final SpellAsset spell;
@@ -218,6 +220,17 @@ class SpellCastAction extends TurnAction {
   final bool isPotent;
   final bool isVelocity;
   final bool isEfficiency;
+
+  /// The caster's own hand slot this cast came from, when known — the only
+  /// duplicate-safe key for building this cast's chapter-membership Merkle
+  /// proof (docs/BASIC_SPELLS_PLAN.md §7): a chapter may hold several copies
+  /// of the same Basic spell, so `spell.commitmentHex` alone cannot tell
+  /// [TurnLoop] WHICH copy's slot to prove. Null falls back to a
+  /// commitment-based lookup (BookCommitment.proveMembership), which is only
+  /// correct for a chapter with no duplicate of this spell — true for every
+  /// non-Basic spell today, and for solo/test construction sites that never
+  /// set this.
+  final int? handIndex;
 
   /// Air-typed Rod of Spreading: the caster asks to consume one rod to add +1
   /// effective radius to this spell's effects (or one size rung to a summoned
@@ -338,6 +351,7 @@ class MysterySpellCastAction extends TurnAction {
     this.isVelocity = false,
     this.isRodOfSpreading = false,
     this.vocalScore,
+    this.handIndex,
   });
 
   final SpellAsset spell;
@@ -359,6 +373,9 @@ class MysterySpellCastAction extends TurnAction {
   /// Sorcerer-mode vocal quality score. Null in Wizard mode.
   /// Transmitted and decoded identically to SpellCastAction.vocalScore.
   final VocalScore? vocalScore;
+
+  /// See [SpellCastAction.handIndex].
+  final int? handIndex;
 
   bool get isImmediate => immediateTarget != null;
 }
@@ -762,12 +779,47 @@ class TurnLoop {
   /// UI seam (battle_screen.dart) uses this to grey out withered cards and
   /// [_selectSpell] should refuse them. False (never withered) if draw state
   /// isn't dealt yet or [spell] isn't a chapter member.
+  ///
+  /// Prefer [isHandSlotWithered] when the caller already knows which hand
+  /// slot [spell] came from (docs/BASIC_SPELLS_PLAN.md §7) — this
+  /// commitment-based lookup only resolves to the FIRST chapter occurrence
+  /// of [spell]'s grid, which is wrong for a chapter holding more than one
+  /// copy of the same Basic spell.
   bool isHandSpellWithered(SpellAsset spell) {
     final commitments = localChapterCommitments;
     if (commitments == null) return false;
     final proof = BookCommitment.proveMembership(commitments, spell.commitmentHex);
     if (proof == null) return false;
     return isPositionWithered(localPlayerId, proof.leafIndex);
+  }
+
+  /// Whether the card currently at [handIndex] in [localSpellDraw]'s hand is
+  /// withered — the duplicate-safe form of [isHandSpellWithered]. False if
+  /// draw state isn't dealt yet or [handIndex] is out of range.
+  bool isHandSlotWithered(int handIndex) {
+    final schedule = _drawSchedules[localPlayerId];
+    if (schedule == null || handIndex < 0 || handIndex >= schedule.hand.length) {
+      return false;
+    }
+    return isPositionWithered(localPlayerId, schedule.hand[handIndex]);
+  }
+
+  /// The chapter position of a local cast of [spell]: the caster's own hand
+  /// slot when [handIndex] is known (the only form that stays correct when
+  /// the chapter holds several copies of [spell]'s grid — see
+  /// docs/BASIC_SPELLS_PLAN.md §7), else a commitment lookup (legacy path
+  /// for solo/test call sites that never set handIndex, and for tests using
+  /// single-copy chapters where the two forms always agree).
+  int? _localCastPosition(SpellAsset spell, int? handIndex) {
+    if (handIndex != null) {
+      final schedule = _drawSchedules[localPlayerId];
+      if (schedule != null && handIndex >= 0 && handIndex < schedule.hand.length) {
+        return schedule.hand[handIndex];
+      }
+    }
+    final commitments = localChapterCommitments;
+    if (commitments == null) return null;
+    return BookCommitment.proveMembership(commitments, spell.commitmentHex)?.leafIndex;
   }
 
   // ── Phase D: signed per-turn state hash (BATTLE_AUTH_PLAN.md §6) ───────────
@@ -788,7 +840,10 @@ class TurnLoop {
 
   /// commitmentHex values the peer has cast this match. A second cast of the
   /// same grid is a protocol violation (Kin-stacking exploit); the match is
-  /// forfeited on detection.
+  /// forfeited on detection. EXCEPT for a shipped Basic spell
+  /// (docs/BASIC_SPELLS_PLAN.md — isBasicGridAndT), which is exempt: a
+  /// chapter may hold unlimited copies of one, so casting it more than once
+  /// per match is legitimate, not an exploit.
   final _seenPeerCommitments = <String>{};
 
   /// Spell casts resolved during the most recent [runTurn] call, for the UI's
@@ -1228,14 +1283,15 @@ class TurnLoop {
       MysterySpellCastAction(:final spell) => spell,
       _ => null,
     };
-    final localCommitments = localChapterCommitments;
-    if (localSpell != null && localCommitments != null) {
-      final localProof = BookCommitment.proveMembership(
-        localCommitments,
-        localSpell.commitmentHex,
-      );
-      if (localProof != null) {
-        _advanceDrawState(localPlayerId, localProof.leafIndex, entropy);
+    final localHandIndex = switch (input.action) {
+      SpellCastAction(:final handIndex) => handIndex,
+      MysterySpellCastAction(:final handIndex) => handIndex,
+      _ => null,
+    };
+    if (localSpell != null) {
+      final localPosition = _localCastPosition(localSpell, localHandIndex);
+      if (localPosition != null) {
+        _advanceDrawState(localPlayerId, localPosition, entropy);
       }
     }
     if ((action is SpellCastAction || action is MysterySpellCastAction) &&
@@ -3399,13 +3455,21 @@ class TurnLoop {
       // Each hand card carries its own Merkle proof (siblings/directions)
       // against our own committed book — the receiver checks it against
       // [peerBookRoot] on their side (see this method's header comment for
-      // why a single batch root over just the hand can't work).
+      // why a single batch root over just the hand can't work). Proved by
+      // SLOT (schedule.hand[i]), not by commitment search — the duplicate-
+      // safe form (docs/BASIC_SPELLS_PLAN.md §7): a hand may hold several
+      // copies of the same Basic spell's grid, and DrawSchedule.hand /
+      // SpellDraw.hand are index-parallel by construction, so slot i's
+      // chapter position is schedule.hand[i] regardless of duplicates.
+      final schedule = _drawSchedules[localPlayerId];
       final entries = <Map<String, dynamic>>[];
-      for (final spell in hand) {
-        final proof = BookCommitment.proveMembership(
-          commitments,
-          spell.commitmentHex,
-        );
+      for (var i = 0; i < hand.length; i++) {
+        final spell = hand[i];
+        final position = schedule != null && i < schedule.hand.length
+            ? schedule.hand[i]
+            : BookCommitment.proveMembership(commitments, spell.commitmentHex)?.leafIndex;
+        final proof =
+            position != null ? BookCommitment.proveMembershipAt(commitments, position) : null;
         if (proof == null) continue; // unreachable: hand spells are chapter members
         entries.add({
           'spell': spell.toJson(),
@@ -3566,6 +3630,7 @@ class TurnLoop {
         :final isRodOfSpreading,
         :final vocalScore,
         :final conveyorDirection,
+        :final handIndex,
       ):
         buf.addByte(0x01);
         buf.add(_hexToBytes(spell.commitmentHex));
@@ -3584,7 +3649,7 @@ class TurnLoop {
         buf.addByte(isRodOfSpreading ? 1 : 0);
         buf.addByte(conveyorDirection != null ? 1 : 0);
         if (conveyorDirection != null) buf.add(_encodeCoord(conveyorDirection));
-        _appendSpellProofTail(buf, spell);
+        _appendSpellProofTail(buf, spell, handIndex);
         if (isSorcererMode) _appendSorcererBytes(buf, vocalScore);
 
       case DashAction():
@@ -3602,6 +3667,7 @@ class TurnLoop {
         :final isVelocity,
         :final isRodOfSpreading,
         :final vocalScore,
+        :final handIndex,
       ):
         buf.addByte(0x03);
         buf.add(_hexToBytes(spell.commitmentHex));
@@ -3623,7 +3689,7 @@ class TurnLoop {
         buf.addByte(isPotent ? 1 : 0);
         buf.addByte(isVelocity ? 1 : 0);
         buf.addByte(isRodOfSpreading ? 1 : 0);
-        _appendSpellProofTail(buf, spell);
+        _appendSpellProofTail(buf, spell, handIndex);
         if (isSorcererMode) _appendSorcererBytes(buf, vocalScore);
     }
     return buf.toBytes();
@@ -3631,15 +3697,20 @@ class TurnLoop {
 
   /// Appends [proof_len:4][proof_bytes:N][merkle_depth:1][path:depth*(32+1)] to
   /// [buf] for the given [spell], but only when [localChapterCommitments] is set.
-  void _appendSpellProofTail(BytesBuilder buf, SpellAsset spell) {
+  ///
+  /// [handIndex], when known, proves the caster's OWN hand slot rather than
+  /// searching the chapter for a matching commitment — the duplicate-safe
+  /// form (docs/BASIC_SPELLS_PLAN.md §7). Null falls back to the commitment
+  /// search, correct only when the chapter holds no duplicate of [spell].
+  void _appendSpellProofTail(BytesBuilder buf, SpellAsset spell, int? handIndex) {
     final commitments = localChapterCommitments;
     if (commitments == null || spell.proofBytes.isEmpty) return;
     buf.add(_be4(spell.proofBytes.length));
     buf.add(spell.proofBytes);
-    final proof = BookCommitment.proveMembership(
-      commitments,
-      spell.commitmentHex,
-    );
+    final position = _localCastPosition(spell, handIndex);
+    final proof = position != null
+        ? BookCommitment.proveMembershipAt(commitments, position)
+        : null;
     if (proof == null || proof.siblings.isEmpty) {
       buf.addByte(0); // depth 0: leaf is the only node (single-spell chapter)
       return;
@@ -3933,8 +4004,14 @@ class TurnLoop {
   /// Verify a peer spell cast (Option 3). Forfeits the match on failure.
   ///
   /// Checks (in order):
-  ///   1. No duplicate grid cast — same [commitmentHex] twice is Kin-stacking.
-  ///   2. UltraHonk proof verifies and public [commitmentHex] matches the wire value.
+  ///   1. UltraHonk proof verifies and public [commitmentHex] matches the wire value.
+  ///   2. No duplicate grid cast — same (verified [commitmentHex], T) twice is
+  ///      Kin-stacking — UNLESS this is one of the shipped Basic spells
+  ///      (docs/BASIC_SPELLS_PLAN.md), which may legitimately be cast more than
+  ///      once per match (a chapter may hold unlimited copies of one). Keyed on
+  ///      VERIFIED proof outputs, not the wire `spell.commitmentHex`/`.t` — see
+  ///      [isBasicGridAndT]'s header for why that distinction matters at a
+  ///      trust boundary.
   ///   3. Merkle membership proof is valid against [peerBookRoot].
   ///
   /// On success, populates [certifiedPeerFormulas] with the trajectory-derived
@@ -3968,16 +4045,7 @@ class TurnLoop {
       return;
     }
 
-    // 1. Duplicate grid detection.
-    if (!_seenPeerCommitments.add(spell.commitmentHex)) {
-      session.sendForfeit('duplicate_spell_cast:${spell.commitmentHex}');
-      throw StateError(
-        'peer cast the same grid twice — match forfeit '
-        '(commitmentHex=${spell.commitmentHex})',
-      );
-    }
-
-    // 2. Proof verification.
+    // 1. Proof verification.
     if (spell.proofBytes.isEmpty) {
       session.sendForfeit('missing_spell_proof');
       throw StateError(
@@ -4001,6 +4069,17 @@ class TurnLoop {
       throw StateError(
         'peer proof commitmentHex ${outputs.commitmentHex} '
         'does not match wire value ${spell.commitmentHex} — match forfeit',
+      );
+    }
+
+    // 2. Duplicate grid detection — skipped for a shipped Basic spell, which
+    // may legitimately be cast more than once per match.
+    if (!isBasicGridAndT(outputs.commitmentHex, outputs.t) &&
+        !_seenPeerCommitments.add(outputs.commitmentHex)) {
+      session.sendForfeit('duplicate_spell_cast:${outputs.commitmentHex}');
+      throw StateError(
+        'peer cast the same grid twice — match forfeit '
+        '(commitmentHex=${outputs.commitmentHex})',
       );
     }
 
@@ -4096,6 +4175,7 @@ class TurnLoop {
       final authorized = await castingPlayerMayUse(
         spellOwnerPubkeyHex: outputs.ownerPubkeyHex,
         commitmentHex: outputs.commitmentHex,
+        t: outputs.t,
         castingPlayerPubkeyHex: authenticatedPeerPubkeyHex,
         permissions: peerPermissions,
       );

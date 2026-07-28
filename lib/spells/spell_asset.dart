@@ -119,13 +119,20 @@ class SpellAsset {
   /// as a 16-cell incantation effect. False for ordinary spells.
   final bool isSummon;
 
-  /// design doc "Personalities": the battlefield-behavior glyph assigned to
-  /// this summon, stored as the SummonPersonality enum name ('aggressive',
-  /// 'evasive', 'protective', 'tactical'). A raw string, not the enum
-  /// itself, so this persistence-layer file doesn't depend on the battle
-  /// engine's minion.dart -- mirrors how [formula] stores raw BorderZone
-  /// names rather than the enum. No assignment UI exists yet; every summon
-  /// defaults to 'aggressive'. Meaningless when [isSummon] is false.
+  /// design doc "Personalities": the battlefield-behavior glyph this summon
+  /// will fight with, stored as the SummonPersonality enum name
+  /// ('aggressive', 'evasive', 'protective', 'tactical'). A raw string, not
+  /// the enum itself, so this persistence-layer file doesn't depend on the
+  /// battle engine's minion.dart -- mirrors how [formula] stores raw
+  /// BorderZone names rather than the enum.
+  ///
+  /// This is a fallback default, not the assignment point: personality is
+  /// chosen per-chapter, when the spell is added to a Chapter (see
+  /// ChapterEntry.summonPersonality / [withSummonPersonality]), not at
+  /// inscription -- the same base spell may be added to different chapters
+  /// with different personalities. This field is only what a summon uses
+  /// when no chapter-entry override is present (e.g. legacy chapters saved
+  /// before this field existed). Meaningless when [isSummon] is false.
   final String summonPersonality;
 
   /// Hex SHA-256 of the player-imported custom art's canonical full-size
@@ -254,6 +261,38 @@ class SpellAsset {
         artSource: artSource,
         artUpdatedAt: artUpdatedAt,
         artPackId: artPackId,
+      );
+
+  /// Returns a copy with [personality] substituted for [summonPersonality];
+  /// all other fields unchanged. Used to bind the battlefield-behavior glyph
+  /// chosen when this spell is added to a Chapter (see
+  /// ChapterEntry.summonPersonality) -- not called at inscription, since the
+  /// same base spell may be added to different chapters (or, for Basic
+  /// spells, added more than once to the same chapter) with different
+  /// personalities each time.
+  SpellAsset withSummonPersonality(String personality) => SpellAsset(
+        id: id,
+        createdAt: createdAt,
+        tier: tier,
+        t: t,
+        ownerPubkeyHex: ownerPubkeyHex,
+        manaCost: manaCost,
+        segmentCount: segmentCount,
+        dotCount: dotCount,
+        initialGrid: initialGrid,
+        proofBytes: proofBytes,
+        name: name,
+        commitmentHex: commitmentHex,
+        spellHashHex: spellHashHex,
+        formula: formula,
+        supremeTags: supremeTags,
+        isSummon: isSummon,
+        summonPersonality: personality,
+        artHash: artHash,
+        artSource: artSource,
+        artUpdatedAt: artUpdatedAt,
+        artPackId: artPackId,
+        gridWithheld: gridWithheld,
       );
 
   /// Returns a copy with custom-art metadata set to [hash]/[source], stamped

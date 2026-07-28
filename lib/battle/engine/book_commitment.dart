@@ -143,16 +143,28 @@ class BookCommitment {
     return Uint8List.fromList(sha256.convert(buf.toBytes()).bytes);
   }
 
-  /// Prove that [leafHex] is a member of the Merkle tree over [commitmentHexes].
+  /// Prove that the leaf at sorted position [leafIndex] is a member of the
+  /// Merkle tree over [commitmentHexes]. Returns null if [leafIndex] is out
+  /// of range.
   ///
-  /// Returns null if [leafHex] is not present in [commitmentHexes].
-  static MembershipProof? proveMembership(
+  /// Unlike [proveMembership], this resolves the leaf by POSITION rather
+  /// than by searching for a matching commitment string — the only form
+  /// that stays correct when [commitmentHexes] contains duplicate entries
+  /// (docs/BASIC_SPELLS_PLAN.md §7, unlimited copies of a Basic spell per
+  /// chapter): searching by string always finds the FIRST matching
+  /// occurrence, which would collapse every duplicate's cast onto the same
+  /// leafIndex and desync DrawSchedule's hand/wither bookkeeping between
+  /// clients. Callers that know their own hand SLOT (e.g. TurnLoop casting
+  /// a specific card) must use this method with that slot's chapter
+  /// position, not [proveMembership] with the card's commitmentHex.
+  static MembershipProof? proveMembershipAt(
     List<String> commitmentHexes,
-    String leafHex,
+    int leafIndex,
   ) {
     final sorted = List<String>.from(commitmentHexes)..sort();
-    var idx = sorted.indexOf(leafHex);
-    if (idx < 0) return null;
+    if (leafIndex < 0 || leafIndex >= sorted.length) return null;
+    var idx = leafIndex;
+    final leafHex = sorted[idx];
 
     var level = sorted.map(_leafBytes).toList();
     final siblings = <String>[];
@@ -181,6 +193,25 @@ class BookCommitment {
       siblings: siblings,
       directions: directions,
     );
+  }
+
+  /// Prove that [leafHex] is a member of the Merkle tree over [commitmentHexes].
+  ///
+  /// Returns null if [leafHex] is not present in [commitmentHexes]. When
+  /// [commitmentHexes] contains multiple entries equal to [leafHex] (a
+  /// chapter with several copies of the same Basic spell), this always
+  /// proves the FIRST (lowest sorted-index) occurrence — callers that must
+  /// distinguish between duplicate occurrences (e.g. TurnLoop casting a
+  /// specific hand slot) MUST call [proveMembershipAt] with their own known
+  /// position instead of this method.
+  static MembershipProof? proveMembership(
+    List<String> commitmentHexes,
+    String leafHex,
+  ) {
+    final sorted = List<String>.from(commitmentHexes)..sort();
+    final idx = sorted.indexOf(leafHex);
+    if (idx < 0) return null;
+    return proveMembershipAt(commitmentHexes, idx);
   }
 
   /// Encode a root for sending over the wire (32 raw bytes, big-endian).

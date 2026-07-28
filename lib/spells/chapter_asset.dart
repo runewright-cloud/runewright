@@ -79,17 +79,30 @@ class ArtifactEntry {
 // ── Spell loadout ─────────────────────────────────────────────────────────────
 
 class ChapterEntry {
-  const ChapterEntry({required this.spellId});
+  const ChapterEntry({required this.spellId, this.summonPersonality});
 
   /// ID of the included spell (matches SpellAsset.id).
   final String spellId;
 
+  /// design doc "Personalities": the battlefield-behavior glyph (a
+  /// SummonPersonality enum name) this copy of the spell will fight with,
+  /// chosen when it was added to this chapter -- not at inscription, since
+  /// the same base spell may be added to several chapters (or, for Basic
+  /// spells, added more than once to the same chapter) with a different
+  /// personality each time. Null means "use the spell's own
+  /// SpellAsset.summonPersonality default" (non-summon entries, or entries
+  /// added before this field existed). Ignored entirely when the underlying
+  /// spell isn't a summon.
+  final String? summonPersonality;
+
   Map<String, dynamic> toJson() => {
         'spellId': spellId,
+        if (summonPersonality != null) 'summonPersonality': summonPersonality,
       };
 
   static ChapterEntry fromJson(Map<String, dynamic> json) => ChapterEntry(
         spellId: json['spellId'] as String,
+        summonPersonality: json['summonPersonality'] as String?,
       );
 }
 

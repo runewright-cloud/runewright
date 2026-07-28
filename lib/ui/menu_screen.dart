@@ -126,18 +126,6 @@ class MenuScreen extends StatelessWidget {
                     MaterialPageRoute(builder: (_) => const OnboardingLandingScreen()),
                   ),
                 ),
-                _MenuButton(
-                  label: 'DEBUG: Reset Identity',
-                  onTap: () async {
-                    await Identity.deleteOnDevice();
-                    if (!context.mounted) return;
-                    Navigator.of(context).pushAndRemoveUntil(
-                      MaterialPageRoute(
-                          builder: (_) => const OnboardingLandingScreen()),
-                      (route) => false,
-                    );
-                  },
-                ),
               ],
             ),
           ),
