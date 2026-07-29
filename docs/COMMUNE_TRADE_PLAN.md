@@ -69,7 +69,9 @@ from each side is an arbitrary set (including empty) of items, each item being e
   - `lib/protocol/lan_socket_transport.dart` — `LanSocketTransport` / `LanListener`.
   - `lib/protocol/lan_discovery.dart` — mDNS via `nsd`. **`advertiseDuelHost` /
     `discoverDuelHosts` hardcode `_runewright._tcp`** — parameterize the service type
-    (default = battle's) so trade can advertise on a **distinct** `_runewright-trade._tcp`
+    (default = battle's) so trade can advertise on a **distinct** `_rw-trade._tcp`
+    (`nsd` caps the service label at 15 chars per RFC 6763 — `runewright-trade` is 16 and
+    fails validation, hence the `rw-` short prefix)
     and not collide with battle discovery.
   - `lib/protocol/wire.dart` — `Frame` / `FrameReader` (`[1 type][4 BE len][payload]`),
     `lengthPrefixedConcat` / `lengthPrefixedSplit`. Reuse `FrameReader` as-is with a new
@@ -218,7 +220,7 @@ already used by `SpellPermission.isSignatureValid` (already covered in existing 
 
 ### 5.4 Discovery (`lib/trade/trade_discovery.dart` or param on `LanMatchDiscovery`)
 
-Advertise/discover on **`_runewright-trade._tcp`** so trade peers and battle peers don't
+Advertise/discover on **`_rw-trade._tcp`** so trade peers and battle peers don't
 cross-list. Prefer adding an optional `serviceType` parameter to `advertiseDuelHost` /
 `discoverDuelHosts` (default `kRunewrightServiceType`) and to `LanMatchDiscovery`, over
 copy-pasting the discovery class. Reuse `selectBestAddress` (Wi-Fi-Direct address filtering)

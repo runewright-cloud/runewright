@@ -41,6 +41,12 @@ enum BattleMsgType {
   // publicly alongside bookCommit so DrawSchedule can compute nextInt(n) for
   // the peer's chapter without ever learning its contents.
   bookLeafCount(0x1C),    // uint32 big-endian
+  // Player-chosen display name (Identity.loadWizardName()), exchanged
+  // unauthenticated alongside the rest of setup — presentation only, never
+  // trusted for identity/authorization (that's exchangeIdentityAuth's job).
+  wizardName(0x1D),       // UTF-8 bytes, may be empty
+
+
 
   // Commit-reveal entropy (§3)
   nonceCommit(0x20),

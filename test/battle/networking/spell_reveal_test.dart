@@ -93,6 +93,11 @@ void main() {
           position: posRevealer,
           teamId: 'team_revealer',
           baseSpellRange: 3,
+          // 1 bookmark -> hand size 2, matching the 2-spell test chapters
+          // below exactly, so the whole chapter always fits in hand.
+          accoutrements: [
+            Accoutrement(id: 'revealer_bm0', kind: AccoutrementKind.bookmark),
+          ],
         ),
         WizardAvatar(
           playerId: 'victim',
@@ -103,6 +108,9 @@ void main() {
           position: posVictim,
           teamId: 'team_victim',
           baseSpellRange: 3,
+          accoutrements: [
+            Accoutrement(id: 'victim_bm0', kind: AccoutrementKind.bookmark),
+          ],
         ),
       ],
       teams: [
@@ -121,9 +129,9 @@ void main() {
     final sessionRevealer = BattleSession(transportRevealer, matchId);
     final sessionVictim = BattleSession(transportVictim, matchId);
 
-    // 2 spells, default bookmarkCount (3) — the whole chapter fits in the
-    // opening hand, so the deal is deterministic (no draw-order dependence)
-    // and the revealed hand is exactly victimHexes.
+    // 2 spells, fixture hand size 2 (1 bookmark + 1) — the whole chapter
+    // fits in the opening hand, so the deal is deterministic (no
+    // draw-order dependence) and the revealed hand is exactly victimHexes.
     final victimSpells = [fixtureSpell('a', 0xAA), fixtureSpell('b', 0xBB)];
     final victimHexes = victimSpells.map((s) => s.commitmentHex).toList()..sort();
     final victimRoot = BookCommitment.computeRoot(victimHexes);

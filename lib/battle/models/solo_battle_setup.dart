@@ -56,7 +56,7 @@ SoloBattleSetup buildSoloBattleState(
     playerId: localId,
     ownerPubkeyHex: '0x${'0' * 64}',
     hp: config.playerHp,
-    mana: maxMana,
+    mana: maxMana ~/ 2,
     maxMana: maxMana,
     position: spawnPos,
     teamId: 'solo',

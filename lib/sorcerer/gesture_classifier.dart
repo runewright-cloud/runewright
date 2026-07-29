@@ -60,27 +60,45 @@ class GestureMatch {
 
 class GestureClassifier {
   const GestureClassifier({
-    this.energyFloor = 0.02,
-    this.distanceCap = 4.0,
-    this.marginThreshold = 0.5,
+    this.energyFloor = 8.0,
+    this.distanceCap = 0.80,
+    this.marginThreshold = 0.15,
   });
 
   /// windowEnergy() below this = holding steady = neutral, skip DTW
-  /// entirely. **Placeholder** — must sit above sensor noise + hand tremor,
-  /// grid-searched from the "hold steady" confusable capture, exactly like
-  /// DtwMatcher.score's `scale` placeholder was calibrated against real
-  /// recordings. Not yet calibrated against a real device.
+  /// entirely.
+  ///
+  /// Calibrated against the real Pixel 6 corpus: idle captures top out at
+  /// mean-square energy 7.76, while the weakest genuine gesture rep (fire)
+  /// sits at 13.75. 8.0 clears every recorded idle without gating any
+  /// recorded gesture. The previous placeholder of 0.02 was ~400x too low —
+  /// real stillness sails straight past it, which is how a still hand
+  /// reached DTW and came out "fire".
+  ///
+  /// This is a cheap early-out, not the primary defence: idle also sits
+  /// >1.1 away in normalised DTW space, comfortably outside [distanceCap].
   final double energyFloor;
 
   /// Reject a match whose best DTW distance is >= this (query resembles no
-  /// enrolled gesture closely enough). **Placeholder**, same caveat.
+  /// enrolled gesture closely enough).
+  ///
+  /// Calibrated over the real corpus in normalised feature space (see
+  /// [normalizeForMatching]) — NOT comparable to a distance on raw frames.
+  /// Genuine reps span 0.21-0.86; the closest impostor (theatrical
+  /// "garbage") sits near 0.90. 0.80 accepts 90% of genuine reps with zero
+  /// false accepts and leaves headroom below the first impostor.
+  ///
+  /// Bias this DOWN, never up: a rejected genuine gesture is merely a cast
+  /// without enhancement, but a false accept applies the *wrong*
+  /// enhancement and breaks the never-false-advance bar
+  /// (SOMATIC_GESTURE_PLAN.md §0).
   final double distanceCap;
 
   /// Reject a match whose margin over the second-best gesture is <= this
-  /// (query is ambiguous between two gestures). **Placeholder**, same
-  /// caveat. Grid-search all three constants together via the confusion
-  /// matrix harness (SOMATIC_GESTURE_PLAN.md §6.5/§9) once a real corpus
-  /// exists — do not hand-tune in isolation.
+  /// (query is ambiguous between two gestures). Calibrated jointly with
+  /// [distanceCap] and [energyFloor] over the real corpus — do not
+  /// hand-tune one in isolation; re-run
+  /// `tool/gesture_corpus_analysis.dart` after any change.
   final double marginThreshold;
 
   /// Classifies [query] against [templatesByGesture] (each gesture's
@@ -103,13 +121,17 @@ class GestureClassifier {
       );
     }
 
-    final queryFrames = imuFeatureFrames(query);
+    // Both sides go through normalizeForMatching: template reps are stored
+    // raw (so the corpus stays reprocessable as calibration evolves), so the
+    // normalisation happens here rather than at write time. Cost is O(frames)
+    // against DTW's O(n*m) — immaterial.
+    final queryFrames = normalizeForMatching(imuFeatureFrames(query));
     final distances = <Gesture, double>{};
     for (final entry in templatesByGesture.entries) {
       if (entry.value.isEmpty) continue; // unenrolled — not a candidate
       var best = double.infinity;
       for (final rep in entry.value) {
-        final d = DtwMatcher.distance(queryFrames, rep);
+        final d = DtwMatcher.distance(queryFrames, normalizeForMatching(rep));
         if (d < best) best = d;
       }
       distances[entry.key] = best;

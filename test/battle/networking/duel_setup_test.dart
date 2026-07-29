@@ -29,6 +29,7 @@ import 'package:rune_duel/spells/chapter_asset.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
 import 'package:rune_duel/src/rust/frb_generated.dart';
 
+import '../../identity/fake_secure_storage.dart';
 import '../../spells/fake_path_provider.dart';
 
 void main() {
@@ -41,6 +42,7 @@ void main() {
   late Directory tempDir;
 
   setUp(() async {
+    installFakeSecureStorage();
     tempDir = await installFakePathProvider();
   });
 

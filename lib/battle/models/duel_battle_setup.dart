@@ -62,9 +62,13 @@ DuelBattleSetup buildDuelBattleState({
   required List<ArtifactEntry> peerArtifacts,
   required String localOwnerHex,
   required String peerOwnerHex,
+  String localWizardName = '',
+  String peerWizardName = '',
 }) {
   final bottomHex = _hexLessThan(localOwnerHex, peerOwnerHex) ? localOwnerHex : peerOwnerHex;
   final topHex = bottomHex == localOwnerHex ? peerOwnerHex : localOwnerHex;
+  final bottomWizardName = bottomHex == localOwnerHex ? localWizardName : peerWizardName;
+  final topWizardName = bottomHex == localOwnerHex ? peerWizardName : localWizardName;
 
   final battlefield = Battlefield(radius: config.gridRadius);
   final spawns = battlefield.spawnPositions(2); // [bottom, top]
@@ -77,6 +81,7 @@ DuelBattleSetup buildDuelBattleState({
     required String idPrefix,
     required HexCoord position,
     required String teamId,
+    required String wizardName,
   }) {
     final accoutrements = accoutrementsFromArtifacts(artifacts, idPrefix: idPrefix);
     final manaGems = accoutrements.where((a) => a.kind == AccoutrementKind.manaGem).length;
@@ -84,8 +89,9 @@ DuelBattleSetup buildDuelBattleState({
     return WizardAvatar(
       playerId: ownerHex,
       ownerPubkeyHex: ownerHex,
+      wizardName: wizardName,
       hp: config.playerHp,
-      mana: maxMana,
+      mana: maxMana ~/ 2,
       maxMana: maxMana,
       position: position,
       teamId: teamId,
@@ -103,12 +109,14 @@ DuelBattleSetup buildDuelBattleState({
     idPrefix: 'acc_bottom',
     position: bottomPos,
     teamId: 'team_bottom',
+    wizardName: bottomWizardName,
   );
   final topAvatar = buildAvatar(
     ownerHex: topHex,
     artifacts: topArtifacts,
     idPrefix: 'acc_top',
     position: topPos,
+    wizardName: topWizardName,
     teamId: 'team_top',
   );
 

@@ -35,17 +35,17 @@ class DrawSchedule {
         remaining = List.unmodifiable(remaining),
         withered = Set.unmodifiable(withered);
 
-  /// Deals the opening hand: draws up to [bookmarkCount] positions one at a
+  /// Deals the opening hand: draws up to [handSize] positions one at a
   /// time from `[0, chapterSize)` using [rng]. Mirrors [SpellDraw.opening]
   /// exactly (same rng.nextInt(pool.length) sequence over a same-size pool),
   /// so a DrawSchedule dealt from the same seed as a SpellDraw always agrees
   /// on which position sits in which hand slot.
-  factory DrawSchedule.opening(int chapterSize, int bookmarkCount, HashRng rng) {
+  factory DrawSchedule.opening(int chapterSize, int handSize, HashRng rng) {
     assert(chapterSize > 0, 'chapter must have at least one spell');
     final pool = List<int>.generate(chapterSize, (i) => i);
-    final handSize = bookmarkCount < pool.length ? bookmarkCount : pool.length;
+    final dealSize = handSize < pool.length ? handSize : pool.length;
     final hand = <int>[];
-    for (var i = 0; i < handSize; i++) {
+    for (var i = 0; i < dealSize; i++) {
       hand.add(pool.removeAt(rng.nextInt(pool.length)));
     }
     return DrawSchedule._(hand: hand, remaining: pool, withered: const {});
@@ -86,6 +86,36 @@ class DrawSchedule {
       final j = drawRng.nextInt(newRemaining.length);
       newHand.add(newRemaining.removeAt(j));
     }
+    return DrawSchedule._(hand: newHand, remaining: newRemaining, withered: newWithered);
+  }
+
+  /// Adds a hand slot, drawing a fresh position from [remaining] via [rng] —
+  /// a bookmark accoutrement gained mid-battle (TurnLoop._reconcileHandSize).
+  /// No-op if [remaining] is empty (every chapter position is already in
+  /// hand). Mirrors [SpellDraw.addSlot].
+  DrawSchedule addSlot(HashRng rng) {
+    if (remaining.isEmpty) return this;
+    final newRemaining = List<int>.from(remaining);
+    final newHand = List<int>.from(hand)
+      ..add(newRemaining.removeAt(rng.nextInt(newRemaining.length)));
+    return DrawSchedule._(hand: newHand, remaining: newRemaining, withered: withered);
+  }
+
+  /// Removes the hand slot at [handIndex], reinserting its position back
+  /// into [remaining] in canonical (ascending) order — the reverse of a
+  /// draw. A bookmark accoutrement lost mid-battle
+  /// (TurnLoop._reconcileHandSize). Mirrors [SpellDraw.removeSlot].
+  DrawSchedule removeSlot(int handIndex) {
+    assert(handIndex >= 0 && handIndex < hand.length);
+    final newHand = List<int>.from(hand);
+    final removedPos = newHand.removeAt(handIndex);
+    final newWithered = Set<int>.from(withered)..remove(removedPos);
+    final newRemaining = List<int>.from(remaining);
+    var i = 0;
+    while (i < newRemaining.length && newRemaining[i] < removedPos) {
+      i++;
+    }
+    newRemaining.insert(i, removedPos);
     return DrawSchedule._(hand: newHand, remaining: newRemaining, withered: newWithered);
   }
 

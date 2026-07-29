@@ -60,8 +60,10 @@ HexCoord _hexRound(double q, double r) {
 
 /// One resolved spell cast to animate: a glowing orb that appears at
 /// [fromHex] (the caster), flies to [toHex], and bursts — coloured by the
-/// spell's elemental affinity. Purely cosmetic; built by the UI layer from
-/// [SpellCastEvent] (see turn_loop.dart), which is the gameplay source of truth.
+/// casting wizard's identity (see [BattlefieldPainter.colorForWizard]), so
+/// it's always clear *who* cast the spell rather than what element it was.
+/// Purely cosmetic; built by the UI layer from [SpellCastEvent] (see
+/// turn_loop.dart), which is the gameplay source of truth.
 class CastAnimation {
   const CastAnimation({
     required this.fromHex,
@@ -88,7 +90,8 @@ const double _kCastTravelEnd = 0.72;
 const double kCastOrbImpactFraction = _kCastTravelEnd;
 
 /// A spell cast that has been committed but not yet resolved: a glowing orb
-/// held at [origin], pulsing, coloured by elemental affinity. Covers both a
+/// held at [origin], pulsing, coloured by the casting wizard's identity (see
+/// [BattlefieldPainter.colorForWizard]). Covers both a
 /// same-turn normal cast (while its owner is picking movement) and a
 /// multi-turn Mystery cast waiting out its delay. [rangeRadius], when > 0,
 /// draws a translucent ring around [origin] hinting at the spell's reach
@@ -174,6 +177,7 @@ class BattlefieldPainter extends CustomPainter {
     this.hiddenMinionIds = const {},
     this.effectBloom,
     this.effectBloomAnimation,
+    this.terrainBeneath = false,
   }) : super(
          repaint: Listenable.merge([
            pulseAnimation,
@@ -253,6 +257,14 @@ class BattlefieldPainter extends CustomPainter {
   /// the bloom animates without a widget rebuild.
   final Animation<double>? effectBloomAnimation;
 
+  /// Whether a scenery backdrop is drawn underneath this painter (see
+  /// lib/ui/scenery/). When true the playable tiles are washed rather than
+  /// filled, so the terrain shows through inside the grid, and the tile rim is
+  /// drawn as a light line over a dark halo so cells stay countable against any
+  /// terrain. Defaults to false, which keeps the original opaque stone board —
+  /// that is still what shows if the atlas fails to load.
+  final bool terrainBeneath;
+
   /// The 6 neighbor hexes of a ConveyorTile about to be created, highlighted
   /// (air-colored) while the caster is choosing a push direction. See
   /// battle_screen.dart's pickingDirection phase.
@@ -288,12 +300,38 @@ class BattlefieldPainter extends CustomPainter {
   static const _kTileLight = Color(0xFFD5CCB2); // stone tile fill
   static const _kTileDark = Color(0xFFC2B89A); // alternate tile (checkerboard)
   static const _kEdge = Color(0xFF4A3018); // tile border
+
+  // ── Terrain-beneath variants (see [terrainBeneath]) ────────────────────────
+  // The opaque fills above would hide the scenery entirely, so with terrain
+  // underneath the checkerboard becomes a wash and the rim does the work of
+  // keeping cells countable. Both washes are needed: tinting only the light
+  // cells reads as "some tiles are highlighted" rather than as a grid.
+  static const _kTileLightWash = Color(0x1FFFF4DC); // warm lift, ~12% alpha
+  static const _kTileDarkWash = Color(0x26241505); // cool sink, ~15% alpha
+
+  // A single 1px line vanishes wherever the terrain happens to match its
+  // luminance — over snow the dark edge is fine, over pinewood it is invisible.
+  // Drawing a dark halo under a light line keeps the lattice readable on both.
+  static const _kEdgeHalo = Color(0xCC1A0F04);
+  static const _kEdgeLine = Color(0x99E8D9B8);
   static const _kLocalToken = Color(0xFFB8860B); // illumination gold
   static const _kFoeToken = Color(0xFF7A1F1F); // rubric red
 
-  // Elemental colors — minion label tint, barrier ring glow, and the cast
-  // animation orb. [colorForAffinity] is the public accessor for callers
-  // (e.g. battle_screen.dart) building a [CastAnimation].
+  // Extra wizard identity colors for 3-6 player experimental matches, used
+  // in [colorForWizard] after the local (gold) and first-opponent (red)
+  // slots are taken — assigned in avatar list order so every wizard reads
+  // as a stable, distinct caster color.
+  static const List<Color> _kExtraWizardColors = [
+    Color(0xFF3A7FCC), // azure
+    Color(0xFF5FA83C), // verdant
+    Color(0xFF9B5FC0), // violet
+    Color(0xFFCC7A2E), // amber
+  ];
+
+  // Elemental colors — minion label tint, barrier ring glow, and the chain
+  // indicator. [colorForAffinity] is the public accessor for callers (e.g.
+  // battle_screen.dart) that want the *element's* color rather than the
+  // caster's — see [colorForWizard] for the cast-orb/caster-identity color.
   static const Map<SpellAffinity, Color> _kElementColor = {
     SpellAffinity.fire: Color(0xFFE05020),
     SpellAffinity.earth: Color(0xFF8B6033),
@@ -301,9 +339,33 @@ class BattlefieldPainter extends CustomPainter {
     SpellAffinity.air: Color(0xFFD8C840),
   };
 
-  /// The cast-animation orb color for a spell's primary elemental affinity.
+  /// The elemental color for a spell's/minion's/chain's primary affinity.
   static Color colorForAffinity(SpellAffinity affinity) =>
       _kElementColor[affinity] ?? Colors.white;
+
+  /// The cast-orb color for whichever wizard cast the spell: gold for the
+  /// local player, red for the first opponent (matching the existing board
+  /// token colors), and a fixed extra palette for any further wizards in a
+  /// 3-6 player experimental match, assigned by their order in
+  /// [orderedPlayerIds] (typically `BattleState.avatars` order, which is
+  /// stable for the life of a match). Keeping this by caster rather than by
+  /// spell element is the point: in a multi-wizard duel, the orb must answer
+  /// "who cast that" at a glance, not "what element was it."
+  static Color colorForWizard(
+    String playerId, {
+    required String? localPlayerId,
+    required List<String> orderedPlayerIds,
+  }) {
+    if (playerId == localPlayerId) return _kLocalToken;
+    final opponentIds =
+        orderedPlayerIds.where((id) => id != localPlayerId).toList();
+    final idx = opponentIds.indexOf(playerId);
+    if (idx <= 0) return _kFoeToken;
+    final extraIdx = idx - 1;
+    return extraIdx < _kExtraWizardColors.length
+        ? _kExtraWizardColors[extraIdx]
+        : _kFoeToken;
+  }
 
   // Terrain/cloud color follows the elemental flavor that creates it (same
   // palette as minion labels / barrier rings / cast orbs).
@@ -518,11 +580,37 @@ class BattlefieldPainter extends CustomPainter {
 
     // Subtle checkerboard tint so tiles are distinguishable.
     final light = (coord.q + coord.r + coord.q * coord.r).isEven;
-    canvas.drawPath(path, Paint()..color = light ? _kTileLight : _kTileDark);
+
+    if (!terrainBeneath) {
+      canvas.drawPath(path, Paint()..color = light ? _kTileLight : _kTileDark);
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = _kEdge
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.0,
+      );
+      return;
+    }
+
+    // Terrain underneath: wash instead of fill, and a two-tone rim. The halo
+    // is stroked first and wider, so the light line reads as sitting on top of
+    // a shadow rather than as a doubled border.
+    canvas.drawPath(
+      path,
+      Paint()..color = light ? _kTileLightWash : _kTileDarkWash,
+    );
     canvas.drawPath(
       path,
       Paint()
-        ..color = _kEdge
+        ..color = _kEdgeHalo
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.6,
+    );
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = _kEdgeLine
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.0,
     );
@@ -1197,6 +1285,7 @@ class BattlefieldPainter extends CustomPainter {
       old.hiddenCloudIds.length != hiddenCloudIds.length ||
       old.hiddenTileHexes.length != hiddenTileHexes.length ||
       old.hiddenMinionIds.length != hiddenMinionIds.length ||
+      old.terrainBeneath != terrainBeneath ||
       !identical(old.effectBloom, effectBloom);
 
   /// Length-only comparison misses [CloudObject.position] mutating in place

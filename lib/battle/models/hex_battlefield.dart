@@ -7,8 +7,9 @@
 // different purpose.
 //
 // Movement validation is REAL: up to 2 tiles/turn, collision resolved by
-// speed (higher speed claims contested tile; ties bounce both back).
-// Pathing UI and movement-intent serialisation are stubbed.
+// speed (higher speed claims contested tile; ties bounce both back one tile
+// along their own path). Pathing UI and movement-intent serialisation are
+// stubbed.
 //
 // Chapter selection belongs here per the subsystem grouping (the player
 // selects a Chapter — a subset of their spell library — before entering
@@ -57,11 +58,22 @@ List<HexCoord> hexNeighbors(HexCoord h) =>
 /// see tile_entry_resolver.dart) and BattleState (occupancy/avatars/minions)
 /// this self-contained Battlefield class deliberately doesn't reference.
 class MovementResult {
-  const MovementResult({required this.bounced});
+  const MovementResult({required this.bounced, required this.paths});
 
   /// playerIds who lost a contested-destination collision this turn (tied or
-  /// out-sped) and so don't move at all, regardless of their declared path.
+  /// out-sped) and so stop short of the tile they declared.
   final Set<String> bounced;
+
+  /// playerId → the declared-path prefix (tiles to enter, origin excluded)
+  /// the player is cleared to walk after budget/blocker clamping *and*
+  /// contested-tile arbitration. An empty list means "stay put".
+  ///
+  /// A collision loser is walked back one tile along their own path rather
+  /// than all the way to their origin (design doc §Movement Collision:
+  /// "the other remains on their previous position along their path"), and
+  /// arbitration re-runs, so a chain of collisions can push a player back
+  /// more than one tile.
+  final Map<String, List<HexCoord>> paths;
 }
 
 // ── Battlefield ───────────────────────────────────────────────────────────────
@@ -91,7 +103,8 @@ class Battlefield {
   /// more players would land on simultaneously. This does NOT mutate
   /// [occupancy] or apply any terrain side-effect (budget cost aside, for
   /// arbitration purposes) -- the caller (TurnLoop._resolveAvatarMovement)
-  /// does the real walk for every non-bounced player afterward.
+  /// does the real walk afterward, along the arbitrated
+  /// [MovementResult.paths] rather than the raw declared ones.
   ///
   /// Rules (design doc §movement):
   ///   - Each player supplies an ordered list of tiles to enter ([paths]).
@@ -102,7 +115,12 @@ class Battlefield {
   ///   - [SlowTile]: each tile entered costs 1 + [extraMoveCost] budget here
   ///     (for arbitration only -- the real mana drain happens in the caller's
   ///     real walk).
-  ///   - Contested destination: highest speed wins; ties bounce both to origin.
+  ///   - Contested destination: highest speed claims the tile; every loser
+  ///     (out-sped, or every contestant when the top speed is tied) stops one
+  ///     tile short along their own path. Arbitration then repeats, so a
+  ///     player pushed back onto another contested tile keeps giving ground.
+  ///     A player already back at their origin holds it -- movement can never
+  ///     shove someone off the tile they started the turn on.
   ///
   /// [paths] maps playerId → ordered list of tiles to enter (not including origin).
   /// [speeds] maps playerId → effective move speed (base 2 + status effects).
@@ -143,30 +161,75 @@ class Battlefield {
     }
 
     // ── Step 2: Collision resolution ─────────────────────────────────────────
-    final destToPlayers = <HexCoord, List<String>>{};
-    for (final entry in walkedPaths.entries) {
-      destToPlayers.putIfAbsent(entry.value.last, () => []).add(entry.key);
-    }
-
+    // claim[id] indexes walkedPaths[id]: the tile that player currently
+    // intends to end on. It starts at their naive destination and is walked
+    // back one tile per lost contest. Index 0 is their origin and the floor --
+    // a player can't be pushed off the tile they started the turn on, so an
+    // origin-pinned contestant automatically holds the tile.
+    final claim = {
+      for (final entry in walkedPaths.entries) entry.key: entry.value.length - 1,
+    };
     final bounced = <String>{};
 
-    for (final entry in destToPlayers.entries) {
-      final contestants = entry.value;
-      if (contestants.length == 1) continue;
-      final maxSpeed = contestants
-          .map((id) => speeds[id] ?? maxTilesPerTurn)
-          .reduce(max);
-      final winners = contestants
-          .where((id) => (speeds[id] ?? maxTilesPerTurn) == maxSpeed)
-          .toList();
-      if (winners.length == 1) {
-        bounced.addAll(contestants.where((id) => id != winners.first));
-      } else {
-        bounced.addAll(contestants);
+    // Stepping back can land a loser on a tile someone else is claiming, so
+    // arbitration runs to a fixed point. Every pass that changes anything
+    // strictly decreases the sum of claim indices (each loser has claim > 0),
+    // so this terminates; the step budget is a belt-and-braces bound.
+    var guard = claim.values.fold<int>(0, (a, b) => a + b) + 1;
+    var settled = false;
+    while (!settled && guard-- > 0) {
+      settled = true;
+
+      final destToPlayers = <HexCoord, List<String>>{};
+      for (final entry in claim.entries) {
+        destToPlayers
+            .putIfAbsent(walkedPaths[entry.key]![entry.value], () => [])
+            .add(entry.key);
+      }
+
+      for (final entry in destToPlayers.entries) {
+        final contestants = entry.value;
+        if (contestants.length == 1) continue;
+
+        // Materialised, not lazy: the loop below mutates [claim], which this
+        // predicate reads.
+        final List<String> losers;
+        if (contestants.any((id) => claim[id] == 0)) {
+          // Someone is standing on their own origin here: they keep it and
+          // everyone with room to give ground gives it.
+          losers = contestants.where((id) => claim[id]! > 0).toList();
+        } else {
+          final maxSpeed = contestants
+              .map((id) => speeds[id] ?? maxTilesPerTurn)
+              .reduce(max);
+          final winners = contestants
+              .where((id) => (speeds[id] ?? maxTilesPerTurn) == maxSpeed)
+              .toList();
+          // A unique fastest contestant claims the tile; a tie for fastest
+          // means nobody does and all of them fall back.
+          losers = winners.length == 1
+              ? contestants.where((id) => id != winners.first).toList()
+              : contestants;
+        }
+
+        for (final id in losers) {
+          claim[id] = claim[id]! - 1;
+          bounced.add(id);
+          settled = false;
+        }
       }
     }
 
-    return MovementResult(bounced: bounced);
+    return MovementResult(
+      bounced: bounced,
+      paths: {
+        // walkedPaths[id][1..] is the declared path in order (the walk breaks
+        // out rather than skipping steps), so the prefix up to the claimed
+        // index is exactly the declared path the player is cleared to take.
+        for (final entry in claim.entries)
+          entry.key: walkedPaths[entry.key]!.sublist(1, entry.value + 1),
+      },
+    );
   }
 
   // ── Pathfinding ───────────────────────────────────────────────────────────

@@ -21,9 +21,11 @@
 // same key BookCommitment's Merkle tree sorts leaves by, see chapter.dart),
 // never pre-shuffled, so both clients agree on which index a given draw value
 // selects, and a drawn position lines up with a Merkle leaf index (see
-// docs/SPELL_DRAW_WIRING_PLAN.md §2). Because draws only ever remove elements
-// (never reorder them), the untouched remainder always stays in that
-// canonical order.
+// docs/SPELL_DRAW_WIRING_PLAN.md §2). Draws only ever remove elements; the
+// only way an element re-enters [remaining] is [removeSlot] (a bookmark
+// accoutrement destroyed mid-battle, TurnLoop._reconcileHandSize), which
+// reinserts at the sorted position — so [remaining] always stays in
+// canonical order, whether shrinking or regrowing.
 //
 // Chapter spells must be in canonical order before calling [SpellDraw.opening]
 // so both clients compute the same opening hand.
@@ -45,7 +47,7 @@ class SpellDraw {
   })  : hand = List.unmodifiable(hand),
         remaining = List.unmodifiable(remaining);
 
-  /// Deals the opening hand: draws up to [bookmarkCount] spells one at a time
+  /// Deals the opening hand: draws up to [handSize] spells one at a time
   /// from [chapter] (must already be in canonical order) using [rng].
   ///
   /// The opening hand is dealt once, at battle start, from the initial joint
@@ -54,20 +56,21 @@ class SpellDraw {
   /// [useSpell]).
   factory SpellDraw.opening(
     List<SpellAsset> chapter,
-    int bookmarkCount,
+    int handSize,
     HashRng rng,
   ) {
     assert(chapter.isNotEmpty, 'chapter must have at least one spell');
     final pool = List<SpellAsset>.from(chapter);
-    final handSize = bookmarkCount < pool.length ? bookmarkCount : pool.length;
+    final dealSize = handSize < pool.length ? handSize : pool.length;
     final hand = <SpellAsset>[];
-    for (var i = 0; i < handSize; i++) {
+    for (var i = 0; i < dealSize; i++) {
       hand.add(pool.removeAt(rng.nextInt(pool.length)));
     }
     return SpellDraw._(hand: hand, remaining: pool);
   }
 
-  /// The current hand (at most [bookmarkCount] spells).
+  /// The current hand (at most bookmarkCount + 1 spells — see
+  /// TurnLoop._dealOpeningHandsIfNeeded / _reconcileHandSize).
   final List<SpellAsset> hand;
 
   /// Spells not yet drawn, in canonical order.
@@ -89,6 +92,34 @@ class SpellDraw {
       final j = drawRng.nextInt(newRemaining.length);
       newHand.add(newRemaining.removeAt(j));
     }
+    return SpellDraw._(hand: newHand, remaining: newRemaining);
+  }
+
+  /// Adds a hand slot, drawing a fresh spell from [remaining] via [rng] —
+  /// a bookmark accoutrement gained mid-battle (TurnLoop._reconcileHandSize).
+  /// No-op if [remaining] is empty (every chapter spell is already in hand).
+  SpellDraw addSlot(HashRng rng) {
+    if (remaining.isEmpty) return this;
+    final newRemaining = List<SpellAsset>.from(remaining);
+    final newHand = List<SpellAsset>.from(hand)
+      ..add(newRemaining.removeAt(rng.nextInt(newRemaining.length)));
+    return SpellDraw._(hand: newHand, remaining: newRemaining);
+  }
+
+  /// Removes the hand slot at [handIndex], reinserting its spell back into
+  /// [remaining] in canonical (commitmentHex) order — the reverse of a draw.
+  /// A bookmark accoutrement lost mid-battle (TurnLoop._reconcileHandSize).
+  SpellDraw removeSlot(int handIndex) {
+    assert(handIndex >= 0 && handIndex < hand.length);
+    final newHand = List<SpellAsset>.from(hand);
+    final removed = newHand.removeAt(handIndex);
+    final newRemaining = List<SpellAsset>.from(remaining);
+    var i = 0;
+    while (i < newRemaining.length &&
+        newRemaining[i].commitmentHex.compareTo(removed.commitmentHex) < 0) {
+      i++;
+    }
+    newRemaining.insert(i, removed);
     return SpellDraw._(hand: newHand, remaining: newRemaining);
   }
 }

@@ -10,9 +10,16 @@
 // lib/battle/networking/match_discovery.dart's LanMatchDiscovery -- that
 // class carries duel-specific concepts (DeviceCapabilities/ramTierCap) that
 // don't apply here, and lib/trade/ should not depend on lib/battle/.
+//
+// mDNS advertising is best-effort, not load-bearing: `nsd` has no Linux
+// desktop backend at all (lan_discovery.dart's header comment), so
+// startAdvertising's registration step soft-fails and the listening socket
+// stays up regardless -- trade_screen.dart falls back to manual IP entry,
+// dialing the same socket directly via LanSocketTransport.connectTo.
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:nsd/nsd.dart' as nsd;
 
 import '../protocol/lan_discovery.dart';
@@ -45,11 +52,24 @@ class TradeDiscovery {
 
   Future<void> startAdvertising({String displayName = 'Runewright Trade'}) async {
     _listener = await LanSocketTransport.bind();
-    _registration = await advertiseDuelHost(
-      port: _listener!.port,
-      displayName: displayName,
-      serviceType: kRunewrightTradeServiceType,
-    );
+    try {
+      _registration = await advertiseDuelHost(
+        port: _listener!.port,
+        displayName: displayName,
+        serviceType: kRunewrightTradeServiceType,
+      );
+    } catch (e) {
+      // Soft failure by design (mirrors LanMatchDiscovery.startAdvertising,
+      // match_discovery.dart): `nsd` has no Linux desktop backend at all
+      // (lan_discovery.dart's header comment), and mDNS can fail for other
+      // reasons on real networks (AP isolation, multicast deprioritized).
+      // The listening socket above doesn't depend on it -- a peer can still
+      // reach this host via manual IP entry (trade_screen.dart), which
+      // dials the same socket directly. Advertise failing must never block
+      // hosting.
+      debugPrint('mDNS advertise failed (manual IP entry still works): $e');
+      _registration = null;
+    }
   }
 
   Future<void> stopAdvertising() async {
@@ -59,6 +79,23 @@ class TradeDiscovery {
     }
     await _listener?.close();
     _listener = null;
+  }
+
+  /// This device's listening port once [startAdvertising] has bound it, for
+  /// display alongside [localAddressHint] so a peer can connect via manual
+  /// IP entry when mDNS discovery isn't available on their platform/network.
+  int? get listeningPort => _listener?.port;
+
+  /// Best-effort local IPv4 address hint for manual-IP display -- see
+  /// [preferredLocalAddress]. Null if undeterminable; display-only, never
+  /// blocks anything.
+  Future<String?> localAddressHint() async {
+    try {
+      final addr = await preferredLocalAddress();
+      return addr?.address;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Returns a broadcast stream emitting peers as they are discovered.

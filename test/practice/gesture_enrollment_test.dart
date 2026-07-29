@@ -14,7 +14,12 @@ import 'package:rune_duel/practice/gesture_template_source.dart';
 import 'package:rune_duel/sorcerer/gesture.dart';
 import 'package:rune_duel/sorcerer/imu_sample.dart';
 
-List<ImuSample> _movingSamples(int n, {double amplitude = 3.0, int seed = 0}) {
+/// Amplitude 6.0 puts these fixtures at mean-square energy ~20, inside the
+/// range real captures occupy (the weakest recorded gesture rep is 13.75,
+/// the strongest 1391) and therefore above GestureEnrollment's stillness
+/// floor. The earlier 3.0 predated that floor being calibrated against a
+/// device and sat at ~4.9 — below the energy of an actual human gesture.
+List<ImuSample> _movingSamples(int n, {double amplitude = 6.0, int seed = 0}) {
   final rnd = math.Random(seed);
   return List.generate(n, (i) {
     final t = i / 100.0;

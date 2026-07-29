@@ -10,10 +10,16 @@
 // SORCERER_REALTIME_PLAN.md §5.2. Reps of the same gesture get independent
 // jitter/phase to simulate natural rep-to-rep variance without ever being
 // identical (so DTW isn't trivially matching a byte-identical sequence).
-// Thresholds are constructed explicitly per test at a scale that fits the
-// synthetic amplitudes — NOT GestureClassifier's default placeholder
-// constants, which are calibration targets for real data, not fixture
-// parameters.
+// distanceCap/marginThreshold here are now the SHIPPED values, because
+// normalizeForMatching puts synthetic and real captures on the same scale —
+// so these fixtures exercise the real operating point rather than a
+// fixture-specific one. Only energyFloor is overridden: these synthetic
+// waveforms sit at mean-square energy ~5, below the 8.0 floor calibrated
+// from real captures, and raising their amplitude would be tuning the
+// fixture to the gate rather than testing the gate.
+//
+// The real calibration gate is gesture_confusion_e2e_test.dart, over the
+// captured Pixel 6 corpus. This file tests pipeline mechanics.
 
 import 'dart:math' as math;
 
@@ -94,8 +100,8 @@ Map<Gesture, List<List<List<double>>>> _templates() => {
 
 const _classifier = GestureClassifier(
   energyFloor: 0.05, // synthetic still-noise is ~0.0001; real gestures ~4-9
-  distanceCap: 3.0,
-  marginThreshold: 0.3,
+  distanceCap: 0.80,
+  marginThreshold: 0.15,
 );
 
 void main() {

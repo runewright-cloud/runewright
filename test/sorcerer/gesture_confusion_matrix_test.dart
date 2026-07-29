@@ -4,15 +4,14 @@
 // run over a SYNTHETIC corpus.
 //
 // IMPORTANT — this is NOT the SOMATIC_GESTURE_PLAN.md §9 calibration gate.
-// That gate requires a REAL captured corpus (test/sorcerer/fixtures/, built
-// from lib/ui/practice_screen.dart's Gesture tab on a real device) — the
-// somatic analog of test/practice/real_template_e2e_test.dart, which is
-// what caught the vocal scorer's real "silence crosses templates in 40ms"
-// bug that no synthetic test found (docs/M4_findings.md 2026-07-16). No
-// physical device / IMU is available in this development environment, so
-// that real corpus and its real-device pass remain outstanding — see
-// SOMATIC_GESTURE_PLAN.md §11 build order, step 6, and gesture.dart's
-// kSomaticCaptureEnabled, which stays false until it exists and passes.
+// That gate is gesture_confusion_e2e_test.dart, which runs the same matrix
+// over the REAL captured corpus in fixtures/corpus_pixel6/ (Pixel 6,
+// 2026-07-27/28). It is the somatic analog of
+// test/practice/real_template_e2e_test.dart — and it earned its keep the
+// same way: every test in THIS file passed while the shipped defaults
+// classified 19 of 20 real idle/walk captures as `fire`. Synthetic
+// oscillations cannot catch a representation that is wrong about real
+// sensor data.
 //
 // What THIS file verifies: the harness *mechanics* — that a confusion
 // matrix built the way §9 specifies (recognized gestures × {gestures,
@@ -96,8 +95,8 @@ List<ImuSample> _garbage(int n, {int seed = 0, double amplitude = 3.0}) {
 
 const _classifier = GestureClassifier(
   energyFloor: 0.05,
-  distanceCap: 3.0,
-  marginThreshold: 0.3,
+  distanceCap: 0.80,
+  marginThreshold: 0.15,
 );
 
 Map<Gesture, List<List<List<double>>>> _enrolledTemplates() => {

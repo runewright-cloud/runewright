@@ -353,6 +353,16 @@ class BattleSession implements BattleTurnSession {
     return config;
   }
 
+  /// Both sides send their player-chosen wizard name simultaneously.
+  /// Unauthenticated — presentation only (battle_screen.dart's status panel
+  /// and HUD chip), never fed into cast authorization or the state-hash
+  /// lockstep. Returns the peer's name, or '' if they haven't set one.
+  Future<String> exchangeWizardName(String ours) async {
+    send(BattleMsgType.wizardName, Uint8List.fromList(utf8.encode(ours)));
+    final frame = await framesOfType(BattleMsgType.wizardName).first;
+    return utf8.decode(frame.payload);
+  }
+
   /// Both sides send their Chapter Merkle root simultaneously.
   /// Returns the peer's root bytes (32 bytes).
   Future<Uint8List> exchangeBookCommitment(Uint8List ourRoot) async {

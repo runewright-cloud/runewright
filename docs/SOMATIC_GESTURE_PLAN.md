@@ -271,14 +271,18 @@ Mirror `lib/practice/vocal_enrollment.dart` exactly:
 2. **Capture tool** (§8) — enrollment + raw logging; capture Soren's five gestures + confusables.
    **DONE** (`lib/practice/gesture_enrollment.dart`, `practice_screen.dart`'s Gesture tab) — the
    tool exists; Soren's actual reps are not yet recorded (needs a real device).
-3. **Corpus commit** (§8/§9) — raw fixtures under the test tree. **Outstanding** — needs a real
-   device to record from; a synthetic placeholder exists
-   (`test/sorcerer/gesture_confusion_matrix_test.dart`, explicitly not the real gate).
+3. **Corpus commit** (§8/§9) — raw fixtures under the test tree. **DONE** (2026-07-28):
+   `test/sorcerer/fixtures/corpus_pixel6/`, 10 reps each of the five gestures plus the three
+   confusables, captured on a Pixel 6 at ~55 Hz.
 4. **GestureClassifier** (§6) — stillness gate → DTW → accept rule → eligibility downgrade.
    **DONE** for the classifier itself (`lib/sorcerer/gesture_classifier.dart`); the eligibility
    downgrade is documented (§5) but not yet wired into `battle_screen.dart` (see step 6).
-5. **Harness** (§9) — confusion matrix; grid-search constants to the strict bar. **Mechanics
-   done against synthetic data**; the real gate (real corpus, real constants) is outstanding.
+5. **Harness** (§9) — confusion matrix; grid-search constants to the strict bar. **DONE**
+   (2026-07-28): `test/sorcerer/gesture_confusion_e2e_test.dart` is the real gate, run over the
+   committed corpus with the shipped constants — zero wrong-gesture false accepts, 90% genuine
+   acceptance. Constants were grid-searched via `tool/gesture_corpus_analysis.dart`, which is
+   also where handedness, generalization and streaming-feedback studies live. See
+   `docs/M4_findings.md` 2026-07-28 for the full write-up, including what did NOT work.
 6. **Wire the seam** (§10); flip `kSomaticCaptureEnabled`; **real-device pass** (the hardware
    gate — a fixture harness calibrates, a real IMU + real hand validates, exactly as vocal
    still awaits its real-mic pass). **Outstanding** — deliberately not done without real
@@ -290,5 +294,39 @@ Mirror `lib/practice/vocal_enrollment.dart` exactly:
 
 - ~~Velocity (Air) + Mystery (Earth) gesture choreography~~ — **resolved**: all five gestures
   ship together (§3), choreography is Soren's own performed baseline via the capture tool.
-- **Resample target rate** — pick after the capture tool reports the device's actual steady
-  IMU rate (don't invent it).
+- ~~**Resample target rate**~~ — **resolved (2026-07-28): no resampling.** The device reports a
+  steady ~55 Hz (not the 100 Hz `SensorsGestureCapture` requests). Fixed-length resampling was
+  measured against the real corpus and gave no gain over plain unit-RMS normalisation — DTW is
+  already time-warp invariant, as §4 assumed. `normalizeForMatching` smooths and normalises but
+  does not resample.
+
+- **Universal bundled templates vs per-user enrollment** `[DECISION — needs Soren]` — the
+  direction is universal gestures players are *taught*, with a haptic trainer, rather than
+  per-user enrollment. Held-out probes are encouraging (100% across a real style shift) but
+  cannot test grip orientation, the dominant cross-person variable; the vocal precedent
+  (same-voice 5/5 vs cross-voice 2/5) is a warning. **Gate: capture 2–3 other people, 10 reps
+  each (~10 min each).** Universality fails safe — a stranger's rendition falls to `neutral`,
+  never to a wrong gesture — so this is a playability question, not a soundness one.
+
+- **Haptic trainer** — agreed direction (2026-07-28): pulse-rate modulation via the built-in
+  `HapticFeedback` API as the default, continuous amplitude via a vibration package as an opt-in
+  setting. Streaming feedback is validated as viable (see M4_findings): the running prefix
+  alignment cost separates own-class from other-class from ~25% into the gesture and widens
+  monotonically. Build as `StreamingGestureScorer` mirroring `StreamingPhonemeScorer`, over
+  `DtwMatcher.distanceWithSteps`.
+
+- ~~**Re-record `fire`**~~ — **withdrawn (2026-07-28).** Fire's choreography is deliberately a
+  *tremor* (phone mostly still, hand shaking). That is a stochastic texture, not a trajectory:
+  shake cycles have arbitrary phase, so DTW has nothing repeatable to align and re-recording
+  cannot make it crisper. Measured: fire is best matched **spectrally** (crispness 1.83 → 2.26
+  under band energies) while the other four are best matched by trajectory DTW (2.1–2.5,
+  collapsing to ~1.35 under spectral). No single representation wins both, and concatenating
+  them is worse than either. **Decision: leave the cast-time classifier as-is** — fire at 1.83
+  passes the gate — **but give the trainer a per-gesture matcher**, spectral for fire. Training
+  is single-class, so mixed representations cost nothing there. See M4_findings 2026-07-28.
+
+- **Fire vs the stillness gate** — "mostly still" fights `energyFloor = 8.0`; fire's weakest
+  recorded rep is 13.75, the tightest margin of any gesture. A too-gentle shake gets gated and
+  the player sees nothing happen. Prefer coaching intensity in the trainer; optionally make the
+  gate spectral (low-energy *high-frequency* is a tremor; low-energy *low-frequency* is real
+  stillness) — verify against `confusable_idle` before relying on it.

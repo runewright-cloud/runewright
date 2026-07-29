@@ -10,6 +10,8 @@
 // transferred spell cannot be re-offered until the recipient re-inscribes it
 // under their own key (at which point it genuinely is native, and eligible).
 
+import 'dart:typed_data';
+
 import '../identity/identity.dart';
 import '../spells/spell_asset.dart';
 
@@ -22,6 +24,15 @@ class TradeItem {
     required this.spellName,
     required this.mode,
     this.loanDays,
+    this.manaCost = 0,
+    this.formula = const [],
+    this.t = 0,
+    this.tier = 12,
+    this.segmentCount = -1,
+    this.dotCount = -1,
+    this.supremeTags = const [],
+    this.isSummon = false,
+    this.summonPersonality = 'aggressive',
   }) : assert(
           (mode == TradeMode.loan) == (loanDays != null),
           'loanDays must be set iff mode is TradeMode.loan',
@@ -37,12 +48,60 @@ class TradeItem {
   /// (perpetual).
   final int? loanDays;
 
+  // The fields below are the same "non-grid" metadata a loan grant already
+  // reveals (SpellAsset.withGridWithheld only redacts initialGrid) --
+  // carrying them in the advisory preview too, before either side confirms,
+  // is not a new privacy exposure. They exist so [previewSpellAsset] can
+  // render a real, commitment-derived card at review time: a same-name
+  // reskin would still show a visibly different shield, since that art is
+  // generated from [commitmentHex], not [spellName] (docs/COMMUNE_TRADE_PLAN.md).
+  final int manaCost;
+  final List<String> formula;
+  final int t;
+  final int tier;
+  final int segmentCount;
+  final int dotCount;
+  final List<String> supremeTags;
+  final bool isSummon;
+  final String summonPersonality;
+
+  /// Builds the [TradeItem] describing [spell] for an offer -- carries
+  /// enough of [spell]'s metadata (see the field-group comment above) for
+  /// the receiving side to render a real preview card via
+  /// [previewSpellAsset], not just a name.
+  factory TradeItem.fromSpell(SpellAsset spell, {required TradeMode mode, int? loanDays}) =>
+      TradeItem(
+        spellId: spell.id,
+        commitmentHex: spell.commitmentHex,
+        spellName: spell.name,
+        mode: mode,
+        loanDays: loanDays,
+        manaCost: spell.manaCost,
+        formula: spell.formula,
+        t: spell.t,
+        tier: spell.tier,
+        segmentCount: spell.segmentCount,
+        dotCount: spell.dotCount,
+        supremeTags: spell.supremeTags,
+        isSummon: spell.isSummon,
+        summonPersonality: spell.summonPersonality,
+      );
+
   Map<String, dynamic> toJson() => {
         'spellId': spellId,
         'commitmentHex': commitmentHex,
         'spellName': spellName,
         'mode': mode.name,
         if (loanDays != null) 'loanDays': loanDays,
+        'manaCost': manaCost,
+        'formula': formula,
+        't': t,
+        'tier': tier,
+        'segmentCount': segmentCount,
+        'dotCount': dotCount,
+        'supremeTags': supremeTags,
+        'isSummon': isSummon,
+        'summonPersonality': summonPersonality,
       };
 
   static TradeItem fromJson(Map<String, dynamic> json) => TradeItem(
@@ -51,6 +110,44 @@ class TradeItem {
         spellName: json['spellName'] as String,
         mode: TradeMode.values.byName(json['mode'] as String),
         loanDays: json['loanDays'] as int?,
+        manaCost: json['manaCost'] as int? ?? 0,
+        formula: (json['formula'] as List<dynamic>? ?? []).cast<String>(),
+        t: json['t'] as int? ?? 0,
+        tier: json['tier'] as int? ?? 12,
+        segmentCount: json['segmentCount'] as int? ?? -1,
+        dotCount: json['dotCount'] as int? ?? -1,
+        supremeTags: (json['supremeTags'] as List<dynamic>? ?? []).cast<String>(),
+        isSummon: json['isSummon'] as bool? ?? false,
+        summonPersonality: json['summonPersonality'] as String? ?? 'aggressive',
+      );
+
+  /// A synthetic, grid-withheld [SpellAsset] carrying only this item's
+  /// preview metadata -- lets [showSpellCardFullscreen] render the real
+  /// commitment-derived card (shield, element symbols, rules text) before
+  /// either side confirms, rather than the player trusting [spellName]
+  /// alone. Never carries [SpellAsset.initialGrid] or
+  /// [SpellAsset.proofBytes] -- those don't exist locally until the real
+  /// grant arrives post-confirm (`exchangeGrantsAndSave`), and this preview
+  /// must never claim to have them (`gridWithheld: true`).
+  SpellAsset previewSpellAsset() => SpellAsset(
+        id: 'preview-$spellId',
+        createdAt: DateTime.now(),
+        tier: tier,
+        t: t,
+        ownerPubkeyHex: '',
+        manaCost: manaCost,
+        segmentCount: segmentCount,
+        dotCount: dotCount,
+        initialGrid: const [],
+        proofBytes: Uint8List(0),
+        name: spellName,
+        commitmentHex: commitmentHex,
+        spellHashHex: '',
+        formula: formula,
+        supremeTags: supremeTags,
+        isSummon: isSummon,
+        summonPersonality: summonPersonality,
+        gridWithheld: true,
       );
 }
 

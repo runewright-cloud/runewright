@@ -36,7 +36,11 @@
 //      turn yet this round won't appear in the melee prompt.
 //   5. Action resolution — reveal main-phase actions, sort spells
 //      (quick→haymaker-tier→normal→sluggish, then by step count T ascending,
-//      then commitmentHex), apply each in order. A Potent summon-mode cast
+//      then commitmentHex, then playerId), apply each in order. Quick and
+//      Sluggish rank a cast only against the *other casts* that turn: if
+//      every cast this turn is quick (or every one sluggish — including the
+//      degenerate "only one cast, and it's mine" case) the modifier cancels
+//      and they all resolve as normal. A Potent summon-mode cast
 //      spawns its creature and lets it act immediately as part of this same
 //      step (TurnLoop._castSummon) — a one-time bonus, on top of (not
 //      instead of) the normal action it gets in 5b below.
@@ -470,7 +474,14 @@ class TurnLoop {
     this.onPhase,
     this.signMessage,
     this.peerRawPubkey,
+    this.allowProoflessSpells = false,
   });
+
+  /// DEV FLAG — see [kAllowProoflessSpells] in lib/dev_flags.dart for the
+  /// full rationale and the removal checklist. Defaults to false so every
+  /// test and every non-UI construction site stays on the strict path; only
+  /// BattleScreen wires the flag through. Delete this parameter with it.
+  final bool allowProoflessSpells;
 
   final BattleState state;
   final BattleTurnSession session;
@@ -683,7 +694,10 @@ class TurnLoop {
 
     final canonicalChapter = List<SpellAsset>.from(chapter)
       ..sort((a, b) => a.commitmentHex.compareTo(b.commitmentHex));
-    final bookmarkCount = state.config.bookmarkCount;
+    // Hand size is per-avatar (bookmarkCount + 1, always ≥ 1) — not a shared
+    // negotiated MatchConfig value, since bookmarks come from each player's
+    // own accoutrement loadout (accoutrementsFromArtifacts).
+    final localHandSize = _localAvatar().bookmarkCount + 1;
 
     final localSeed = _playerPhaseSeed(
       entropy,
@@ -694,18 +708,19 @@ class TurnLoop {
     );
     localSpellDraw = SpellDraw.opening(
       canonicalChapter,
-      bookmarkCount,
+      localHandSize,
       HashRng(localSeed),
     );
     _drawSchedules[localPlayerId] = DrawSchedule.opening(
       canonicalChapter.length,
-      bookmarkCount,
+      localHandSize,
       HashRng(localSeed),
     );
 
     final peerId = _peerId();
     final leafCount = peerBookLeafCount;
     if (peerId != null && leafCount != null && leafCount > 0) {
+      final peerHandSize = (_avatarById(peerId)?.bookmarkCount ?? 0) + 1;
       final peerSeed = _playerPhaseSeed(
         entropy,
         matchId,
@@ -715,7 +730,7 @@ class TurnLoop {
       );
       _drawSchedules[peerId] = DrawSchedule.opening(
         leafCount,
-        bookmarkCount,
+        peerHandSize,
         HashRng(peerSeed),
       );
     }
@@ -762,6 +777,69 @@ class TurnLoop {
         localSpellDraw = draw.useSpell(handIndex, HashRng(seed));
       }
     }
+  }
+
+  /// Reconciles [avatarId]'s hand size after its bookmark count changed from
+  /// [beforeCount] to [afterCount] within one spell resolution (handSize ==
+  /// bookmarkCount + 1 — see [_dealOpeningHandsIfNeeded]). Growing draws a
+  /// fresh spell into a new slot immediately, using this turn's already-
+  /// revealed entropy; shrinking returns a randomly chosen slot's spell to
+  /// the deck (reinserted in canonical order — see [SpellDraw.removeSlot] /
+  /// [DrawSchedule.removeSlot]).
+  ///
+  /// Mirrors [_advanceDrawState]'s dual-structure update: [_drawSchedules]
+  /// (both players' public position bookkeeping) always advances;
+  /// [localSpellDraw] (real contents) only advances when [avatarId] is the
+  /// local player — the peer's contents are never known to this client.
+  /// Each slot change consumes its own [_consumeDrawNonce] under domain tag
+  /// `0x08`, so multiple simultaneous slot changes (e.g. burnArtifactCount >
+  /// 1) never collide with each other or with refill (`0x05`) / wither
+  /// (`0x06`) / opening-deal (`0x07`) draws.
+  void _reconcileHandSize(
+    String avatarId,
+    int beforeCount,
+    int afterCount,
+    Uint8List entropy,
+  ) {
+    final schedule = _drawSchedules[avatarId];
+    if (schedule == null) return;
+    var currentSchedule = schedule;
+    var currentDraw = avatarId == localPlayerId ? localSpellDraw : null;
+    final delta = afterCount - beforeCount;
+    if (delta > 0) {
+      for (var i = 0; i < delta; i++) {
+        final seed = _playerPhaseSeed(
+          entropy,
+          matchId,
+          state.turnNumber,
+          0x08,
+          avatarId,
+          _consumeDrawNonce(avatarId),
+        );
+        currentSchedule = currentSchedule.addSlot(HashRng(seed));
+        if (currentDraw != null) {
+          currentDraw = currentDraw.addSlot(HashRng(seed));
+        }
+      }
+    } else {
+      for (var i = 0; i < -delta && currentSchedule.hand.isNotEmpty; i++) {
+        final seed = _playerPhaseSeed(
+          entropy,
+          matchId,
+          state.turnNumber,
+          0x08,
+          avatarId,
+          _consumeDrawNonce(avatarId),
+        );
+        final handIndex = HashRng(seed).nextInt(currentSchedule.hand.length);
+        currentSchedule = currentSchedule.removeSlot(handIndex);
+        if (currentDraw != null && handIndex < currentDraw.hand.length) {
+          currentDraw = currentDraw.removeSlot(handIndex);
+        }
+      }
+    }
+    _drawSchedules[avatarId] = currentSchedule;
+    if (avatarId == localPlayerId) localSpellDraw = currentDraw;
   }
 
   /// Whether chapter position [position] is currently withered, per this
@@ -977,52 +1055,11 @@ class TurnLoop {
       _ => null,
     };
     if (committedSpell == null) return;
+    // DEV FLAG — free on both devices. See [_isProoflessBypass].
+    if (_isProoflessBypass(committedSpell)) return;
 
     final av = _localAvatar();
-    // In sorcerer mode, derive enhancements from the (not-yet-transmitted)
-    // vocal score. fromSorcererQuality reads only the u8-quantised
-    // accessors, so this agrees byte-for-byte with what _resolveActions
-    // computes later from the wire-decoded copy — see the determinism note
-    // on VocalScore.pronunciationU8/volumeU8.
-    // isPotent/isVelocity/isEfficiency double as "caster owns this
-    // loadout"; in sorcerer mode, vocal quality gates whether that
-    // loadout is actually realised this cast; in wizard mode it's always
-    // realised (isPotent/isVelocity don't affect cost, but isEfficiency
-    // must still reach _spellManaCost here for the discount to apply).
-    final castingEnhancements = switch (action) {
-      SpellCastAction(
-        :final vocalScore,
-        :final isPotent,
-        :final isVelocity,
-        :final isEfficiency,
-      ) =>
-        isSorcererMode && vocalScore != null
-            ? CastingEnhancements.fromSorcererQuality(
-                vocalScore: vocalScore,
-                hasPotentLoadout: isPotent,
-                hasVelocityLoadout: isVelocity,
-                hasEfficiencyLoadout: isEfficiency,
-              )
-            : CastingEnhancements(
-                isPotent: isPotent,
-                isVelocity: isVelocity,
-                isEfficiency: isEfficiency,
-              ),
-      MysterySpellCastAction(
-        :final vocalScore,
-        :final isPotent,
-        :final isVelocity,
-      ) =>
-        isSorcererMode && vocalScore != null
-            ? CastingEnhancements.fromSorcererQuality(
-                vocalScore: vocalScore,
-                hasPotentLoadout: isPotent,
-                hasVelocityLoadout: isVelocity,
-                hasEfficiencyLoadout: false,
-              )
-            : CastingEnhancements(isPotent: isPotent, isVelocity: isVelocity),
-      _ => null,
-    };
+    final castingEnhancements = _castingEnhancementsFor(action);
     av.mana =
         (av.mana -
                 _spellManaCost(
@@ -1032,6 +1069,88 @@ class TurnLoop {
                 ))
             .clamp(0, _kMaxMana);
   }
+
+  /// DEV FLAG (kAllowProoflessSpells — lib/dev_flags.dart). Delete with it.
+  ///
+  /// True when [spell] is being waved through unverified: the flag is on and
+  /// the spell carries no proof (a Spell Test Lab fabrication). Such a cast is
+  /// **free on both devices**, and that is the only option that can't desync.
+  ///
+  /// The alternative — charging the wire price on both sides — is not
+  /// available: the 0x01 action encoding carries only commitment, T, target
+  /// and formula. It has no segmentCount/dotCount, because the verifying
+  /// device normally reads those from the *proof's* public outputs. Strip the
+  /// proof and the opponent has no geometry to price from, so it computes a
+  /// base of 0 while the caster prices from its local asset —
+  /// `avatar.mana` diverges and [_exchangeStateHash] forfeits at the end of
+  /// that same turn. The bypass would have swapped a clean forfeit for the
+  /// "state hash mismatch on turn N" freeze it was meant to avoid.
+  ///
+  /// Charging nothing costs little in practice: SpellTestLabScreen writes
+  /// `manaCost: 0, segmentCount: 0, dotCount: 0`, so these spells already
+  /// price at zero. What it does mean is that a test spell no longer consumes
+  /// a pending `nextSpellCostDouble` / `chainSurcharge` (that consumption
+  /// lives inside [_spellManaCost]) — to exercise those, make the *follow-up*
+  /// cast a real proven spell. Chain building is unaffected: it happens in
+  /// [_updateChainState] during resolution, which still runs.
+  bool _isProoflessBypass(SpellAsset spell) =>
+      allowProoflessSpells && spell.proofBytes.isEmpty;
+
+  /// The [CastingEnhancements] a spell-like [action] casts under, or null if
+  /// it isn't a cast.
+  ///
+  /// In sorcerer mode these derive from the vocal score.
+  /// [CastingEnhancements.fromSorcererQuality] reads only the u8-quantised
+  /// accessors, so the caster's copy (computed here from the not-yet-
+  /// transmitted score) agrees byte-for-byte with the one the opponent
+  /// computes from the wire-decoded copy — see the determinism note on
+  /// VocalScore.pronunciationU8/volumeU8.
+  ///
+  /// isPotent/isVelocity/isEfficiency double as "caster owns this loadout";
+  /// in sorcerer mode vocal quality gates whether that loadout is actually
+  /// realised this cast, in wizard mode it always is (isPotent/isVelocity
+  /// don't affect cost, but isEfficiency must still reach [_spellManaCost]
+  /// for the discount to apply).
+  ///
+  /// Shared by every site that has to price a cast — the caster's own
+  /// deduction and the opponent's — so the two cannot drift apart. Mana lands
+  /// in the canonical state hash, so a drift here is a desync, not a rounding
+  /// difference (see M4_findings 2026-07-29).
+  CastingEnhancements? _castingEnhancementsFor(TurnAction action) =>
+      switch (action) {
+        SpellCastAction(
+          :final vocalScore,
+          :final isPotent,
+          :final isVelocity,
+          :final isEfficiency,
+        ) =>
+          isSorcererMode && vocalScore != null
+              ? CastingEnhancements.fromSorcererQuality(
+                  vocalScore: vocalScore,
+                  hasPotentLoadout: isPotent,
+                  hasVelocityLoadout: isVelocity,
+                  hasEfficiencyLoadout: isEfficiency,
+                )
+              : CastingEnhancements(
+                  isPotent: isPotent,
+                  isVelocity: isVelocity,
+                  isEfficiency: isEfficiency,
+                ),
+        MysterySpellCastAction(
+          :final vocalScore,
+          :final isPotent,
+          :final isVelocity,
+        ) =>
+          isSorcererMode && vocalScore != null
+              ? CastingEnhancements.fromSorcererQuality(
+                  vocalScore: vocalScore,
+                  hasPotentLoadout: isPotent,
+                  hasVelocityLoadout: isVelocity,
+                  hasEfficiencyLoadout: false,
+                )
+              : CastingEnhancements(isPotent: isPotent, isVelocity: isVelocity),
+        _ => null,
+      };
 
   /// Run one full turn, returning a non-null [WinCheckResult] if the match is over.
   ///
@@ -1459,8 +1578,9 @@ class TurnLoop {
   /// recommendation for per-player stream separation — this codebase has no
   /// numeric player-index convention, so [playerId] itself is the domain
   /// separator). Used for SpellDraw/DrawSchedule opening deals (tag 0x07),
-  /// refill draws (tag 0x05), and FuelTransmutation wither/reactivate draws
-  /// (tag 0x06) — see SPELL_DRAW_WIRING_PLAN.md §§4, 9.
+  /// refill draws (tag 0x05), FuelTransmutation wither/reactivate draws
+  /// (tag 0x06), and bookmark-driven hand slot add/remove (tag 0x08, see
+  /// [_reconcileHandSize]) — see SPELL_DRAW_WIRING_PLAN.md §§4, 9.
   static Uint8List _playerPhaseSeed(
     Uint8List entropy,
     Uint8List? matchId,
@@ -1932,10 +2052,12 @@ class TurnLoop {
   /// collision preview -- Battlefield.resolveMovement's naive walk +
   /// contested-tile arbitration, ignoring conveyor tiles, just to decide who
   /// wins a contested destination -- then a full terrain-aware walk
-  /// ([_walkAvatar]) for each non-bounced avatar from their real origin.
-  /// Bounced avatars don't move at all (stay at origin, per the existing
-  /// speed-tiebreak rule). Returns each avatar's actually-walked path
-  /// (bounced: just [origin]), for knockback's move-path bounce reference.
+  /// ([_walkAvatar]) for each avatar from their real origin, along the
+  /// arbitrated path the preview cleared them for. A collision loser walks
+  /// their declared path minus the tile(s) they were pushed back off, so
+  /// they stop one tile short rather than forfeiting the whole move.
+  /// Returns each avatar's actually-walked path, for knockback's move-path
+  /// bounce reference.
   Map<String, List<HexCoord>> _resolveAvatarMovement(
     Map<String, List<HexCoord>> movePaths,
     Map<String, int> speeds,
@@ -1949,15 +2071,16 @@ class TurnLoop {
     final walked = <String, List<HexCoord>>{};
     for (final av in state.avatars) {
       final origin = av.position;
-      if (preview.bounced.contains(av.playerId)) {
-        walked[av.playerId] = [origin];
-        continue;
-      }
       final budget = max(0, speeds[av.playerId] ?? av.effectiveMoveSpeed);
+      // Fall back to the declared path only for an avatar the battlefield
+      // didn't know about (absent from occupancy, so absent from the preview).
+      final clearedPath = preview.paths[av.playerId] ??
+          movePaths[av.playerId] ??
+          const <HexCoord>[];
       final path = _walkAvatar(
         av,
         origin,
-        movePaths[av.playerId] ?? const [],
+        clearedPath,
         budget,
         rng,
       );
@@ -2064,6 +2187,28 @@ class TurnLoop {
       _ => null,
     };
 
+    // Quick and Sluggish are *relative* orderings among the spells actually
+    // resolving this turn ("resolve first/last unless others are also
+    // quick/sluggish" — design doc §Effect Table, Fire-Air row). So when
+    // every such cast shares the modifier it cancels out and the group
+    // collapses to normal — which also covers the single-caster case: the
+    // lone caster is trivially "all of them", so a sluggish wizard casting
+    // alone still resolves at the front rather than being demoted behind
+    // the other player's Pass/Dash/Meditate.
+    //
+    // SpellCastAction only, deliberately: a MysterySpellCastAction still
+    // standing at this point is the *delayed* variant (the immediate one was
+    // rewritten by _verifyMysteryAction upstream), so it stashes a
+    // PendingDelayedSpell rather than resolving, and must not count as
+    // "another cast" this turn. Delayed spells actually firing now arrive as
+    // SpellCastActions via [delayedFires] and do count.
+    final casters = pairs
+        .where((p) => p.$2 is SpellCastAction)
+        .map((p) => p.$1)
+        .toList();
+    final allCastsQuick = casters.every((av) => av.isQuick);
+    final allCastsSluggish = casters.every((av) => av.isSluggish);
+
     // Assign resolution group per action.
     _ResolutionGroup group((WizardAvatar, TurnAction) pair) {
       final av = pair.$1;
@@ -2073,15 +2218,22 @@ class TurnLoop {
         DashAction() ||
         MeditateAction() => _ResolutionGroup.normalSpell,
         SpellCastAction() || MysterySpellCastAction() =>
-          av.isQuick
+          av.isQuick && !allCastsQuick
               ? _ResolutionGroup.quickSpell
-              : av.isSluggish
+              : av.isSluggish && !allCastsSluggish
               ? _ResolutionGroup.sluggishSpell
               : _ResolutionGroup.normalSpell,
       };
     }
 
     // Sort: group first, then T ascending, then commitmentHex within group.
+    // The playerId fallback is what makes this a *total* order: without it,
+    // a cast and a non-cast (or two non-casts) in the same group compare
+    // equal, and since `pairs` is built local-actor-first the two clients
+    // would then stably sort them into different orders. Nothing a Pass/
+    // Dash/Meditate does is order-sensitive today, so that never actually
+    // diverged canonical state — but it's a lockstep landmine, and this
+    // change makes ties strictly more likely by collapsing groups.
     final sorted = List.of(pairs)
       ..sort((a, b) {
         final dc = group(a).index.compareTo(group(b).index);
@@ -2091,9 +2243,10 @@ class TurnLoop {
         if (sa != null && sb != null) {
           final tc = sa.t.compareTo(sb.t);
           if (tc != 0) return tc;
-          return sa.commitmentHex.compareTo(sb.commitmentHex);
+          final cc = sa.commitmentHex.compareTo(sb.commitmentHex);
+          if (cc != 0) return cc;
         }
-        return 0;
+        return a.$1.playerId.compareTo(b.$1.playerId);
       });
 
     for (final (actor, action) in sorted) {
@@ -2199,6 +2352,9 @@ class TurnLoop {
               final cloudsBefore = state.clouds.map((c) => c.id).toSet();
               final tilesBefore = state.tileEffects.keys.toSet();
               final minionsBefore = state.minions.map((m) => m.id).toSet();
+              final bookmarksBefore = {
+                for (final av in state.avatars) av.playerId: av.bookmarkCount,
+              };
               // FuelTransmutation wither/reactivate (§9): a dedicated,
               // per-caster RNG, kept separate from the shared actionRng
               // stream so drawing from it can never desync that stream.
@@ -2233,6 +2389,16 @@ class TurnLoop {
               // never visibly stationary. See _moveCloud's doc comment.
               for (final c in state.clouds) {
                 if (!cloudsBefore.contains(c.id)) _moveCloud(c);
+              }
+              // Bookmark accoutrements gained/lost this resolution (e.g.
+              // ArtifactsInteractionEffect Air/Fire, FuelTransmutationEffect
+              // Fire/Air) resize the affected avatar's hand immediately —
+              // handSize == bookmarkCount + 1 (see _reconcileHandSize).
+              for (final av in state.avatars) {
+                final before = bookmarksBefore[av.playerId]!;
+                if (av.bookmarkCount != before) {
+                  _reconcileHandSize(av.playerId, before, av.bookmarkCount, entropy);
+                }
               }
               lastResolvedSpells.add(
                 ResolvedSpellEvent(
@@ -4047,6 +4213,26 @@ class TurnLoop {
 
     // 1. Proof verification.
     if (spell.proofBytes.isEmpty) {
+      // DEV FLAG (kAllowProoflessSpells — lib/dev_flags.dart): let a Spell
+      // Test Lab spell through so effects can be exercised on two devices.
+      // Delete this branch along with the flag.
+      //
+      // Nothing is charged here, and [_deductManaForCommittedSpell] doesn't
+      // charge on the caster's side either — see [_isProoflessBypass] for why
+      // free-on-both-sides is the only option that can't desync.
+      //
+      // Nothing is written to [certifiedPeerFormulas], so [_applySpell] falls
+      // back to `_parsedFormulas(spell)`: the wire formula, which is also what
+      // the caster resolves from. Same source on both devices, so effects and
+      // chain state agree. That fallback is exactly the TODO(B-1) hole this
+      // flag leans on — closing that TODO means removing this flag first.
+      //
+      // Not mirrored, deliberately: the peer's draw state doesn't advance
+      // (there's no Merkle proof saying which chapter slot was spent). Draw
+      // state isn't part of [BattleState.toCanonicalBytes], so it can't
+      // desync the match, but the opponent's view of the caster's hand will
+      // drift and scrying a test-spell hand reads stale.
+      if (allowProoflessSpells) return;
       session.sendForfeit('missing_spell_proof');
       throw StateError(
         'peer sent a spell cast with no proof bytes — match forfeit',
@@ -4329,12 +4515,39 @@ class TurnLoop {
     return cost.clamp(0, _kMaxMana);
   }
 
+  /// Step 1 of [_spellManaCost], written to be the exact local mirror of
+  /// [_certifiedBaseManaCost]: same inputs, same operations, same order.
+  ///
+  /// Deliberately recomputed rather than read off [SpellAsset.manaCost].
+  /// That field is baked at inscribe time from the *activation* count —
+  /// `max(0, (activations - 1) ~/ 3)` — while the certified path derives
+  /// effectCount from the count of *complete formulas*, `max(0, formulas - 1)`.
+  /// Those agree only when the activation count is an exact multiple of 3, so
+  /// any spell with a residual activation charged its own caster ~1.5x what
+  /// the opponent's device charged it, `avatar.mana` diverged, and
+  /// [_exchangeStateHash] forfeited the match ("state hash mismatch on turn
+  /// N"). The certified count is the one that must win — it's the trust
+  /// boundary, and the wire count was exploitable by padding the formula
+  /// list — so the local path adopts it here.
+  ///
+  /// [_parsedFormulas] and TrajectoryParser both group the same flat
+  /// activation sequence into triplets and drop the residual, so
+  /// `_parsedFormulas(spell).length == certFormulas.length` for an honest
+  /// spell; a dishonest one still loses, because the opponent charges the
+  /// certified amount regardless and the state hash catches the difference.
+  int _wireBaseManaCost(SpellAsset spell) {
+    final base = 5 * spell.segmentCount + spell.dotCount;
+    final effectCount = max(0, _parsedFormulas(spell).length - 1);
+    return (base * pow(1.05, spell.t) * pow(1.5, effectCount)).round();
+  }
+
   int _spellManaCost(
     SpellAsset spell,
     WizardAvatar caster, {
     CastingEnhancements? enhancements,
   }) {
-    var cost = spell.manaCost;
+    // 1. Base + growth — mirrors _certifiedManaCost step 1.
+    var cost = _wireBaseManaCost(spell);
 
     // Chain: a pending chainSurcharge (potent Air-flavor Chain Interaction)
     // overrides the ordinary chain lookup for this one cast, regardless of

@@ -165,6 +165,7 @@ class WizardAvatar {
   WizardAvatar({
     required this.playerId,
     required this.ownerPubkeyHex,
+    this.wizardName = '',
     required this.hp,
     required this.mana,
     required this.maxMana,
@@ -187,6 +188,13 @@ class WizardAvatar {
 
   /// Poseidon2(inscriber's Ed25519 pubkey) — matches the proof's owner_pubkey.
   final String ownerPubkeyHex;
+
+  /// Player-chosen display name (Identity.loadWizardName()), exchanged
+  /// unauthenticated over LAN alongside the artifact loadout — presentation
+  /// only, never fed into toCanonicalBytes()'s state-hash lockstep. Empty
+  /// when unknown (e.g. solo/practice dummy); callers fall back to a
+  /// playerId-derived label.
+  final String wizardName;
 
   int hp;
   int mana;
@@ -267,6 +275,13 @@ class WizardAvatar {
   int get rodOfSpreadingCount => accoutrements
       .where((a) => a.kind == AccoutrementKind.rodOfSpreading)
       .length;
+
+  /// Bookmarks currently carried. Drives hand size (handSize == bookmarkCount
+  /// + 1, see TurnLoop._dealOpeningHandsIfNeeded / _reconcileHandSize) —
+  /// design v3.0 §Artifacts: "each bookmark tracks a spell... players toggle
+  /// between bookmarked spells for casting (effectively hand size)."
+  int get bookmarkCount =>
+      accoutrements.where((a) => a.kind == AccoutrementKind.bookmark).length;
 
   // ── Derived stats from status effects ─────────────────────────────────────
 

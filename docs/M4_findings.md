@@ -1,5 +1,138 @@
 # M4 — Findings Log (live, updated per milestone)
 
+## Trade manual-IP fallback + real bug report: hung on "Waiting for their offer" (2026-07-28)
+
+**Context:** Commune/Trade never had a manual-IP fallback the way
+`battle_lobby_screen.dart` does (see the 2026-07-20 entry below) — it only
+ever had `nsd` auto-discovery. Since `nsd` has no Linux desktop backend at
+all, trade was completely untestable on the Soren's Linux-laptop + Pixel 6
+pair until this landed: `TradeDiscovery.startAdvertising` now soft-fails its
+`nsd` registration (mirrors `LanMatchDiscovery`, listening socket binds
+regardless) and gained `listeningPort`/`localAddressHint()`;
+`trade_screen.dart` gained the same address-hint display + `host:port`
+manual-connect field as the battle lobby. New resilience test:
+`test/trade/trade_discovery_resilience_test.dart` (same shape as
+`match_discovery_resilience_test.dart`).
+
+**Real bug report, first real two-device trade attempt:** pixel hosted and
+offered a real spell; laptop joined via the new manual-IP field and offered
+nothing. Both sides submitted their offer; both hung forever on "Waiting for
+their offer" (`_Stage.submittingOffer`).
+
+**Investigation — could not reproduce locally despite several realistic
+attempts, all over real loopback TCP sockets (`LanSocketTransport`, not
+`InMemoryTransport`):** trivial empty/empty offer exchange; the exact
+asymmetric shape reported (one real spell item vs. an empty offer). Both
+completed instantly. `exchangeOffer`'s subscribe-before-send ordering is
+correct and symmetric on both sides; `TradeItem`/`TradeOffer` payloads are
+small metadata only (no proof bytes or grid), ruling out a payload-size
+theory. `trade_wire.dart`'s `TradeFrameReader._drain()` is byte-identical to
+the canonical, hardware-validated `wire.dart` `FrameReader`, so it isn't a
+regression specific to trade's copy.
+
+**A first theory — that the listens omit `onDone`/`onError`, so a silently
+dropped TCP connection never closes the reader — was WRONG as the cause
+here.** Recorded because it cost a round trip: it was inferred from code
+reading rather than reproduction, and Soren correctly rejected it on
+evidence (devices a foot apart on a private phone hotspot; and the hang
+*moved between devices* between runs, which a flaky link doesn't explain).
+The gap is real and worth closing (it is, below), but it was not this bug.
+**Reproduce before theorising** — the reproduction took one test.
+
+**CONFIRMED root cause: `TradeFrameReader`'s `StreamController` is a
+*broadcast* controller, and a broadcast stream silently discards any event
+added while it has no subscriber.** `TradeSession` only subscribed *inside*
+`exchangeOffer`/`exchangeConfirm` (via `framesOfType(...).first`). Every step
+of this protocol is gated on a human pressing a button, so the two peers are
+never subscribed at the same moment: whoever pressed Submit **first** sent
+their offer while the other device was still sitting in its offer-builder UI
+with nothing listening — that frame was dropped on the floor, permanently.
+The second player's `await` could then never be satisfied. **The second
+submitter always hangs.** That is exactly the reported evidence: Linux hung
+when the Pixel submitted first; the Pixel hung when Linux submitted first;
+host/guest role was irrelevant. `exchangeConfirm` had the identical defect
+(two humans decide independently, seconds apart).
+
+**Why every existing test missed it, and why the first repro attempts did
+too:** `trade_session_test.dart` calls both sides' `exchangeOffer` in the
+same event-loop turn, so both are subscribed before either frame is
+delivered. Reproducing over real loopback TCP with a payload matching the
+report *also* passed, for the same reason. The bug only appears once the two
+calls are **staggered in time** — a 300 ms delay is enough. Note that
+subscribe-before-send (the discipline the 2026-07-18 `exchangeGrantsAndSave`
+race fix introduced) does **not** help: the gap that matters is between the
+two peers *calling the method at all*, not between subscribe and send inside
+one method. That earlier fix closed a real but much smaller window and was
+mistaken for a general defence.
+
+**The codebase already had the correct pattern — trade just never got it.**
+`BattleFrameReader` (`battle_wire.dart`) is queue-backed
+(`_pendingByType`/`_waitersByType`) precisely because this same failure was
+hit during LAN duel setup (its doc comment describes it, differing FFI
+latency during `exchangeIdentityAuth` being enough to trigger it). Trade
+copied battle's *shape* (broadcast stream + `framesOfType`) without the
+buffering that makes it safe.
+
+**Fix:** `TradeSession` now keeps ONE permanent subscription for the
+session's life and routes every protocol await through a new `_nextFrame(
+Set<TradeMsgType>)`, which returns a matching frame that **already arrived**
+from an in-order buffer, or registers a waiter. `close()` and stream
+done/error fail all pending waiters instead of leaving them hung.
+`framesOfType` is kept but documented as a footgun — anything the protocol
+awaits must use `_nextFrame`.
+
+**Regression test:** `test/trade/trade_session_staggered_test.dart` — real
+loopback TCP, with a deliberate delay between the two peers' calls, covering
+offer, confirm, a cancel from the *first* decider, and close-releases-an-
+in-flight-await. **Verified all four fail (5 s timeouts) with the fix
+stashed and pass with it applied.** The delay is load-bearing; removing it
+makes the file test nothing.
+
+**Fixes applied alongside:**
+- `LanListener.acceptOnce()` (`lan_socket_transport.dart`) now sets
+  `SocketOption.tcpNoDelay` on the accepted socket too — previously only
+  `LanSocketTransport.connectTo` (the dialing side) set it, a latent
+  Nagle/delayed-ACK asymmetry for this kind of small-message,
+  one-round-trip-per-step protocol.
+- **`trade_screen.dart` gained a Cancel escape hatch** (`_abortExchange`) on
+  the three post-pairing exchange spinners (`submittingOffer`,
+  `awaitingConfirm`, `exchanging`) — previously `_SpinnerSection` had no way
+  out at all once past pairing, so *any* stall (this bug, a genuine network
+  drop, anything) left force-quitting the app as the only recourse.
+  `_abortExchange` calls `TradeSession.close()` first — which now explicitly
+  fails pending `_nextFrame` waiters, the thing that actually unblocks an
+  in-flight exchange; merely disconnecting the transport does not — before
+  resetting to idle. The `_submitOffer`/`_decide` catch blocks guard
+  `_stage == _Stage.idle` first, so an old now-erroring future doesn't
+  clobber the user's own cancel-triggered reset back into an error screen.
+- Not added to the `pairing` stage's spinner: at that point `_session` isn't
+  set yet, so `_abortExchange`'s unblock mechanism wouldn't reach the
+  in-flight `TradeSession.initiate`/`.accept()` call — a real gap, but
+  scoped out rather than shipping a half-working escape hatch.
+- The socket listens in `initiate`/`accept` now pass `onDone`/`onError` that
+  close the reader, so a genuinely dropped connection fails the pending
+  awaits instead of stalling. (This is the first theory's fix. It was not
+  this bug, but it is a real hole and cost one line each.)
+  `TradeFrameReader.addChunk` ignores post-close chunks so that can't throw.
+
+**Still open — `sync_art_session.dart` has the same defect, unfixed.** It
+still does `framesOfType(...).first` over the same broadcast stream for its
+want-list and art-bundle rounds. Its exposure is much smaller than trade's
+(both sides call `sync()` automatically right after pairing, so the window
+is FFI/handshake timing — milliseconds — not a human button press), but it
+is the same bug and the battle precedent shows milliseconds is enough to
+trigger it. **Not fixed here: out of scope for a trade bug, and Sync Art
+deserves its own reproduction + regression test rather than a copy-paste
+fix.** Recommended fix is identical: give `SyncArtSession` the same
+`_nextFrame` buffer. `match_session.dart` is a strict, tightly-sequenced
+request/response handshake and is *not* obviously exposed; `battle_session`
+is already queue-backed and safe.
+
+**Next:** retry the two-device trade. The staggered regression test now
+covers the exact failure, but this needs the real hardware pass to close.
+
+---
+
 ## Basic Spells (shipped starter spells + unlimited chapter copies) (2026-07-27)
 
 Built per `docs/BASIC_SPELLS_PLAN.md`. Two real bugs found while implementing
@@ -2520,3 +2653,647 @@ root:
 - Two-device validation (plan step 4).
 - Wiring real (non-ephemeral) `Identity.loadOrCreate()` + real proofs into a
   minimal harness screen.
+
+---
+
+## 2026-07-28 — Somatic gesture: real corpus calibration (SORC.5)
+
+First real IMU corpus captured on the Pixel 6 via practice_screen's Gesture
+tab: 10 reps each of fire/air/water/earth/melee plus idle/walk/garbage
+confusables, now committed at `test/sorcerer/fixtures/corpus_pixel6/`. Pulled
+with `adb shell run-as com.runeduel.rune_duel cat
+app_flutter/gesture_enrollment/<name>.json`.
+
+### The corpus was fine. The constants were the bug.
+
+Leave-one-out nearest-neighbour ranking is **100% correct for all 50 gesture
+reps** under nearly every representation tried. The five chosen motions are
+genuinely separable — no choreography change was needed.
+
+What failed was the shipped `GestureClassifier` default constants
+(`energyFloor 0.02`, `distanceCap 4.0`, `marginThreshold 0.5`) applied to
+**raw** IMU frames. Over the real corpus those defaults produce:
+
+```
+  9x  confusable_idle -> fire   <<< FALSE ACCEPT
+ 10x  confusable_walk -> fire   <<< FALSE ACCEPT
+  4x  melee -> neutral (missed)
+  2x  air   -> neutral (missed)
+```
+
+Two independent scale errors:
+
+1. **`energyFloor` was ~400x too low.** Real idle sits at mean-square energy
+   0.04–7.76, not below 0.02, so the stillness gate never fired and a still
+   hand reached DTW at all.
+2. **Raw DTW distance is amplitude-dominated, and fire is the quietest
+   gesture** (E≈25, vs air 390, melee 1100). So near-zero motion lands nearest
+   to fire: idle→fire distance 1.80 vs fire→fire 1.75. Meanwhile cap 4.0 sat
+   *below* air's (4.16) and melee's (3.80) natural within-class distances, so
+   those two were rejected outright.
+
+### Fix: normalise before matching
+
+`normalizeForMatching()` (imu_sample.dart) — smooth over 5 frames, multiply
+the gyro block by `kGyroBalance = 4.0`, then scale the rep to unit RMS.
+Applied to **both** query and every template rep at classify time, so stored
+enrollment JSON stays raw and reprocessable.
+
+The gyro boost is not a fudge: this device's gyro magnitudes run ~1/4 of its
+accel magnitudes, so after a single global normalisation the accelerometer
+dominates the Euclidean cost and drowns the rotation signature that actually
+separates the gestures. Sweeping the factor moved held-out false accepts 2→0.
+
+New constants: `energyFloor 8.0`, `distanceCap 0.80`, `marginThreshold 0.15`.
+Genuine reps span 0.21–0.86 in normalised space; the closest impostor
+(theatrical garbage) sits near 0.90. **Bias the cap down, never up** — a
+rejected genuine gesture is a cast without enhancement, but a false accept
+applies the wrong one.
+
+### Things that did NOT work — don't re-try
+
+- **Rotation-invariant features** (`[|a|, |g|, a·g, |a×g|]`). These are what
+  would neutralise grip-orientation differences between people, and they keep
+  100% top-1 ranking — but confident-accept rate collapses to 40% (4% without
+  normalisation). Too much signal discarded.
+- **Raw magnitudes only** (`[|a|, |g|]`): 4% accept.
+- **Fixed-length resampling**: no gain over plain unit-RMS. DTW is already
+  time-warp invariant, which was the original design call and it holds.
+- **Smoothing alone**, without normalisation: makes things *worse* (50%
+  accept) — it sharpens the amplitude domination rather than removing it.
+
+### Handedness comes free — mirroring is an exact isometry
+
+Reflecting across the sagittal plane is `ax→−ax, gy→−gy, gz→−gz` (acceleration
+is a true vector so only the mirrored axis flips; **angular velocity is a
+pseudovector** and picks up an extra sign, so the *other* two flip). Getting
+this backwards yields a physically impossible motion that still plots
+plausibly — the classic IMU-mirroring bug.
+
+Because that is a signed permutation, it is orthogonal, so it commutes with
+smoothing, per-channel scaling, unit-RMS and DTW. Measured worst
+`|d(a,b) − d(mirror a, mirror b)|` = **0.00e+0**. A mirrored template set
+therefore reproduces right-handed accuracy bit for bit — **one capture covers
+both hands, no recapture, no recalibration**. `mirrorFrames`/`mirrorSamples`
+in imu_sample.dart; guarded by tests in gesture_confusion_e2e_test.dart.
+
+The gestures are strongly chiral (mean self-vs-mirror distance 1.20–1.61, far
+outside the cap), so a handedness mismatch degrades to `neutral` — never to a
+wrong gesture. That negative case is now a test.
+
+### Generalization: promising, not proven
+
+Enrolling only reps 0–4 and testing reps 5–9 (a real style shift — later reps
+run ~40% slower) gives **100% top-1, 100% accept, 0 false accepts**. Speed and
+amplitude variation are handled.
+
+But that probe cannot test the dominant cross-person variable, **grip
+orientation**, which is a rigid rotation of the device frame. The features
+that would survive it are the rotation-invariant ones that measured poorly
+above. The vocal precedent is a warning: same-voice 5/5 vs cross-voice 2/5
+(2026-07-16 entry). **Universal bundled templates remain unvalidated until
+2–3 other people are captured** (~10 min each).
+
+Mitigating: universality **fails safe**. Wrong-gesture confusion never occurred
+once in 50 reps, so a stranger's rendition falling outside the cap yields
+"no enhancement", not "wrong enhancement". Frustrating, never exploitable.
+
+### Streaming feedback is viable (basis for the haptic trainer)
+
+Running prefix alignment cost (own class vs best competing class), sampled
+through the gesture:
+
+```
+gesture        @25%          @50%          @75%         @100%
+fire        1.17 / 1.54   1.10 / 1.66   1.06 / 1.74   1.13 / 1.85
+air         0.62 / 0.79   0.77 / 1.21   0.80 / 1.57   0.72 / 1.47
+water       0.38 / 0.68   0.62 / 1.30   0.73 / 1.47   0.79 / 1.49
+earth       0.40 / 0.46   0.60 / 0.97   0.66 / 1.29   0.75 / 1.51
+melee       0.28 / 0.39   0.51 / 1.03   0.60 / 1.45   0.53 / 1.31
+```
+
+Separation exists from ~25% in and widens monotonically, so a haptic that
+builds as the player commits correctly and fades as they drift has a real
+signal to drive — no faking needed. Cost is ~1500 DP cells per frame at 55 Hz,
+trivially inside the latency budget. Reuse `DtwMatcher.distanceWithSteps` and
+mirror `StreamingPhonemeScorer`'s structure.
+
+**Choreography note: fire is the least self-consistent gesture** (own-class
+cost 1.06–1.17 vs 0.28–0.80 for the others). See the correction below — this
+is structural, not a performance problem.
+
+### Correction: fire is a tremor, and DTW is the wrong matcher for it
+
+Fire's intended choreography is **phone held mostly still, hand shaking** —
+"having trouble containing the energy". That is a *stochastic texture*, not a
+trajectory: successive shake cycles have arbitrary phase, so there is no
+repeatable path to time-align. DTW pays a large cost for a perfectly good
+performance. **Re-recording it cannot help** — an earlier note in this
+document suggesting that was wrong. This also explains fire's two anomalies:
+lowest energy of any gesture (~25) *and* highest own-class DTW cost.
+
+Per-gesture crispness (mean own-class distance / mean nearest-other-class
+distance; higher = tighter, better isolated cluster):
+
+```
+transform                  fire      air    water    earth    melee
+gyroX4+unitRms (shipped)   1.83     2.11     2.35     2.27     2.54
+traj+spec concat (w=1.0)   1.87     1.42     1.42     1.38     1.56
+spec2 (|a|,|g| bands)      2.26     1.37     1.32     1.44     1.35
+```
+
+Fire is best matched **spectrally** (1.83 → 2.26); the other four are best
+matched by **trajectory DTW** (2.1–2.5, collapsing to ~1.35 under spectral).
+Concatenating both into one sequence is worse than either specialist — it
+dilutes the trajectory signal without meaningfully helping fire. There is no
+single representation that wins for both, and that is a property of the
+gestures, not a tuning failure.
+
+**Resolution — do not change the cast-time classifier.** Fire at 1.83 works:
+all 10 reps accept, zero false accepts, and the e2e gate passes. The tremor
+design costs ~25% margin versus the trajectory gestures, which is a price, not
+a failure.
+
+**But use a spectral matcher for fire in the TRAINER.** Training is
+single-class verification (the target gesture is known), so a per-gesture
+representation costs nothing there — the scale-comparability problem that
+would break a mixed-representation *classifier* simply does not arise. And a
+tremor is arguably the *easiest* gesture to give streaming feedback on: its
+identity is a stable instantaneous property (shake rate + intensity) rather
+than a path you must complete, so the haptic can say "you're there, hold it"
+continuously. Closer to sustaining a musical note than to executing a dance
+step.
+
+**Watch the stillness gate on fire.** "Mostly still" is in direct tension with
+`energyFloor = 8.0`: fire's weakest recorded rep is 13.75, only 1.7x above the
+floor — the tightest margin of any gesture. A player shaking too gently will
+be stillness-gated and see nothing happen. Mitigations, in order of
+preference: (a) have the trainer coach intensity; (b) make the gate spectral
+rather than pure energy — low-energy *high-frequency* is a tremor, low-energy
+*low-frequency* is genuine stillness, and the band energies distinguish them
+for free. Verify (b) against `confusable_idle` before relying on it.
+
+### Traps found
+
+- **The device samples at ~55 Hz, not the 100 Hz**
+  `SensorsGestureCapture._samplingPeriod` requests. Never assume the requested
+  rate; `impliedSampleRateHz` records the real one and reps store it.
+- `earth[3]` is a clipped capture (0.92 s vs ~1.5 s for its siblings) — the
+  single worst rep in the corpus, from releasing the button early.
+- Synthetic fixtures at amplitude 3.0 sit at energy ~4.9, **below the energy
+  of a real human gesture** (weakest recorded rep: 13.75). Fixtures written
+  before a gate is calibrated will silently fall on the wrong side of it once
+  it is.
+
+### Tooling
+
+`tool/gesture_corpus_analysis.dart <corpus_dir>` — offline bench (not a test).
+Prints the representation sweep, held-out threshold cross-validation, the
+operating curve (accept% and first-false-accept per cap), the handedness
+study, the generalization probe, and the streaming-feedback study. **Re-run it
+after any feature or constant change**; do not hand-tune one constant in
+isolation.
+
+---
+
+## 2026-07-28 — Battle scenery: generated hex-terrain backdrop
+
+Soren added the CC0 **Screaming Brain Studios "Realistic Hex Tiles"** pack under
+`assets/art/` (gitignored, like every raw art source). Each battle now draws a
+generated terrain backdrop beneath the battlefield, on the *same* hex grid, so
+playable tiles sit squarely on their terrain and the landscape runs out past the
+edge of the field.
+
+**Purely cosmetic.** Scenery never touches movement, line of sight, targeting,
+or any hashed/committed state. `lib/battle/models/terrain.dart` (`TileEffect`)
+is the real terrain system and is unrelated; the new code lives under
+`lib/ui/scenery/` and every file says so in its header.
+
+### Decisions (Soren, 2026-07-28)
+
+- **One aligned map**, not a separate decorative backdrop — battlefield hexes
+  coincide with terrain hexes.
+- **Bonus sheet (18 tiles)**, but **only ground you could walk on**: lava,
+  cooling magma and both waters are excluded. They stay in the enum and in the
+  shipped atlas (they cost nothing and a hazard feature may want them).
+
+### Sheet geometry — measured, not assumed
+
+Both sheets in the pack use the same top-face geometry. The Bonus sheet is
+768x432, 6x3 cells of 128x144:
+
+- Top face is a **flat-top hex 128 wide x 128 tall** at rows 0..127 — i.e.
+  stretched vertically by 2/sqrt(3) versus a regular hex.
+- Rows 128..143 are a **16px straight-down extrusion**, which overlaps the tile
+  behind it. Tiles must be drawn **back to front** or the depth reads wrong.
+- Tiling step: dx = 96, dy = 128, odd-column y-offset 64.
+
+The painter reproduces `BattlefieldPainter.hexToPixel` exactly via a single
+canvas transform (`sx = 2*hexSize/128`, `sy = sqrt(3)*hexSize/128`) rather than
+per-tile maths — the 0.866 vertical squash is invisible on a texture.
+
+### Asset pipeline
+
+`scripts/build_hex_terrain.py` -> `assets/art_pack/terrain/hex_terrain_atlas.png`
+(+ `ATTRIBUTION.md`), same raw-source/derived-output split as
+`build_art_pack.py`. It does three things the runtime should not:
+
+1. Keys out the source's hard **teal `#008080`** (the Flat/Thick sheets use
+   magenta `#ff00ff`) into a real alpha channel — the source PNGs are RGB with
+   no alpha and cannot be drawn as-is.
+2. **Rebuilds edge alpha analytically** as 8x8 supersampled coverage of the
+   known silhouette polygon. The source key is hard-edged, which reads as
+   jaggies once scaled; complementary coverage on shared edges also means
+   adjacent tiles composite seam-free.
+3. **Bleeds RGB outward** into the transparent margin, or bilinear filtering
+   pulls the key colour in as a halo.
+
+### How "logical transitions" are actually guaranteed
+
+Terrain is never chosen per tile. Two fBm value-noise fields (elevation,
+moisture) -> quantile banding into 5x5 bands -> a **Lipschitz-1 clamp** over the
+hex adjacency graph -> a hand-authored 5x5 biome ladder. The clamp is the
+load-bearing step: it computes the largest field <= the banded one in which
+adjacent hexes never differ by more than one band, so every adjacency lands
+inside a 3x3 window of the ladder, and the ladder is authored so every such
+window is a plausible pair. **No post-hoc fixups.** `sceneryAdjacencyIsLegal`
+derives the legal relation from the ladder itself (so it cannot drift), and
+`test/ui/scenery_map_test.dart` checks every adjacency of every map across all
+7 regions x 12 seeds.
+
+Determinism: seeded from the duel's shared `matchId` via SHA-256, so both
+devices render the same landscape without exchanging a byte. Solo play takes
+local entropy. 32-bit-masked integer hashing throughout, IEEE-754 +,-,* only.
+
+### Three things only *looking at it* caught
+
+All the unit tests were green before any of these were found. This is the
+verification-hierarchy point, again.
+
+- **Quantiles over the whole disc put a snowfield in a meadow.** Band
+  thresholds computed over the full generated map are globally correct but say
+  nothing about the arena, which is a small fraction of it — so "Verdant Downs"
+  legitimately rendered an alpine battlefield with its meadows out of frame.
+  Fix: `focusRadius` (the battlefield radius) — thresholds come from the arena's
+  cells, applied everywhere. Extremes now sit past the edge, which is also the
+  better picture: near meadow, distant peaks.
+- **Linear area-scaling of feature clusters made a plaza.** Paving covered
+  9-14% of tiles and clusters merged into one slab. Fix: sqrt area scaling plus
+  a minimum separation of 4 hexes between clusters of the same kind -> 3-7%.
+- **Snow/rime are far brighter than anything else in the atlas** and fight the
+  game pieces for attention even at 5%. The temperate presets now carry **zero
+  weight in the top elevation band**; regions that should look cold say so.
+
+### Traps
+
+- `dart format` destroys a lookup table's grid layout, which for the biome
+  ladder *is* the documentation. It sits in a `// dart format off` block with
+  short aliases; keep it that way.
+- `flutter_test` hangs on `instantiateImageCodec` / `Picture.toImage` under the
+  default fake-async zone. The preview renderer wraps its body in
+  `tester.runAsync`. (First attempt burned a 600s timeout on this.)
+- A missing/corrupt atlas must never take the battle down — the load is
+  try/caught and the painter treats a null image as "draw nothing".
+
+### Tooling
+
+`test/ui/scenery_render_preview_test.dart` is a **tuning loop, not an assertion
+test**: with `SCENERY_PREVIEW_DIR` set it renders one PNG per region plus a seed
+sweep through the real painter and the real atlas; without it, it is a no-op.
+Every defect listed above came from that renderer. Re-run it after touching any
+region weight, ladder cell, or dimming constant.
+
+### Follow-up (same day): the terrain was invisible inside the grid
+
+Soren: *"I wanted the tiling to occur inside the battle grid, while still
+keeping the cells easily identifiable."*
+
+`BattlefieldPainter._drawTile` filled every playable hex with an **opaque**
+checkerboard (`_kTileLight`/`_kTileDark`), so the scenery only ever showed
+*outside* the playable radius. The geometry was right all along — the grids
+coincided exactly — but the board was painted straight over the terrain.
+
+**This is the second time in one feature that a green test suite said nothing
+about the actual requirement.** The scenery previews looked correct because
+they rendered the backdrop *alone*; nothing composited `BattlefieldPainter` on
+top until it was asked for explicitly. The preview harness now draws the
+composite, which is the only view that answers the real question.
+
+Fix — `BattlefieldPainter.terrainBeneath` (default `false`, so the original
+opaque stone board is exactly what still renders if the atlas fails to load):
+
+- Playable tiles become a **wash** (~12% warm / ~15% cool) instead of a fill.
+  Both parities need a wash; tinting only one reads as "some tiles are
+  highlighted" rather than as a checkerboard.
+- The tile rim becomes a **light line over a dark halo** (2.6px `_kEdgeHalo`
+  then 1.0px `_kEdgeLine`). A single 1px border vanishes wherever the terrain
+  matches its luminance — the old dark edge is fine on snow and invisible on
+  pinewood. The two-tone rim is what actually keeps cells countable, and it is
+  now doing most of the work the checkerboard used to do.
+- Scenery's `_kInnerBrightness` 0.62 → 0.82, `_kInnerSaturation` 0.88 → 0.96.
+  The old values were tuned with nothing on top; once the wash and rim were
+  added the arena went muddy. **Tune these against the composite only.**
+
+`test/ui/battlefield_terrain_beneath_test.dart` asserts pixels — deliberately,
+unlike the neighbouring crash-smoke test. It probes cell centres (terrain shows
+through / the default board still hides it / adjacent parities differ) and a
+shared edge (a rim is actually drawn). The original bug was invisible to every
+non-pixel test, so a pixel probe is the regression guard.
+
+### Follow-up 2 (same day): snow, rime and ice removed
+
+Soren: *"there's some blue watery or snowy tiles still, they seem out of
+place, lets remove them."*
+
+`snow`, `frost` and `ice` dropped out of `SceneryTile.walkable`, joining lava
+and open water as excluded. They stay in the enum and in the shipped atlas — a
+seasonal or hazard feature may want them — but nothing draws them. Taken as one
+family: they are a single visual group, and keeping snow while dropping the
+blue ones would have looked stranger than either.
+
+Consequences worth knowing, because this was not a one-line change:
+
+- **The ladder lost its top tier.** The elevation axis now tops out at bare
+  `chalk` crag, and the crest row is uniformly chalk — above the treeline there
+  is only rock, whatever the moisture. Highland became
+  `sand / chalk / chalk / pine / pine`, which puts the treeline transition
+  (crag thinning into pinewood) where the rime band used to be.
+- **`frostcapRidge` became `stonecrest` ('Stonecrest').** A region named for
+  frost that cannot contain any is worse than no preset. It was also
+  re-weighted damper than `chalkHills`, so its crags stand out of pinewood
+  rather than out of sand — otherwise the two collapse into the same look.
+- **The feature avoid-rule had to be re-earned.** `avoidNeighbours` was
+  `{snow, ice, frost}` for both features, which became vacuous. Rather than
+  keep dead machinery it is now `{mossSoil}`: you do not pave a bog, and
+  waterlogged ground does not carry a fire. The corresponding test is
+  meaningful again instead of trivially green.
+- `mossSoil` left the ruins substrate set for the same reason (it cannot be
+  both a substrate and something to avoid).
+
+New test `the excluded tiles never appear on any map` checks the exclusion
+directly and asserts `walkable` itself has not been widened back — the older
+`isWalkable` test would happily pass if someone re-added a tile to the set.
+The palette is now temperate throughout: clay, earth, mire, sand, dry grass,
+scrub, grass, pinewood, chalk, plus paving and burn scars.
+
+---
+
+## 2026-07-29 — Sluggish resolution order: the hang hypothesis, and the real fix
+
+Reported symptom: "targeted myself with the sluggish debuff, then my game
+froze." The proposed cause was a wait — sluggish means you resolve last, so if
+nobody else casts you sit waiting for a caster who never comes.
+
+### That mechanism does not exist — checked, not assumed
+
+`isSluggish` occurs in exactly two places in the whole tree: the getter on
+`WizardAvatar`, and the `_ResolutionGroup group()` closure inside
+`TurnLoop._resolveActions`. It is a **sort key and nothing else**. No exchange,
+Completer, or `await` anywhere in `turn_loop.dart` or `battle_screen.dart` is
+gated on cast order; every `session.exchange*` call is unconditional and
+symmetric per turn, so the number and order of frames cannot diverge because of
+a status effect.
+
+Reproduced negatively, three ways, all green before any change:
+
+1. Solo (`SoloBattleSession`): sluggish local avatar casts, dummy passes.
+2. Solo: self-cast the real sluggish formula (`['earth','fire','air']` — Earthen
+   Energy Flows) at own tile, then four more turns of casting while sluggish.
+   `_prepareForHit` returns `false` for a self-hit, so self-targeting is a
+   normal, supported path.
+3. Two-client lockstep (`TurnSessionPair`): sluggish caster vs. passing peer —
+   canonical state identical on both clients, no deadlock.
+
+So whatever froze the app, it was not this. If it recurs, the thing to capture
+is whether the phase banner was stuck on "Resolution" (⇒ `_isBusy` stuck true
+⇒ `runTurn` never returned ⇒ a genuine LAN exchange desync, most likely one
+client having thrown mid-turn and stopped exchanging) or whether a fullscreen
+spell card was up (⇒ the reveal sequence).
+
+### What was actually wrong, and is now fixed
+
+Sluggish/Quick were being applied as *absolute* groups, so they ranked a cast
+against Pass/Dash/Meditate too. The design doc (§Effect Table, Fire-Air) says
+"resolve last **unless others are also sluggish**" — i.e. it is a ranking among
+the casts. `_resolveActions` now computes `allCastsSluggish` / `allCastsQuick`
+over the casts resolving this turn and collapses the group to normal when every
+caster shares the modifier. The single-caster case falls out of it: the lone
+caster is trivially "all of them", so a sluggish wizard casting alone resolves
+at the front instead of behind the opponent's Pass.
+
+Deliberate detail: the caster set counts `SpellCastAction` only. A
+`MysterySpellCastAction` still standing at resolution is the *delayed* variant
+(`_verifyMysteryAction` has already rewritten the immediate one), so it stashes
+a `PendingDelayedSpell` rather than resolving and must not count as "another
+cast". Delayed spells actually firing this turn arrive as `SpellCastAction`s via
+`delayedFires` and do count.
+
+### Latent lockstep landmine, found on the way and closed
+
+The sort comparator returned `0` whenever either side was not a spell — so a
+cast vs. a Pass, or two Passes, compared equal. `pairs` is built local-actor
+first, and Dart's sort is stable at these sizes, which means **the two clients
+stably sorted equal elements into different orders**. It never diverged
+canonical state because nothing Pass/Dash/Meditate does is order-sensitive, and
+the state-hash exchange therefore never caught it. The collapse rule above makes
+ties strictly more common, so the comparator now falls back to `playerId` and is
+a total order.
+
+New `test/battle/engine/resolution_order_test.dart` pins all of it over two
+concurrent loops. To get there, the `_TurnSessionPair` fixture was lifted out of
+`turn_loop_determinism_test.dart` into `test/battle/engine/turn_session_pair.dart`
+so any engine test needing real two-client lockstep can use it.
+
+One thing that test *cannot* assert: the lone-caster ordering itself.
+`lastResolvedSpells` only carries casts, so with one cast there is no order to
+observe — and since non-cast actions are order-insensitive, the collapse changes
+no canonical state today. It is the rule that is now right; the two-caster cases
+are what pin it.
+
+---
+
+## 2026-07-29 (same day) — "state hash mismatch on turn N": the mana ledger split in two
+
+Follow-up from the same two-device session. The banner that flashed by was
+`Turn error: Bad state: state hash mismatch on turn 3: local=… peer=…` —
+`TurnLoop._exchangeStateHash`. That is the lockstep tripwire doing its job:
+both devices hash `BattleState.toCanonicalBytes()` and compare, so the message
+means the two devices' *battle state genuinely diverged*, not that the network
+glitched. Every field in the canonical encoding is explicitly sorted, so
+ordering is never the cause — a real value differed.
+
+### The value that differed: the caster's mana
+
+Two structurally different paths charge for the same cast, by design:
+
+| device | path | base |
+|---|---|---|
+| caster | `_deductManaForCommittedSpell` → `_spellManaCost` | `SpellAsset.manaCost`, baked at inscribe time |
+| opponent | `_verifyPeerSpellCast` → `_certifiedManaCost` | recomputed from the proof's public outputs |
+
+Both then apply chain / efficiency / sorcerer / `nextSpellCostDouble` in the
+same order — that part was already audited (B-1/B-8). The **base** was not.
+The two effectCount formulas are different functions:
+
+```
+inscribe (main.dart) : effectCount = max(0, (activations - 1) ~/ 3)
+certified            : effectCount = max(0, completeFormulas - 1)
+                                   = max(0, activations ~/ 3 - 1)
+```
+
+They agree only when the activation count is an exact multiple of 3. On any
+residual they differ by one, i.e. a **1.5x cost gap on the very same cast**:
+
+| activations | wire | certified | |
+|---|---|---|---|
+| 3 | 0 | 0 | agree |
+| 4 | 1 | 0 | **diverge** |
+| 6 | 1 | 1 | agree |
+| 7 | 2 | 1 | **diverge** |
+
+Measured on the repro (segmentCount 3, dotCount 2): 4 activations → caster
+charged itself 31, opponent charged it 21. `avatar.mana` differs → state hash
+differs → both devices throw and forfeit. Turn 3 is simply the first turn
+someone cast a residual-activation spell.
+
+The gap was *known and written down* — there is a `NOTE(B-1, balance)` on
+`_certifiedManaCost` describing it exactly — but it was filed as a balance
+difference. It is not: neither device ever applies the other's number, so it is
+a lockstep divergence. **Any time two code paths compute a value that lands in
+`toCanonicalBytes()`, "they disagree" is a desync, never a balance note.**
+
+### Fix
+
+`_spellManaCost` no longer reads `SpellAsset.manaCost`. New `_wireBaseManaCost`
+recomputes the base as the exact local mirror of `_certifiedBaseManaCost` —
+same inputs, same operations, same order — using `_parsedFormulas(spell).length`
+for the effect count. That is the same triplet grouping `TrajectoryParser`
+performs on the certified trajectory, so the two land on the same integer for
+an honest spell. A dishonest one still loses: the opponent charges the certified
+amount regardless, and the state hash catches the difference.
+
+The certified count is the one that had to win — it is the trust boundary, and
+the wire count was exploitable by padding the formula list.
+
+`main.dart`'s inscribe handler was corrected to the same rule, so the card no
+longer advertises a price the duel doesn't charge. **Spells inscribed before
+this still carry the old inflated `manaCost` in their asset file** — harmless
+for play (nothing reads it to charge any more) but the library card will read
+~1.5x high for a residual-activation spell until it's re-inscribed.
+
+### Why it presented as a freeze, not an error
+
+Worth knowing for the next desync: when one device throws mid-turn it stops
+exchanging, and the other device blocks forever on its next
+`session.exchange*`. In the app that is `_isBusy` stuck true — the phase banner
+frozen on "Resolution", no input accepted. The device that *threw* shows a
+4-second snackbar and then looks fine. So "one device froze, the other seemed
+OK" is the signature of a mid-turn throw, and the snackbar on the *other* phone
+is where the real message is. `mana_cost_lockstep_test.dart` reproduces this
+shape exactly: without `eagerError: true`, `Future.wait` just hangs.
+
+### Tests
+
+`test/battle/engine/mana_cost_lockstep_test.dart` — two concurrent loops, one
+real cast, asserting **both devices agree on the caster's remaining mana** and
+canonical state matches. Covers 3 (was already fine), 4 and 7 activations. It
+fails loudly on the pre-fix engine.
+
+`chain_discount_test.dart`'s fixture had to change with it: it used
+`manaCost: 1000` as "the base price", which no longer feeds the engine. It now
+encodes the price the way the engine reads it (`t: 0`, `dotCount: manaCost`).
+The one factor that can't be neutralised is `1.5^(formulas-1)`, which is now
+intrinsic — so the hybrid spell's full price is 1.5x the pure one's, and that
+test asserts against `_fullPrice(hybrid)` rather than a hard-coded 1000.
+
+---
+
+## 2026-07-29 (same day) — DEV FLAG: proofless spells accepted in a real duel
+
+**This is temporary. `lib/dev_flags.dart` must be deleted before release, along
+with every `DEV FLAG` comment that references it.**
+
+Spell Test Lab spells never run through the circuit, so `proofBytes` is empty,
+`_appendSpellProofTail` sends no tail, and the opponent's device forfeits on
+`missing_spell_proof`. Correct behaviour, but it makes two-device effect testing
+impossible — and several effects (reflections, counter-charms, scrying, anything
+needing a real opponent) can't be exercised in solo practice at all. So
+`kAllowProoflessSpells` waves the empty-proof case through.
+
+Scope is deliberately narrow: a spell that *does* carry proof bytes is still
+fully verified — proof, commitment binding, duplicate-grid detection,
+enhancement claims, cast authorization, Merkle membership. There is a test
+pinning that (`proofless_spell_flag_test.dart`, "a spell that DOES carry a
+proof is still fully verified"), because a bypass that quietly widened into
+"skip verification" is the failure mode worth guarding.
+
+### The non-obvious part: an unverified cast has to be FREE
+
+The first cut charged the peer via `_spellManaCost` on the wire `SpellAsset`,
+to mirror what the caster deducted. It desynced immediately, and the reason is
+worth writing down:
+
+**The 0x01 action encoding carries commitment, T, target and formula — no
+segmentCount/dotCount.** It never needed them: the verifying device reads
+geometry from the *proof's* public outputs. Strip the proof and the opponent
+has no geometry at all, so it prices a base of 0 while the caster prices from
+its local asset file. `avatar.mana` diverges and `_exchangeStateHash` forfeits
+at the end of that same turn — the bypass would have swapped a clean forfeit
+for the "state hash mismatch on turn N" freeze it existed to avoid.
+
+Options were (a) put geometry on the wire, or (b) charge nothing on both sides.
+(b) won: (a) means changing a committed-and-revealed wire format, keeping
+`SoloBattleSession._encodeDummySpellCast` in sync with it, and adding untrusted
+data to the action — a lot of blast radius for a flag we intend to delete.
+
+Free costs little in practice: `SpellTestLabScreen._persistTestSpell` already
+writes `manaCost: 0, segmentCount: 0, dotCount: 0`, so these spells priced at
+zero anyway. The real loss is that a test spell no longer consumes a pending
+`nextSpellCostDouble` / `chainSurcharge` — that consumption lives inside
+`_spellManaCost`. To exercise those, make the *follow-up* cast a real proven
+spell. Chain building is unaffected (`_updateChainState` runs during
+resolution, not costing).
+
+**General lesson, third time today:** the wire format and the proof outputs are
+two different sources for the same facts, and the code assumed the proof would
+always be there to fill the gap. Any bypass of the proof path has to ask "what
+did this path read out of the proof that nothing else provides?" — for mana
+that was the geometry.
+
+### Also true, and not fixed
+
+- The peer's **draw state doesn't advance** for a proofless cast (no Merkle
+  proof to say which chapter slot was spent). Draw state isn't in
+  `toCanonicalBytes`, so it can't desync the match, but the opponent's view of
+  the caster's hand drifts and scrying a test-spell hand reads stale.
+- Effects resolve from `_parsedFormulas(spell)` — the wire formula — on both
+  devices, via the `certFormulas ?? …` fallback at the `TODO(B-1)`. Same source
+  both sides, so no desync, but it means **closing that TODO requires removing
+  this flag first**. They are the same hole.
+
+### Refactor that came with it
+
+`_deductManaForCommittedSpell`'s inline enhancement-building switch became
+`_castingEnhancementsFor(action)`, shared by every site that prices a cast.
+Mana lands in the state hash, so two copies of that switch is a desync waiting
+to happen — the same shape as the effectCount bug earlier today.
+
+### Both devices must build with the same value
+
+If one has the flag and the other doesn't, the strict device forfeits the first
+time a test spell is cast. `BattleScreen` shows a permanent red
+**⚠ UNVERIFIED PLAY** banner whenever the flag is on and the session is a real
+duel — partly so no result from such a match is mistaken for real, partly so a
+glance at both phones confirms they match. Do not remove that banner while the
+flag exists.
+
+### Removal checklist
+
+1. Delete `lib/dev_flags.dart`.
+2. `grep -rn "DEV FLAG\|kAllowProoflessSpells\|allowProoflessSpells" lib/ test/` —
+   remove the `TurnLoop.allowProoflessSpells` parameter, the `_isProoflessBypass`
+   helper and its call in `_deductManaForCommittedSpell`, the bypass branch in
+   `_verifyPeerSpellCast`, the `_UnverifiedPlayBanner` widget and its call site.
+3. Delete `test/battle/engine/proofless_spell_flag_test.dart`.
+4. Purge the `[TEST] ` spells (Library → test-spell list) so nothing proofless
+   remains castable.

@@ -11,8 +11,14 @@
 // [TradeResult] reports what was sent and what was received-and-saved
 // honestly, rather than pretending atomicity that isn't there.
 //
-// Frame routing mirrors BattleSession (broadcast stream, framesOfType), not
-// MatchSession's strict request/response Completer -- see trade_wire.dart.
+// Frame routing reads from TradeFrameReader's broadcast stream (like
+// BattleSession) rather than MatchSession's strict request/response
+// Completer -- but every protocol await goes through [_nextFrame], which
+// keeps ONE permanent subscription and buffers frames nobody is waiting for
+// yet. That buffer is mandatory, not an optimization: a broadcast stream
+// drops events delivered while unsubscribed, and every step here is gated
+// on a human pressing a button, so the two peers are never subscribed at
+// the same moment. See [_nextFrame] and docs/M4_findings.md (2026-07-28).
 
 import 'dart:async';
 import 'dart:convert';
@@ -68,6 +74,14 @@ class TradeResult {
 
 // ── Session ────────────────────────────────────────────────────────────────
 
+/// One pending [TradeSession._nextFrame] await: the frame types it will
+/// accept, and the completer to resolve when one arrives.
+class _FrameWaiter {
+  _FrameWaiter(this.types, this.completer);
+  final Set<TradeMsgType> types;
+  final Completer<TradeFrame> completer;
+}
+
 class TradeSession {
   TradeSession._(
     this._transport,
@@ -76,7 +90,15 @@ class TradeSession {
     this.peerRawPubkeyBytes,
     this._reader,
     this._sub,
-  );
+  ) {
+    // Subscribe ONCE, for the session's whole life, and buffer anything
+    // nobody is waiting for yet -- see [_nextFrame].
+    _frameSub = _reader.frames.listen(
+      _routeFrame,
+      onDone: () => _failPendingWaiters(StateError('trade connection closed by peer')),
+      onError: _failPendingWaiters,
+    );
+  }
 
   final Transport _transport;
 
@@ -91,8 +113,74 @@ class TradeSession {
   final TradeFrameReader _reader;
   final StreamSubscription<List<int>> _sub;
 
+  /// The session's single, permanent subscription to [_reader] -- see the
+  /// constructor and [_nextFrame].
+  late final StreamSubscription<TradeFrame> _frameSub;
+
+  /// Frames that arrived before anything was waiting for them, oldest
+  /// first. THIS IS THE LOAD-BEARING PIECE -- see [_nextFrame].
+  final _buffered = <TradeFrame>[];
+
+  final _waiters = <_FrameWaiter>[];
+
+  /// Set once the connection closes or errors; makes every subsequent
+  /// [_nextFrame] fail fast instead of waiting for a frame that can no
+  /// longer arrive.
+  Object? _closedReason;
+
+  /// Raw frame stream. Prefer [_nextFrame] for anything the protocol
+  /// awaits: this is a *broadcast* stream, so subscribing to it late means
+  /// silently missing everything that already arrived (see [_nextFrame]).
   Stream<TradeFrame> get frames => _reader.frames;
   Stream<TradeFrame> framesOfType(TradeMsgType type) => frames.where((f) => f.type == type);
+
+  void _routeFrame(TradeFrame frame) {
+    for (var i = 0; i < _waiters.length; i++) {
+      if (_waiters[i].types.contains(frame.type)) {
+        _waiters.removeAt(i).completer.complete(frame);
+        return;
+      }
+    }
+    _buffered.add(frame);
+  }
+
+  void _failPendingWaiters(Object error) {
+    _closedReason ??= error;
+    final pending = List<_FrameWaiter>.from(_waiters);
+    _waiters.clear();
+    for (final waiter in pending) {
+      if (!waiter.completer.isCompleted) waiter.completer.completeError(error);
+    }
+  }
+
+  /// Waits for the next frame of any type in [types], **including one that
+  /// already arrived before this call**.
+  ///
+  /// This buffering is not an optimization, it is the correctness fix for a
+  /// real two-device hang (2026-07-28, docs/M4_findings.md). [_reader]'s
+  /// controller is a *broadcast* controller, and a broadcast stream drops
+  /// any event added while it has no subscriber. Every step of this
+  /// protocol is gated on a human: the two players hit "Submit offer" (and
+  /// later "Confirm") seconds or minutes apart. Whoever acted FIRST sent
+  /// their frame while the other device was still sitting in its offer-
+  /// builder UI with nothing subscribed -- so that frame was discarded, and
+  /// the second player's await could never be satisfied. The hang followed
+  /// submission order, not host/guest role, which is exactly this.
+  ///
+  /// Subscribing before sending (as the callers below still do) does NOT
+  /// fix it: the gap that matters is between the two peers *calling the
+  /// method at all*, not between subscribe and send within one method.
+  Future<TradeFrame> _nextFrame(Set<TradeMsgType> types) {
+    for (var i = 0; i < _buffered.length; i++) {
+      if (types.contains(_buffered[i].type)) {
+        return Future.value(_buffered.removeAt(i));
+      }
+    }
+    if (_closedReason != null) return Future.error(_closedReason!);
+    final completer = Completer<TradeFrame>();
+    _waiters.add(_FrameWaiter(types, completer));
+    return completer.future;
+  }
 
   void _send(TradeMsgType type, List<int> payload) {
     _transport.send(TradeFrame(type, Uint8List.fromList(payload)).encode());
@@ -105,7 +193,15 @@ class TradeSession {
   /// owner_pubkey via [Identity.ownerPubkeyHexFromRawKey].
   static Future<TradeSession> initiate(Transport transport, Identity identity) async {
     final reader = TradeFrameReader();
-    final sub = transport.onReceive.listen(reader.addChunk);
+    // onDone/onError close the reader so a dropped connection surfaces as a
+    // failed await rather than an indefinite stall (TradeSession's
+    // _frameSub turns the resulting stream-close into an error on every
+    // pending waiter).
+    final sub = transport.onReceive.listen(
+      reader.addChunk,
+      onDone: reader.close,
+      onError: (Object _) => reader.close(),
+    );
     final tradeId = _randomBytes(16);
 
     final ackFuture = reader.frames.where((f) => f.type == TradeMsgType.tradeHelloAck).first;
@@ -126,7 +222,15 @@ class TradeSession {
   /// and replies with our own raw pubkey.
   static Future<TradeSession> accept(Transport transport, Identity identity) async {
     final reader = TradeFrameReader();
-    final sub = transport.onReceive.listen(reader.addChunk);
+    // onDone/onError close the reader so a dropped connection surfaces as a
+    // failed await rather than an indefinite stall (TradeSession's
+    // _frameSub turns the resulting stream-close into an error on every
+    // pending waiter).
+    final sub = transport.onReceive.listen(
+      reader.addChunk,
+      onDone: reader.close,
+      onError: (Object _) => reader.close(),
+    );
 
     final hello = await reader.frames.where((f) => f.type == TradeMsgType.tradeHello).first;
     final parts = lengthPrefixedSplit(hello.payload, 2);
@@ -140,8 +244,15 @@ class TradeSession {
   }
 
   Future<void> close() async {
+    await _frameSub.cancel();
     await _sub.cancel();
     await _reader.close();
+    // Explicit, because cancelling [_frameSub] above means its onDone will
+    // never fire -- without this, a caller who closed the session out from
+    // under an in-flight exchange (trade_screen.dart's Cancel button) would
+    // leave that await hanging forever, which is the very bug this class
+    // was just fixed for.
+    _failPendingWaiters(StateError('trade session closed'));
   }
 
   // ── Offer exchange (advisory preview) ─────────────────────────────────────
@@ -150,7 +261,7 @@ class TradeSession {
   /// you get" before confirming. Advisory only: the binding step is
   /// [exchangeConfirm] + [exchangeGrantsAndSave].
   Future<TradeOffer> exchangeOffer(TradeOffer ours) async {
-    final theirsFuture = framesOfType(TradeMsgType.offer).first;
+    final theirsFuture = _nextFrame(const {TradeMsgType.offer});
     _send(TradeMsgType.offer, utf8.encode(jsonEncode(ours.toJson())));
     final frame = await theirsFuture;
     return TradeOffer.fromJson(jsonDecode(utf8.decode(frame.payload)) as Map<String, dynamic>);
@@ -162,8 +273,10 @@ class TradeSession {
   /// true only if both sides confirmed — a cancel from either side (or a
   /// cancel we send ourselves) means no grants should be exchanged.
   Future<bool> exchangeConfirm(bool weConfirm) async {
-    final theirsFuture =
-        frames.where((f) => f.type == TradeMsgType.confirm || f.type == TradeMsgType.cancel).first;
+    // Same human-scale gap as exchangeOffer -- the two players decide
+    // independently, so whichever confirms first would otherwise have its
+    // decision dropped. See [_nextFrame].
+    final theirsFuture = _nextFrame(const {TradeMsgType.confirm, TradeMsgType.cancel});
     _send(weConfirm ? TradeMsgType.confirm : TradeMsgType.cancel, const []);
     final theirs = await theirsFuture;
     return weConfirm && theirs.type == TradeMsgType.confirm;
@@ -187,15 +300,12 @@ class TradeSession {
     required TradeOffer ourOffer,
     required List<SpellAsset> ourSpells,
   }) async {
-    // Subscribe BEFORE any async prep work (signing below involves several
-    // FFI round-trips), not after -- otherwise a peer whose own prep
-    // finishes first can send their bundle before this side has started
-    // listening. TradeFrameReader's underlying broadcast stream does not
-    // buffer for late subscribers, so that frame would be silently dropped
-    // and this side would then await a bundle that will never arrive again.
-    // Same class of race MatchSession's file header documents; the fix here
-    // is to close the window rather than add a buffer.
-    final theirsFuture = framesOfType(TradeMsgType.grantBundle).first;
+    // Registered BEFORE any async prep work (signing below involves several
+    // FFI round-trips) so a peer whose own prep finishes first is handled
+    // in order. Since 2026-07-28 this is belt-and-braces rather than the
+    // whole defence: [_nextFrame] buffers a bundle that arrives before this
+    // call, so an early peer can no longer be missed either way.
+    final theirsFuture = _nextFrame(const {TradeMsgType.grantBundle});
 
     final ourOwnerPubkeyHex = await ourIdentity.ownerPubkeyHex();
     final bundleEntries = <Map<String, dynamic>>[];

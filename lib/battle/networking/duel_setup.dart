@@ -174,6 +174,13 @@ Future<DuelSetupResult> runDuelSetup({
   final myOwnerHex = await localIdentity.ownerPubkeyHex();
   final localCommitments = await _chapterCommitmentHexes(localChapter);
 
+  // Step 4b: wizard display name — unauthenticated, presentation only (see
+  // exchangeWizardName's doc comment). Runs after identity auth so it isn't
+  // load-bearing for anything auth-adjacent; a stale/missing local name
+  // exchanges as ''.
+  final myWizardName = await Identity.loadWizardName() ?? '';
+  final peerWizardName = await session.exchangeWizardName(myWizardName);
+
   // Step 5: spell-permission exchange (BATTLE_AUTH_PLAN §5). Send the local
   // grants where WE are grantee, for spells in our own chapter — so a
   // loaned spell we hold a grant for (but don't own) can still be cast and
@@ -208,6 +215,8 @@ Future<DuelSetupResult> runDuelSetup({
     peerArtifacts: peerArtifacts,
     localOwnerHex: myOwnerHex,
     peerOwnerHex: peer.ownerPubkeyHex,
+    localWizardName: myWizardName,
+    peerWizardName: peerWizardName,
   );
 
   return DuelSetupResult(

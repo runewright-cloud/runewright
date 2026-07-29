@@ -32,7 +32,6 @@ class MatchConfig {
     this.baseRange = 3,
     this.rulesetVersion = 2,
     this.tier = 24,
-    this.bookmarkCount = 3,
     this.accoutrementLoadoutId,
     this.manaGemPoolPerGem = 100,
     this.manaGemRegenPerGem = 10,
@@ -60,9 +59,6 @@ class MatchConfig {
   /// Circuit tier (12 / 24 / 48) — smallest covering the declared max T.
   /// Tier 48 requires ≥6 GB RAM; gated by DeviceCapabilities.ramTierCap.
   final int tier;
-
-  /// Hand size: number of bookmarks (spell slots) per player.
-  final int bookmarkCount;
 
   /// Reference to the player's chosen ChapterAsset id.
   // TODO(battle): validate existence; for now just carried as a string.
@@ -103,7 +99,6 @@ class MatchConfig {
       baseRange == other.baseRange &&
       rulesetVersion == other.rulesetVersion &&
       tier == other.tier &&
-      bookmarkCount == other.bookmarkCount &&
       manaGemPoolPerGem == other.manaGemPoolPerGem &&
       manaGemRegenPerGem == other.manaGemRegenPerGem &&
       winCondition == other.winCondition &&
@@ -119,7 +114,6 @@ class MatchConfig {
         'baseRange': baseRange,
         'rulesetVersion': rulesetVersion,
         'tier': tier,
-        'bookmarkCount': bookmarkCount,
         if (accoutrementLoadoutId != null) 'accoutrementLoadoutId': accoutrementLoadoutId,
         'manaGemPoolPerGem': manaGemPoolPerGem,
         'manaGemRegenPerGem': manaGemRegenPerGem,
@@ -135,7 +129,6 @@ class MatchConfig {
         baseRange: j['baseRange'] as int? ?? 3,
         rulesetVersion: j['rulesetVersion'] as int? ?? 2,
         tier: j['tier'] as int? ?? 24,
-        bookmarkCount: j['bookmarkCount'] as int? ?? 3,
         accoutrementLoadoutId: j['accoutrementLoadoutId'] as String?,
         manaGemPoolPerGem: j['manaGemPoolPerGem'] as int? ?? 100,
         manaGemRegenPerGem: j['manaGemRegenPerGem'] as int? ?? 10,

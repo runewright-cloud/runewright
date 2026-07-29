@@ -81,6 +81,17 @@ ApplyContext _chainCtx({
 
 // ── TurnLoop-level helpers (full commit-reveal pipeline) ──────────────────────
 
+/// [manaCost] is the spell's *base* price — what TurnLoop charges before any
+/// chain/enhancement modifier. The engine derives that from geometry rather
+/// than reading `SpellAsset.manaCost` (see TurnLoop._wireBaseManaCost: the
+/// stored field can't be trusted, because the opponent's device recomputes
+/// the same number from the proof and the two must agree). So the fixture
+/// encodes the price the way the engine reads it: `t: 0` removes the 1.05^T
+/// growth and `dotCount: manaCost` makes `5*seg + dot` land exactly on it.
+///
+/// The one factor that can't be neutralised is 1.5^(formulas - 1) — it is
+/// intrinsic to the spell now. A 2-formula (hybrid) spell therefore has a
+/// base price of 1.5 × [manaCost]; [_fullPrice] computes it for assertions.
 SpellAsset _spell({
   required List<String> formula,
   int manaCost = 1000,
@@ -91,11 +102,11 @@ SpellAsset _spell({
     id: key,
     createdAt: DateTime.utc(2026, 7, 26),
     tier: 12,
-    t: 5,
+    t: 0,
     ownerPubkeyHex: '0x${'0' * 64}',
     manaCost: manaCost,
     segmentCount: 0,
-    dotCount: 1,
+    dotCount: manaCost,
     initialGrid: List<int>.filled(469, 0)..[234] = 1,
     proofBytes: Uint8List.fromList([1, 2, 3, 4, 5]), // never verified in solo mode
     name: 'Test Spell',
@@ -104,6 +115,12 @@ SpellAsset _spell({
     formula: formula,
     isSummon: isSummon,
   );
+}
+
+/// The undiscounted price of a [_spell]: base × 1.5^(complete formulas − 1).
+int _fullPrice(SpellAsset spell) {
+  final effectCount = max(0, spell.formula.length ~/ 3 - 1);
+  return (spell.dotCount * pow(1.5, effectCount)).round();
 }
 
 ({BattleState state, TurnLoop loop, WizardAvatar local, WizardAvatar dummy}) _setup({
@@ -371,7 +388,11 @@ void main() {
       final before = ctx.local.mana;
       await ctx.loop
           .runTurn(TurnInput(action: SpellCastAction(spell: hybrid, targetHex: ctx.dummy.position)));
-      expect(before - ctx.local.mana, 1000, reason: 'hybrid spells are never discount-eligible');
+      // Its own full price, not pureFire's: the hybrid carries two complete
+      // formulas, so its base is 1.5x. The point under test is that no chain
+      // discount is applied to it, despite the length-2 fire chain.
+      expect(before - ctx.local.mana, _fullPrice(hybrid),
+          reason: 'hybrid spells are never discount-eligible');
       expect(ctx.local.activeChainElement, isNull);
       expect(ctx.local.chainLengths, isEmpty);
     });

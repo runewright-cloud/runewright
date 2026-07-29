@@ -100,6 +100,7 @@ class LanListener {
     sub = _server.listen((socket) {
       sub.cancel();
       _server.close();
+      socket.setOption(SocketOption.tcpNoDelay, true);
       completer.complete(LanSocketTransport._(socket));
     });
     return completer.future;

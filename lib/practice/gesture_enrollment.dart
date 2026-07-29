@@ -104,7 +104,7 @@ class GestureEnrollment {
   Future<int> saveGestureRep(
     Gesture gesture,
     List<ImuSample> samples, {
-    double stillnessFloor = 0.02,
+    double stillnessFloor = 8.0, // matches GestureClassifier.energyFloor
   }) async {
     if (samples.length < minSamplesPerRep) {
       throw const GestureEnrollmentException(

@@ -17,6 +17,7 @@
 import 'dart:async' show Completer, unawaited;
 import 'dart:math';
 import 'dart:typed_data';
+import 'dart:ui' as ui show Image;
 
 import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:flutter/material.dart';
@@ -58,6 +59,9 @@ import '../spells/sighting_asset.dart';
 import '../spells/spell_asset.dart';
 import '../spells/spell_permission.dart';
 import '../spells/supreme_tags.dart' show deriveSupremeTags;
+import '../dev_flags.dart' show kAllowProoflessSpells;
+import 'scenery/scenery_map.dart';
+import 'scenery/scenery_painter.dart';
 import 'battlefield_painter.dart';
 import 'manuscript_theme.dart';
 import 'spell_card_painter.dart';
@@ -399,6 +403,14 @@ class _BattleScreenState extends State<BattleScreen>
   double _hexSize = 20;
   Offset _fieldCenter = Offset.zero;
 
+  // ── Scenery backdrop (purely cosmetic; see lib/ui/scenery/) ─────────────────
+  // Seeded from the duel's shared matchId so both devices see the same
+  // landscape; solo play gets a fresh local seed per battle. Fixed at initState
+  // so the terrain doesn't reshuffle on rebuild.
+  late final int _scenerySeed;
+  SceneryMap? _scenery;
+  ui.Image? _sceneryAtlas;
+
   // RenderBox key on the battlefield paint area, so a tile's local pixel
   // (in _fieldCenter/_hexSize space) can be mapped to a global screen point —
   // used to grow a resolution-phase spell card out of the tile it just hit.
@@ -453,11 +465,58 @@ class _BattleScreenState extends State<BattleScreen>
       vsync: this,
       duration: const Duration(milliseconds: 500),
     );
+    _initScenery();
     _loadSpells();
     if (widget.state.config.sorcererMode) {
       _initSorcererMode();
     }
     _initTurnLoop();
+  }
+
+  /// Picks this battle's backdrop seed and kicks off the atlas decode.
+  ///
+  /// In a LAN duel the seed is derived from the shared `matchId`, so both
+  /// devices generate the same landscape without exchanging a byte — the map is
+  /// a pure function of a value they already agree on. Solo play has no peer to
+  /// agree with, so it just takes fresh local entropy each battle.
+  ///
+  /// The atlas decode is async; until it lands the painter draws nothing and
+  /// the scaffold colour shows through, exactly as before this feature existed.
+  void _initScenery() {
+    final matchId = widget.matchId;
+    _scenerySeed = matchId != null
+        ? scenerySeedFromBytes(matchId)
+        : Random().nextInt(1 << 31);
+    unawaited(_loadSceneryAtlas());
+  }
+
+  Future<void> _loadSceneryAtlas() async {
+    try {
+      final image = await SceneryAtlas.load();
+      if (mounted) setState(() => _sceneryAtlas = image);
+    } catch (e) {
+      // A missing or corrupt atlas must never take the battle down: log it and
+      // leave the backdrop unpainted.
+      debugPrint('scenery: atlas load failed — $e');
+    }
+  }
+
+  /// Returns the backdrop for the current panel, generating (or re-generating,
+  /// on a resize that exposes more ground) as needed.
+  ///
+  /// Called from within `build`, so it deliberately does not `setState`: the
+  /// result is consumed by the same build pass that produced it.
+  SceneryMap _sceneryFor(Size panel, double hexSize) {
+    final needed = sceneryRadiusForPanel(panel, hexSize);
+    final cached = _scenery;
+    if (cached != null && cached.radius >= needed) return cached;
+    return _scenery = generateSceneryMap(
+      seed: _scenerySeed,
+      radius: needed,
+      // Band the terrain against the battlefield itself, so the arena looks
+      // like the region it is named for and the extremes sit out past the edge.
+      focusRadius: widget.state.config.gridRadius,
+    );
   }
 
   /// Constructs [_loop]. For solo/test play (no session, or a
@@ -479,9 +538,16 @@ class _BattleScreenState extends State<BattleScreen>
   /// starts, rather than silently falling back to trusting peer casts
   /// unverified (CLAUDE.md quality bar — "a check that fails open is worse
   /// than no check").
+  /// True for a LAN duel against a real peer; false for solo/practice, where
+  /// there is no peer to verify and [SoloBattleSession] stands in.
+  bool get _isRealDuel {
+    final session = widget.session;
+    return session != null && session is! SoloBattleSession;
+  }
+
   Future<void> _initTurnLoop() async {
     final session = widget.session;
-    final isRealDuel = session != null && session is! SoloBattleSession;
+    final isRealDuel = _isRealDuel;
 
     ProofVerifier? verifyProof;
     Uint8List? vkBytes;
@@ -524,6 +590,9 @@ class _BattleScreenState extends State<BattleScreen>
       isSorcererMode: widget.state.config.sorcererMode,
       meleeTargetPicker: _pickMeleeTarget,
       onPhase: _onEnginePhase,
+      // DEV FLAG (lib/dev_flags.dart) — the only site that turns proofless
+      // peer casts on. Delete this argument with the flag.
+      allowProoflessSpells: kAllowProoflessSpells,
     );
     _loopConstructed = true;
     _maybeSetLocalChapterCommitments();
@@ -656,13 +725,19 @@ class _BattleScreenState extends State<BattleScreen>
   /// casts render here too, not just the local player's own.
   List<PendingCastOrb> get _pendingCastOrbs {
     final orbs = <PendingCastOrb>[];
+    final orderedPlayerIds =
+        widget.state.avatars.map((a) => a.playerId).toList();
     final origin = _pendingCastOrigin;
     final affinity = _pendingCastAffinity;
     if (origin != null && affinity != null) {
       orbs.add(
         PendingCastOrb(
           origin: origin,
-          color: BattlefieldPainter.colorForAffinity(affinity),
+          color: BattlefieldPainter.colorForWizard(
+            widget.localPlayerId,
+            localPlayerId: widget.localPlayerId,
+            orderedPlayerIds: orderedPlayerIds,
+          ),
         ),
       );
     }
@@ -675,7 +750,11 @@ class _BattleScreenState extends State<BattleScreen>
       orbs.add(
         PendingCastOrb(
           origin: pending.origin,
-          color: BattlefieldPainter.colorForAffinity(pendingAffinity),
+          color: BattlefieldPainter.colorForWizard(
+            pending.ownerId,
+            localPlayerId: widget.localPlayerId,
+            orderedPlayerIds: orderedPlayerIds,
+          ),
           rangeRadius: caster != null
               ? _maxCastRange(caster, pending.origin)
               : 0,
@@ -1458,7 +1537,12 @@ class _BattleScreenState extends State<BattleScreen>
             CastAnimation(
               fromHex: cast.fromHex,
               toHex: cast.toHex,
-              color: BattlefieldPainter.colorForAffinity(cast.affinity),
+              color: BattlefieldPainter.colorForWizard(
+                cast.casterId,
+                localPlayerId: widget.localPlayerId,
+                orderedPlayerIds:
+                    widget.state.avatars.map((a) => a.playerId).toList(),
+              ),
             ),
           ],
         );
@@ -1671,6 +1755,11 @@ class _BattleScreenState extends State<BattleScreen>
       ),
       body: Column(
         children: [
+          // DEV FLAG (lib/dev_flags.dart): a duel running without proof
+          // verification must never be mistakable for a real one. Delete
+          // this with the flag.
+          if (kAllowProoflessSpells && _isRealDuel) const _UnverifiedPlayBanner(),
+
           // Phase banner — always visible, so it's never ambiguous whether
           // the battle is waiting on the local player's Main/Move decision
           // or playing out Summons/Resolution.
@@ -1709,65 +1798,80 @@ class _BattleScreenState extends State<BattleScreen>
                   onTapUp: (d) => _onTapBattlefield(d.localPosition),
                   onLongPressStart: (d) =>
                       _onLongPressBattlefield(d.localPosition),
+                  // Cosmetic terrain backdrop, drawn first and on the same
+                  // hex geometry as the battlefield so playable tiles sit
+                  // squarely on their terrain. See lib/ui/scenery/.
                   child: CustomPaint(
-                    key: _battlefieldKey,
-                    painter: BattlefieldPainter(
-                      radius: config.gridRadius,
+                    painter: SceneryBackdropPainter(
+                      map: _sceneryFor(size, hSize),
+                      atlas: _sceneryAtlas,
                       hexSize: hSize,
-                      occupancy: widget.state.battlefield.occupancy,
-                      localPlayerId: widget.localPlayerId,
-                      highlightHex: _targetHex,
-                      // Renders the *simulated* path (including any free
-                      // conveyor push-throughs), not just the raw tiles
-                      // tapped, so the player sees where they'll actually
-                      // end up -- see predictAvatarMove.
-                      movePath: _local != null
-                          ? predictAvatarMove(
-                              state: widget.state,
-                              origin: _local!.position,
-                              declaredPath: _movePath,
-                              budget: _localMoveBudget,
-                            ).path.skip(1).toList()
-                          : _movePath,
-                      spellRangeRadius: _selectedSpell != null && _local != null
-                          ? _maxCastRange(_local!, _local!.position)
-                          : 0,
-                      casterPos: _local?.position,
-                      minions: widget.state.minions
-                          .where((m) => m.isAlive)
-                          .toList(),
-                      localTeamId: _local?.teamId,
-                      barrierRings: _barrierRings(),
-                      pulseAnimation: _pulseController,
-                      castAnimations: _castAnimations,
-                      castAnimation: _castAnimController,
-                      tileEffects: widget.state.tileEffects,
-                      clouds: widget.state.clouds,
-                      directionPickHexes:
-                          _phase == _InputPhase.pickingDirection &&
-                              _conveyorPickOrigin != null
-                          ? HexGrid.directions
-                                .map(
-                                  (d) => HexCoord(
-                                    _conveyorPickOrigin!.q + d.q,
-                                    _conveyorPickOrigin!.r + d.r,
-                                  ),
-                                )
-                                .toList()
-                          : const [],
-                      conveyorChainAnimations: _conveyorChainAnimations,
-                      pendingCastOrbs: _pendingCastOrbs,
-                      scryRevealHex: _scryRevealedTile,
-                      meleePickHexes: _pickingMelee
-                          ? _meleeCandidates
-                          : const [],
-                      hiddenCloudIds: _hiddenCloudIds,
-                      hiddenTileHexes: _hiddenTileHexes,
-                      hiddenMinionIds: _hiddenMinionIds,
-                      effectBloom: _effectBloom,
-                      effectBloomAnimation: _effectBloomController,
+                      playRadius: config.gridRadius,
                     ),
-                    child: const SizedBox.expand(),
+                    child: CustomPaint(
+                      key: _battlefieldKey,
+                      painter: BattlefieldPainter(
+                        radius: config.gridRadius,
+                        hexSize: hSize,
+                        // Wash the playable tiles instead of filling them, so
+                        // the scenery shows through inside the grid. Falls back
+                        // to the opaque board if the atlas never loaded.
+                        terrainBeneath: _sceneryAtlas != null,
+                        occupancy: widget.state.battlefield.occupancy,
+                        localPlayerId: widget.localPlayerId,
+                        highlightHex: _targetHex,
+                        // Renders the *simulated* path (including any free
+                        // conveyor push-throughs), not just the raw tiles
+                        // tapped, so the player sees where they'll actually
+                        // end up -- see predictAvatarMove.
+                        movePath: _local != null
+                            ? predictAvatarMove(
+                                state: widget.state,
+                                origin: _local!.position,
+                                declaredPath: _movePath,
+                                budget: _localMoveBudget,
+                              ).path.skip(1).toList()
+                            : _movePath,
+                        spellRangeRadius: _selectedSpell != null && _local != null
+                            ? _maxCastRange(_local!, _local!.position)
+                            : 0,
+                        casterPos: _local?.position,
+                        minions: widget.state.minions
+                            .where((m) => m.isAlive)
+                            .toList(),
+                        localTeamId: _local?.teamId,
+                        barrierRings: _barrierRings(),
+                        pulseAnimation: _pulseController,
+                        castAnimations: _castAnimations,
+                        castAnimation: _castAnimController,
+                        tileEffects: widget.state.tileEffects,
+                        clouds: widget.state.clouds,
+                        directionPickHexes:
+                            _phase == _InputPhase.pickingDirection &&
+                                _conveyorPickOrigin != null
+                            ? HexGrid.directions
+                                  .map(
+                                    (d) => HexCoord(
+                                      _conveyorPickOrigin!.q + d.q,
+                                      _conveyorPickOrigin!.r + d.r,
+                                    ),
+                                  )
+                                  .toList()
+                            : const [],
+                        conveyorChainAnimations: _conveyorChainAnimations,
+                        pendingCastOrbs: _pendingCastOrbs,
+                        scryRevealHex: _scryRevealedTile,
+                        meleePickHexes: _pickingMelee
+                            ? _meleeCandidates
+                            : const [],
+                        hiddenCloudIds: _hiddenCloudIds,
+                        hiddenTileHexes: _hiddenTileHexes,
+                        hiddenMinionIds: _hiddenMinionIds,
+                        effectBloom: _effectBloom,
+                        effectBloomAnimation: _effectBloomController,
+                      ),
+                      child: const SizedBox.expand(),
+                    ),
                   ),
                 );
               },
@@ -2164,6 +2268,38 @@ class _ActionBar extends StatelessWidget {
 
 /// A thin, always-visible banner naming the current turn phase (Summons /
 /// Main / Move / Resolution) — see _BattleScreenState._phaseLabel.
+/// DEV FLAG (lib/dev_flags.dart) — shown for the whole match whenever
+/// [kAllowProoflessSpells] is on and this is a real duel. Delete with the flag.
+///
+/// Deliberately loud and deliberately not dismissible: with the flag on, an
+/// opponent can cast a spell backed by nothing at all, so no result from this
+/// match means anything. It also gives the second device a way to tell at a
+/// glance whether it was built with the same flag — if only one banner shows,
+/// the strict device will forfeit the first time a test spell is cast.
+class _UnverifiedPlayBanner extends StatelessWidget {
+  const _UnverifiedPlayBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      color: const Color(0xFF7A1F1F),
+      padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 8),
+      child: const Text(
+        '⚠ UNVERIFIED PLAY — PROOFLESS SPELLS ACCEPTED',
+        textAlign: TextAlign.center,
+        style: TextStyle(
+          fontFamily: 'serif',
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 1.5,
+          color: Color(0xFFF2E4C9),
+        ),
+      ),
+    );
+  }
+}
+
 class _PhaseBanner extends StatelessWidget {
   const _PhaseBanner({required this.label});
 
@@ -2525,9 +2661,11 @@ class _OpponentChip extends StatelessWidget {
     final manaFrac = avatar.maxMana > 0
         ? (avatar.mana / avatar.maxMana).clamp(0.0, 1.0)
         : 0.0;
-    final name = avatar.playerId.length > 10
-        ? '${avatar.playerId.substring(0, 9)}…'
-        : avatar.playerId;
+    final name = avatar.wizardName.isNotEmpty
+        ? avatar.wizardName
+        : (avatar.playerId.length > 10
+            ? '${avatar.playerId.substring(0, 9)}…'
+            : avatar.playerId);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -3057,9 +3195,10 @@ class _StatusEffectPanel extends StatelessWidget {
         .toList();
     final hasAny = effects.isNotEmpty || barriers.isNotEmpty;
 
-    final label = isLocal
-        ? 'YOUR STATUS'
-        : '${avatar?.playerId ?? '?'} STATUS'.toUpperCase();
+    final opponentName = (avatar?.wizardName.isNotEmpty ?? false)
+        ? avatar!.wizardName
+        : (avatar?.playerId ?? '?');
+    final label = isLocal ? 'YOUR STATUS' : '$opponentName STATUS'.toUpperCase();
 
     return Container(
       color: const Color(0xFF160E06),

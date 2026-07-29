@@ -35,6 +35,14 @@ import 'package:rune_duel/spells/spell_asset.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  // Hand size == bookmarkCount + 1 (see WizardAvatar.bookmarkCount); every
+  // test in this file was written against a hand size of 3, so each fixture
+  // avatar carries 2 bookmarks.
+  List<Accoutrement> twoBookmarks(String idPrefix) => [
+        Accoutrement(id: '${idPrefix}_bm0', kind: AccoutrementKind.bookmark),
+        Accoutrement(id: '${idPrefix}_bm1', kind: AccoutrementKind.bookmark),
+      ];
+
   BattleState makeAdjacentState() {
     final battlefield = Battlefield();
     const posCaster = HexCoord(0, 0);
@@ -53,6 +61,7 @@ void main() {
           position: posCaster,
           teamId: 'team_caster',
           baseSpellRange: 3,
+          accoutrements: twoBookmarks('caster'),
         ),
         WizardAvatar(
           playerId: 'verifier',
@@ -63,6 +72,7 @@ void main() {
           position: posVerifier,
           teamId: 'team_verifier',
           baseSpellRange: 3,
+          accoutrements: twoBookmarks('verifier'),
         ),
       ],
       teams: [
@@ -257,9 +267,9 @@ void main() {
 
     test('hand refills from the deck on cast; deck shrinks; hand size holds '
         'until the deck empties', () async {
-      // 5 spells, default bookmarkCount (3) — 3 in hand, 2 in the deck after
-      // the opening deal. All inert (empty formula) — this test is about
-      // draw-state bookkeeping, not effect resolution.
+      // 5 spells, fixture hand size 3 (2 bookmarks + 1) — 3 in hand, 2 in
+      // the deck after the opening deal. All inert (empty formula) — this
+      // test is about draw-state bookkeeping, not effect resolution.
       final chapter = List.generate(5, (i) => fixtureSpell('inert$i'));
       final pair = buildLoopPair(casterChapter: chapter, verifierChapter: [fixtureSpell('v')]);
 
@@ -423,7 +433,7 @@ void main() {
       final fireSpell = fireWitherSpell('fire-wither');
       final earthA = earthReactivateSpell('earth-a');
       final earthB = earthReactivateSpell('earth-b');
-      final chapter = [fireSpell, earthA, earthB]; // == bookmarkCount: all 3 always in hand
+      final chapter = [fireSpell, earthA, earthB]; // == fixture hand size: all 3 always in hand
       final pair = buildLoopPair(casterChapter: chapter, verifierChapter: [fixtureSpell('v')]);
 
       await runTurnExpectingSuccess(
@@ -435,7 +445,7 @@ void main() {
         {fireSpell.commitmentHex, earthA.commitmentHex, earthB.commitmentHex},
       );
 
-      // Cast fireSpell: deck is empty (3 spells, bookmarkCount 3), so the
+      // Cast fireSpell: deck is empty (3 spells, hand size 3), so the
       // hand shrinks to {earthA, earthB} and wither(1) picks one of them.
       // Self-targeted: FuelTransmutation lands on whoever occupies the
       // target tile (2026-07-27), not automatically the caster.
@@ -498,10 +508,10 @@ void main() {
     });
 
     test('a cast of a withered position is rejected (item 6)', () async {
-      // Only 2 spells (== bookmarkCount would be 3, so use a 2-card chapter
-      // with the default bookmarkCount): after casting fireSpell, exactly
-      // one card (filler) remains in hand, so wither(1)'s pool has a single
-      // candidate — fully deterministic, unlike the 3-card scenario above.
+      // Only 2 spells (fixture hand size is 3, so use a 2-card chapter to
+      // undersize it): after casting fireSpell, exactly one card (filler)
+      // remains in hand, so wither(1)'s pool has a single candidate — fully
+      // deterministic, unlike the 3-card scenario above.
       final fireSpell = fireWitherSpell('fire-wither');
       final filler = fixtureSpell('filler');
       final chapter = [fireSpell, filler];

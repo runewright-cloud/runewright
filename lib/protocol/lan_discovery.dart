@@ -47,14 +47,24 @@ const kRunewrightServiceType = '_runewright._tcp';
 /// Distinct service type for Commune/Trade pairing (docs/COMMUNE_TRADE_PLAN.md
 /// §5.4) -- kept separate from [kRunewrightServiceType] so a device browsing
 /// for a duel never lists a trade-only peer and vice versa.
-const kRunewrightTradeServiceType = '_runewright-trade._tcp';
+///
+/// Uses the `rw-` short prefix rather than `runewright-` because `nsd`
+/// enforces RFC 6763's 15-character cap on the service label (the part
+/// between the leading `_` and `._tcp`); `runewright-trade` is 16 characters
+/// and fails `nsd`'s validation with an `illegalArgument` NsdError at
+/// register/discover time (`"Service type must be in format _<Service>._<Proto>"`).
+const kRunewrightTradeServiceType = '_rw-trade._tcp';
 
 /// Distinct service type for Commune/Sync Art pairing
 /// (lib/trade/sync_art_session.dart) -- kept separate from
 /// [kRunewrightServiceType] and [kRunewrightTradeServiceType] so a device
 /// browsing for a duel or a trade never lists a sync-art-only peer, and
 /// vice versa.
-const kRunewrightSyncArtServiceType = '_runewright-syncart._tcp';
+///
+/// Uses the `rw-` short prefix for the same 15-character-label reason as
+/// [kRunewrightTradeServiceType] above -- `runewright-syncart` is 18
+/// characters and would fail the same validation.
+const kRunewrightSyncArtServiceType = '_rw-syncart._tcp';
 
 /// Advertises this device as a duel host at [port] (the port a prior
 /// `LanSocketTransport.bind()` returned). Returns the active

@@ -4,6 +4,14 @@
 `SpellDraw`-wiring task rather than treating it as a later retrofit. Not yet ratified —
 §9 lists the calls that need Soren before implementation starts.*
 
+*2026-07-28 update: `bookmarkCount` below was a static `MatchConfig` value at proposal
+time. It's since become per-avatar and dynamic — hand size is
+`WizardAvatar.bookmarkCount + 1`, resized mid-battle when a bookmark accoutrement is
+created/destroyed (`TurnLoop._reconcileHandSize`, reusing this doc's `opening`/`useSpell`
+entropy machinery via new `addSlot`/`removeSlot` methods). The entropy-separation
+argument in this document is unaffected — every reference to `bookmarkCount` below
+should be read as "this avatar's current hand size."
+
 ---
 
 ## 1. The problem

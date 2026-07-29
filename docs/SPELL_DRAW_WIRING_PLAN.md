@@ -7,6 +7,13 @@ sortedness proof (§7) — full hand-membership enforcement, full deck privacy,
 zero in-match proving. §11 lists what's still open (a proving spike +
 sequencing). The structural insight in §2 is load-bearing; read it first.*
 
+*2026-07-28 update: `bookmarkCount` below was a static `MatchConfig` value at
+proposal time; it's since become per-avatar and dynamic (hand size ==
+`WizardAvatar.bookmarkCount + 1`, resized mid-battle when a bookmark
+accoutrement is created/destroyed — `TurnLoop._reconcileHandSize`). Every
+`bookmarkCount` reference below should be read as "this avatar's current hand
+size."*
+
 ---
 
 ## 1. Scope

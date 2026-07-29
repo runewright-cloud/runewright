@@ -15,12 +15,14 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../identity/identity.dart';
+import '../protocol/lan_socket_transport.dart';
 import '../protocol/transport.dart';
 import '../spells/spell_asset.dart';
 import '../trade/trade_discovery.dart';
 import '../trade/trade_offer.dart';
 import '../trade/trade_session.dart';
 import 'manuscript_theme.dart';
+import 'spell_card_painter.dart' show showSpellCardFullscreen;
 
 enum _Stage {
   idle,
@@ -71,11 +73,21 @@ class _TradeScreenState extends State<TradeScreen> {
   TradeOffer? _theirOffer;
   TradeResult? _result;
 
+  // Manual-IP fallback state -- `nsd` has no Linux desktop backend at all
+  // (lan_discovery.dart's header comment / M4.4), so hosting/joining a trade
+  // on the Linux dev machine requires dialing the listening socket directly.
+  // Mirrors battle_lobby_screen.dart's identical fallback.
+  String? _hostAddressHint; // "192.168.1.23:54321", shown while hosting.
+  String? _autoDiscoveryError; // set when startDiscovering() itself fails.
+  final _manualConnectController = TextEditingController();
+  bool _manualConnecting = false;
+
   @override
   void dispose() {
     _peerSub?.cancel();
     _transport?.disconnect();
     _discovery.dispose();
+    _manualConnectController.dispose();
     super.dispose();
   }
 
@@ -93,9 +105,18 @@ class _TradeScreenState extends State<TradeScreen> {
     setState(() {
       _stage = _Stage.hosting;
       _peers.clear();
+      _hostAddressHint = null;
     });
     try {
+      // mDNS advertising inside this call is itself best-effort (see
+      // TradeDiscovery.startAdvertising) -- this only throws on a genuine
+      // socket-bind failure, not on `nsd` being unavailable.
       await _discovery.startAdvertising();
+      final ip = await _discovery.localAddressHint();
+      final port = _discovery.listeningPort;
+      if (mounted && port != null) {
+        setState(() => _hostAddressHint = '${ip ?? "?"}:$port');
+      }
       final transport = await _discovery.acceptConnection();
       if (!mounted || _stage != _Stage.hosting) return;
       await _discovery.stopAdvertising();
@@ -110,6 +131,7 @@ class _TradeScreenState extends State<TradeScreen> {
     setState(() {
       _stage = _Stage.joining;
       _peers.clear();
+      _autoDiscoveryError = null;
     });
     try {
       final stream = await _discovery.startDiscovering();
@@ -118,7 +140,13 @@ class _TradeScreenState extends State<TradeScreen> {
         setState(() => _peers.add(peer));
       });
     } catch (e) {
-      _fail('Could not scan for wizards: $e');
+      // Soft failure: automatic mDNS discovery isn't available on every
+      // platform (`nsd` has no Linux desktop backend) or every network (AP
+      // isolation can block multicast). Manual IP entry below dials the
+      // same LanSocketTransport directly, so stay in the joining view
+      // rather than bouncing to the full error stage.
+      if (!mounted) return;
+      setState(() => _autoDiscoveryError = '$e');
     }
   }
 
@@ -135,6 +163,47 @@ class _TradeScreenState extends State<TradeScreen> {
     } catch (e) {
       _fail('Could not connect: $e');
     }
+  }
+
+  /// Manual IP fallback (see the class-level comment on
+  /// [_hostAddressHint]) -- parses "host:port" and dials
+  /// [LanSocketTransport.connectTo] directly, bypassing `nsd` discovery
+  /// entirely. Mirrors battle_lobby_screen.dart's _connectManual.
+  Future<void> _connectManual() async {
+    if (_manualConnecting) return;
+    final raw = _manualConnectController.text.trim();
+    final colonIdx = raw.lastIndexOf(':');
+    if (colonIdx <= 0) {
+      _showSnack('Enter host:port, e.g. 192.168.1.23:54321');
+      return;
+    }
+    final host = raw.substring(0, colonIdx);
+    final port = int.tryParse(raw.substring(colonIdx + 1));
+    if (port == null) {
+      _showSnack('Bad port in "$raw"');
+      return;
+    }
+
+    setState(() => _manualConnecting = true);
+    try {
+      await _peerSub?.cancel();
+      _peerSub = null;
+      await _discovery.stopDiscovering();
+      final transport = await LanSocketTransport.connectTo(host, port);
+      if (!mounted) return;
+      setState(() => _manualConnecting = false);
+      _transport = transport;
+      await _pair(transport, isInitiator: true);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _manualConnecting = false);
+      _showSnack('Could not connect to $host:$port: $e');
+    }
+  }
+
+  void _showSnack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   /// The dialer initiates the TradeSession handshake; the listener accepts
@@ -159,6 +228,22 @@ class _TradeScreenState extends State<TradeScreen> {
     } catch (e) {
       _fail('Pairing failed: $e');
     }
+  }
+
+  /// Escape hatch for the mid-exchange spinner stages (pairing, offer
+  /// submission, confirm, grant exchange). None of those network awaits has
+  /// a timeout -- a real confirm decision can legitimately take as long as
+  /// the other wizard needs -- so without this, a peer that never responds
+  /// (dropped Wi-Fi, a backgrounded/throttled app, a genuine protocol stall)
+  /// leaves no way back except force-quitting. Closing the session first
+  /// unblocks any pending `.first` await on its frame stream (TradeSession
+  /// .close() closes the TradeFrameReader's controller), so the abandoned
+  /// future resolves with an error instead of hanging forever.
+  Future<void> _abortExchange() async {
+    await _session?.close();
+    await _transport?.disconnect();
+    if (!mounted) return;
+    _returnToStart();
   }
 
   Future<void> _cancelNetworking() async {
@@ -212,15 +297,11 @@ class _TradeScreenState extends State<TradeScreen> {
     final session = _session;
     if (session == null) return;
     final offer = TradeOffer(
-      items: _selections.where((s) => s.included).map((s) {
-        return TradeItem(
-          spellId: s.spell.id,
-          commitmentHex: s.spell.commitmentHex,
-          spellName: s.spell.name,
-          mode: s.mode,
-          loanDays: s.mode == TradeMode.loan ? s.loanDays : null,
-        );
-      }).toList(),
+      items: _selections
+          .where((s) => s.included)
+          .map((s) => TradeItem.fromSpell(s.spell,
+              mode: s.mode, loanDays: s.mode == TradeMode.loan ? s.loanDays : null))
+          .toList(),
     );
     setState(() => _stage = _Stage.submittingOffer);
     try {
@@ -231,6 +312,9 @@ class _TradeScreenState extends State<TradeScreen> {
         _stage = _Stage.reviewingOffers;
       });
     } catch (e) {
+      // If the user hit Cancel (_abortExchange) while this was in flight,
+      // _stage is already idle -- don't clobber it with an error screen.
+      if (!mounted || _stage == _Stage.idle) return;
       _fail('Offer exchange failed: $e');
     }
   }
@@ -251,15 +335,11 @@ class _TradeScreenState extends State<TradeScreen> {
       setState(() => _stage = _Stage.exchanging);
       final identity = _identity!;
       final ourOffer = TradeOffer(
-        items: _selections.where((s) => s.included).map((s) {
-          return TradeItem(
-            spellId: s.spell.id,
-            commitmentHex: s.spell.commitmentHex,
-            spellName: s.spell.name,
-            mode: s.mode,
-            loanDays: s.mode == TradeMode.loan ? s.loanDays : null,
-          );
-        }).toList(),
+        items: _selections
+            .where((s) => s.included)
+            .map((s) => TradeItem.fromSpell(s.spell,
+                mode: s.mode, loanDays: s.mode == TradeMode.loan ? s.loanDays : null))
+            .toList(),
       );
       final ourSpells = _selections.map((s) => s.spell).toList();
       final result = await session.exchangeGrantsAndSave(
@@ -273,6 +353,8 @@ class _TradeScreenState extends State<TradeScreen> {
         _stage = _Stage.done;
       });
     } catch (e) {
+      // See _submitOffer's identical guard -- Cancel already reset to idle.
+      if (!mounted || _stage == _Stage.idle) return;
       _fail('Grant exchange failed: $e');
     }
   }
@@ -317,9 +399,18 @@ class _TradeScreenState extends State<TradeScreen> {
       _Stage.hosting => _WaitingSection(
           message: 'Waiting for another wizard...',
           detail: 'Make sure you are on the same network.',
+          addressHint: _hostAddressHint,
           onCancel: _cancelNetworking,
         ),
-      _Stage.joining => _JoiningSection(peers: _peers, onPeerTap: _connectToPeer, onCancel: _cancelNetworking),
+      _Stage.joining => _JoiningSection(
+          peers: _peers,
+          onPeerTap: _connectToPeer,
+          onCancel: _cancelNetworking,
+          autoDiscoveryError: _autoDiscoveryError,
+          manualController: _manualConnectController,
+          manualConnecting: _manualConnecting,
+          onManualConnect: _connectManual,
+        ),
       _Stage.connecting => const _SpinnerSection(message: 'Connecting...'),
       _Stage.pairing => const _SpinnerSection(message: 'Establishing trust...'),
       _Stage.buildingOffer => _OfferBuilderSection(
@@ -328,15 +419,17 @@ class _TradeScreenState extends State<TradeScreen> {
           onToggleTransfer: _onToggleTransfer,
           onSubmit: _submitOffer,
         ),
-      _Stage.submittingOffer => const _SpinnerSection(message: 'Waiting for their offer...'),
+      _Stage.submittingOffer =>
+        _SpinnerSection(message: 'Waiting for their offer...', onCancel: _abortExchange),
       _Stage.reviewingOffers => _ReviewSection(
           ourSelections: _selections,
           theirOffer: _theirOffer!,
           onConfirm: () => _decide(true),
           onCancel: () => _decide(false),
         ),
-      _Stage.awaitingConfirm => const _SpinnerSection(message: 'Waiting for their decision...'),
-      _Stage.exchanging => const _SpinnerSection(message: 'Exchanging grants...'),
+      _Stage.awaitingConfirm =>
+        _SpinnerSection(message: 'Waiting for their decision...', onCancel: _abortExchange),
+      _Stage.exchanging => _SpinnerSection(message: 'Exchanging grants...', onCancel: _abortExchange),
       _Stage.done => _ResultSection(result: _result!, onDone: _returnToStart),
       _Stage.cancelled => _MessageSection(
           icon: Icons.cancel_outlined,
@@ -375,9 +468,15 @@ class _IdleSection extends StatelessWidget {
 }
 
 class _WaitingSection extends StatelessWidget {
-  const _WaitingSection({required this.message, required this.detail, required this.onCancel});
+  const _WaitingSection({
+    required this.message,
+    required this.detail,
+    required this.addressHint,
+    required this.onCancel,
+  });
   final String message;
   final String detail;
+  final String? addressHint;
   final VoidCallback onCancel;
 
   @override
@@ -390,6 +489,26 @@ class _WaitingSection extends StatelessWidget {
         Text(message, style: manuscriptBodyStyle(fontSize: 16), textAlign: TextAlign.center),
         const SizedBox(height: 4),
         Text(detail, style: manuscriptCaptionStyle(), textAlign: TextAlign.center),
+        if (addressHint != null) ...[
+          const SizedBox(height: 20),
+          Text(
+            'If they can\'t find this trade automatically,\n'
+            'have them enter this address manually:',
+            style: manuscriptCaptionStyle(),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 8),
+          SelectableText(
+            addressHint!,
+            style: const TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: kInkColor,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ],
         const SizedBox(height: 28),
         TextButton(
           onPressed: onCancel,
@@ -401,8 +520,14 @@ class _WaitingSection extends StatelessWidget {
 }
 
 class _SpinnerSection extends StatelessWidget {
-  const _SpinnerSection({required this.message});
+  const _SpinnerSection({required this.message, this.onCancel});
   final String message;
+
+  /// Escape hatch for stages awaiting a peer response with no timeout (a
+  /// real confirm decision can take as long as the other wizard needs) --
+  /// see _abortExchange's doc comment. Null where there's nothing to abort
+  /// yet (e.g. the initial socket connect).
+  final VoidCallback? onCancel;
 
   @override
   Widget build(BuildContext context) {
@@ -412,39 +537,69 @@ class _SpinnerSection extends StatelessWidget {
         const CircularProgressIndicator(color: kIlluminationGold),
         const SizedBox(height: 20),
         Text(message, style: manuscriptBodyStyle(fontSize: 16), textAlign: TextAlign.center),
+        if (onCancel != null) ...[
+          const SizedBox(height: 28),
+          TextButton(
+            onPressed: onCancel,
+            child: Text('Cancel', style: manuscriptBodyStyle(fontSize: 14, color: kInkMutedColor)),
+          ),
+        ],
       ],
     );
   }
 }
 
 class _JoiningSection extends StatelessWidget {
-  const _JoiningSection({required this.peers, required this.onPeerTap, required this.onCancel});
+  const _JoiningSection({
+    required this.peers,
+    required this.onPeerTap,
+    required this.onCancel,
+    required this.autoDiscoveryError,
+    required this.manualController,
+    required this.manualConnecting,
+    required this.onManualConnect,
+  });
   final List<DiscoveredTradePeer> peers;
   final void Function(DiscoveredTradePeer) onPeerTap;
   final VoidCallback onCancel;
+  final String? autoDiscoveryError;
+  final TextEditingController manualController;
+  final bool manualConnecting;
+  final VoidCallback onManualConnect;
 
   @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          children: [
-            const SizedBox(
-              width: 14,
-              height: 14,
-              child: CircularProgressIndicator(strokeWidth: 2, color: kIlluminationGold),
-            ),
-            const SizedBox(width: 10),
-            Text('Scanning for wizards...', style: manuscriptCaptionStyle()),
-          ],
-        ),
-        const SizedBox(height: 12),
+        if (autoDiscoveryError == null) ...[
+          Row(
+            children: [
+              const SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(strokeWidth: 2, color: kIlluminationGold),
+              ),
+              const SizedBox(width: 10),
+              Text('Scanning for wizards...', style: manuscriptCaptionStyle()),
+            ],
+          ),
+          const SizedBox(height: 12),
+        ] else ...[
+          Text(
+            'Automatic discovery isn\'t available here '
+            '(enter their address below instead).',
+            style: manuscriptCaptionStyle(color: kInkMutedColor),
+          ),
+          const SizedBox(height: 12),
+        ],
         Expanded(
           child: peers.isEmpty
               ? Center(
                   child: Text(
-                    'No one found yet.\nMake sure your fellow wizard is hosting.',
+                    autoDiscoveryError == null
+                        ? 'No one found yet.\nMake sure your fellow wizard is hosting.'
+                        : 'No one found automatically.\nEnter their address below.',
                     style: manuscriptBodyStyle(fontSize: 14, color: kInkMutedColor),
                     textAlign: TextAlign.center,
                   ),
@@ -454,6 +609,41 @@ class _JoiningSection extends StatelessWidget {
                   itemBuilder: (_, i) => _PeerTile(peer: peers[i], onTap: () => onPeerTap(peers[i])),
                 ),
         ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: manualController,
+                style: const TextStyle(fontFamily: 'serif', fontSize: 14, color: kInkColor),
+                decoration: InputDecoration(
+                  hintText: 'host:port',
+                  hintStyle: const TextStyle(color: kInkMutedColor),
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(4),
+                    borderSide: BorderSide(color: kInkColor.withValues(alpha: 0.3)),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton(
+              onPressed: manualConnecting ? null : onManualConnect,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: kIlluminationGold,
+                side: const BorderSide(color: kIlluminationGold),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+              ),
+              child: const Text(
+                'Connect',
+                style: TextStyle(fontFamily: 'serif', fontSize: 14),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
         TextButton(
           onPressed: onCancel,
           child: Text('Cancel', style: manuscriptBodyStyle(fontSize: 14, color: kInkMutedColor)),
@@ -576,7 +766,10 @@ class _SelectionTile extends StatelessWidget {
             controlAffinity: ListTileControlAffinity.leading,
             contentPadding: EdgeInsets.zero,
             activeColor: kIlluminationGold,
-            title: Text(selection.spell.name, style: const TextStyle(fontFamily: 'serif', fontSize: 15, color: kInkColor)),
+            title: GestureDetector(
+              onLongPress: () => showSpellCardFullscreen(context, selection.spell),
+              child: Text(selection.spell.name, style: const TextStyle(fontFamily: 'serif', fontSize: 15, color: kInkColor)),
+            ),
           ),
           if (selection.included)
             Padding(
@@ -611,7 +804,19 @@ class _SelectionTile extends StatelessWidget {
                             }
                           : null,
                     ),
-                    Text('${selection.loanDays}d', style: manuscriptBodyStyle(fontSize: 14)),
+                    InkWell(
+                      onTap: () async {
+                        final entered = await _promptLoanDays(context, selection.loanDays);
+                        if (entered != null) {
+                          selection.loanDays = entered;
+                          onChanged();
+                        }
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                        child: Text('${selection.loanDays}d', style: manuscriptBodyStyle(fontSize: 14)),
+                      ),
+                    ),
                     IconButton(
                       icon: const Icon(Icons.add_circle_outline, size: 18, color: kInkMutedColor),
                       onPressed: () {
@@ -625,6 +830,62 @@ class _SelectionTile extends StatelessWidget {
             ),
         ],
       ),
+    );
+  }
+}
+
+/// Numeric-keyboard entry for a loan's day count, instead of only the +/-
+/// steppers (tedious for anything beyond a few days). Returns the entered
+/// value (>= 1), or null if the user cancelled or entered nothing usable.
+Future<int?> _promptLoanDays(BuildContext context, int current) {
+  return showDialog<int>(context: context, builder: (_) => _LoanDaysDialog(initial: current));
+}
+
+class _LoanDaysDialog extends StatefulWidget {
+  const _LoanDaysDialog({required this.initial});
+  final int initial;
+
+  @override
+  State<_LoanDaysDialog> createState() => _LoanDaysDialogState();
+}
+
+class _LoanDaysDialogState extends State<_LoanDaysDialog> {
+  late final _controller = TextEditingController(text: '${widget.initial}');
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final days = int.tryParse(_controller.text.trim());
+    Navigator.of(context).pop(days != null && days >= 1 ? days : null);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: kParchmentColor,
+      title: Text('Loan length (days)', style: manuscriptHeaderStyle(fontSize: 16)),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        keyboardType: TextInputType.number,
+        style: const TextStyle(fontFamily: 'serif', fontSize: 16, color: kInkColor),
+        decoration: const InputDecoration(border: OutlineInputBorder()),
+        onSubmitted: (_) => _submit(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text('Cancel', style: manuscriptBodyStyle(fontSize: 14, color: kInkMutedColor)),
+        ),
+        TextButton(
+          onPressed: _submit,
+          child: Text('Set', style: manuscriptBodyStyle(fontSize: 14, color: kIlluminationGold)),
+        ),
+      ],
     );
   }
 }
@@ -690,6 +951,7 @@ class _ReviewSection extends StatelessWidget {
                       name: s.spell.name,
                       mode: s.mode,
                       loanDays: s.loanDays,
+                      cardSpell: s.spell,
                     )),
               const SizedBox(height: 20),
               Text('You receive', style: manuscriptCaptionStyle(color: kIlluminationGold)),
@@ -701,6 +963,7 @@ class _ReviewSection extends StatelessWidget {
                       name: i.spellName,
                       mode: i.mode,
                       loanDays: i.loanDays,
+                      cardSpell: i.previewSpellAsset(),
                     )),
             ],
           ),
@@ -725,10 +988,18 @@ class _ReviewSection extends StatelessWidget {
 }
 
 class _OfferLine extends StatelessWidget {
-  const _OfferLine({required this.name, required this.mode, this.loanDays});
+  const _OfferLine({required this.name, required this.mode, this.loanDays, required this.cardSpell});
   final String name;
   final TradeMode mode;
   final int? loanDays;
+
+  /// Long-pressed to view the real card -- for "you receive" this is a
+  /// preview built from [TradeItem.previewSpellAsset] (the offer only
+  /// carries metadata, not the grid), so the shield/symbols are genuine
+  /// (derived from the actual commitment) even though the grid itself isn't
+  /// available until after confirming. See docs/COMMUNE_TRADE_PLAN.md --
+  /// this is the "verify it's not just a similarly-named spell" check.
+  final SpellAsset cardSpell;
 
   @override
   Widget build(BuildContext context) {
@@ -736,11 +1007,14 @@ class _OfferLine extends StatelessWidget {
     final tagColor = mode == TradeMode.loan ? kIlluminationGold : kRubricRed;
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
-      child: Row(
-        children: [
-          Expanded(child: Text(name, style: manuscriptBodyStyle(fontSize: 14))),
-          Text(tag, style: manuscriptCaptionStyle(color: tagColor)),
-        ],
+      child: GestureDetector(
+        onLongPress: () => showSpellCardFullscreen(context, cardSpell),
+        child: Row(
+          children: [
+            Expanded(child: Text(name, style: manuscriptBodyStyle(fontSize: 14))),
+            Text(tag, style: manuscriptCaptionStyle(color: tagColor)),
+          ],
+        ),
       ),
     );
   }

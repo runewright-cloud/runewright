@@ -75,6 +75,10 @@ class TradeFrameReader {
   Stream<TradeFrame> get frames => _controller.stream;
 
   void addChunk(List<int> chunk) {
+    // A late chunk after close (the socket's onDone/onError closes this
+    // reader -- see trade_session.dart) would otherwise throw on _drain's
+    // _controller.add.
+    if (_controller.isClosed) return;
     _buffer.add(chunk);
     _drain();
   }

@@ -44,6 +44,14 @@ import 'package:rune_duel/spells/spell_asset.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  // Hand size == bookmarkCount + 1 (see WizardAvatar.bookmarkCount); this
+  // file's tests were written against a hand size of 3, so each fixture
+  // avatar carries 2 bookmarks.
+  List<Accoutrement> twoBookmarks(String idPrefix) => [
+        Accoutrement(id: '${idPrefix}_bm0', kind: AccoutrementKind.bookmark),
+        Accoutrement(id: '${idPrefix}_bm1', kind: AccoutrementKind.bookmark),
+      ];
+
   BattleState makeAdjacentState() {
     final battlefield = Battlefield();
     const posCaster = HexCoord(0, 0);
@@ -62,6 +70,7 @@ void main() {
           position: posCaster,
           teamId: 'team_caster',
           baseSpellRange: 3,
+          accoutrements: twoBookmarks('caster'),
         ),
         WizardAvatar(
           playerId: 'verifier',
@@ -72,6 +81,7 @@ void main() {
           position: posVerifier,
           teamId: 'team_verifier',
           baseSpellRange: 3,
+          accoutrements: twoBookmarks('verifier'),
         ),
       ],
       teams: [
@@ -209,9 +219,10 @@ void main() {
       final commitmentBytes = _hexToBytes(firebolt.commitmentHex);
 
       // Three chapter entries sharing one commitment/proof — the "unlimited
-      // copies of a Basic spell" case. bookmarkCount defaults to 3
-      // (MatchConfig), matching this chapter's size exactly, so the opening
-      // deal puts ALL THREE positions in hand and leaves the deck empty —
+      // copies of a Basic spell" case. The fixture avatar's hand size is 3
+      // (2 bookmarks + 1), matching this chapter's size exactly, so the
+      // opening deal puts ALL THREE positions in hand and leaves the deck
+      // empty —
       // no refill happens, which is what forces each of the three casts
       // below to consume a genuinely distinct position (a refill-masked bug
       // would still eventually crash, but an empty deck makes the failure

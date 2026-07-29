@@ -465,7 +465,14 @@ class _GameScreenState extends State<GameScreen>
     final initialGrid = _initialGrid!;
     final steps = _grid.stepCount;
     final geo = gridGeometry(initialGrid);
-    final effectCount = max(0, (_formulaTracker.committed.length - 1) ~/ 3);
+    // effectCount counts *complete* formulas, not activations: a residual
+    // activation buys nothing. This must match TurnLoop._wireBaseManaCost /
+    // _certifiedBaseManaCost, which are what actually charge the caster and
+    // the opponent at cast time — the old `(committed.length - 1) ~/ 3` form
+    // over-counted on any residual, so the card advertised a price ~1.5x
+    // what the duel deducted (and, worse, the two devices deducted different
+    // amounts; see M4_findings 2026-07-29).
+    final effectCount = max(0, _formulaTracker.formulas.length - 1);
     final manaCost = ((5 * geo.segmentCount + geo.dotCount) *
             pow(1.05, steps) *
             pow(1.5, effectCount))

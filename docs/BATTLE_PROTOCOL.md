@@ -206,9 +206,20 @@ for i from len(shuffled)-1 downto 1:
   j ← nextInt(i + 1)
   swap(shuffled[i], shuffled[j])
 
-hand ← shuffled[0 .. bookmarkCount-1]
-deck ← shuffled[bookmarkCount ..]
+handSize ← thisAvatar.bookmarkCount + 1  // per-player, NOT a shared MatchConfig
+                                          // value — see WizardAvatar.bookmarkCount
+hand ← shuffled[0 .. handSize-1]
+deck ← shuffled[handSize ..]
 ```
+
+`handSize` is derived independently per avatar from its own `bookmark`
+accoutrement count (always ≥ 1, even with zero bookmarks) — bookmarks come
+from each player's own accoutrement loadout, so this is no longer a value
+both players negotiate/compare via `matchConfig`. A bookmark accoutrement
+created or destroyed by an in-battle effect resizes the hand immediately,
+in the same resolution (TurnLoop._reconcileHandSize): growing draws a fresh
+card from the deck; shrinking returns a randomly chosen hand card to the
+deck (reinserted in canonical order).
 
 On spell use, the next spell from `deck` slides into the vacated hand slot (no
 additional randomness; the shuffle order was fixed at draw time).
