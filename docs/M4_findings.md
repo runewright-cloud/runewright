@@ -3689,3 +3689,416 @@ previews, and how the sprite scale and lunge reach were tuned.
 **Not done:** no real-device pass yet. This is pure rendering over an existing turn, so the LAN
 risk is low, but per the verification hierarchy it isn't finished until it has been seen on
 hardware in a two-device duel.
+
+---
+
+## M4.x — Artifact system rework (Phase 0 activation) — 2026-07-31
+
+Built from `docs/ARTIFACT_SYSTEM_PLAN.md` in the plan's six-step order. Every loadout
+artifact is now **passive + one consumable activation**, at most one per player per turn,
+declared in a new public **Phase 0** commit-reveal ahead of the Phase 1 action commit.
+No CA / circuit / golden-vector surface was touched, so **no `RULESET_VERSION` bump** — but
+the battle wire protocol and `BattleState.toCanonicalBytes()` both changed, which is its own
+compatibility break (old and new clients cannot duel).
+
+### The melee RNG ordering bug was real, and this feature is what made it matter
+
+`§6.1`'s prediction held exactly. The melee round applied haymakers **local-first**, so device
+A ran A-then-B while device B ran B-then-A — off the *same* shared `meleeRng`. It had never
+been caught because `_applyHaymaker` only touched that stream via `_redirectIfIllusion`, which
+early-returns without drawing unless the victim holds decoys. So a divergence needed *both*
+players to melee in the same turn *and* an illusion in play.
+
+The counter-charm melee proc makes **every** melee draw from that stream, so any two-melee turn
+would have desynced. Fixed first, on its own, by sorting the applications by `playerId` — the
+same convention `_findCounteringCharm` already used.
+
+**Worth writing down:** the regression test
+(`turn_loop_determinism_test.dart`, "two melees into illusions stay in lockstep") was verified
+to *fail before the fix and pass after* by temporarily reverting the source, not just by
+observing green. A determinism test that has never been seen red is not evidence of anything —
+`player_a` sorts before `player_b`, so device A's local-first order and the sorted order are
+identical, and only the B-perspective loop diverges. Half the fixture proves nothing on its own.
+
+### What surprised us
+
+- **`_endOfTurn` had no access to `entropy`.** Both new end-of-turn draws (the rod movement roll
+  under tag `0x0A`, the bookmark redraw under `0x09`) need `_playerPhaseSeed`, which needs
+  entropy, and `_endOfTurn(preMovPos, rng)` only had the phase RNG. Threading `entropy` in as a
+  third parameter was the honest fix; reaching for the `_turnEntropy` field would have worked
+  and hidden the dependency.
+- **The rod's `remainingTurns: 1` status must be added AFTER `tickStatusEffects`.** Added before
+  it, the tick decrements it to 0 and sweeps it in the same breath — the bonus would silently
+  never exist. The plan called this out and it was still the easiest thing to get wrong.
+- **`_addStatus` replaces any effect of the same id**, so the rod passive could not reuse
+  `StatusEffectId.speedUp` without clobbering a spell's speed buff (and vice versa). New id
+  `rodMobility`, summed alongside speedUp/speedDown in `effectiveMoveSpeed`.
+- **Phase 0 could not live inside `runTurn`.** The action commit is exchanged by `beginTurn()`,
+  which the UI calls as soon as the player locks in an action — so a Phase 0 placed at the top
+  of `runTurn` would run *after* the commit it is supposed to precede. It lives in
+  `beginArtifactPhase()`, memoized like `_beginTurnFuture`, awaited at the top of
+  `_beginTurnImpl`. Tests and solo mode get it transitively with no changes; the UI calls it
+  explicitly and early so the peer's declaration is on screen *before* the player picks.
+- **`cancelPendingTurn()` deliberately does NOT clear `_artifactPhaseFuture`.** By the time a
+  turn is abandoned the Phase-0 frames have already crossed the wire and both devices have
+  applied the declaration. Replaying it would send a second pair of frames the peer is not
+  waiting for.
+- **The turn-scoped flag lives on `WizardAvatar`, not in a `TurnLoop` map.** `§6.3` asked for it
+  in the avatar record of `toCanonicalBytes()`, and `pendingFreeMoveBurst` is the existing
+  precedent for turn-scoped state on the avatar. Cleared *after* `_exchangeStateHash()`, never
+  before — it gates charm firing at Phase 5, so it is part of the state both devices must agree
+  on for that turn.
+- **`_redrawHand` and `DrawSchedule.redrawHand`/`SpellDraw.redrawHand` already existed** (wild
+  magic's Scattered Gusts). §8.3's "needs `redrawHand`" was written before that landed; all the
+  bookmark burn needed was an explicit target size (the burned slot is permanently gone) and a
+  distinct phase-seed tag so the two redraw paths cannot collide on one turn.
+
+### Trust boundary
+
+One validation path (`_validateActivation`), called for the local declaration and the peer's
+alike — the B-1/B-8 lesson, applied before there was a second path to remove. A declaration is
+valid only if the kind is `manaGem`/`bookmark`/`rodOfSpreading`, the declarer holds one, and
+they have not already declared this turn. Failure degrades to no-activation on both devices
+rather than forfeiting: a desync here is indistinguishable from a stale client.
+
+The wire names a **kind**, never an accoutrement id, and the engine consumes the owner's first
+match by sorted id. That removes the whole class of "peer names an id it does not own" bug by
+construction rather than by checking for it.
+
+`_consumeRodOfSpreading` stays the single rod-consumption path; only its *input* moved (from an
+action-commit flag to the Phase-0 declaration). A rod declared but never spent — no cast, a
+fizzle, a counter — survives; what is wasted is the once-per-turn activation budget.
+
+### Coverage
+
+`test/battle/engine/artifact_activation_test.dart` (20 tests: round trip from both
+perspectives, the four trust-boundary cases, gem pool/clamp/last-gem, the rod's guaranteed +1
+at 10 rods, bookmark burn incl. burning the last one, and the melee proc incl. a clean fizzle),
+plus the Phase-0 charm gate in `counter_charm_test.dart` and the melee-ordering regression in
+`turn_loop_determinism_test.dart`. Every two-client test asserts
+`toCanonicalBytes()` equality across swapped perspectives — that is the real assertion; the
+per-artifact expectations are the readable half.
+
+Probabilistic mechanics are pinned at their **saturating** ends (10 rods = 100%, 20 charms =
+100%) so they assert without hard-coding the RNG stream.
+
+**Not done: no two-device pass yet.** Phase 0 is a new network round trip, and per CLAUDE.md's
+verification hierarchy a green suite is not sufficient evidence for a protocol change. This is
+the release gate for the feature.
+
+### Pre-existing breakage found (not ours, not fixed)
+
+Two **untracked** files fail to compile against current APIs and are excluded from every run
+above: `test/battle/engine/turn_loop_nplayer_test.dart` (references a `MeshBattleSession` that
+does not exist in `lib/`) and `lib/battle/models/chapter_accoutrements.dart` (references
+`Accoutrement(isCoreGem:)`, removed with the core gem, and `ArtifactKind.deflectionRod`,
+repurposed for the Rod of Spreading). They are leftovers from another session's WIP; someone
+should decide whether to finish or delete them.
+
+### Cleanup backlog found while building this (not done, roughly priority-ordered)
+
+1. **Two-device LAN pass on Phase 0** — the release gate for the artifact rework. New round
+   trip + `toCanonicalBytes()` break; a green suite is not sufficient evidence.
+2. **`TurnLoop.lastCounterCharmProcs` has no UI consumer yet.** The engine records every melee
+   proc (attacker, victim, gem-destroyed vs spell-withered) and `battle_screen.dart` ignores
+   it. Right now a gem just vanishes and a card just greys out with no explanation — exactly
+   the "reads as a bug rather than a mechanic" failure the Phase-0 banners exist to avoid.
+   Cheapest fix: a line in the resolution reveal sequence.
+3. **Name the absorption totem.** Mechanically settled in code (identical to an Absorption
+   Rod, summon-only, excluded from the passive/activation split); the effect table says
+   "totem", the code says `deflectionTotem`, the design prose says "rod". **Soren picks one**,
+   then the other two get renamed. No mechanic hangs on it.
+4. **Three `[TODO — playtest]` numbers now live in the design doc** and are whiteboard values:
+   5%/charm proc (12 charms = 60%), 10%/rod movement (10+ rods = guaranteed), and — the
+   largest untested assumption in the rework — **whether artifact depletion ends matches too
+   fast**. The whole artifact economy now trends toward zero and no match-length data accounts
+   for that.
+5. **Two untracked files don't compile against current `lib/`** and are excluded from every
+   test run: `test/battle/engine/turn_loop_nplayer_test.dart` (`MeshBattleSession` has never
+   existed in any commit) and `lib/battle/models/chapter_accoutrements.dart`
+   (`Accoutrement(isCoreGem:)` removed in c8fd79d; `ArtifactKind.deflectionRod` repurposed for
+   the Rod of Spreading). Another session's WIP — finish or delete. A third,
+   `lib/battle/models/network_battle_setup.dart`, is untracked but compiles clean; it just
+   needs a decision about whether it belongs in the branch.
+6. ~~Pre-existing inconsistency in `_applyHaymaker`~~ — **fixed 2026-07-31**, alongside a
+   requested behavior change: a melee punch redirected onto an illusion decoy now does
+   *nothing else* (no teleport, no damage, no haymaker side effect — the decoy dies and that's
+   it; `_redirectIfIllusion` used to also teleport the real wizard onto the decoy's tile). That
+   change exposed exactly the bug flagged here: the Fire haymaker DoT block re-queries
+   `_avatarsAt(targetTile)` by position, so without the teleport a redirected wizard would
+   incorrectly take DoT stacks. Fixed by tracking redirected playerIds through `_applyHaymaker`
+   and skipping them in the DoT sweep too. `EffectApplicator._resolveIllusionRedirect` (the
+   formula-effect path) intentionally keeps its teleport — melee has no "spell chasing the
+   illusion's last position" framing, so the two paths are now deliberately asymmetric, not
+   accidentally duplicated. Covered by
+   `test/battle/engine/illusion_melee_redirect_test.dart` — no test seam exists for
+   `math.Random.secure()`-backed entropy, so it runs ~40 independent single-turn trials and
+   asserts invariants against whichever branch (real hit vs. decoy hit) each trial actually
+   took, rather than pinning the RNG. Verified to fail against the pre-fix teleport by
+   reverting the source, same discipline as the melee-ordering regression test above.
+7. **Housekeeping:** a stray `.claude/settings.local.json.tmp.1096781.*` temp file is sitting
+   in the repo, and `stash@{0}` is a `WIP ink-substrate (resume here)` stash from a different
+   branch that has been carried along untouched.
+8. ~~`TurnLoop.lastCounterCharmProcs` has no UI consumer~~ — **still true**, but the sibling
+   gap (a countered CAST had a red "COUNTERED" ribbon with no flash, per user request) is now
+   fixed: `_FullscreenSpellCard` plays a double-pulse rubric-red flash
+   (`_kCounteredFlashCurve`) on entry when `countered: true`, on top of the pre-existing static
+   ribbon. Item 2 above (the melee proc's silent gem-vanish/card-grey) is unrelated and still
+   open.
+9. ~~Rod of Spreading terminology~~ — **swept 2026-07-31**. Every comment and doc-prose mention
+   in `lib/` and `docs/runewright_design_v3_0.md` now reads "Rod of Wind" (the name already
+   shown to players everywhere in the UI); `test/battle/engine/rod_of_spreading_test.dart` is
+   renamed to `rod_of_wind_test.dart`. **The Dart identifiers are deliberately untouched** —
+   `AccoutrementKind.rodOfSpreading` (battle state, serialized by ordinal — a rename would be
+   safe) and `ArtifactKind.rodOfSpreading` (loadout selection, `accoutrement_loadout.dart` /
+   `chapter_asset.dart`, **serialized by NAME to on-device storage** — a rename would orphan
+   any already-saved loadout unless paired with a migration alias in `_kindFromName`). Renaming
+   the identifiers is a real follow-up if wanted, but it's a different-shaped task (data
+   migration, not terminology) from what was asked here.
+10. **Artifact activation UX + timing rework, 2026-07-31** — see `ARTIFACT_SYSTEM_PLAN.md` §13
+    for the full writeup; this is the "what tripped us up" half.
+    - **Confirmed the forced-modal removal doesn't need to touch the wire protocol at all.**
+      `beginArtifactPhase()`'s doc comment already anticipated an "implicit" call path (run
+      lazily from `beginTurn()` instead of eagerly at turn start) and explicitly said fairness
+      holds either way — that turned out to be exactly the escape hatch needed. The UI change
+      is real (long-press replaces a blocking prompt) but it's pure UI-trigger-timing; Phase 0
+      itself, its commit-reveal shape, and its position ahead of `actionCommit` are unchanged.
+    - **The actual hard part was Rod's movement passive**, not the UI. It used to be rolled at
+      end-of-turn N specifically because movement commits (Phase 2) before the turn's main
+      entropy is revealed (Phase 3) — a deliberate anti-lookahead property (B-5), not
+      incidental. Making the roll usable the SAME turn it's decided is only safe because it
+      draws from a *second*, independently-committed entropy source
+      (`BattleTurnSession.refreshEntropy`) that is never mixed into anything look-ahead
+      sensitive. Nearly reached for reusing the main entropy early instead — would have quietly
+      reopened the B-5 hole for a bonus round of "SpellDraw can go stale mid-turn"-flavored
+      analysis before catching it; reusing the already-wired-but-unused refresh seam sidesteps
+      that entirely by construction (it's a wholly separate joint value).
+    - **The `remainingTurns: 1` status-effect timing flips when you move the roll earlier.**
+      The old code added the rod's status effect *after* `tickStatusEffects()` specifically so
+      it wouldn't be swept in the same turn it was granted. Once the roll moved to Phase 0 (same
+      turn as the read AND the tick), that ordering constraint disappears on its own — the
+      status is read at Phase 2 (before the tick) and correctly expires at that same turn's
+      Phase 6 (after the tick), with no special-casing needed. Worth naming explicitly because
+      it's easy to port the OLD "add after tick" comment forward out of habit into code where
+      it no longer applies (and where doing so would silently swallow the roll before Phase 2
+      ever reads it).
+    - **Test consequence:** `effectiveMoveSpeed` read right after `runTurn()` returns is no
+      longer a valid proxy for "did the rod bonus apply" — the one-shot status has already
+      expired by the time the turn fully resolves. The rewritten test in
+      `artifact_activation_test.dart` proves the bonus was live by giving it a 3-tile move
+      path (unreachable at base speed 2) and asserting the avatar actually walked all 3 tiles,
+      rather than inspecting post-turn state.
+
+---
+
+## 2026-07-31 — Animations "pre-rendered": the painter shows engine state the reveal hasn't got to yet
+
+**Symptom** (as reported): wizards teleport to their destination, blink back, and *then* walk it
+properly. Clouds appear, vanish, and reappear when the spell card resolves.
+
+**Cause — one bug, two faces, and it isn't in either animation.** `BattlefieldPainter` is
+constructed with `repaint: Listenable.merge([pulseAnimation, ...])` and `_pulseController`
+is `..repeat()`. So the battlefield repaints **every frame, forever, without a widget
+rebuild** — reading `widget.state` live. Meanwhile `TurnLoop.runTurn` mutates that same
+`BattleState` *in place* and then keeps `await`-ing network exchanges: movement is applied at
+Phase 3, clouds are conjured at Phase 5, and the turn doesn't return until after Phase 6.5.
+
+Every frame in those gaps draws the new truth. The animations were both being handed to the UI
+*after* `runTurn` returned — hundreds of milliseconds to several seconds too late — so what the
+player saw was: engine result first, animation of that result second.
+
+**This is the general shape of the trap**, not two isolated glitches: *any* visual that is
+recorded during resolution and played back afterwards is spoiled by the free-running repaint.
+The fix has to be "narrow the window to zero", not "make the animation better".
+
+### The two fixes
+
+1. **Movement now plays from inside `runTurn`.** New awaited seam
+   `TurnLoop.onMovementResolved` (typedef `MovementPlayback`), called immediately after
+   `_resolveAvatarMovement` and before Phase 4. `_resolveAvatarMovement` is synchronous and the
+   callback body runs synchronously to its first `await`, so `_playAvatarWalks`' `setState`
+   installs the animation **before any frame can render the new occupancy** — that
+   synchronous-run property is the whole fix; move the call one `await` later and the bug is back.
+   - **Awaiting a UI callback mid-turn is safe here** and worth being unbothered by: it sits
+     immediately before the Phase 4b melee commit, which already blocks on an unbounded *human*
+     decision via `meleeTargetPicker`. Both peers spend their playback independently and
+     re-synchronise at the next exchange. Nothing consensus-visible is read or written.
+   - **`.orCancel` on the TickerFuture is not optional now that the turn blocks on it.**
+     Leaving the battle screen mid-walk disposes the controller, and a plain `TickerFuture`
+     *never completes* when its ticker is cancelled — that would strand `runTurn` (and its open
+     exchange) forever. `await ctrl.forward(from: 0).orCancel.catchError((_) {})`.
+   - Playing the walk *here* is also just more correct: it now happens in the turn's real
+     chronology (Phase 3, before the melee prompt asks about post-move adjacency) rather than
+     being replayed after every spell has already resolved.
+
+2. **`ResolutionBaseline` — a snapshot of what was on the field when the turn started**
+   (cloud ids / terrain hexes / minion ids), installed by `_submitTurn` before `runTurn` and
+   handed off to `_hiddenCloudIds` & co. the moment it returns. While it's set, the painter
+   skips anything *not* in it.
+   - **Why the painter evaluates this, and not the caller:** a hidden-set computed in `build()`
+     is already stale — the applicator conjures the cloud between rebuilds, and the next
+     pulse-driven repaint draws it. The check has to happen at *paint* time
+     (`_cloudHeldBack`/`_tileHeldBack`/`_minionHeldBack`). This is the load-bearing detail; a
+     "just compute the set in build" fix looks identical and doesn't work.
+   - The post-turn hidden sets are now seeded from **baseline diff ∪ resolved-event
+     `created*`**, not from the events alone, so the handoff holds back exactly what the
+     baseline was holding back. Otherwise anything created outside a `ResolvedSpellEvent` (a
+     wild-magic conjuration) pops in at the seam. The reveal sequence's tail releases whatever
+     no card claimed — and its trigger condition now includes "the hidden sets are non-empty",
+     or that remainder would stay invisible for the rest of the match.
+
+### The one deliberate trade-off
+
+`_pickFreeMoveDirection` (Phase 5.5 / 6.5) is the only point where the player makes a *decision*
+against a board that is still mid-reveal — this turn's lava and clouds already exist. The
+hold-back is therefore **lifted for the duration of that prompt and restored afterwards**.
+Asking someone to step somewhere while hiding what's on the tile is a worse bug than the pop-in
+the hold-back exists to prevent. (`ResolutionBaseline` is an immutable snapshot, so restoring it
+re-hides them and they still bloom with their cards.)
+
+### Still outstanding (same family, not fixed)
+
+- **Conveyor chain rides** (`_conveyorChainAnimations`) are still recorded during resolution and
+  replayed after `runTurn` — so a pushed entity jumps first and rides the belt second. Fixing it
+  properly means the same treatment as movement, but `lastConveyorChainEvents` is appended from
+  ~5 sites across Phases 4–6, so it needs a per-event playback seam rather than one call.
+- **HP/mana and status changes** are likewise visible the instant the engine applies them,
+  ahead of the cast orb and card that explain them. Not reported as a problem; noted so it isn't
+  re-derived as a new discovery.
+
+### Coverage
+
+- `test/battle/engine/avatar_move_events_test.dart` — new `onMovementResolved` group: fires with
+  positions already applied, the turn *waits* for playback before Phase 4, and it still fires on
+  a turn where nobody moved.
+- `test/ui/battlefield_painter_test.dart` — new `ResolutionBaseline` group. Pixel comparisons
+  (render to `Picture` → PNG bytes), not smoke tests, because "was it drawn?" is the entire
+  question: a post-snapshot cloud must render byte-identically to an empty field.
+
+---
+
+## 2026-07-31 — Overspending mana: the client allowed it, the peer forfeited
+
+**Report:** "I cast a spell on my laptop that cost more mana than I had, the client allowed
+it, but it caused a desync on my Pixel."
+
+### Why it looked like a desync and wasn't one
+
+Not a divergence bug — an *asymmetric rule*. Both devices did exactly what they were written
+to do, and the two behaviours are incompatible:
+
+- **Caster's device** (`_deductManaForCommittedSpell`) charges with a clamp:
+  `av.mana = (av.mana - cost).clamp(0, _kMaxMana)`. Overspending is silently absorbed; the
+  bar empties to 0 and play continues.
+- **Peer's device** (`_verifyPeerSpellCast` step 4) treats the same cast as cheating:
+  `if (peerAvatar.mana < verifiedCost) { session.sendForfeit('insufficient_mana_for_spell'); throw }`.
+
+So one device plays on and the other stops the match. Whichever device *casts* is the one
+that sees nothing wrong, which is why it reads as "the other phone desynced."
+
+The forfeit is the right call — it's a trust-boundary check on an untrusted peer, and
+weakening it to a clamp would let a peer cast for free. **The fix belongs in the UI**: don't
+offer the player a cast their opponent will forfeit over.
+
+### The fix
+
+`TurnLoop._spellManaCost` couldn't be asked "what would this cost?" — computing the price and
+applying its consequences were the same function (it consumes `chainSurcharge` /
+`nextSpellCostDouble` and calls `absorbDamage`). Split:
+
+- **`_spellCostBreakdown`** — pure. Returns `(cost, hpDamage, surchargeIdx, doubleIdx)`.
+- **`_spellManaCost`** — unchanged behaviour; applies what the breakdown reports.
+- **`previewSpellCost` / `canAffordSpell`** — public, side-effect free, what the UI reads.
+
+One price function, so the gate and the deduction cannot drift. (`_certifiedManaCost` is
+untouched and still the peer-side mirror — see CLAUDE.md's order-identity note.)
+
+UI barrier in `battle_screen.dart`, three layers:
+1. Hand cards print their price and grey out + refuse taps when unaffordable.
+2. CAST is disabled with "Not enough mana — N needed, M left".
+3. `_onCast` re-checks and snackbars, in case mana moved under a stale frame.
+
+### Two traps this hit
+
+- **Gate *selection* on the cheapest achievable price, not the base price.** The enhancement
+  picker only appears once a card is selected, and Water/Efficiency is −1/3 — gating selection
+  on the undiscounted cost puts a spell the player *can* afford permanently out of reach.
+  `_bestCaseSpellCost` applies Efficiency when the spell actually earned that supreme tag.
+- **Sorcerer mode must quote the worst case.** The vocal score doesn't exist until *after*
+  the player commits, and a fizzle multiplies cost by 1.50 while also withholding the
+  Efficiency discount. Quoting 1.0× would let the gate approve a cast the peer then forfeits
+  over — the exact bug, reintroduced. `previewSpellCost` prices sorcerer casts at
+  `CastingEnhancements.maxManaCostMultiplier` with the discount withheld; a well-spoken
+  incantation then costs *less* than advertised, which is the only safe direction.
+
+**Not blocked:** a pending `nextSpellCostDouble` converts its shortfall to HP damage and
+clamps the price to what the caster holds. That is a legal over-budget cast, and it falls out
+of the shared price function without a special case in the gate.
+
+### Coverage
+
+`test/battle/engine/mana_affordability_gate_test.dart` (9 tests) — the preview equals what
+the cast actually deducts; previewing repeatedly consumes nothing (no status effect, no HP,
+no mana); affordable at exactly `cost == mana` and not one above; the `nextSpellCostDouble`
+exemption; the sorcerer worst-case quote.
+
+**Outstanding:** the UI half is verified by analyzer + engine tests only. `BattleScreen` has
+no widget-pump harness in `test/ui/` (nothing pumps it today), so the greyed card, the dead
+CAST button and the readout still want one real-app pass — `flutter run -d linux`, take a
+turn with a spell you can't afford.
+
+---
+
+## 2026-07-31 — Two WIP files parked as `.pending` (and one of them is already dead)
+
+**What happened.** Three untracked files were sitting in the tree from an unfinished n-player
+mesh pass. Two of them did not compile, which meant `flutter analyze` carried 10 errors and
+`flutter test` had a file that failed to *load* — 1 red file against 1059 green tests, forever,
+until a production class that doesn't exist yet lands.
+
+Renamed rather than deleted or committed-as-is:
+
+- `test/battle/engine/turn_loop_nplayer_test.dart` → `.dart.pending`
+- `lib/battle/models/chapter_accoutrements.dart` → `.dart.pending`
+
+`lib/battle/models/network_battle_setup.dart` compiles and is committed normally — it is the
+2-6-player generalization of `duel_battle_setup.dart` (which is 2-device only), so it is real
+forward work for the mesh milestone, not a duplicate.
+
+**Why `.pending` and not `skip:`.** These are compile errors, so the file fails at load time.
+`skip: true` and `@Skip()` both require the file to compile first — neither can park a file
+like this. The test runner globs `*_test.dart` and the analyzer reads `*.dart`, so the suffix
+takes a file out of both with a rename you can reverse in one command.
+
+**Why not just leave them untracked.** Untracked is one `git clean -fd` from gone, and the test
+is 276 lines that encode real reasoning about the withheld-reveal elimination path (§10c) —
+including *why* it tests a mismatched reveal rather than a silent peer (neither
+`InMemoryTransport` nor `BattleFrameReader` has a timeout, so a truly silent peer hangs the
+exchange forever; that gap is inherited from the 2-player protocol, not introduced here).
+
+**The trap worth writing down: parked WIP rots against decisions made after it was written.**
+`chapter_accoutrements.dart` is not merely unfinished — it is **superseded**, in two separate
+ways, and resuming it by "making it compile" would reintroduce deleted behaviour:
+
+1. Its stated purpose is "the core-gem-assignment rule lives in one place." The core gem was
+   **removed** on 2026-07-30 (see that entry above) — the mana pool is innate now, and removing
+   the `isCoreGem` byte was load-bearing enough to bump `kBattleProtocolVersion` 1 → 2.
+   Restoring `isCoreGem` to make this file compile would silently revert a protocol decision.
+2. It maps `ArtifactKind.deflectionRod`, a slot that was repurposed into `rodOfSpreading`
+   (Rod of Wind) on 2026-07-24.
+
+And the live replacement already exists: `accoutrementsFromArtifacts` in
+`accoutrement_loadout.dart`, used by both `solo_battle_setup.dart` and `duel_battle_setup.dart`.
+**So this file should almost certainly just be deleted** — it is parked only because deleting an
+untracked file is unrecoverable, and once it is in history that stops being true. Deleting it is
+now free.
+
+The test file is the opposite case: genuinely ahead of the codebase, blocked on a real missing
+production class (`MeshBattleSession` — per-peer `BattleSession` fan-out, docs/MESH_ARCHITECTURE
+.md). It also references `Accoutrement(isCoreGem:)`, so when it is un-parked, those two call
+sites want deleting, not implementing.
+
+**Note CI would not have caught any of this.** `.github/workflows/ci.yml` runs
+`scripts/run_vectors.sh`, which tests `test/engine/` plus the circuit corpus — nothing under
+`test/battle/` is in CI. A permanently-red local suite is the only signal that exists here, which
+is exactly why it is worth keeping green.

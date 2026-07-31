@@ -9,6 +9,16 @@
 // engine phase order below is what actually executes on the wire:
 //
 // Phase order (B-5: entropy reveal moved after all player decisions):
+//   0. Artifact activation commit-reveal — each player declares which
+//      loadout artifact (if any) they are spending this turn, BEFORE the
+//      Phase 1 action commit (docs/ARTIFACT_SYSTEM_PLAN.md §4). That
+//      ordering is the whole mechanic: spending an artifact drops your own
+//      counter charms for the turn, and the opponent must learn it while
+//      they can still change their cast. Commit-reveal rather than a plain
+//      exchange so neither side can stall and read the other's declaration
+//      first. Runs inside beginTurn() (see [beginArtifactPhase]), so the UI
+//      can settle it and show the result before the player even picks an
+//      action.
 //   1. Action commit — each player commits their main-phase action
 //      (spell / dash / meditate / pass) before entropy is known. Mana is
 //      deducted at commit time (Cast cost, or Meditate's +25 gain).
@@ -99,6 +109,16 @@
 // Melee wire encoding (separate commit-reveal, after movement resolves):
 //   No melee: [0x00]   Melee: [0x01][q:2][r:2]
 // Commit/reveal shape identical to movement's.
+//
+// Artifact-activation wire encoding (Phase 0 commit-reveal, before the action
+// commit):
+//   No activation: [0x00]   Activation: [0x01][kind:1]
+// [kind] is the AccoutrementKind index. The declaration names a KIND, never a
+// specific accoutrement id — the engine picks which instance is consumed by
+// sorting the owner's accoutrements by id and taking the first match, the
+// same fixed-order convention _findCounteringCharm uses. That removes a whole
+// class of trust bug: a peer cannot name an id it does not own, because it
+// never gets to name an id. Commit/reveal shape identical to movement's.
 
 import 'dart:convert' show jsonDecode, jsonEncode, utf8;
 import 'dart:math' show max, min, pow;
@@ -219,7 +239,6 @@ class SpellCastAction extends TurnAction {
     this.isPotent = false,
     this.isVelocity = false,
     this.isEfficiency = false,
-    this.isRodOfSpreading = false,
     this.vocalScore,
     this.conveyorDirection,
     this.delayedOriginHex,
@@ -242,13 +261,6 @@ class SpellCastAction extends TurnAction {
   /// non-Basic spell today, and for solo/test construction sites that never
   /// set this.
   final int? handIndex;
-
-  /// Air-typed Rod of Spreading: the caster asks to consume one rod to add +1
-  /// effective radius to this spell's effects (or one size rung to a summoned
-  /// minion). Only realised at resolution if the caster actually owns an
-  /// unused rod (see TurnLoop._resolveSpellCast); a peer that sets this without
-  /// owning one gets no bonus (trust boundary, like _certifiedManaCost).
-  final bool isRodOfSpreading;
 
   /// Sorcerer-mode vocal quality score for this cast. Null in Wizard mode.
   ///
@@ -398,7 +410,6 @@ class MysterySpellCastAction extends TurnAction {
     this.immediateNonce,
     this.isPotent = false,
     this.isVelocity = false,
-    this.isRodOfSpreading = false,
     this.vocalScore,
     this.handIndex,
   });
@@ -414,10 +425,6 @@ class MysterySpellCastAction extends TurnAction {
 
   final bool isPotent;
   final bool isVelocity;
-
-  /// See [SpellCastAction.isRodOfSpreading]. Carried through the delayed-fire
-  /// path so a Mystery-precommitted spell can still spend a rod on reveal.
-  final bool isRodOfSpreading;
 
   /// Sorcerer-mode vocal quality score. Null in Wizard mode.
   /// Transmitted and decoded identically to SpellCastAction.vocalScore.
@@ -473,6 +480,25 @@ const _kMaxMana = 9999;
 /// [TurnInput.meditateInMove] and [MeditateAction].
 const _kMeditateManaGain = 25;
 
+/// Counter Charm passive: percentage points, per unspent charm, that a
+/// successful melee destroys one of the victim's mana gems or withers one of
+/// their in-hand spells (ARTIFACT_SYSTEM_PLAN.md §2.3). Linear and capped at
+/// 100, so a full 12-charm loadout procs 60% of the time.
+///
+/// `[TODO — playtest]` — 60% is only balanced if melee is hard to land against
+/// a kiting mage, which is a play question, not a math one.
+const _kCounterCharmProcPctPerCharm = 5;
+
+/// Rod of Wind passive: percentage points, per carried rod, of ONE
+/// end-of-turn roll for +1 movement on the following turn
+/// (ARTIFACT_SYSTEM_PLAN.md §2.8/§3.2). Capped at 100, so 10+ rods is a
+/// guaranteed extra tile every turn — an archetype-defining passive parallel
+/// to the mage slayer's.
+///
+/// `[TODO — playtest]` — both the rate and whether that 100% cap is the
+/// archetype it should be.
+const _kRodMovementPctPerRod = 10;
+
 /// Domain-separation tag for the per-turn signed state-hash (Phase D,
 /// BATTLE_AUTH_PLAN.md §6). Distinct from battle_session.dart's
 /// `kIdentityAuthSignatureTag` so a state-hash signature can never be
@@ -500,6 +526,91 @@ typedef FreeMoveDirectionPicker =
 
 Future<HexCoord?> _defaultNoFreeMove(List<HexCoord> candidates) async => null;
 
+/// Asks the local UI which loadout artifact (if any) to spend this turn, given
+/// the kinds the local wizard actually carries at least one of.
+/// [available] is always non-empty when this is called — [TurnLoop] only
+/// invokes it for a player who has something to spend. Return null to decline.
+///
+/// Declaring anything drops the declarer's own counter charms for the turn
+/// (ARTIFACT_SYSTEM_PLAN.md §2.2), so the UI must make that cost legible
+/// before the player commits.
+typedef ArtifactActivationPicker =
+    Future<AccoutrementKind?> Function(List<AccoutrementKind> available);
+
+Future<AccoutrementKind?> _defaultNoActivation(
+  List<AccoutrementKind> available,
+) async => null;
+
+/// Hands this turn's resolved walks to the UI *at the moment the avatars
+/// actually move*, and waits for the playback to finish before the turn
+/// continues.
+///
+/// The awaiting is the point. [TurnLoop] mutates [BattleState] in place and
+/// then keeps awaiting network exchanges, while the battlefield painter
+/// repaints every frame off a free-running controller — so a walk played back
+/// after `runTurn` returns has already been spoiled: the token teleports to its
+/// destination the instant [_resolveAvatarMovement] runs, then snaps back to
+/// the start when playback finally begins. Firing here, synchronously with the
+/// position change, is what makes the walk the first thing anyone sees.
+///
+/// Cosmetic only, and safe to block on: it runs between the movement resolution
+/// and the Phase 4b melee commit, which already blocks on an unbounded *human*
+/// decision through [MeleeTargetPicker]. Both peers spend their own playback
+/// time independently and re-synchronise at the next exchange. Defaults to
+/// null — headless callers (tests, solo mode) animate nothing.
+typedef MovementPlayback = Future<void> Function(List<AvatarMoveEvent> moves);
+
+/// The loadout artifacts a player may declare at Phase 0.
+///
+/// [AccoutrementKind.counterCharm] is deliberately absent — charms self-trigger
+/// at Phase 5 and have no voluntary activation, which is exactly why an
+/// all-charm "mage slayer" loadout is never off-guard (§2.3). The summon-only
+/// kinds ([AccoutrementKind.absorptionRod], [AccoutrementKind.deflectionTotem])
+/// are absent because they have no loadout presence at all and keep their
+/// existing on-hit behaviour untouched.
+const kActivatableArtifactKinds = <AccoutrementKind>[
+  AccoutrementKind.manaGem,
+  AccoutrementKind.bookmark,
+  AccoutrementKind.rodOfSpreading,
+];
+
+/// What a counter-charm melee proc took from its victim.
+enum CounterCharmProcKind { gemDestroyed, spellWithered }
+
+/// One counter-charm melee proc that landed this turn — UI-only bookkeeping so
+/// the battle screen can say *why* a gem vanished or a card greyed out. The
+/// state change itself has already been applied; [TurnLoop] never reads these
+/// back. An invisible proc reads as a bug rather than a mechanic.
+class CounterCharmProcEvent {
+  const CounterCharmProcEvent({
+    required this.attackerId,
+    required this.victimId,
+    required this.outcome,
+  });
+
+  final String attackerId;
+  final String victimId;
+  final CounterCharmProcKind outcome;
+}
+
+/// Both players' settled Phase-0 declarations for one turn — what
+/// [TurnLoop.beginArtifactPhase] returns and [TurnLoop.lastArtifactActivations]
+/// holds.
+///
+/// Post-validation: a field is non-null only if that player really held the
+/// declared artifact (see [TurnLoop._validateActivation]), so the UI can render
+/// these directly without re-checking. A non-null [peer] is the information the
+/// whole Phase-0 design exists to deliver — their counter charms are down this
+/// turn, and the local player still has time to act on it.
+class ArtifactActivationRound {
+  const ArtifactActivationRound({this.local, this.peer});
+
+  final AccoutrementKind? local;
+  final AccoutrementKind? peer;
+
+  bool get isEmpty => local == null && peer == null;
+}
+
 /// Implements [WildMagicHooks] and [ForcedCastHost] so wild-magic effects that
 /// must re-enter turn-loop machinery (re-dealing a hand, forcing a reveal and
 /// cast) reach it through a narrow named seam instead of the applicator
@@ -520,6 +631,8 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     this.isSorcererMode = false,
     this.meleeTargetPicker = _defaultNoMelee,
     this.freeMoveDirectionPicker = _defaultNoFreeMove,
+    this.artifactActivationPicker = _defaultNoActivation,
+    this.onMovementResolved,
     this.onPhase,
     this.signMessage,
     this.peerRawPubkey,
@@ -553,6 +666,19 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// TODO(sorcerer): wire a speed-boost status effect for [GameMode.sorcerer]
   /// instead of prompting this picker.
   final FreeMoveDirectionPicker freeMoveDirectionPicker;
+
+  /// Called once per turn, at Phase 0 — before anything else in the turn — and
+  /// only when the local avatar carries at least one activatable artifact (see
+  /// [kActivatableArtifactKinds]). Defaults to always declining (headless
+  /// callers — tests, solo mode's scripted dummy — never spend an artifact
+  /// unless they override this).
+  final ArtifactActivationPicker artifactActivationPicker;
+
+  /// Optional UI playback hook: awaited once per turn, immediately after
+  /// movement resolves and before anything else observes the new positions.
+  /// See [MovementPlayback] for why this is awaited rather than fired and
+  /// forgotten. Null (the default) skips it entirely.
+  final MovementPlayback? onMovementResolved;
 
   /// Optional UI notification hook: fired at the two phase boundaries a
   /// caller can't otherwise observe from outside [runTurn] — [TurnPhase
@@ -901,6 +1027,16 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   bool isPositionWithered(String playerId, int position) =>
       _drawSchedules[playerId]?.isWithered(position) ?? false;
 
+  /// Read-only view of [playerId]'s public, position-only draw schedule — the
+  /// bookkeeping both clients compute identically for BOTH players. Null until
+  /// the opening deal has run.
+  ///
+  /// Safe to expose for either player: a [DrawSchedule] holds chapter
+  /// POSITIONS, never spell contents (see draw_schedule.dart's header), so
+  /// this leaks nothing about the peer's hand beyond its size and which slots
+  /// are withered — both of which are already public.
+  DrawSchedule? drawScheduleFor(String playerId) => _drawSchedules[playerId];
+
   /// Whether [spell] — a card currently in [localSpellDraw]'s hand — is
   /// withered and therefore not castable (FuelTransmutation Fire, §9). The
   /// UI seam (battle_screen.dart) uses this to grey out withered cards and
@@ -999,6 +1135,11 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// repopulated at the start of every turn.
   List<ConveyorChainEvent> lastConveyorChainEvents = [];
 
+  /// Counter-charm melee procs that landed during the most recent [runTurn]
+  /// call, for the UI's "your gem shattered" / "that card just withered"
+  /// feedback. Cleared and repopulated at the start of every turn.
+  List<CounterCharmProcEvent> lastCounterCharmProcs = [];
+
   /// Every avatar's walk during the most recent [runTurn] call — one entry per
   /// living avatar, including those who stayed put — for the UI's movement
   /// animation. Cleared and repopulated at the start of every turn.
@@ -1060,7 +1201,310 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// See [beginTurn] / [cancelPendingTurn].
   Future<HexCoord?>? _beginTurnFuture;
 
+  /// Memoizes this turn's Phase-0 exchange, exactly like [_beginTurnFuture]
+  /// does for the action commit: the UI calls [beginArtifactPhase] at the top
+  /// of the turn to learn the peer's declaration before choosing an action,
+  /// and [beginTurn] awaits the same completed Future rather than re-running
+  /// a second exchange over the wire. Cleared by [runTurn] once the turn it
+  /// belongs to has been consumed.
+  ///
+  /// Deliberately NOT cleared by [cancelPendingTurn]: by the time a turn is
+  /// abandoned the Phase-0 frames have already crossed the wire and the
+  /// declaration has already been applied to both devices' state. Replaying it
+  /// would send a second pair of frames the peer is not waiting for.
+  Future<ArtifactActivationRound>? _artifactPhaseFuture;
+
+  /// This turn's settled Phase-0 declarations — a UI read-out of what
+  /// [beginArtifactPhase] resolved to, so a caller that didn't hold onto the
+  /// Future (the battle screen's phase banner, the "charms are down" warning)
+  /// can still render both sides. Reset at the start of each artifact phase.
+  ArtifactActivationRound lastArtifactActivations =
+      const ArtifactActivationRound();
+
   // ── Public entry point ────────────────────────────────────────────────────
+
+  /// Phase 0 (ARTIFACT_SYSTEM_PLAN.md §4): declare which loadout artifact, if
+  /// any, the local player is spending this turn; exchange that declaration
+  /// with the peer under commit-reveal; validate both; apply both.
+  ///
+  /// Idempotent per turn, memoized in [_artifactPhaseFuture]. [beginTurn]
+  /// awaits this before exchanging the action commit, so every existing caller
+  /// — tests, solo mode, anything that calls [runTurn] directly — gets the
+  /// phase for free, in the right order, without changing.
+  ///
+  /// Ordering is still the entire mechanic (§2.2: spending something drops
+  /// your own counter charms for the turn, and the opponent must see that
+  /// while they can still change their cast) — this always resolves before
+  /// either side's action commit, whoever triggers it. But as of 2026-07-31
+  /// the UI no longer forces this **early**: a player can browse their hand
+  /// and the board first, and long-pressing a loadout tile declares and
+  /// fires this exchange right then (so its effect — mana, hand, the rod
+  /// bonus — is visible before they pick a spell). A player who commits a
+  /// spell without ever long-pressing anything gets the implicit no-op path
+  /// this always supported: [beginTurn] awaits this the same way regardless.
+  Future<ArtifactActivationRound> beginArtifactPhase() =>
+      _artifactPhaseFuture ??= _artifactPhaseImpl();
+
+  /// Memoizes this turn's dedicated artifact-entropy exchange (see
+  /// [beginArtifactEntropy]), exactly like [_artifactPhaseFuture] does for
+  /// the kind declaration. Cleared alongside it in [runTurn].
+  Future<Uint8List>? _artifactEntropyFuture;
+
+  /// Fires the turn's dedicated Phase-0 entropy exchange and, once it
+  /// resolves, rolls the Rod of Wind movement passive for every avatar that
+  /// holds one — amended 2026-07-31 (docs/ARTIFACT_SYSTEM_PLAN.md §2.8's
+  /// original "rolled at Phase 6 for the following turn" timing, superseded
+  /// at Soren's direction: activation effects should be usable the turn
+  /// they're decided, so players can weigh them against their hand and the
+  /// tactical situation before committing).
+  ///
+  /// This CANNOT reuse the turn's main joint entropy: that is deliberately
+  /// revealed only after the action/move commits (B-5 look-ahead fix), but
+  /// the rod bonus has to be knowable *before* this turn's own move commit
+  /// to be usable this turn. So it draws from a separate, dedicated
+  /// commit-reveal — [BattleTurnSession.refreshEntropy], the mid-resolution
+  /// seam docs/BATTLE_PROTOCOL.md §3b already names as "the integration
+  /// point for future interactive spells." Knowing this value early leaks
+  /// nothing into the look-ahead-sensitive systems (spell retargeting, burn
+  /// targeting, summon collision) because it is never used for any of them —
+  /// only for a player's own rod roll and their own bookmark redraw (see
+  /// [_applyArtifactActivation]'s bookmark case).
+  ///
+  /// Unconditional every turn — the rod passive isn't gated on a Phase-0
+  /// declaration at all, so this can't wait for one. Memoized and safe to
+  /// call any number of times; the UI calls it eagerly at the top of the
+  /// turn (before the player has looked at their hand) so the roll is
+  /// already settled by the time they're deciding anything.
+  Future<Uint8List> beginArtifactEntropy() =>
+      _artifactEntropyFuture ??= _artifactEntropyImpl();
+
+  Future<Uint8List> _artifactEntropyImpl() async {
+    final entropy = await session.refreshEntropy('artifact_phase');
+
+    // Sorted so both devices walk the avatars in one order, matching
+    // _findCounteringCharm / the Phase 4b melee round's convention.
+    final avatars = List<WizardAvatar>.from(state.avatars)
+      ..sort((a, b) => a.playerId.compareTo(b.playerId));
+    for (final av in avatars) {
+      if (!av.isAlive) continue;
+      // One roll at min(rods × 10, 100)%, not one roll per rod (§3.2).
+      final rods = av.rodOfSpreadingCount;
+      if (rods == 0) continue;
+      final chancePct = min(rods * _kRodMovementPctPerRod, 100);
+      final roll = HashRng(
+        _playerPhaseSeed(entropy, matchId, state.turnNumber, 0x0A, av.playerId),
+      ).nextInt(100);
+      // remainingTurns: 1 is genuinely one-shot now: this status is read by
+      // this SAME turn's movement sizing (below, before Phase 6), then
+      // ticked away by this same turn's Phase 6 — it does not carry into
+      // next turn. That is correct: a fresh roll happens every turn.
+      if (roll < chancePct) {
+        _addStatus(av, StatusEffectId.rodMobility, {'speedDelta': 1}, 1);
+      }
+    }
+    return entropy;
+  }
+
+  Future<ArtifactActivationRound> _artifactPhaseImpl() async {
+    lastArtifactActivations = const ArtifactActivationRound();
+
+    // Ensures the rod roll (and the entropy the bookmark redraw needs) has
+    // happened before declarations are applied below, whether or not the UI
+    // already started it eagerly.
+    final artifactEntropy = await beginArtifactEntropy();
+
+    final localAvatar = _localAvatar();
+    final available = localAvatar.isAlive
+        ? _activatableKinds(localAvatar)
+        : const <AccoutrementKind>[];
+    final localChoice = available.isEmpty
+        ? null
+        : await artifactActivationPicker(available);
+
+    final nonce = CommitRevealEntropy.generateNonce().sublist(
+      0,
+      _kRevealNonceBytes,
+    );
+    final bytes = _encodeActivation(localChoice);
+    final commit = await Sha256()
+        .hash(Uint8List.fromList([...bytes, ...nonce]))
+        .then((h) => Uint8List.fromList(h.bytes));
+    final peerCommit = await session.exchangeArtifactActivationCommit(commit);
+
+    final myReveal = Uint8List.fromList([...nonce, ...bytes]);
+    final peerReveal = await session.exchangeArtifactActivationReveal(myReveal);
+    await _verifyReveal(peerReveal, peerCommit, 'artifact');
+    final peerChoice = _decodeActivation(peerReveal, _kRevealNonceBytes);
+
+    // Applied in sorted-playerId order, not local-first, so both devices walk
+    // the same sequence — the same convention _findCounteringCharm and the
+    // Phase 4b melee round use. It matters here for the same reason: gem
+    // activation mutates avatar state that later validation reads.
+    final peerId = _peerId();
+    final declarations = <(WizardAvatar, AccoutrementKind?)>[
+      (localAvatar, localChoice),
+      if (peerId != null)
+        if (_avatarById(peerId) case final peerAvatar?) (peerAvatar, peerChoice),
+    ]..sort((a, b) => a.$1.playerId.compareTo(b.$1.playerId));
+
+    for (final (avatar, declared) in declarations) {
+      _applyArtifactActivation(
+        avatar,
+        _validateActivation(avatar, declared),
+        artifactEntropy,
+      );
+    }
+
+    final round = ArtifactActivationRound(
+      local: localAvatar.declaredActivation,
+      peer: peerId == null ? null : _avatarById(peerId)?.declaredActivation,
+    );
+    lastArtifactActivations = round;
+    return round;
+  }
+
+  /// The artifact kinds [av] could legally declare right now: the
+  /// [kActivatableArtifactKinds] they actually carry at least one of.
+  List<AccoutrementKind> _activatableKinds(WizardAvatar av) => [
+    for (final kind in kActivatableArtifactKinds)
+      if (av.accoutrements.any((a) => a.kind == kind)) kind,
+  ];
+
+  /// **The Phase-0 trust boundary** (ARTIFACT_SYSTEM_PLAN.md §5), and the only
+  /// one — the local player's own declaration goes through this same call, so
+  /// there is never a second, laxer path (the B-1/B-8 lesson).
+  ///
+  /// Returns [declared] if [av] may really spend it this turn, else null. A
+  /// rejected declaration degrades to no-activation rather than forfeiting:
+  /// both devices run this check against the same state and reach the same
+  /// verdict, and a desync here would be indistinguishable from a stale
+  /// client, so a silent discard is the honest outcome.
+  AccoutrementKind? _validateActivation(
+    WizardAvatar av,
+    AccoutrementKind? declared,
+  ) {
+    if (declared == null) return null;
+    // A dead wizard spends nothing. Both devices agree on who is alive at
+    // Phase 0 (nothing has resolved yet this turn), so this is safe to gate on.
+    if (!av.isAlive) return null;
+    // Never counterCharm (charms self-trigger), never a summon-only kind.
+    if (!kActivatableArtifactKinds.contains(declared)) return null;
+    // At most one activation per player per turn.
+    if (av.declaredActivation != null) return null;
+    // A peer cannot spend what it does not hold. No sub-filter for manaGem:
+    // every gem is consumable now that the indestructible core gem is gone,
+    // including the last one (§2 derived rulings).
+    if (!av.accoutrements.any((a) => a.kind == declared)) return null;
+    return declared;
+  }
+
+  /// Records [kind] as [av]'s activation for this turn and applies whatever
+  /// takes effect immediately. Null is a no-op — [av] declared nothing, or
+  /// their declaration failed [_validateActivation]. [artifactEntropy] is
+  /// this turn's dedicated Phase-0 entropy (see [beginArtifactEntropy]),
+  /// needed by the bookmark redraw.
+  ///
+  /// Not every activation resolves here: the Rod of Wind's *activation* is
+  /// still realised at cast time by [_consumeRodOfSpreading] (single
+  /// rod-consumption path; its movement *passive* is unrelated and rolled by
+  /// [beginArtifactEntropy]). Mana gem and bookmark both resolve instantly —
+  /// amended 2026-07-31, ARTIFACT_SYSTEM_PLAN.md §2.7's original "resolves at
+  /// Phase 6, new hand next turn" is superseded, see [beginArtifactEntropy]'s
+  /// doc comment for why.
+  void _applyArtifactActivation(
+    WizardAvatar av,
+    AccoutrementKind? kind,
+    Uint8List artifactEntropy,
+  ) {
+    if (kind == null) return;
+    av.declaredActivation = kind;
+
+    switch (kind) {
+      case AccoutrementKind.manaGem:
+        // Order is load-bearing (ARTIFACT_SYSTEM_PLAN.md §6.2): shrink the
+        // pool FIRST, then grant. maxMana is stored state, not a live
+        // derivation, so removing the gem alone would leave a stale pool and
+        // desync the state hash — hence _syncMaxMana rather than an open-coded
+        // `maxMana -= 100`. Granting after the shrink is what makes the burst
+        // worthless at near-full mana: this is an emergency button, not free
+        // value. Spending your LAST gem is legal and drops you to the innate
+        // pool with zero passive regen — a real, self-inflicted cost, which is
+        // exactly the trade this activation is meant to be.
+        _consumeAccoutrement(av, AccoutrementKind.manaGem);
+        _syncMaxMana(av);
+        _applyManaGain(av, state.config.manaGemPoolPerGem);
+
+      case AccoutrementKind.bookmark:
+        // Burned AND redrawn immediately, both in this same Phase-0 step —
+        // the new hand is available for THIS turn's own action choice, using
+        // the dedicated artifact entropy rather than this turn's main
+        // entropy (which doesn't exist yet this early in the turn). §2.7's
+        // price is now just the permanent hand slot; the tempo cost is gone.
+        _consumeAccoutrement(av, AccoutrementKind.bookmark);
+        _redrawHand(
+          av.playerId,
+          artifactEntropy,
+          handSize: av.bookmarkCount + 1,
+          tag: 0x09,
+        );
+
+      case AccoutrementKind.rodOfSpreading:
+        // Not consumed here: _consumeRodOfSpreading remains the single
+        // consumption path, and it runs at cast time so a declared rod that
+        // never gets spent (no cast, a fizzle, a counter) is not destroyed —
+        // only the activation budget is wasted.
+        break;
+
+      case AccoutrementKind.counterCharm:
+      case AccoutrementKind.absorptionRod:
+      case AccoutrementKind.deflectionTotem:
+        // Unreachable: _validateActivation rejects these kinds. Listed
+        // exhaustively so adding an AccoutrementKind is a compile error here
+        // rather than a silent no-op.
+        break;
+    }
+  }
+
+  /// Consumes one accoutrement of [kind] from [av], chosen by sorting the
+  /// owner's accoutrements by id and taking the first match — the same
+  /// deterministic tie-break [_findCounteringCharm] uses, and the reason the
+  /// wire declaration can name a kind instead of an id. Returns false if [av]
+  /// holds none.
+  bool _consumeAccoutrement(WizardAvatar av, AccoutrementKind kind) {
+    final match = (List<Accoutrement>.from(av.accoutrements)
+          ..sort((a, b) => a.id.compareTo(b.id)))
+        .where((a) => a.kind == kind)
+        .firstOrNull;
+    if (match == null) return false;
+    av.accoutrements.removeWhere((a) => a.id == match.id);
+    return true;
+  }
+
+  /// Recomputes [av]'s stored [WizardAvatar.maxMana] from its current gem count
+  /// and clamps current mana into the new pool. The engine-side twin of
+  /// EffectApplicator._syncMaxMana — [WizardAvatar.maxMana] is hashed state,
+  /// not a live derivation, so any gem gained or lost must resync it or the two
+  /// devices' state hashes drift.
+  void _syncMaxMana(WizardAvatar av) {
+    av.maxMana = av.maxManaFor(state.config);
+    if (av.mana > av.maxMana) av.mana = av.maxMana;
+  }
+
+  static Uint8List _encodeActivation(AccoutrementKind? kind) => kind == null
+      ? Uint8List.fromList([0x00])
+      : Uint8List.fromList([0x01, kind.index]);
+
+  /// Decodes an activation declaration from [data] at [offset]. Anything
+  /// malformed — truncated, unknown lead byte, out-of-range kind index —
+  /// reads as "declared nothing", which [_validateActivation] would have
+  /// reduced it to anyway.
+  static AccoutrementKind? _decodeActivation(Uint8List data, int offset) {
+    if (offset >= data.length || data[offset] != 0x01) return null;
+    if (offset + 1 >= data.length) return null;
+    final index = data[offset + 1];
+    if (index >= AccoutrementKind.values.length) return null;
+    return AccoutrementKind.values[index];
+  }
 
   /// Begins the action-commit phase for [action] early, before movement is
   /// chosen: exchanges the split action commitment (§13b.2.1) with the peer,
@@ -1097,6 +1541,11 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   }
 
   Future<HexCoord?> _beginTurnImpl(TurnAction action) async {
+    // Phase 0 must settle before the action commit crosses the wire — that
+    // ordering IS the mechanic (see [beginArtifactPhase]). Memoized, so a UI
+    // that already ran it explicitly (the intended flow) pays nothing here.
+    await beginArtifactPhase();
+
     final saltA = CommitRevealEntropy.generateNonce().sublist(
       0,
       _kRevealNonceBytes,
@@ -1250,6 +1699,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     lastCastEvents = [];
     lastResolvedSpells = [];
     lastConveyorChainEvents = [];
+    lastCounterCharmProcs = [];
     lastAvatarMoveEvents = [];
     lastWildMagicEvents = [];
     lastCertifiedBaseManaCosts = {};
@@ -1304,6 +1754,11 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     _pendingActionCommit = null;
     _pendingPeerActionCommit = null;
     _beginTurnFuture = null;
+    // Phase 0 already ran (beginTurn awaits it). Release the memo so the NEXT
+    // turn opens a fresh exchange; the declarations themselves live on the
+    // avatars until the end of this turn.
+    _artifactPhaseFuture = null;
+    _artifactEntropyFuture = null;
 
     // ── Phase 2: Movement commit-reveal ───────────────────────────────────
     // Also committed before entropy is known (same look-ahead protection as
@@ -1399,6 +1854,18 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       HashRng(_phaseSeed(entropy, matchId, state.turnNumber, 0x02)),
     );
 
+    // Walk the tokens now, while this is the only thing that has changed —
+    // no frame gets a chance to render the new positions first, because
+    // _resolveAvatarMovement and this call sit in the same synchronous run.
+    // See [MovementPlayback]. Everything below (cloud drift, the melee prompt,
+    // spell resolution) reads positions this playback has already shown.
+    final playMovement = onMovementResolved;
+    if (playMovement != null) {
+      await playMovement(
+        List<AvatarMoveEvent>.unmodifiable(lastAvatarMoveEvents),
+      );
+    }
+
     // ── Phase 4: Cloud movement ─────────────────────────────────────────────
     // Air-flavor Clouds only; creature Summons AI (this used to run here
     // too) now runs as Phase 5b, after Action resolution — see this file's
@@ -1442,14 +1909,21 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     final meleeRng = HashRng(
       _phaseSeed(entropy, matchId, state.turnNumber, 0x04),
     );
-    if (localMeleeTarget != null) {
-      _applyHaymaker(_localAvatar(), localMeleeTarget, walked, meleeRng);
-    }
-    if (peerId != null && peerMeleeTarget != null) {
-      final peerAvatarForMelee = _avatarById(peerId);
-      if (peerAvatarForMelee != null) {
-        _applyHaymaker(peerAvatarForMelee, peerMeleeTarget, walked, meleeRng);
-      }
+    // Sorted by playerId, NOT local-first. Both haymakers draw from the same
+    // [meleeRng] stream (illusion redirect, and the counter-charm melee proc),
+    // so applying them in device-relative order would have device A run
+    // A-then-B while device B runs B-then-A — the two would consume the shared
+    // stream in different orders and diverge. Same fixed-order convention as
+    // [_findCounteringCharm]. See docs/ARTIFACT_SYSTEM_PLAN.md §6.1.
+    final meleeApplications = <(WizardAvatar, HexCoord)>[
+      if (localMeleeTarget != null) (_localAvatar(), localMeleeTarget),
+      if (peerId != null && peerMeleeTarget != null)
+        if (_avatarById(peerId) case final peerAvatarForMelee?)
+          (peerAvatarForMelee, peerMeleeTarget),
+    ]..sort((a, b) => a.$1.playerId.compareTo(b.$1.playerId));
+    for (final (actor, target) in meleeApplications) {
+      final hit = _applyHaymaker(actor, target, walked, meleeRng);
+      _applyCounterCharmProc(actor, hit, meleeRng);
     }
 
     onPhase?.call(TurnPhase.actionResolve);
@@ -1621,6 +2095,13 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     await _runFreeMoveRound(peerId);
 
     await _exchangeStateHash();
+
+    // Phase-0 declarations are turn-scoped. Cleared AFTER the state-hash
+    // exchange, never before: the flag gates counter-charm firing at Phase 5,
+    // so it is part of the state both devices must agree on for this turn.
+    for (final av in state.avatars) {
+      av.declaredActivation = null;
+    }
 
     // Last chance for a Phoenix save before the match can be declared over —
     // a wizard who dies to end-of-turn damage must still rise.
@@ -2474,7 +2955,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           :final isPotent,
           :final isVelocity,
           :final isEfficiency,
-          :final isRodOfSpreading,
           :final vocalScore,
           :final conveyorDirection,
         ):
@@ -2589,7 +3069,13 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
                 certWildMagic: certifiedPeerWildMagic[spell.commitmentHex],
                 conveyorDirection: conveyorDirection,
                 witherRng: witherRng,
-                rodRequested: isRodOfSpreading,
+                // The rod is declared at Phase 0 now, not folded into the
+                // action commit — every other activation is declared on the
+                // turn it takes effect, and this keeps a delayed Mystery cast
+                // from reserving a rod for three turns while its owner spends
+                // the activation budget elsewhere (§3.1).
+                rodRequested: actor.declaredActivation ==
+                    AccoutrementKind.rodOfSpreading,
               );
               // Scattered Gusts (wild magic, row 3 Air): once active, every
               // cast blows the caster's bookmarks loose and they find a new
@@ -2645,7 +3131,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           :final mysteryCommitment,
           :final isPotent,
           :final isVelocity,
-          :final isRodOfSpreading,
         ):
           // Immediate mystery spells were converted to SpellCastAction by
           // _verifyMysteryAction before reaching here. A MysterySpellCastAction
@@ -2660,7 +3145,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
               origin: actor.position,
               isPotent: isPotent,
               isVelocity: isVelocity,
-              isRodOfSpreading: isRodOfSpreading,
             ),
           );
       }
@@ -2690,7 +3174,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       targetHex: action.immediateTarget!,
       isPotent: action.isPotent,
       isVelocity: action.isVelocity,
-      isRodOfSpreading: action.isRodOfSpreading,
       vocalScore: action.vocalScore,
     );
   }
@@ -2745,7 +3228,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           targetHex: targetTile,
           isPotent: pending.isPotent,
           isVelocity: pending.isVelocity,
-          isRodOfSpreading: pending.isRodOfSpreading,
           delayedOriginHex: pending.origin,
         ),
       ));
@@ -2786,14 +3268,28 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     return buf.toBytes();
   }
 
-  void _applyHaymaker(
+  /// Returns the avatars this punch actually damaged — i.e. the ones that did
+  /// NOT dodge onto an illusion decoy. That list is what makes "a *successful*
+  /// melee attack" precise for the counter-charm proc
+  /// ([_applyCounterCharmProc]), which is applied by the caller rather than
+  /// here: this method is already doing four things.
+  List<WizardAvatar> _applyHaymaker(
     WizardAvatar actor,
     HexCoord targetTile,
     Map<String, List<HexCoord>> walked,
     HashRng rng,
   ) {
-    if (!_isAdjacent(actor.position, targetTile)) return;
+    if (!_isAdjacent(actor.position, targetTile)) return const [];
 
+    final hitAvatars = <WizardAvatar>[];
+    // Every avatar redirected onto an illusion decoy this punch — a dodge is
+    // a full absorb, not just a dodge of the base damage, so every later pass
+    // over this same tile (the Fire DoT sweep below) must also skip them.
+    // Without the melee redirect's old position-teleport (removed 2026-07-31,
+    // see _redirectIfIllusion), the real wizard stays put at [targetTile], so
+    // a naive re-query by position would otherwise apply the DoT to a wizard
+    // whose punch never actually landed.
+    final redirected = <String>{};
     var damage = 1;
 
     // Air haymaker: bonus damage = half the tiles actually traversed this
@@ -2808,9 +3304,12 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
     // Apply damage to entities on target tile.
     for (final av in _avatarsAt(targetTile)) {
-      if (av.playerId != actor.playerId && _redirectIfIllusion(av, rng))
+      if (av.playerId != actor.playerId && _redirectIfIllusion(av, rng)) {
+        redirected.add(av.playerId);
         continue;
+      }
       av.absorbDamage(damage);
+      hitAvatars.add(av);
 
       // Earth haymaker: slow target.
       if (actor.hasHaymakerSlow) {
@@ -2829,9 +3328,11 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       m.takeDamage(damage);
     }
 
-    // Fire haymaker DoT: add stacks to each hit avatar.
+    // Fire haymaker DoT: add stacks to each hit avatar — but skip anyone
+    // redirected above; their punch never landed.
     if (actor.hasHaymakerDot) {
       for (final av in _avatarsAt(targetTile)) {
+        if (redirected.contains(av.playerId)) continue;
         final existing = av.activeStatusEffects
             .where((fx) => fx.effectTypeId == StatusEffectId.haymakerDot)
             .firstOrNull;
@@ -2841,6 +3342,93 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           _addStatus(av, StatusEffectId.haymakerDot, {'damagePerTick': 1}, 2);
         }
       }
+    }
+
+    return hitAvatars;
+  }
+
+  /// Counter Charm passive (ARTIFACT_SYSTEM_PLAN.md §2.3): each of [attacker]'s
+  /// **unspent** charms gives 5% for a successful melee to destroy one of the
+  /// victim's mana gems or wither one of their in-hand spells. Linear, so `n`
+  /// charms is `n × 5%`, capped at 100.
+  ///
+  /// This is the passive that makes an Eldritch Knight / Mage Slayer archetype
+  /// real: dump all 12 loadout slots into charms, run on the innate 100 mana
+  /// pool with no gems at all, spend your limited casting on cheap self-buffs,
+  /// and force mages into a kiting game. It replaced an earlier "1% chance to
+  /// negate an incantation" proposal, which was swingy, invisible, and
+  /// unlearnable.
+  ///
+  /// **Draws from the shared [meleeRng], deliberately — do NOT give it its own
+  /// stream.** That stream is already joint-entropy-seeded and sequenced at the
+  /// right point in the turn. It is also what makes the melee round's
+  /// sorted-playerId application order load-bearing rather than cosmetic: with
+  /// this proc, *every* melee consumes the stream, so any turn with two melees
+  /// would desync under the old local-first ordering (§6.1).
+  ///
+  /// Note this is NOT gated on [WizardAvatar.declaredActivation]: §2.2's gate
+  /// suppresses charms *firing their counter*, not the passive they radiate
+  /// while carried.
+  void _applyCounterCharmProc(
+    WizardAvatar attacker,
+    List<WizardAvatar> victims,
+    HashRng rng,
+  ) {
+    // Only UNSPENT charms count (§2.4): a charm that has fired its counter is
+    // used up and stops feeding the proc, so the 12-charm build self-limits
+    // (60% → 55% → 50%) instead of getting full counter coverage AND a full
+    // proc rate for free.
+    final charms = attacker.activeCounterCharmCount;
+    if (charms == 0) return;
+    final chancePct = min(charms * _kCounterCharmProcPctPerCharm, 100);
+
+    final sortedVictims = List<WizardAvatar>.from(victims)
+      ..sort((a, b) => a.playerId.compareTo(b.playerId));
+    for (final victim in sortedVictims) {
+      if (victim.playerId == attacker.playerId) continue;
+      // The roll is drawn whether or not the victim has anything to lose, so
+      // both devices consume the stream identically — a victim with nothing
+      // destructible fizzles AFTER the draw, never instead of it.
+      if (rng.nextInt(100) >= chancePct) continue;
+
+      final schedule = _drawSchedules[victim.playerId];
+      // "Wither a bookmarked spell" is implemented as "wither a uniformly
+      // chosen in-hand, not-already-withered position": handSize is
+      // bookmarkCount + 1 and DrawSchedule.hand is a flat position list — no
+      // bookmark *owns* a slot, so there is no bookmark→position mapping to
+      // consult and none is needed.
+      final witherable = schedule == null
+          ? const <int>[]
+          : schedule.hand.where((p) => !schedule.withered.contains(p)).toList();
+
+      final options = <CounterCharmProcKind>[
+        if (victim.manaGemsEquipped > 0) CounterCharmProcKind.gemDestroyed,
+        if (witherable.isNotEmpty) CounterCharmProcKind.spellWithered,
+      ];
+      if (options.isEmpty) continue; // nothing to take — fizzles cleanly
+
+      final outcome = options[rng.nextInt(options.length)];
+      switch (outcome) {
+        case CounterCharmProcKind.gemDestroyed:
+          // Gems die permanently, hand slots do not (§2.5). The asymmetry is
+          // deliberate: gems are the engine, hand disruption is tempo.
+          _consumeAccoutrement(victim, AccoutrementKind.manaGem);
+          _syncMaxMana(victim);
+        case CounterCharmProcKind.spellWithered:
+          // Withering lasts until reactivated, identical to FuelTransmutation
+          // Fire's existing behaviour (§2.6) — no duration bookkeeping, and
+          // Earth's existing "reactivate 1 withered spell" already undoes it.
+          final position = witherable[rng.nextInt(witherable.length)];
+          _drawSchedules[victim.playerId] =
+              schedule!.witherPositions([position]);
+      }
+      lastCounterCharmProcs.add(
+        CounterCharmProcEvent(
+          attackerId: attacker.playerId,
+          victimId: victim.playerId,
+          outcome: outcome,
+        ),
+      );
     }
   }
 
@@ -2941,12 +3529,12 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     final formulas = certFormulas ?? _parsedFormulas(spell);
     if (formulas.isEmpty) {
       // Wild-magic stub (zero formulas = void spell). Nothing resolves, so a
-      // requested Rod of Spreading is NOT consumed here (don't burn a rod on a
+      // requested Rod of Wind is NOT consumed here (don't burn a rod on a
       // no-op cast).
       return null;
     }
 
-    // Rod of Spreading: consume one now (if requested and owned) — a real cast
+    // Rod of Wind: consume one now (if requested and owned) — a real cast
     // with at least one effect follows, so the rod does something. +1 radius
     // applies to every spatial effect of this spell (see EffectApplicator).
     final radiusBonus = _consumeRodOfSpreading(actor, rodRequested);
@@ -3147,8 +3735,10 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
   /// Re-deals [playerId]'s entire hand: every card returns to `remaining` in
   /// canonical commitmentHex order (that sortedness is a load-bearing
-  /// invariant — see spell_draw.dart's header), then a fresh hand of the same
-  /// size is drawn.
+  /// invariant — see spell_draw.dart's header), then a fresh hand is drawn.
+  /// Old spells can come back: they are returned to the pool BEFORE the redraw,
+  /// which is exactly what makes a bookmark burn a gamble rather than a
+  /// guaranteed upgrade.
   ///
   /// Mirrors [_advanceDrawState]'s dual-structure update exactly: the public
   /// [_drawSchedules] entry always advances; [localSpellDraw]'s real CONTENTS
@@ -3156,24 +3746,36 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// constructed HashRng instances over the SAME seed bytes — never a shared
   /// mutable instance — which is what keeps positions and contents in
   /// agreement (see this class's hand/deck header comment).
-  void _redrawHand(String playerId, Uint8List entropy) {
+  ///
+  /// [handSize] defaults to the current hand's size (wild magic's Scattered
+  /// Gusts re-deals the same number of cards). The bookmark burn passes an
+  /// explicitly SMALLER size, because burning the bookmark permanently removed
+  /// the slot it paid for. [tag] is the phase-seed domain tag — `0x05` for a
+  /// Scattered Gusts redraw, `0x09` for a bookmark burn — so the two can never
+  /// collide on the same turn.
+  void _redrawHand(
+    String playerId,
+    Uint8List entropy, {
+    int? handSize,
+    int tag = 0x05,
+  }) {
     final schedule = _drawSchedules[playerId];
     if (schedule == null) return;
-    final handSize = schedule.hand.length;
-    if (handSize == 0) return;
+    final size = handSize ?? schedule.hand.length;
+    if (size <= 0) return;
     final seed = _playerPhaseSeed(
       entropy,
       matchId,
       state.turnNumber,
-      0x05,
+      tag,
       playerId,
       _consumeDrawNonce(playerId),
     );
-    _drawSchedules[playerId] = schedule.redrawHand(handSize, HashRng(seed));
+    _drawSchedules[playerId] = schedule.redrawHand(size, HashRng(seed));
     if (playerId == localPlayerId) {
       final draw = localSpellDraw;
       if (draw != null) {
-        localSpellDraw = draw.redrawHand(handSize, HashRng(seed));
+        localSpellDraw = draw.redrawHand(size, HashRng(seed));
       }
     }
   }
@@ -3321,25 +3923,28 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     return candidates[rng.nextInt(candidates.length)];
   }
 
-  /// Rod of Spreading (Air artifact): if [requested] and [actor] carries an
+  /// Rod of Wind (Air artifact): if [requested] and [actor] carries an
   /// unused rod, removes one from their loadout and returns +1 — the effective
   /// radius bonus for an incantation, or the size-rung bonus for a summon.
   /// Otherwise returns 0.
   ///
-  /// Reading the bonus from the actor's OWN accoutrements — not the bare wire
-  /// flag — is the peer trust boundary: a peer that sets isRodOfSpreading
-  /// without actually owning a rod gets no bonus. This mirrors how
-  /// _certifiedManaCost recomputes cost from authoritative state rather than
-  /// trusting the caster's word. Removing the accoutrement mutates the avatar,
-  /// so it shows up in BattleState.toCanonicalBytes() and both devices stay in
-  /// lockstep on the consumed rod.
+  /// [requested] now comes from the caster's **Phase-0 declaration**
+  /// (`declaredActivation == rodOfSpreading`) rather than a flag on the action
+  /// commit, but this stays the single rod-consumption path — which is what
+  /// keeps the trust boundary in one place. Reading the bonus from the actor's
+  /// OWN accoutrements, not from the wire, is that boundary: a peer that
+  /// declares a rod without actually owning one gets no bonus. This mirrors
+  /// how _certifiedManaCost recomputes cost from authoritative state rather
+  /// than trusting the caster's word. Removing the accoutrement mutates the
+  /// avatar, so it shows up in BattleState.toCanonicalBytes() and both devices
+  /// stay in lockstep on the consumed rod.
+  ///
+  /// A rod declared but never spent (no cast, a fizzle, a countered cast)
+  /// survives — the wasted resource is the once-per-turn activation budget,
+  /// not the artifact.
   int _consumeRodOfSpreading(WizardAvatar actor, bool requested) {
     if (!requested) return 0;
-    final idx = actor.accoutrements
-        .indexWhere((a) => a.kind == AccoutrementKind.rodOfSpreading);
-    if (idx < 0) return 0;
-    actor.accoutrements.removeAt(idx);
-    return 1;
+    return _consumeAccoutrement(actor, AccoutrementKind.rodOfSpreading) ? 1 : 0;
   }
 
   // ── Summoning (design doc "Summons") ──────────────────────────────────────
@@ -3364,7 +3969,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     final spec = CreatureSpec.fromElements(sequence);
     if (spec == null) return null; // no activations -- nothing to summon (void)
 
-    // Rod of Spreading: a real creature will spawn, so consume the rod now (if
+    // Rod of Wind: a real creature will spawn, so consume the rod now (if
     // requested and owned) and bump the creature one size rung up the ladder.
     final sizeBonus = _consumeRodOfSpreading(actor, rodRequested);
 
@@ -3420,6 +4025,8 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           abilities: summoned.abilities,
           personality: summoned.personality,
           sizeBonus: summoned.sizeBonus,
+          // Wears the original's card art, tinted (Minion.copiedFromMinionId).
+          copiedFromMinionId: summoned.copiedFromMinionId ?? summoned.id,
         ),
       );
     }
@@ -3520,11 +4127,21 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// Charms trigger on the first cast of their bound grid by ANY wizard,
   /// including the charm's own owner (design: counter-charm plan, "Trigger
   /// source" — deliberately not opponent-only).
+  ///
+  /// A wizard who spent an artifact at Phase 0 has their charms down for the
+  /// turn (ARTIFACT_SYSTEM_PLAN.md §2.2) and is skipped entirely. The tension
+  /// is internal to the charm holder — *"do I want that 100 mana badly enough
+  /// to open a window this turn?"* — which is why the gate is on the CHARM
+  /// OWNER's own declaration and not the caster's. Because this method
+  /// deliberately searches every avatar including the caster, that one guard
+  /// correctly covers a wizard whose own activation opened a window onto their
+  /// own cast, with no second check needed.
   (WizardAvatar, Accoutrement)? _findCounteringCharm(String commitmentHex) {
     if (commitmentHex.isEmpty) return null;
     final sortedAvatars = List<WizardAvatar>.from(state.avatars)
       ..sort((a, b) => a.playerId.compareTo(b.playerId));
     for (final av in sortedAvatars) {
+      if (av.declaredActivation != null) continue;
       final sortedAcc = List<Accoutrement>.from(av.accoutrements)
         ..sort((a, b) => a.id.compareTo(b.id));
       for (final acc in sortedAcc) {
@@ -3554,7 +4171,10 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
   // ── Phase 5: End of turn ──────────────────────────────────────────────────
 
-  void _endOfTurn(Map<String, HexCoord> preMovPos, HashRng rng) {
+  void _endOfTurn(
+    Map<String, HexCoord> preMovPos,
+    HashRng rng,
+  ) {
     // Fire barrier aura: deal 1 damage to all adjacent entities per fire-barrier holder.
     for (final av in state.avatars) {
       final fb = av.barriers[SpellAffinity.fire];
@@ -3767,6 +4387,12 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       av.tickStatusEffects();
     }
     state.tickClouds();
+
+    // Rod of Wind's movement passive and the bookmark burn's hand redraw
+    // used to resolve here (ARTIFACT_SYSTEM_PLAN.md §§2.7-2.8's original
+    // "Phase 6, effective next turn" timing). Amended 2026-07-31: both now
+    // resolve at Phase 0, via [beginArtifactEntropy] / [_applyArtifactActivation],
+    // so they're usable the same turn they're decided. See those for why.
 
     _reapDead(rng);
     _applyPhoenixSaves();
@@ -4432,7 +5058,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         :final isPotent,
         :final isVelocity,
         :final isEfficiency,
-        :final isRodOfSpreading,
         :final vocalScore,
         :final conveyorDirection,
         :final handIndex,
@@ -4451,7 +5076,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         buf.addByte(isPotent ? 1 : 0);
         buf.addByte(isVelocity ? 1 : 0);
         buf.addByte(isEfficiency ? 1 : 0);
-        buf.addByte(isRodOfSpreading ? 1 : 0);
         buf.addByte(conveyorDirection != null ? 1 : 0);
         if (conveyorDirection != null) buf.add(_encodeCoord(conveyorDirection));
         _appendSpellProofTail(buf, spell, handIndex);
@@ -4470,7 +5094,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         :final immediateNonce,
         :final isPotent,
         :final isVelocity,
-        :final isRodOfSpreading,
         :final vocalScore,
         :final handIndex,
       ):
@@ -4493,7 +5116,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         }
         buf.addByte(isPotent ? 1 : 0);
         buf.addByte(isVelocity ? 1 : 0);
-        buf.addByte(isRodOfSpreading ? 1 : 0);
         _appendSpellProofTail(buf, spell, handIndex);
         if (isSorcererMode) _appendSorcererBytes(buf, vocalScore);
     }
@@ -4639,7 +5261,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         final isPotent01 = pos < bytes.length && bytes[pos++] == 1;
         final isVelocity01 = pos < bytes.length && bytes[pos++] == 1;
         final isEfficiency01 = pos < bytes.length && bytes[pos++] == 1;
-        final isRod01 = pos < bytes.length && bytes[pos++] == 1;
 
         HexCoord? conveyorDirection01;
         if (pos < bytes.length) {
@@ -4700,7 +5321,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
             isPotent: isPotent01,
             isVelocity: isVelocity01,
             isEfficiency: isEfficiency01,
-            isRodOfSpreading: isRod01,
             vocalScore: vocalScore01,
             conveyorDirection: conveyorDirection01,
           ),
@@ -4748,7 +5368,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         }
         final isPotent3 = pos3 < bytes.length && bytes[pos3++] == 1;
         final isVelocity3 = pos3 < bytes.length && bytes[pos3++] == 1;
-        final isRod3 = pos3 < bytes.length && bytes[pos3++] == 1;
 
         Uint8List decodedProofBytes3 = Uint8List(0);
         final commitmentHex3 =
@@ -4795,7 +5414,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
             immediateNonce: immNonce,
             isPotent: isPotent3,
             isVelocity: isVelocity3,
-            isRodOfSpreading: isRod3,
             vocalScore: vocalScore03,
           ),
           merkleProof: merkle3,
@@ -5205,7 +5823,48 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     return (base * pow(1.05, spell.t) * pow(1.5, effectCount)).round();
   }
 
+  /// Charge [caster] for casting [spell]: the cost, *and* the state changes
+  /// that pricing it implies (a consumed chainSurcharge, a consumed
+  /// nextSpellCostDouble, the HP damage its shortfall converts to).
+  ///
+  /// The arithmetic lives in [_spellCostBreakdown] so [previewSpellCost] can
+  /// ask "what would this cost?" without charging for it. Do not reintroduce a
+  /// second copy of the formula here — the UI gate and the deduction must
+  /// agree to the mana, or the peer's `insufficient_mana_for_spell` check
+  /// forfeits the match (see [_verifyPeerSpellCast] step 4).
   int _spellManaCost(
+    SpellAsset spell,
+    WizardAvatar caster, {
+    CastingEnhancements? enhancements,
+  }) {
+    final b = _spellCostBreakdown(spell, caster, enhancements: enhancements);
+
+    if (b.hpDamage > 0) caster.absorbDamage(b.hpDamage);
+
+    // Both indices address the UNMUTATED list, so remove the higher first —
+    // that is exactly equivalent to the original inline order (remove the
+    // surcharge, then remove the double at its post-shift index), because
+    // dropping a chainSurcharge never changes *which* nextSpellCostDouble is
+    // first, only where it sits.
+    final consumed = [b.surchargeIdx, b.doubleIdx].where((i) => i >= 0).toList()
+      ..sort();
+    for (final i in consumed.reversed) {
+      caster.activeStatusEffects.removeAt(i);
+    }
+
+    return b.cost;
+  }
+
+  /// Price a cast of [spell] by [caster] without mutating either.
+  ///
+  /// Operation order is the same as [_certifiedManaCost]'s — see its doc
+  /// comment for the numbered steps and why the two must not drift. What this
+  /// returns beyond the cost is everything the charging path has to *apply*:
+  /// [hpDamage] to absorb, and the indices into [caster]'s current
+  /// `activeStatusEffects` of the chainSurcharge / nextSpellCostDouble entries
+  /// this cast consumes (-1 when absent).
+  ({int cost, int hpDamage, int surchargeIdx, int doubleIdx})
+  _spellCostBreakdown(
     SpellAsset spell,
     WizardAvatar caster, {
     CastingEnhancements? enhancements,
@@ -5216,14 +5875,13 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     // Chain: a pending chainSurcharge (potent Air-flavor Chain Interaction)
     // overrides the ordinary chain lookup for this one cast, regardless of
     // affinity — mirrors _certifiedManaCost's step 2, same relative
-    // position. Consumed here so it doesn't also fire in _updateChainState's
-    // normal advancement afterward.
+    // position. Reported back for [_spellManaCost] to consume, so it doesn't
+    // also fire in _updateChainState's normal advancement afterward.
     final surchargeIdx = caster.activeStatusEffects.indexWhere(
       (fx) => fx.effectTypeId == StatusEffectId.chainSurcharge,
     );
     if (surchargeIdx >= 0) {
       cost = (cost * pow(0.9, -1)).ceil();
-      caster.activeStatusEffects.removeAt(surchargeIdx);
     } else {
       final pureAffinity = spell.isSummon
           ? CreatureSpec.fromElements(_elementSequence(spell))?.affinity
@@ -5246,7 +5904,9 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       cost = (cost * enhancements.manaCostMultiplier).ceil();
     }
 
-    // nextSpellCostDouble status effect: consume it and double the cost.
+    // nextSpellCostDouble status effect: double the cost (and report the
+    // effect back for [_spellManaCost] to consume).
+    var hpDamage = 0;
     final doubleIdx = caster.activeStatusEffects.indexWhere(
       (fx) => fx.effectTypeId == StatusEffectId.nextSpellCostDouble,
     );
@@ -5257,17 +5917,93 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       final hpPerMana = fx.modifiers['hpPerManaMissed'] ?? 1;
       final manaPerHp = fx.modifiers['manaPerHp'] ?? 10;
       // HP shortfall conversion: if caster can't afford it, excess cost → HP damage.
+      // This is the one route by which an "unaffordable" cast is still legal —
+      // the caster pays what they have and bleeds for the rest — so the cost
+      // returned here is never above `caster.mana`, and [canAffordSpell]
+      // correctly lets it through without needing a special case.
       final shortfall = (cost - caster.mana).clamp(0, 9999);
       if (shortfall > 0) {
-        final hpDamage = ((shortfall / manaPerHp) * hpPerMana).ceil();
-        caster.absorbDamage(hpDamage);
+        hpDamage = ((shortfall / manaPerHp) * hpPerMana).ceil();
         cost = caster.mana; // pay what they have
       }
-      caster.activeStatusEffects.removeAt(doubleIdx);
     }
 
-    return cost.clamp(0, _kMaxMana);
+    return (
+      cost: cost.clamp(0, _kMaxMana),
+      hpDamage: hpDamage,
+      surchargeIdx: surchargeIdx,
+      doubleIdx: doubleIdx,
+    );
   }
+
+  // ── Cost preview (UI affordability gate) ──────────────────────────────────
+
+  /// What casting [spell] would cost the local avatar **right now**, without
+  /// charging for it or consuming anything. The UI's affordability gate and
+  /// its cost readout both read this.
+  ///
+  /// In sorcerer mode the true multiplier isn't knowable until after the voice
+  /// capture, which happens *after* the player has committed to casting — so
+  /// this prices the worst case ([CastingEnhancements.maxManaCostMultiplier],
+  /// with the Efficiency discount withheld, exactly as a fizzle would). A
+  /// well-spoken incantation then costs less than advertised, which is the
+  /// only direction that's safe: the alternative is a cast the gate approved
+  /// at 1.0× and the peer forfeits over at 1.5×.
+  ///
+  /// Returns 0 for a proofless dev-flag spell — those are free on both devices
+  /// (see [_isProoflessBypass]).
+  int previewSpellCost(
+    SpellAsset spell, {
+    bool isPotent = false,
+    bool isVelocity = false,
+    bool isEfficiency = false,
+  }) {
+    if (_isProoflessBypass(spell)) return 0;
+    final enhancements = isSorcererMode
+        ? CastingEnhancements(
+            isPotent: isPotent,
+            isVelocity: isVelocity,
+            isEfficiency: false,
+            gameMode: GameMode.sorcerer,
+            enhancementEnabled: false,
+            manaCostMultiplier: CastingEnhancements.maxManaCostMultiplier,
+          )
+        : CastingEnhancements(
+            isPotent: isPotent,
+            isVelocity: isVelocity,
+            isEfficiency: isEfficiency,
+          );
+    return _spellCostBreakdown(
+      spell,
+      _localAvatar(),
+      enhancements: enhancements,
+    ).cost;
+  }
+
+  /// Whether the local avatar can pay for [spell] this turn.
+  ///
+  /// This is the client-side mirror of the peer's `insufficient_mana_for_spell`
+  /// forfeit ([_verifyPeerSpellCast] step 4). Casting anyway isn't a local
+  /// nuisance that resolves for less — the caster's own deduction clamps at 0
+  /// and plays on while the *opponent's* device forfeits the match, which
+  /// reads as a desync. Gate the cast in the UI instead.
+  ///
+  /// A pending nextSpellCostDouble makes every cast affordable by definition
+  /// (the shortfall is converted to HP damage rather than refused), and that
+  /// falls out of [previewSpellCost] without a special case here.
+  bool canAffordSpell(
+    SpellAsset spell, {
+    bool isPotent = false,
+    bool isVelocity = false,
+    bool isEfficiency = false,
+  }) =>
+      previewSpellCost(
+        spell,
+        isPotent: isPotent,
+        isVelocity: isVelocity,
+        isEfficiency: isEfficiency,
+      ) <=
+      _localAvatar().mana;
 
   // ── Greedy pathfinding helpers ─────────────────────────────────────────────
 
@@ -5365,10 +6101,17 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
   /// Water-Air Illusions (Water flavor), melee-punch path: if [target] has
   /// active wizard decoys, roll 1/remaining -- on a hit the real wizard takes
-  /// it (returns false); otherwise a random decoy is destroyed and [target]
-  /// is moved to its tile instead (returns true, meaning this hit is dodged).
-  /// Mirrors EffectApplicator._resolveIllusionRedirect for the formula-effect
-  /// path; duplicated here since the melee punch bypasses EffectApplicator.
+  /// it (returns false); otherwise a random decoy is destroyed and the punch
+  /// is fully absorbed (returns true) — **nothing else happens**: no damage,
+  /// no position change, no haymaker side effect (slow/DoT/status-drain).
+  /// The decoy dies regardless; the real wizard is untouched, full stop.
+  ///
+  /// Diverged from [EffectApplicator._resolveIllusionRedirect] (2026-07-31):
+  /// the formula-effect path still teleports the target onto the decoy's tile
+  /// on a dodge (a spell "chasing" the illusion's last-seen position reads as
+  /// intentional); a melee punch has no such framing, so a dodge is just a
+  /// dodge — no free reposition. Mirrors it only in shape, not in that detail;
+  /// duplicated here since the melee punch bypasses EffectApplicator either way.
   bool _redirectIfIllusion(WizardAvatar target, HashRng rng) {
     final set = state.wizardIllusions
         .where(
@@ -5379,9 +6122,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     final n = set.decoyPositions.length;
     if (rng.nextInt(n) == 0) return false; // chance 1/n: real wizard is hit
     final idx = rng.nextInt(n);
-    final decoyPos = set.decoyPositions.removeAt(idx);
-    target.position = decoyPos;
-    state.battlefield.occupancy[target.playerId] = decoyPos;
+    set.decoyPositions.removeAt(idx); // the illusion dies; nothing else moves
     if (set.decoyPositions.isEmpty) state.wizardIllusions.remove(set);
     return true;
   }

@@ -85,7 +85,7 @@ const Map<SummonPersonality, String> kSummonPersonalityLabel = {
 ///   rung 2 → the full radius-1 hex: `[center]` + all six neighbors (7 tiles),
 ///            the largest possible size.
 ///
-/// The rung is `min((big ? 1 : 0) + sizeBonus, 2)`, so a Rod of Spreading
+/// The rung is `min((big ? 1 : 0) + sizeBonus, 2)`, so a Rod of Wind
 /// ([sizeBonus] = 1) pushes a normal creature to the triangle and an already-Big
 /// one to the full hex, capped at 7 tiles (design v3.0 §Artifacts).
 List<HexCoord> footprintFor(
@@ -119,6 +119,7 @@ class Minion {
     this.actedThisTurn = false,
     this.forceCloseToAttack = false,
     this.sizeBonus = 0,
+    this.copiedFromMinionId,
   })  : abilities = abilities ?? const {},
         hp = hp ?? stats.maxHp,
         activeStatusEffects = activeStatusEffects ?? [],
@@ -157,9 +158,23 @@ class Minion {
   final List<StatusEffect> activeStatusEffects;
   final Map<SpellAffinity, BarrierState> barriers;
 
-  /// Extra size rungs granted at summon time by a Rod of Spreading (0 or 1).
+  /// Extra size rungs granted at summon time by a Rod of Wind (0 or 1).
   /// Folds into the footprint ladder in [footprintFor]; see [occupiedTiles].
   final int sizeBonus;
+
+  /// Set when this creature was conjured as a copy of another rather than by
+  /// a direct summon cast — Reflections' summonMirror (turn_loop.dart) and
+  /// Illusions' Fire-flavor minion clone (effect_applicator.dart). Holds the
+  /// id of the ORIGINAL cast creature, not the immediate source, so a copy of
+  /// a copy still resolves in one hop.
+  ///
+  /// Purely presentational: a copy has no cast of its own, so this is how the
+  /// UI finds the SpellAsset whose art it should wear (battle_screen.dart's
+  /// _MinionArtOverlay / long-press card, both of which render it phantasmal
+  /// blue to distinguish it from the original). Nothing in the engine reads
+  /// it, and it must stay that way — it is not a gameplay-relevant link, and
+  /// the original may be dead and reaped while the copy lives on.
+  final String? copiedFromMinionId;
 
   bool get isAlive => hp > 0;
 

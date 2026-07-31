@@ -72,6 +72,8 @@ class SoloBattleSession implements BattleTurnSession {
       Uint8List.fromList([0x00, 0x00, 0x00]); // not dashing, not meditating, count=0
   Uint8List _peerMeleeNonce = Uint8List(16);
   Uint8List _peerMeleeBytes = Uint8List.fromList([0x00]); // no melee target
+  Uint8List _peerArtifactNonce = Uint8List(16);
+  Uint8List _peerArtifactBytes = Uint8List.fromList([0x00]); // no activation
   Uint8List _peerFreeMoveNonce = Uint8List(16);
   Uint8List _peerFreeMoveBytes = Uint8List.fromList([0x00]); // no free move
 
@@ -313,6 +315,25 @@ class SoloBattleSession implements BattleTurnSession {
   @override
   Future<Uint8List> exchangeMoveReveal(Uint8List ourReveal) async {
     return Uint8List.fromList([..._peerMoveNonce, ..._peerMoveBytes]);
+  }
+
+  // ── Phase 0 artifact-activation commit-reveal ───────────────────────────────
+  //
+  // The dummy carries no loadout, so it never spends an artifact.
+
+  @override
+  Future<Uint8List> exchangeArtifactActivationCommit(Uint8List ourCommit) async {
+    _peerArtifactNonce = Uint8List(16);
+    _peerArtifactBytes = Uint8List.fromList([0x00]);
+    final hash = await Sha256().hash(
+      Uint8List.fromList([..._peerArtifactBytes, ..._peerArtifactNonce]),
+    );
+    return Uint8List.fromList(hash.bytes);
+  }
+
+  @override
+  Future<Uint8List> exchangeArtifactActivationReveal(Uint8List ourReveal) async {
+    return Uint8List.fromList([..._peerArtifactNonce, ..._peerArtifactBytes]);
   }
 
   // ── Resolution-phase melee commit-reveal ────────────────────────────────────

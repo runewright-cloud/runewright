@@ -340,7 +340,8 @@ Serialize the activation flag (§6.3).
 ## 9. Tests
 
 Follow the existing per-feature layout — `test/battle/engine/counter_charm_test.dart` and
-`rod_of_spreading_test.dart` are the models to extend rather than replace.
+`rod_of_wind_test.dart` (renamed from `rod_of_spreading_test.dart` 2026-07-31, alongside the
+"Rod of Wind" terminology sweep) are the models to extend rather than replace.
 
 **Determinism (highest value, write these first):**
 - Two `TurnLoop`s with swapped local/peer perspectives produce identical state hashes across a
@@ -407,3 +408,67 @@ Tag these `[TODO — playtest]` in the design doc; they are whiteboard numbers:
 - **Whether artifact depletion ends matches too fast.** This is the largest untested
   assumption in the whole rework: the entire artifact economy now trends toward zero, and
   nothing in the current match-length data accounts for that.
+
+---
+
+## 13. Addendum (2026-07-31) — long-press declaration + same-turn resolution
+
+Ratified by Soren the same day this plan's Phase-0 scaffolding shipped, superseding two
+pieces of §1/§2/§4 above. Everything else in this document — the trust boundary (§5), the
+determinism rules (§6), and both ratified rulings not touched here — stands unchanged.
+
+**What changed and why.** The original design forced a blocking full-screen prompt at the
+very top of the turn, before the player had looked at their hand or the board, and it
+deferred Bookmark's redraw and Rod's movement roll to resolve on a *later* turn than the one
+they were declared on. Soren's ask: let players see their hand and the tactical situation
+before deciding whether an activation is worth it, and make every activation's effect land
+the turn it's declared, not the next one.
+
+**13.1 — UI: no forced modal.** `beginArtifactPhase()`'s kind-declaration commit-reveal is no
+longer triggered eagerly at the top of the turn. The main phase is free to browse; a
+long-press on a loadout corner tile declares that activation and fires the exchange right
+then (`_onArtifactCornerLongPress`). A player who commits a spell without ever long-pressing
+anything gets the implicit "declared nothing" path the engine always supported — `_commitAction`
+calls the same (memoized) exchange as a safety net. The ordering invariant that makes the
+mind game work — Phase 0 fully resolves before either side's action commit — is unchanged;
+only the UI trigger point moved. `[TODO — playtest]` whether the opponent's declaration still
+reaches a slow-deciding player "in time" often enough to matter, now that it isn't forced to
+the very top of the turn for both sides simultaneously.
+
+**13.2 — Rod's movement passive and Bookmark's redraw both resolve the turn they're rolled/
+declared, not the next one.** This requires entropy that exists *before* this turn's own
+movement commit, which the turn's main joint entropy structurally cannot provide (§3.2's
+"movement is committed in Phase 2, entropy arrives in Phase 3" is still true and still the
+reason spell-resolution RNG stays post-commit). The fix is a **second, dedicated commit-reveal
+exchange**, fired unconditionally at the top of every turn — `TurnLoop.beginArtifactEntropy()`,
+reusing the mid-resolution `refreshEntropy` seam (`BATTLE_PROTOCOL.md` §3b) that was already
+wired for exactly this kind of need ("the integration point for future interactive spells").
+It is cheap (one extra LAN round trip, same shape as the turn-start nonce exchange) and kept
+strictly separate from the main entropy stream — it is never used for anything look-ahead
+sensitive (spell retargeting, burn targeting, summon collision), only for a player's own rod
+roll and their own bookmark redraw, so knowing it early leaks nothing that the B-5 protection
+cares about.
+
+- **Rod:** the passive roll moves from Phase 6-of-the-previous-turn to Phase 0-of-this-turn.
+  The `rodMobility` status effect is added with `remainingTurns: 1` same as before, but the
+  timing is now genuinely one-shot: it's read by this same turn's Phase 2 movement sizing,
+  then ticked away by this same turn's Phase 6 — it does not carry into next turn, and doesn't
+  need to (a fresh roll happens every turn regardless). This also deletes the old "must be
+  added AFTER tickStatusEffects or it's swept in the same breath" bookkeeping entirely; there
+  was nothing to work around once the add and the tick landed in the same turn in the
+  intended order.
+- **Bookmark:** the redraw call moves out of `_endOfTurn` and into `_applyArtifactActivation`'s
+  bookmark case, using `beginArtifactEntropy()`'s dedicated entropy (still tag `0x09`) instead
+  of the main turn entropy. The bookmark is still consumed at declaration time; the redraw now
+  happens in the same breath rather than at Phase 6. §2.7's price is down to just the permanent
+  hand slot — the "full turn of tempo" cost is gone, by design, per this ruling.
+
+**13.3 — Banners.** The Phase-0 read-out is corner-tile-only now: "mine" is the tile's outlined
+state, "my charms are down" is the counter-charm tile's dimmed state (both pre-existing), and
+the opponent's declaration is a one-shot `SnackBar` toast fired the moment it's revealed,
+replacing the persistent full-width banner that used to linger for the rest of the turn.
+
+**13.4 — Not changed.** The Phase-0 wire format (`artifactCommit`/`artifactReveal`, §4.3), the
+trust boundary (§5), `_activatedThisTurn`/counter-charm gating (§2.2), the melee-proc ordering
+fix (§6.1), and the Rod's cast-time radius-bonus *activation* (unrelated to the movement
+*passive* touched here — see `_consumeRodOfSpreading`) are all untouched.

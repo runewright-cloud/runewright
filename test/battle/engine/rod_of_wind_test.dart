@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// rod_of_spreading_test.dart — the Air-typed Rod of Spreading artifact
-// (design v3.0 §Artifacts). A one-shot consumable that adds +1 effective
-// radius to a spell's spatial effects and one size rung to a summoned minion.
+// rod_of_wind_test.dart — the Air-typed Rod of Wind artifact
+// (design v3.0 §Artifacts). Renamed from "Rod of Spreading" 2026-07-31; the
+// `AccoutrementKind.rodOfSpreading` / `ArtifactKind.rodOfSpreading` Dart
+// identifiers are left as-is (out of scope for a terminology pass — the
+// sibling `ArtifactKind` in accoutrement_loadout.dart/chapter_asset.dart is
+// persisted to on-device storage BY NAME, so renaming it needs its own
+// migration decision, not a drive-by rename). A one-shot consumable that adds
+// +1 effective radius to a spell's spatial effects and one size rung to a
+// summoned minion.
 //
 // Covers:
 //   - the minion size ladder [1 → 3 → 7] (footprintFor, pure);
@@ -121,7 +127,7 @@ void main() {
   });
 
   // ── EffectApplicator footprint expansion ────────────────────────────────────
-  group('Rod of Spreading enlarges spatial effects', () {
+  group('Rod of Wind enlarges spatial effects', () {
     test('single-target direct damage becomes an AoE over the disc', () {
       final caster = _avatar('caster', const HexCoord(0, 0));
       final onTarget = _avatar('t', const HexCoord(2, 0), teamId: 'foe');
@@ -349,7 +355,7 @@ void main() {
         );
 
     ({BattleState state, TurnLoop loop, WizardAvatar local}) setup(
-        {List<Accoutrement> accoutrements = const []}) {
+        {List<Accoutrement> accoutrements = const [], bool declareRod = false}) {
       final bf = Battlefield(radius: 6);
       const id = 'local';
       final local = WizardAvatar(
@@ -374,19 +380,24 @@ void main() {
         state: state,
         session: SoloBattleSession(state: state),
         localPlayerId: id,
+        // The rod is declared at Phase 0 now, not folded into the action
+        // commit (ARTIFACT_SYSTEM_PLAN.md §3.1) — so a cast that wants the
+        // bonus declares it through the picker before the turn opens.
+        artifactActivationPicker: declareRod
+            ? (_) async => AccoutrementKind.rodOfSpreading
+            : (_) async => null,
       );
       return (state: state, loop: loop, local: local);
     }
 
     test('with a rod owned: creature enlarged one rung, rod consumed', () async {
-      final ctx = setup(accoutrements: [
+      final ctx = setup(declareRod: true, accoutrements: [
         const Accoutrement(id: 'rod', kind: AccoutrementKind.rodOfSpreading),
       ]);
       await ctx.loop.runTurn(TurnInput(
         action: SpellCastAction(
           spell: summonSpell(),
           targetHex: ctx.local.position,
-          isRodOfSpreading: true,
         ),
       ));
 
@@ -397,13 +408,16 @@ void main() {
       expect(ctx.local.rodOfSpreadingCount, 0, reason: 'rod consumed');
     });
 
-    test('requesting a rod without owning one grants nothing', () async {
-      final ctx = setup(); // no accoutrements
+    test('declaring a rod without owning one grants nothing', () async {
+      // Two layers refuse this now: the Phase-0 picker is never even offered
+      // (nothing activatable is held), and _validateActivation would discard
+      // the declaration if a modified client sent one anyway — see
+      // artifact_activation_test.dart for that half.
+      final ctx = setup(declareRod: true); // no accoutrements
       await ctx.loop.runTurn(TurnInput(
         action: SpellCastAction(
           spell: summonSpell(),
           targetHex: ctx.local.position,
-          isRodOfSpreading: true,
         ),
       ));
 

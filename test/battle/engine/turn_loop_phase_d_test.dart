@@ -232,6 +232,14 @@ class _TamperingSession implements BattleTurnSession {
       _inner.exchangeDelayedSpellReveals(ourReveals);
 
   @override
+  Future<Uint8List> exchangeArtifactActivationCommit(Uint8List ourCommit) =>
+      _inner.exchangeArtifactActivationCommit(ourCommit);
+
+  @override
+  Future<Uint8List> exchangeArtifactActivationReveal(Uint8List ourReveal) =>
+      _inner.exchangeArtifactActivationReveal(ourReveal);
+
+  @override
   Future<Uint8List> exchangeMeleeCommit(Uint8List ourCommit) =>
       _inner.exchangeMeleeCommit(ourCommit);
 

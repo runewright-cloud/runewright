@@ -99,7 +99,22 @@ enum BattleMsgType {
   // because both clients derive the triggering wild magic from the same
   // certified proof outputs and so reach the exchange together; this is NOT
   // one of the uniform every-turn slots.
-  forcedReveal(0x43);
+  forcedReveal(0x43),
+
+  // Phase 0 artifact activation (docs/ARTIFACT_SYSTEM_PLAN.md §4.2) — the
+  // earliest exchange in the turn, ahead of the Phase 1 action commit, so each
+  // side learns whether the other has spent an artifact (and therefore has
+  // their counter charms down) while there is still time to act on it.
+  //
+  // Commit-reveal, not a plain exchange: the declaration is public afterwards,
+  // but simultaneity still has to be enforced or a peer could stall, read our
+  // declaration, and then pick theirs. Sent uniformly every turn, encoding
+  // [0x00] when nothing is declared, so the frame sequence never varies.
+  //
+  // Allocated in the 0x4x block rather than alongside the other turn-loop
+  // exchanges because the 0x30–0x3F block is full.
+  artifactCommit(0x44),
+  artifactReveal(0x45);
 
   const BattleMsgType(this.byte);
   final int byte;

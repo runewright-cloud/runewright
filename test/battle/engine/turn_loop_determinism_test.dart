@@ -20,6 +20,7 @@ import 'package:rune_duel/battle/engine/hash_rng.dart';
 import 'package:rune_duel/battle/engine/turn_loop.dart';
 import 'package:rune_duel/battle/models/battle_state.dart';
 import 'package:rune_duel/battle/models/hex_battlefield.dart' show Battlefield;
+import 'package:rune_duel/battle/models/illusion.dart';
 import 'package:rune_duel/battle/models/match_config.dart';
 import 'package:rune_duel/battle/models/wizard_avatar.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
@@ -188,6 +189,47 @@ void main() {
       expect(a.hp, 23);
       expect(b.hp, 23);
       expect(b.mana, 75); // player_b: Meditate (main), starting 50 + 25.
+    });
+
+    // Regression: docs/ARTIFACT_SYSTEM_PLAN.md §6.1. The melee round used to
+    // apply haymakers local-first — device A ran A-then-B while device B ran
+    // B-then-A — and both draw from the SAME shared meleeRng. That only bites
+    // when a melee actually consumes the stream, which today means
+    // _redirectIfIllusion: both players must melee AND the victims must hold
+    // illusions. Fixed by sorting the applications by playerId, the same
+    // convention _findCounteringCharm uses.
+    test(
+        'two melees into illusions stay in lockstep regardless of local '
+        'perspective', () async {
+      final state1 = _makeAdjacentIllusionState();
+      final state2 = _makeAdjacentIllusionState();
+
+      final pair = TurnSessionPair();
+      final loop1 = TurnLoop(
+        state: state1,
+        session: pair.sessionA,
+        localPlayerId: 'player_a',
+        meleeTargetPicker: (candidates) async => candidates.first,
+      );
+      final loop2 = TurnLoop(
+        state: state2,
+        session: pair.sessionB,
+        localPlayerId: 'player_b',
+        meleeTargetPicker: (candidates) async => candidates.first,
+      );
+
+      await Future.wait([
+        loop1.runTurn(TurnInput(action: PassAction())),
+        loop2.runTurn(TurnInput(action: PassAction())),
+      ]);
+
+      expect(
+        state1.toCanonicalBytes(),
+        equals(state2.toCanonicalBytes()),
+        reason: 'Double-melee-into-illusions turn diverged. The melee round '
+            'must apply haymakers in sorted-playerId order, not local-first — '
+            'they share one meleeRng stream.',
+      );
     });
   });
 
@@ -365,6 +407,34 @@ BattleState _makeAdjacentState() {
     ],
     battlefield: battlefield,
   );
+}
+
+/// [_makeAdjacentState] plus a decoy set for each wizard, so a melee punch
+/// actually draws from the shared melee RNG (via
+/// TurnLoop._redirectIfIllusion) instead of early-returning without touching
+/// it. Three decoys each: enough draws that a swapped application order
+/// resolves the two redirects differently.
+BattleState _makeAdjacentIllusionState() {
+  final state = _makeAdjacentState();
+  state.wizardIllusions.addAll([
+    WizardIllusionSet(
+      ownerId: 'player_a',
+      decoyPositions: [
+        const HexCoord(0, 1),
+        const HexCoord(-1, 1),
+        const HexCoord(-1, 0),
+      ],
+    ),
+    WizardIllusionSet(
+      ownerId: 'player_b',
+      decoyPositions: [
+        const HexCoord(2, 0),
+        const HexCoord(2, -1),
+        const HexCoord(1, 1),
+      ],
+    ),
+  ]);
+  return state;
 }
 
 BattleState _makeState() {

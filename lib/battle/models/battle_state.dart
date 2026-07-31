@@ -230,6 +230,13 @@ class BattleState {
       buf.writeInt16(a.position.r);
       buf.writeUtf8(a.teamId);
 
+      // Phase-0 artifact activation (ARTIFACT_SYSTEM_PLAN.md §6.3). Turn-scoped
+      // but hashed: it gates counter-charm firing at Phase 5, so a divergence
+      // here would silently change which casts get countered. 0xFF = declared
+      // nothing. Accoutrement *removal* needs no field of its own — the
+      // accoutrement list below shortens on both devices.
+      buf.writeUint8(a.declaredActivation?.index ?? 0xFF);
+
       final sortedAcc = (List<Accoutrement>.from(a.accoutrements)
             ..sort((x, y) => x.id.compareTo(y.id)));
       buf.writeUint16(sortedAcc.length);
@@ -304,7 +311,7 @@ class BattleState {
     }
 
     // Minions. Footprint (see Minion.occupiedTiles) is a pure function of
-    // position + abilities + sizeBonus (the Rod of Spreading size rung), so
+    // position + abilities + sizeBonus (the Rod of Wind size rung), so
     // only sizeBonus needs encoding alongside them.
     final sortedMinions = (List<Minion>.from(minions)..sort((a, b) => a.id.compareTo(b.id)));
     buf.writeUint16(sortedMinions.length);
@@ -365,7 +372,6 @@ class BattleState {
       buf.writeBytes(p.commitment); // 32 bytes, opaque
       buf.writeUint8(p.isPotent ? 1 : 0);
       buf.writeUint8(p.isVelocity ? 1 : 0);
-      buf.writeUint8(p.isRodOfSpreading ? 1 : 0);
     }
 
     final sortedLinks = (List<ReflectionLink>.from(reflectionLinks)

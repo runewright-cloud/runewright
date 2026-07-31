@@ -334,9 +334,12 @@ class _BattleScreenState extends State<BattleScreen>
   List<CastAnimation> _castAnimations = const [];
   List<ConveyorChainAnimation> _conveyorChainAnimations = const [];
 
-  // Wizard movement — this turn's walks, played back before anything else in
-  // the resolution sequence (movement is Phase 3; casts are Phase 4+, so this
-  // ordering is the turn's real chronology, not a presentation choice).
+  // Wizard movement — this turn's walks, played back from inside runTurn the
+  // instant the engine resolves them (see _playAvatarWalks), which is both the
+  // turn's real chronology (movement is Phase 3; casts are Phase 4+) and the
+  // only moment at which the tokens haven't already jumped: the painter draws
+  // live engine state every frame, so playback deferred until runTurn returns
+  // shows the destination first and the walk second.
   //
   // Cleared the moment playback ends. That is load-bearing: knockback, Zephyr
   // and friends move the same wizards later in the same turn, and a lingering
@@ -441,10 +444,9 @@ class _BattleScreenState extends State<BattleScreen>
   // commitmentHex-independent lookup so a live on-grid summon's long-tap can
   // re-show the exact SpellAsset that created it (for the full card + live
   // HP) — keyed by Minion.id, populated as each summon's ResolvedSpellEvent
-  // is processed. Not pruned on death (match-scoped, small); a minion
-  // created by a mirror/copy effect rather than a direct cast (e.g.
-  // Reflections' summonMirror) has no entry and simply doesn't respond to
-  // long-tap.
+  // is processed. Not pruned on death (match-scoped, small) — deliberately,
+  // since a copy can outlive the original it borrows its card from (see
+  // _cardForMinion).
   final Map<String, SpellAsset> _summonSpellByMinionId = {};
 
   // Cast-time enhancement choice — zone tag ('fire'/'air'/'water'/'earth')
@@ -452,47 +454,180 @@ class _BattleScreenState extends State<BattleScreen>
   // _selectedSpell.supremeTags; see _EnhancementPicker.
   String? _selectedEnhancement;
 
-  // Rod of Wind toggle — long-press the top-right corner tile to spend one
-  // Air artifact, adding +1 effect radius (or one minion size rung) to this
-  // cast. Only takes effect with a spell selected and an unused rod; realised
-  // at resolution iff still owned (the engine's trust boundary,
-  // TurnLoop._consumeRodOfSpreading). Reset after each committed cast.
-  bool _useRodOfSpreading = false;
+  // ── Phase 0: artifact activation (docs/ARTIFACT_SYSTEM_PLAN.md §10) ────────
+  //
+  // Every loadout artifact is passive + one consumable activation, at most one
+  // per player per turn, declared publicly BEFORE the action is committed.
+  // That ordering is the mechanic: spending anything drops your own counter
+  // charms for the turn, and the opponent sees it while they can still change
+  // their cast.
+  //
+  // As of 2026-07-31 this is no longer a forced full-screen prompt at the top
+  // of the turn: the main phase is free to browse (hand, board) and a
+  // long-press on a corner tile declares and fires the exchange right then —
+  // so its effect (mana, a redrawn hand, the rod bonus) lands before the
+  // player picks a spell, if that's the order they want. A player who commits
+  // a spell without ever long-pressing anything gets the implicit "declared
+  // nothing" path TurnLoop.beginArtifactPhase always supported (see
+  // [_commitAction]). A short tap on a tile still just explains it.
 
-  bool get _localOwnsRod => (_local?.rodOfSpreadingCount ?? 0) > 0;
+  /// This turn's dedicated Phase-0 entropy/rod-roll exchange
+  /// (TurnLoop.beginArtifactEntropy) is fired eagerly and unconditionally —
+  /// it isn't gated on any player decision — so it's already settled by the
+  /// time the player looks at the board. See [_beginArtifactEntropyForTurn].
+  bool _artifactEntropyStarted = false;
+
+  /// Guards the corner-tile long-press against firing twice while the
+  /// Phase-0 exchange it started is still in flight.
+  bool _artifactPhaseInFlight = false;
+
+  /// True once this turn's Phase-0 declaration exchange has resolved (with
+  /// or without an actual declaration) — the one-per-turn budget is spent
+  /// either way, so a further long-press is a no-op.
+  bool _artifactPhaseResolved = false;
+
+  /// Both sides' settled declarations for the current turn — refreshed once
+  /// the Phase-0 exchange completes. Drives the corner tiles' outlined
+  /// ("mine") / dimmed ("charms down") states and the opponent toast (see
+  /// [_beginArtifactPhaseForTurn]).
+  ArtifactActivationRound _artifactRound = const ArtifactActivationRound();
+
+  bool get _localCharmsDown => _artifactRound.local != null;
 
   int _accoutrementCount(WizardAvatar? avatar, AccoutrementKind kind) =>
       avatar?.accoutrements.where((a) => a.kind == kind).length ?? 0;
 
-  /// Long-press on the top-right corner tile. Only Rod of Wind has a real
-  /// activation today; gating mirrors the old cast-time checkbox's
-  /// conditions (spell selected, action phase, rod owned) so the toggle
-  /// still only ever applies to a spell about to be cast.
-  void _onRodOfWindLongPress() {
-    if (!_localOwnsRod) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No Rod of Wind in your loadout.')),
-      );
-      return;
-    }
-    if (_phase != _InputPhase.action || _selectedSpell == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Select a spell to use a Rod of Wind.')),
-      );
-      return;
-    }
-    setState(() => _useRodOfSpreading = !_useRodOfSpreading);
+  /// Short tap on any of the four corner tiles: a read-only reminder of what
+  /// that artifact does.
+  void _onArtifactCornerTap(AccoutrementKind kind) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(_artifactHelpText(kind))),
+    );
   }
 
-  /// Long-press on the other 3 corner tiles. None of them has an activation
-  /// yet — that arrives with the artifact rework (docs/ARTIFACT_SYSTEM_PLAN.md)
-  /// — so this just says so rather than silently doing nothing.
-  void _onArtifactCornerLongPress(String label) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('$label activation arrives with the artifact rework.'),
-      ),
-    );
+  /// Long-press on a corner tile: declare that artifact's activation and
+  /// fire the Phase-0 exchange immediately, so its effect is visible before
+  /// the player picks a spell. No-ops (falling back to the tap's help text)
+  /// for counter charm (never declarable), a kind the wizard holds none of,
+  /// or once this turn's declaration has already been made/settled.
+  void _onArtifactCornerLongPress(AccoutrementKind kind) {
+    if (_isBusy || _phase != _InputPhase.action) return;
+    if (_artifactPhaseInFlight || _artifactPhaseResolved) return;
+    if (!kActivatableArtifactKinds.contains(kind) ||
+        _accoutrementCount(_local, kind) == 0) {
+      _onArtifactCornerTap(kind);
+      return;
+    }
+    _localArtifactDeclaration = kind;
+    unawaited(_beginArtifactPhaseForTurn());
+  }
+
+  /// This turn's local declaration, set by [_onArtifactCornerLongPress]
+  /// before it fires the Phase-0 exchange. Read once by [_pickArtifactActivation]
+  /// and never mutated after that — the exchange is one-shot per turn.
+  AccoutrementKind? _localArtifactDeclaration;
+
+  static String _artifactHelpText(AccoutrementKind kind) => switch (kind) {
+    AccoutrementKind.manaGem =>
+      'Mana Gem — passive: +100 max mana and +10 regen each. '
+          'Spend one for an instant 100 mana (the pool shrinks first).',
+    AccoutrementKind.counterCharm =>
+      'Counter Charm — passive: 5% per unspent charm for your melee to '
+          'shatter a gem or wither a foe’s spell. Fires its counter on its '
+          'own; it has no activation to spend.',
+    AccoutrementKind.bookmark =>
+      'Bookmark — passive: +1 hand size each. '
+          'Burn one to redraw your whole hand, ready next turn.',
+    AccoutrementKind.rodOfSpreading =>
+      'Rod of Wind — passive: 10% per rod for +1 movement next turn. '
+          'Spend one for +1 effect radius (or minion size) on this turn’s cast.',
+    AccoutrementKind.absorptionRod ||
+    AccoutrementKind.deflectionTotem =>
+      'Absorption Rod — halves the duration of timed effects from an '
+          'incoming spell, then is consumed. No activation.',
+  };
+
+  static String _artifactLabel(AccoutrementKind kind) => switch (kind) {
+    AccoutrementKind.manaGem => 'Mana Gem',
+    AccoutrementKind.counterCharm => 'Counter Charm',
+    AccoutrementKind.bookmark => 'Bookmark',
+    AccoutrementKind.rodOfSpreading => 'Rod of Wind',
+    AccoutrementKind.absorptionRod => 'Absorption Rod',
+    AccoutrementKind.deflectionTotem => 'Deflection Totem',
+  };
+
+  /// TurnLoop's [ArtifactActivationPicker]: no longer a blocking prompt —
+  /// resolves immediately with whatever [_onArtifactCornerLongPress] already
+  /// staged in [_localArtifactDeclaration] (filtered to what TurnLoop says is
+  /// actually [available], in case a gem/rod/bookmark got consumed by
+  /// something else between the long-press and this call), or null if the
+  /// player never long-pressed anything.
+  Future<AccoutrementKind?> _pickArtifactActivation(
+    List<AccoutrementKind> available,
+  ) async {
+    final declared = _localArtifactDeclaration;
+    return available.contains(declared) ? declared : null;
+  }
+
+  /// Fires this turn's dedicated entropy exchange (TurnLoop.beginArtifactEntropy)
+  /// — unconditional, not gated on any declaration, so the rod-passive roll is
+  /// already settled before the player looks at their hand. Fire-and-forget
+  /// from the two places a turn begins (battle start, and right after the
+  /// previous turn resets). Errors are swallowed here for the same reason
+  /// [_beginArtifactPhaseForTurn] swallows them: a withheld reveal is a
+  /// lockstep break that resurfaces wherever the turn actually gets
+  /// submitted.
+  Future<void> _beginArtifactEntropyForTurn() async {
+    if (_matchEnded || _artifactEntropyStarted) return;
+    _artifactEntropyStarted = true;
+    try {
+      await _loop.beginArtifactEntropy();
+    } catch (_) {
+      // Deliberately silent — see the doc comment above.
+    }
+  }
+
+  /// Opens (or joins, if already in flight/settled) the turn's Phase-0
+  /// declaration exchange. Called from three places: a corner-tile
+  /// long-press (the player declares something), [_commitAction] (a safety
+  /// net so the implicit "declared nothing" path still updates the UI and
+  /// shows the opponent toast even if the player never long-pressed
+  /// anything), and nowhere else — this is deliberately NOT fired eagerly at
+  /// the top of the turn anymore, so the main phase stays free to browse.
+  ///
+  /// TurnLoop memoizes the phase, so whichever caller gets here first does
+  /// the real work; the other(s) just await the same Future. Errors are
+  /// swallowed here on purpose: a withheld Phase-0 reveal is a lockstep
+  /// break, and the memoized failure re-throws out of `beginTurn` at cast
+  /// time, where [_beginTurnAndRevealScry] and [_submitTurn] already surface
+  /// it as a blocking error. Reporting it twice would just race two dialogs.
+  Future<void> _beginArtifactPhaseForTurn() async {
+    if (_matchEnded || _artifactPhaseInFlight) return;
+    _artifactPhaseInFlight = true;
+    try {
+      final round = await _loop.beginArtifactPhase();
+      if (!mounted) return;
+      final peerJustRevealed = !_artifactPhaseResolved && round.peer != null;
+      setState(() {
+        _artifactRound = round;
+        _artifactPhaseResolved = true;
+      });
+      if (peerJustRevealed) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Opponent spent a ${_artifactLabel(round.peer!)} — '
+              'their counter charms are down this turn',
+            ),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (_) {
+      // Deliberately silent — see the doc comment above.
+    } finally {
+      _artifactPhaseInFlight = false;
+    }
   }
 
   // Earth/Mystery only: chosen delay in turns (0 = fire immediately).
@@ -542,6 +677,14 @@ class _BattleScreenState extends State<BattleScreen>
   Set<String> _hiddenCloudIds = const {};
   Set<HexCoord> _hiddenTileHexes = const {};
   Set<String> _hiddenMinionIds = const {};
+
+  // The same hold-back for the window those three sets can't cover: while
+  // runTurn is in flight the engine creates effects between network awaits, and
+  // the painter — which repaints every frame off _pulseController, not off
+  // rebuilds — would draw each one the instant it appeared, seconds before its
+  // card. Non-null only for the duration of one runTurn call; see
+  // ResolutionBaseline and _submitTurn.
+  ResolutionBaseline? _resolutionBaseline;
 
   // The one effect group currently blooming into view (0.5s), scaled up out
   // of the tile its spell hit. Driven by _effectBloomController; null when no
@@ -732,6 +875,8 @@ class _BattleScreenState extends State<BattleScreen>
       isSorcererMode: widget.state.config.sorcererMode,
       meleeTargetPicker: _pickMeleeTarget,
       freeMoveDirectionPicker: _pickFreeMoveDirection,
+      artifactActivationPicker: _pickArtifactActivation,
+      onMovementResolved: _playAvatarWalks,
       onPhase: _onEnginePhase,
       // DEV FLAG (lib/dev_flags.dart) — the only site that turns proofless
       // peer casts on. Delete this argument with the flag.
@@ -775,6 +920,11 @@ class _BattleScreenState extends State<BattleScreen>
     }
     if (!mounted) return;
     setState(() => _loopReady = true);
+    // Turn 1's dedicated artifact entropy (rod roll). Every later turn's is
+    // kicked off from _submitTurn, right after _resetTurn. The Phase-0
+    // declaration itself is NOT started here — see _onArtifactCornerLongPress
+    // / _commitAction.
+    unawaited(_beginArtifactEntropyForTurn());
   }
 
   /// Builds the active VocalScorer and runs the once-per-match ambient
@@ -957,7 +1107,6 @@ class _BattleScreenState extends State<BattleScreen>
     _isBusy = false;
     _selectedEnhancement = null;
     _mysteryDelay = 0;
-    _useRodOfSpreading = false;
     // Phase A of the held cast orb ends here -- on success, _submitTurn's
     // caller populates _castAnimations right after this for phase B; on
     // failure (turn never committed), there's nothing left to hold.
@@ -965,6 +1114,13 @@ class _BattleScreenState extends State<BattleScreen>
     _pendingCastAffinity = null;
     _scryRevealedTile = null;
     _submittingPhase = null;
+    // A fresh turn means a fresh Phase 0 — see _beginArtifactEntropyForTurn /
+    // _beginArtifactPhaseForTurn, kicked off right after this by the two
+    // places a turn begins.
+    _localArtifactDeclaration = null;
+    _artifactEntropyStarted = false;
+    _artifactPhaseInFlight = false;
+    _artifactPhaseResolved = false;
   }
 
   // ── Phase banner / engine phase notifications ─────────────────────────────────
@@ -976,6 +1132,44 @@ class _BattleScreenState extends State<BattleScreen>
   void _onEnginePhase(TurnPhase phase) {
     if (!mounted) return;
     setState(() => _submittingPhase = phase);
+  }
+
+  /// TurnLoop.onMovementResolved: walks every wizard who actually went
+  /// somewhere this turn, and blocks the turn until the walk finishes.
+  ///
+  /// Called synchronously with the engine's position update, so the `setState`
+  /// below installs the animation before any frame can render the new
+  /// occupancy — that is what stops the token teleporting to its destination
+  /// and then snapping back to walk. Cleared as soon as playback ends so
+  /// post-movement displacement (knockback, Zephyr) isn't overridden by a spent
+  /// animation — see _avatarMoveAnimations.
+  ///
+  /// Wizards who stayed put and were in no collision are dropped: they're drawn
+  /// from occupancy exactly as before, so including them would buy nothing —
+  /// and a turn where NOBODY moved skips the movement beat entirely rather than
+  /// holding on a still board.
+  Future<void> _playAvatarWalks(List<AvatarMoveEvent> events) async {
+    if (!mounted) return;
+    final moves = events
+        .where((e) => e.path.length > 1 || e.lungeTile != null)
+        .map(
+          (e) => AvatarMoveAnimation(
+            playerId: e.playerId,
+            path: e.path,
+            lungeTile: e.lungeTile,
+            wonContestAt: e.wonContestAt,
+          ),
+        )
+        .toList();
+    if (moves.isEmpty) return;
+    setState(() => _avatarMoveAnimations = moves);
+    // .orCancel, because runTurn is blocked on this: leaving the battle screen
+    // mid-walk disposes the controller, and a plain TickerFuture simply never
+    // completes when its ticker is cancelled — which would strand the turn (and
+    // its open exchange) forever rather than letting it unwind.
+    await _moveAnimController.forward(from: 0).orCancel.catchError((_) {});
+    if (!mounted) return;
+    setState(() => _avatarMoveAnimations = const []);
   }
 
   /// TurnLoop.meleeTargetPicker: invoked once per turn, after movement has
@@ -1007,13 +1201,24 @@ class _BattleScreenState extends State<BattleScreen>
   /// tiles and waits for the player to tap one (see _onTapBattlefield's
   /// _pickingFreeMove branch) or to pass (_ActionBar's onDeclineFreeMove).
   /// Only ever called when [candidates] is non-empty.
+  ///
+  /// Lifts the resolution hold-back for the duration of the prompt and puts it
+  /// back afterwards. This is the one moment in the turn where the player makes
+  /// a *decision* against a board that's still mid-reveal — Phase 5.5 runs
+  /// after this turn's spells have already created their lava, ice and clouds —
+  /// and asking someone to step somewhere while hiding what's on the tile is a
+  /// worse bug than the pop-in the hold-back exists to prevent. Restoring the
+  /// snapshot re-hides them, so they still bloom out of their cast tiles with
+  /// their cards. See [ResolutionBaseline].
   Future<HexCoord?> _pickFreeMoveDirection(List<HexCoord> candidates) async {
     if (!mounted) return null;
     final completer = Completer<HexCoord?>();
+    final heldBack = _resolutionBaseline;
     setState(() {
       _pickingFreeMove = true;
       _freeMoveCandidates = candidates;
       _freeMovePickCompleter = completer;
+      _resolutionBaseline = null;
     });
     final result = await completer.future;
     if (mounted) {
@@ -1021,6 +1226,7 @@ class _BattleScreenState extends State<BattleScreen>
         _pickingFreeMove = false;
         _freeMoveCandidates = const [];
         _freeMovePickCompleter = null;
+        _resolutionBaseline = heldBack;
       });
     }
     return result;
@@ -1046,6 +1252,49 @@ class _BattleScreenState extends State<BattleScreen>
 
   // ── Action phase ─────────────────────────────────────────────────────────────
 
+  // ── Mana affordability gate ──────────────────────────────────────────────
+  //
+  // The engine charges the caster with a clamp (`.clamp(0, _kMaxMana)`), so
+  // overspending locally looks harmless — the bar just empties. The opponent's
+  // device is the one that notices: TurnLoop._verifyPeerSpellCast sends
+  // `insufficient_mana_for_spell` and forfeits the match. That asymmetry is
+  // what a player sees as "my laptop let me cast it and my Pixel desynced".
+  // These three helpers are the barrier; TurnLoop.previewSpellCost is the
+  // single shared price so the gate and the deduction cannot disagree.
+
+  /// What [spell] would cost right now under [enhancementZone] (the same zone
+  /// strings the enhancement picker uses; null = no enhancement). Null when
+  /// there's no local avatar to price against — callers treat that as
+  /// "unknown, don't block".
+  int? _spellCost(SpellAsset spell, {String? enhancementZone}) {
+    if (_local == null) return null;
+    return _loop.previewSpellCost(
+      spell,
+      isPotent: enhancementZone == 'fire',
+      isVelocity: enhancementZone == 'air',
+      isEfficiency: enhancementZone == 'water',
+    );
+  }
+
+  /// The cheapest [spell] can be made this turn: with Water/Efficiency's −1/3
+  /// applied if the spell actually earned that supreme tag. This — not the
+  /// unenhanced cost — is what gates *selection*, because the enhancement
+  /// picker only appears once a card is selected. Gating selection on the
+  /// dearer price would put a spell the player can afford out of reach.
+  int? _bestCaseSpellCost(SpellAsset spell) => _spellCost(
+    spell,
+    enhancementZone: spell.supremeTags.contains('water') ? 'water' : null,
+  );
+
+  /// Whether [spell] is unaffordable under *every* enhancement choice — the
+  /// hand-strip greying rule.
+  bool _isUnaffordable(SpellAsset spell) {
+    final mana = _local?.mana;
+    final cost = _bestCaseSpellCost(spell);
+    if (mana == null || cost == null) return false;
+    return cost > mana;
+  }
+
   /// [handIndex] is [spell]'s position in [_handSpells] — the slot tapped in
   /// the hand strip, not derived from [spell] itself, since a hand may hold
   /// several copies of the same Basic spell's grid (docs/BASIC_SPELLS_PLAN.md
@@ -1054,6 +1303,7 @@ class _BattleScreenState extends State<BattleScreen>
     if (_isBusy || _phase != _InputPhase.action) return;
     if (_loop.isHandSlotWithered(handIndex))
       return; // §9: withered, not castable
+    if (_isUnaffordable(spell)) return; // can't pay for it under any enhancement
     setState(() {
       if (_selectedHandIndex == handIndex) {
         _selectedSpell = null;
@@ -1065,7 +1315,6 @@ class _BattleScreenState extends State<BattleScreen>
       }
       _selectedEnhancement = null;
       _mysteryDelay = 0;
-      _useRodOfSpreading = false;
     });
   }
 
@@ -1076,6 +1325,12 @@ class _BattleScreenState extends State<BattleScreen>
 
   /// Confirm the action and advance to the movement phase.
   void _commitAction(TurnAction action) {
+    // Safety net: if the player never long-pressed a corner tile, this is
+    // where Phase 0 actually opens (declaring nothing) — beginTurn() below
+    // awaits the same memoized exchange either way, so this just makes sure
+    // the UI (the opponent toast, the corner tiles' outlined state) updates
+    // promptly rather than silently, whichever path fired it first.
+    unawaited(_beginArtifactPhaseForTurn());
     setState(() {
       _pendingAction = action;
       _phase = _InputPhase.movement;
@@ -1131,6 +1386,24 @@ class _BattleScreenState extends State<BattleScreen>
     final target = _targetHex;
     if (spell == null || target == null) return;
 
+    // Backstop behind the disabled CAST button. The button is the barrier the
+    // player sees; this is the one that holds if mana changed under a stale
+    // frame, or if a future call site reaches _onCast some other way. Both
+    // read the same TurnLoop.previewSpellCost the deduction uses.
+    final cost = _spellCost(spell, enhancementZone: _selectedEnhancement);
+    final mana = _local?.mana;
+    if (cost != null && mana != null && cost > mana) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Not enough mana: ${spell.name.isEmpty ? 'that spell' : spell.name}'
+            ' costs $cost, you have $mana.',
+          ),
+        ),
+      );
+      return;
+    }
+
     if (_selectedEnhancement == 'earth') {
       await _onCastMystery(spell, target);
       return;
@@ -1150,7 +1423,6 @@ class _BattleScreenState extends State<BattleScreen>
     final isPotent = _selectedEnhancement == 'fire';
     final isVelocity = _selectedEnhancement == 'air';
     final isEfficiency = _selectedEnhancement == 'water';
-    final useRod = _useRodOfSpreading && _localOwnsRod;
 
     final scorer = _vocalScorer;
     final word = spell.formula.isNotEmpty
@@ -1167,7 +1439,6 @@ class _BattleScreenState extends State<BattleScreen>
           isPotent: isPotent,
           isVelocity: isVelocity,
           isEfficiency: isEfficiency,
-          isRodOfSpreading: useRod,
           conveyorDirection: conveyorDirection,
           handIndex: _selectedHandIndex,
         ),
@@ -1243,7 +1514,6 @@ class _BattleScreenState extends State<BattleScreen>
         isPotent: isPotent,
         isVelocity: isVelocity,
         isEfficiency: isEfficiency,
-        isRodOfSpreading: useRod,
         vocalScore: vocalScore,
         conveyorDirection: conveyorDirection,
         handIndex: _selectedHandIndex,
@@ -1320,7 +1590,6 @@ class _BattleScreenState extends State<BattleScreen>
           mysteryCommitment: commitment,
           immediateTarget: isImmediate ? target : null,
           immediateNonce: isImmediate ? nonce : null,
-          isRodOfSpreading: _useRodOfSpreading && _localOwnsRod,
           handIndex: _selectedHandIndex,
         ),
       );
@@ -1348,7 +1617,6 @@ class _BattleScreenState extends State<BattleScreen>
         mysteryCommitment: commitment,
         immediateTarget: isImmediate ? target : null,
         immediateNonce: isImmediate ? nonce : null,
-        isRodOfSpreading: _useRodOfSpreading && _localOwnsRod,
         vocalScore: vocalScore,
         handIndex: _selectedHandIndex,
       ),
@@ -1531,6 +1799,15 @@ class _BattleScreenState extends State<BattleScreen>
       // _onEnginePhase corrects this to actionResolve once melee/resolution
       // begins. See _phaseLabel.
       _submittingPhase = TurnPhase.summons;
+      // Freeze what's on the field now, so anything the engine conjures during
+      // the awaits below stays off-screen until the resolution sequence blooms
+      // it out of its cast tile. Handed off to _hiddenCloudIds & co. the moment
+      // runTurn returns (and dropped on the error path). See ResolutionBaseline.
+      _resolutionBaseline = ResolutionBaseline(
+        cloudIds: widget.state.clouds.map((c) => c.id).toSet(),
+        tileHexes: widget.state.tileEffects.keys.toSet(),
+        minionIds: widget.state.minions.map((m) => m.id).toSet(),
+      );
     });
 
     // Reveal any of our own pending Mystery casts whose fireTurn is the turn
@@ -1574,21 +1851,8 @@ class _BattleScreenState extends State<BattleScreen>
       final chains = _loop.lastConveyorChainEvents
           .map((e) => ConveyorChainAnimation(path: e.path, killed: e.killed))
           .toList();
-      // Only wizards something actually happened to. A wizard who stayed put
-      // and was in no collision is drawn from occupancy exactly as before, so
-      // including them would buy nothing — and a turn where NOBODY moved skips
-      // the movement beat entirely rather than holding on a still board.
-      final moves = _loop.lastAvatarMoveEvents
-          .where((e) => e.path.length > 1 || e.lungeTile != null)
-          .map(
-            (e) => AvatarMoveAnimation(
-              playerId: e.playerId,
-              path: e.path,
-              lungeTile: e.lungeTile,
-              wonContestAt: e.wonContestAt,
-            ),
-          )
-          .toList();
+      // (Wizard walks already played, from inside runTurn — see
+      // _playAvatarWalks.)
       final resolved = List<ResolvedSpellEvent>.from(_loop.lastResolvedSpells);
       // Wild magic is untelegraphed by design, so this snapshot is the ONLY
       // channel through which either player learns a global effect fired.
@@ -1608,9 +1872,25 @@ class _BattleScreenState extends State<BattleScreen>
       // Hold every effect created this turn off the field; the reveal sequence
       // un-hides each spell's set (and blooms it) only once that spell's card
       // has finished. See _playResolvedSpellSequence / _bloomSpellEffects.
-      final hiddenClouds = <String>{};
-      final hiddenTiles = <HexCoord>{};
-      final hiddenMinions = <String>{};
+      //
+      // Seeded from the resolution baseline rather than from the resolved
+      // events alone, so this takes over exactly what the baseline was already
+      // holding back — otherwise anything created outside a ResolvedSpellEvent
+      // (a wild-magic conjuration, say) would pop into view at this handoff.
+      // The tail of _playResolvedSpellSequence releases whatever no spell
+      // claimed.
+      final baseline = _resolutionBaseline;
+      final hiddenClouds = widget.state.clouds
+          .map((c) => c.id)
+          .where((id) => baseline != null && !baseline.cloudIds.contains(id))
+          .toSet();
+      final hiddenTiles = widget.state.tileEffects.keys
+          .where((h) => baseline != null && !baseline.tileHexes.contains(h))
+          .toSet();
+      final hiddenMinions = widget.state.minions
+          .map((m) => m.id)
+          .where((id) => baseline != null && !baseline.minionIds.contains(id))
+          .toSet();
       for (final ev in resolved) {
         hiddenClouds.addAll(ev.createdCloudIds);
         hiddenTiles.addAll(ev.createdTileHexes);
@@ -1618,12 +1898,17 @@ class _BattleScreenState extends State<BattleScreen>
       }
       setState(() {
         _resetTurn();
+        // A fresh turn means a fresh Phase 0: clear last turn's read-out
+        // before the new exchange (kicked off below) replaces it, so the
+        // "charms are down" warning can never linger a turn too long.
+        _artifactRound = const ArtifactActivationRound();
         _castAnimations = const [];
         _conveyorChainAnimations = chains;
-        _avatarMoveAnimations = moves;
         _hiddenCloudIds = hiddenClouds;
         _hiddenTileHexes = hiddenTiles;
         _hiddenMinionIds = hiddenMinions;
+        // The three sets above now hold back everything it was holding back.
+        _resolutionBaseline = null;
         _effectBloom = null;
         // Set synchronously, in the same setState _resetTurn runs in, so no
         // further turn is submittable the instant win condition fires — even
@@ -1632,20 +1917,25 @@ class _BattleScreenState extends State<BattleScreen>
         // doc comment.
         if (win != null && win.isOver) _matchEnded = true;
       });
+      // Also runs when only the hidden sets are non-empty: something is being
+      // held back that no card will reveal, and the sequence's tail is what
+      // releases it.
       if (resolved.isNotEmpty ||
           chains.isNotEmpty ||
           wildMagic.isNotEmpty ||
-          moves.isNotEmpty) {
+          hiddenClouds.isNotEmpty ||
+          hiddenTiles.isNotEmpty ||
+          hiddenMinions.isNotEmpty) {
         unawaited(
-          _playResolvedSpellSequence(
-            resolved,
-            castEvents,
-            chains,
-            wildMagic,
-            moves,
-          ),
+          _playResolvedSpellSequence(resolved, castEvents, chains, wildMagic),
         );
       }
+      // Open the next turn's dedicated artifact entropy immediately (the rod
+      // roll), so it's already settled before the player looks at their
+      // hand. The Phase-0 declaration itself waits for a long-press or the
+      // action commit — see _beginArtifactPhaseForTurn. No-ops once the
+      // match is over.
+      unawaited(_beginArtifactEntropyForTurn());
       if (win != null && win.isOver) {
         unawaited(_handleMatchEnd(win));
       }
@@ -1655,7 +1945,12 @@ class _BattleScreenState extends State<BattleScreen>
       // than leaving a reveal the engine has no matching PendingDelayedSpell
       // for (dueSecrets are left in place; they'll be retried next submit).
       _stagedMysterySecret = null;
-      setState(_resetTurn);
+      setState(() {
+        _resetTurn();
+        // Nothing left to reveal — whatever a half-applied turn managed to
+        // create must not stay invisible for the rest of the match.
+        _resolutionBaseline = null;
+      });
       if (_isRealDuel) {
         // Fail-closed, same doctrine as [_verifierInitError]. In a LAN duel
         // every throw out of runTurn is a lockstep break: the turn is
@@ -1873,18 +2168,10 @@ class _BattleScreenState extends State<BattleScreen>
     List<SpellCastEvent> castEvents,
     List<ConveyorChainAnimation> chains,
     List<WildMagicEvent> wildMagic,
-    List<AvatarMoveAnimation> moves,
   ) async {
     if (!mounted) return;
-    // Wizards walk first, because that is when they walked: movement is the
-    // turn's Phase 3 and every cast below resolved in Phase 4 or later. Cleared
-    // as soon as it finishes so post-movement displacement (knockback, Zephyr)
-    // isn't overridden by a spent animation — see _avatarMoveAnimations.
-    if (moves.isNotEmpty) {
-      await _moveAnimController.forward(from: 0);
-      if (!mounted) return;
-      setState(() => _avatarMoveAnimations = const []);
-    }
+    // Wizard walks are NOT played here: they already played, from inside
+    // runTurn at the moment the engine moved the tokens (_playAvatarWalks).
     // Wild magic resolves BEFORE formula effects (design v3.0 L746), so it is
     // revealed first — and on its own full-screen banner rather than folded
     // into the spell cards, because it is a global, symmetric effect that has
@@ -2073,19 +2360,26 @@ class _BattleScreenState extends State<BattleScreen>
   }
 
   /// Long-press on the battlefield: re-opens a live summon's card (with
-  /// current/max HP) if the tapped hex holds one this client has a recorded
-  /// SpellAsset for. No-op everywhere else (empty tile, opponent's
-  /// mirror-summoned creature with no recorded cast — see
-  /// _summonSpellByMinionId's doc comment).
+  /// current/max HP) if the tapped hex holds one this client can resolve a
+  /// card for — its own cast, or the original's card tinted blue for a copied
+  /// creature (see [_cardForMinion]). No-op everywhere else.
   void _onLongPressBattlefield(Offset localPos) {
     final hex = pixelToHex(localPos, _fieldCenter, _hexSize);
     final minion = widget.state.minions
         .where((m) => m.isAlive && m.occupiedTiles.contains(hex))
         .firstOrNull;
     if (minion == null) return;
-    final spell = _summonSpellByMinionId[minion.id];
-    if (spell == null) return;
-    showSpellCardFullscreen(context, spell, liveHp: minion.hp);
+    final card = _cardForMinion(minion, _summonSpellByMinionId);
+    if (card == null) return;
+    showSpellCardFullscreen(
+      context,
+      card.spell,
+      liveHp: minion.hp,
+      // The creature's own max, not the card's: a copy's card is borrowed and
+      // an Illusions clone is 1 HP whatever it copied.
+      liveMaxHp: minion.stats.maxHp,
+      phantasmal: card.phantasmal,
+    );
   }
 
   // ── Build ───────────────────────────────────────────────────────────────────
@@ -2313,6 +2607,7 @@ class _BattleScreenState extends State<BattleScreen>
                                   hiddenCloudIds: _hiddenCloudIds,
                                   hiddenTileHexes: _hiddenTileHexes,
                                   hiddenMinionIds: _hiddenMinionIds,
+                                  resolutionBaseline: _resolutionBaseline,
                                   effectBloom: _effectBloom,
                                   effectBloomAnimation: _effectBloomController,
                                 ),
@@ -2352,8 +2647,14 @@ class _BattleScreenState extends State<BattleScreen>
                       local,
                       AccoutrementKind.counterCharm,
                     ),
-                    onLongPress: () =>
-                        _onArtifactCornerLongPress('Counter Charm'),
+                    // Charms have no activation to spend, so this tile never
+                    // lights up — but it DOES grey out on a turn the local
+                    // wizard spent something else, because that is precisely
+                    // when their charms are down (§2.2). A tap explains it;
+                    // there's nothing to long-press-declare.
+                    dimmed: _localCharmsDown,
+                    onTap: () =>
+                        _onArtifactCornerTap(AccoutrementKind.counterCharm),
                   ),
                 ),
                 Positioned(
@@ -2365,8 +2666,13 @@ class _BattleScreenState extends State<BattleScreen>
                     color: _kRodOfWindDisplay.$2,
                     label: _kRodOfWindDisplay.$3,
                     count: local?.rodOfSpreadingCount ?? 0,
-                    active: _useRodOfSpreading,
-                    onLongPress: _onRodOfWindLongPress,
+                    active: _artifactRound.local ==
+                        AccoutrementKind.rodOfSpreading,
+                    onTap: () =>
+                        _onArtifactCornerTap(AccoutrementKind.rodOfSpreading),
+                    onLongPress: () => _onArtifactCornerLongPress(
+                      AccoutrementKind.rodOfSpreading,
+                    ),
                   ),
                 ),
                 Positioned(
@@ -2378,7 +2684,11 @@ class _BattleScreenState extends State<BattleScreen>
                     color: _kManaGemDisplay.$2,
                     label: _kManaGemDisplay.$3,
                     count: _accoutrementCount(local, AccoutrementKind.manaGem),
-                    onLongPress: () => _onArtifactCornerLongPress('Mana Gem'),
+                    active: _artifactRound.local == AccoutrementKind.manaGem,
+                    onTap: () =>
+                        _onArtifactCornerTap(AccoutrementKind.manaGem),
+                    onLongPress: () =>
+                        _onArtifactCornerLongPress(AccoutrementKind.manaGem),
                   ),
                 ),
                 Positioned(
@@ -2390,7 +2700,11 @@ class _BattleScreenState extends State<BattleScreen>
                     color: _kBookmarkDisplay.$2,
                     label: _kBookmarkDisplay.$3,
                     count: _accoutrementCount(local, AccoutrementKind.bookmark),
-                    onLongPress: () => _onArtifactCornerLongPress('Bookmark'),
+                    active: _artifactRound.local == AccoutrementKind.bookmark,
+                    onTap: () =>
+                        _onArtifactCornerTap(AccoutrementKind.bookmark),
+                    onLongPress: () =>
+                        _onArtifactCornerLongPress(AccoutrementKind.bookmark),
                   ),
                 ),
               ],
@@ -2415,30 +2729,11 @@ class _BattleScreenState extends State<BattleScreen>
               onDelayChanged: (d) => setState(() => _mysteryDelay = d),
             ),
 
-          // Rod of Wind armed indicator — toggled via long-press on the
-          // top-right corner tile (_ArtifactCornerTile), not here. Read-only
-          // feedback so spending the rod at resolution is never a surprise.
-          if (_phase == _InputPhase.action &&
-              _selectedSpell != null &&
-              _useRodOfSpreading)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-              child: Row(
-                children: [
-                  const Icon(Icons.air, size: 16, color: kParchmentColor),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Rod of Wind armed — +1 effect radius (or minion size) this cast',
-                      style: manuscriptBodyStyle(
-                        fontSize: 12,
-                        color: kParchmentColor,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
+          // Phase-0 read-out is corner-tile-only now (2026-07-31): "mine" is
+          // the outlined tile, "charms down" is the dimmed counter-charm
+          // tile, and the opponent's declaration is a one-shot toast fired
+          // from _beginArtifactPhaseForTurn the moment it's revealed, rather
+          // than a banner that lingers for the rest of the turn.
 
           // Sorcerer mode: vocal capture indicator
           if (_isCapturingVoice && _capturingWord != null)
@@ -2460,6 +2755,16 @@ class _BattleScreenState extends State<BattleScreen>
           _ActionBar(
             phase: _phase,
             selectedSpell: _selectedSpell,
+            // Priced under the enhancement actually chosen, which can differ
+            // from the hand strip's best-case figure (Water/Efficiency is −1/3;
+            // everything else is full price).
+            selectedSpellCost: _selectedSpell != null
+                ? _spellCost(
+                    _selectedSpell!,
+                    enhancementZone: _selectedEnhancement,
+                  )
+                : null,
+            availableMana: _local?.mana,
             hasTarget: _targetHex != null,
             movePathLength: _movePath.length,
             isBusy: _isBusy || _isCapturingVoice,
@@ -2473,7 +2778,6 @@ class _BattleScreenState extends State<BattleScreen>
               _targetHex = null;
               _selectedEnhancement = null;
               _mysteryDelay = 0;
-              _useRodOfSpreading = false;
             }),
             onMeditateMove: _onMeditateMove,
             onConfirmMove: _onConfirmMove,
@@ -2509,6 +2813,11 @@ class _BattleScreenState extends State<BattleScreen>
             onSelect: _selectSpell,
             onView: (spell) => showSpellCardFullscreen(context, spell),
             isWithered: (index, _) => _loop.isHandSlotWithered(index),
+            // Best-case price per card: what the enhancement picker could get
+            // it down to. Shown on every card so the player can budget, and
+            // reddened + tap-refused on the ones they can't pay for.
+            costOf: (_, spell) => _bestCaseSpellCost(spell),
+            isUnaffordable: (_, spell) => _isUnaffordable(spell),
             deckCount: _loop.localSpellDraw?.remaining.length,
           ),
         ],
@@ -2529,15 +2838,48 @@ class _BattleScreenState extends State<BattleScreen>
   }
 }
 
+/// The card a live creature should wear, and whether to render it phantasmal.
+///
+/// A creature summoned by a cast has its own recorded [SpellAsset]. A creature
+/// conjured as a *copy* of another (Reflections' summonMirror, Illusions'
+/// clone) has no cast of its own, so it borrows the original's card — drawn
+/// under [kPhantasmalFilter] so it never passes for the genuine article.
+/// [Minion.copiedFromMinionId] always points at the original, so a copy of a
+/// copy resolves in one hop, and the original's entry is never pruned, so a
+/// copy that outlives what it copied keeps its art.
+///
+/// Null → no card: this client saw no cast for the creature or its original
+/// (a Morphic reform, which is a genuinely different creature derived from
+/// half the element sequence, deliberately falls here rather than borrowing a
+/// card whose stats it no longer matches).
+/// Wraps [child] in the cold-blue copy treatment when [on]; a pass-through
+/// otherwise. See [kPhantasmalFilter].
+Widget _phantasmal(bool on, Widget child) =>
+    on ? ColorFiltered(colorFilter: kPhantasmalFilter, child: child) : child;
+
+({SpellAsset spell, bool phantasmal})? _cardForMinion(
+  Minion m,
+  Map<String, SpellAsset> spellByMinionId,
+) {
+  if (spellByMinionId[m.id] case final own?) {
+    return (spell: own, phantasmal: false);
+  }
+  final sourceId = m.copiedFromMinionId;
+  if (sourceId == null) return null;
+  if (spellByMinionId[sourceId] case final source?) {
+    return (spell: source, phantasmal: true);
+  }
+  return null;
+}
+
 /// Renders each live summon's card art as a tiny thumbnail on its battlefield
 /// tile, in place of the plain affinity-letter token painted underneath by
 /// [BattlefieldPainter]. Purely decorative — sits under an [IgnorePointer] so
 /// the existing long-press hit-testing (`_onLongPressBattlefield`, which
 /// already opens the full card via [showSpellCardFullscreen]) is unaffected.
 ///
-/// Only minions with a recorded [SpellAsset] in [spellByMinionId] get a
-/// thumbnail (see its doc comment for why some don't, e.g. mirror-copied
-/// creatures); everything else falls back to the painter's plain token.
+/// Only minions [_cardForMinion] resolves a card for get a thumbnail;
+/// everything else falls back to the painter's plain token.
 class _MinionArtOverlay extends StatelessWidget {
   const _MinionArtOverlay({
     required this.minions,
@@ -2560,7 +2902,7 @@ class _MinionArtOverlay extends StatelessWidget {
       clipBehavior: Clip.none,
       children: [
         for (final m in minions)
-          if (spellByMinionId[m.id] case final spell?)
+          if (_cardForMinion(m, spellByMinionId) case final card?)
             Positioned(
               left: hexToPixel(m.position, center, hexSize).dx - size / 2,
               top: hexToPixel(m.position, center, hexSize).dy - size / 2,
@@ -2579,12 +2921,17 @@ class _MinionArtOverlay extends StatelessWidget {
                     BoxShadow(color: Colors.black45, blurRadius: 2),
                   ],
                 ),
+                // The tint stops at the art: the gold/red border stays true so
+                // a phantasmal creature's side is still readable at a glance.
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(size * 0.12),
-                  child: SpellCardWidget(
-                    spell: spell,
-                    size: size,
-                    interactive: false,
+                  child: _phantasmal(
+                    card.phantasmal,
+                    SpellCardWidget(
+                      spell: card.spell,
+                      size: size,
+                      interactive: false,
+                    ),
                   ),
                 ),
               ),
@@ -2807,6 +3154,8 @@ class _ActionBar extends StatelessWidget {
   const _ActionBar({
     required this.phase,
     required this.selectedSpell,
+    required this.selectedSpellCost,
+    required this.availableMana,
     required this.hasTarget,
     required this.movePathLength,
     required this.isBusy,
@@ -2826,6 +3175,17 @@ class _ActionBar extends StatelessWidget {
 
   final _InputPhase phase;
   final SpellAsset? selectedSpell;
+
+  /// Mana [selectedSpell] costs under the currently-chosen enhancement, or
+  /// null when nothing is selected / there's no local avatar to price against.
+  final int? selectedSpellCost;
+
+  /// The local caster's mana. With [selectedSpellCost] this decides whether
+  /// CAST is live: an unaffordable cast is not a local inconvenience, it makes
+  /// the *peer* forfeit the match (TurnLoop._verifyPeerSpellCast,
+  /// `insufficient_mana_for_spell`), so the button must not offer it.
+  final int? availableMana;
+
   final bool hasTarget;
   final int movePathLength;
   final bool isBusy;
@@ -2989,6 +3349,12 @@ class _ActionBar extends StatelessWidget {
 
     // Action phase
     final selecting = selectedSpell != null;
+    final cost = selectedSpellCost;
+    final mana = availableMana;
+    // Unknown price (no avatar yet) never blocks — fail open here, because the
+    // engine's own checks still stand behind it and a wrongly-dead CAST button
+    // is unrecoverable for the player.
+    final affordable = cost == null || mana == null || cost <= mana;
     return Container(
       color: const Color(0xFF0F0804),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -3022,17 +3388,21 @@ class _ActionBar extends StatelessWidget {
               children: [
                 Text(
                   selecting
-                      ? (hasTarget
-                            ? selectedSpell!.name
-                            : 'Tap a tile to target')
+                      ? (!affordable
+                            ? 'Not enough mana — $cost needed, $mana left'
+                            : (hasTarget
+                                  ? selectedSpell!.name
+                                  : 'Tap a tile to target'))
                       : 'Choose a spell, Dash, or Meditate',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontFamily: 'serif',
                     fontSize: 13,
-                    color: selecting
-                        ? kParchmentColor.withValues(alpha: 0.90)
-                        : kInkMutedColor,
+                    color: !affordable
+                        ? const Color(0xFFE05A4A)
+                        : (selecting
+                              ? kParchmentColor.withValues(alpha: 0.90)
+                              : kInkMutedColor),
                     fontStyle: selecting && !hasTarget
                         ? FontStyle.italic
                         : FontStyle.normal,
@@ -3055,6 +3425,25 @@ class _ActionBar extends StatelessWidget {
                       color: kIlluminationGold.withValues(alpha: 0.70),
                     ),
                   ),
+                  // Live price under the chosen enhancement — this is the
+                  // number that has to clear `mana`, and it moves when the
+                  // player picks Water/Efficiency, so keep it visible next to
+                  // the picker rather than only on the hand card.
+                  if (cost != null) ...[
+                    const SizedBox(height: 1),
+                    Text(
+                      '$cost mana',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontFamily: 'serif',
+                        fontSize: 10,
+                        letterSpacing: 0.5,
+                        color: affordable
+                            ? const Color(0xFF6FC3FF)
+                            : const Color(0xFFE05A4A),
+                      ),
+                    ),
+                  ],
                 ],
               ],
             ),
@@ -3063,7 +3452,7 @@ class _ActionBar extends StatelessWidget {
           _ActionButton(
             label: 'CAST',
             color: kIlluminationGold,
-            enabled: selecting && hasTarget && !isBusy,
+            enabled: selecting && hasTarget && !isBusy && affordable,
             onTap: onCast,
           ),
         ],
@@ -3837,6 +4226,8 @@ class _ArtifactCornerTile extends StatelessWidget {
     required this.count,
     required this.label,
     this.active = false,
+    this.dimmed = false,
+    this.onTap,
     this.onLongPress,
   });
 
@@ -3845,7 +4236,19 @@ class _ArtifactCornerTile extends StatelessWidget {
   final Color color;
   final int count;
   final String label;
+
+  /// This artifact is the one declared at Phase 0 this turn — outlined.
   final bool active;
+
+  /// This artifact's passive is suppressed this turn (counter charms, on a
+  /// turn their owner spent something else) — drawn as if the slot were empty.
+  final bool dimmed;
+
+  /// Short tap: read-only help text (_onArtifactCornerTap).
+  final VoidCallback? onTap;
+
+  /// Long-press: declare-and-fire this turn's activation
+  /// (_onArtifactCornerLongPress) — absent for counter charm, which has none.
   final VoidCallback? onLongPress;
 
   // Sized so a short label anchored at the right-angle vertex stays clear of
@@ -3865,13 +4268,14 @@ class _ArtifactCornerTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final hasAny = count > 0;
+    final hasAny = count > 0 && !dimmed;
     final fg = hasAny ? color : kInkMutedColor.withValues(alpha: 0.35);
 
     return SizedBox(
       width: _w,
       height: _h,
       child: GestureDetector(
+        onTap: onTap,
         onLongPress: onLongPress,
         child: Stack(
           children: [
@@ -3942,10 +4346,14 @@ class _SpellBook extends StatelessWidget {
     required this.onSelect,
     required this.onView,
     this.isWithered = _neverWithered,
+    this.costOf = _noCost,
+    this.isUnaffordable = _alwaysAffordable,
     this.deckCount,
   });
 
   static bool _neverWithered(int index, SpellAsset spell) => false;
+  static int? _noCost(int index, SpellAsset spell) => null;
+  static bool _alwaysAffordable(int index, SpellAsset spell) => false;
 
   final List<SpellAsset?> spells;
 
@@ -3961,6 +4369,18 @@ class _SpellBook extends StatelessWidget {
   /// slot (like [selectedIndex]) for the same duplicate-safety reason.
   /// Defaults to "never withered" for callers that don't track wither state.
   final bool Function(int index, SpellAsset spell) isWithered;
+
+  /// Mana price to print on each card, or null to print none. Slot-indexed
+  /// like [selectedIndex] — cost depends on the caster's live chain/status
+  /// state, so it can't be read off [SpellAsset] alone.
+  final int? Function(int index, SpellAsset spell) costOf;
+
+  /// Whether the caster can't pay for a card under any enhancement choice.
+  /// Such a card renders with a red price and refuses taps: casting it would
+  /// empty the local mana bar harmlessly while the *peer* forfeits the match
+  /// over `insufficient_mana_for_spell`. Defaults to "always affordable" for
+  /// callers with no avatar to price against.
+  final bool Function(int index, SpellAsset spell) isUnaffordable;
 
   /// Remaining deck size (SPELL_DRAW_WIRING_PLAN.md §5's HUD readout). Null
   /// hides the counter (e.g. before the opening deal has run).
@@ -3994,13 +4414,21 @@ class _SpellBook extends StatelessWidget {
                     if (spell == null) return const SizedBox(width: 6);
                     final selected = i == selectedIndex;
                     final withered = isWithered(i, spell);
+                    final tooCostly = !withered && isUnaffordable(i, spell);
+                    final cost = costOf(i, spell);
                     return Padding(
                       padding: const EdgeInsets.only(right: 8),
                       child: GestureDetector(
-                        onTap: withered ? null : () => onSelect(i, spell),
+                        // Long-press still opens the card either way — an
+                        // uncastable spell is still worth reading.
+                        onTap: withered || tooCostly
+                            ? null
+                            : () => onSelect(i, spell),
                         onLongPress: () => onView(spell),
                         child: Opacity(
-                          opacity: withered ? 0.35 : 1.0,
+                          opacity: withered
+                              ? 0.35
+                              : (tooCostly ? 0.45 : 1.0),
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
@@ -4026,6 +4454,15 @@ class _SpellBook extends StatelessWidget {
                                         right: 2,
                                         bottom: 2,
                                         child: _SummonBadge(),
+                                      ),
+                                    if (cost != null)
+                                      Positioned(
+                                        left: 2,
+                                        top: 2,
+                                        child: _ManaCostBadge(
+                                          cost: cost,
+                                          affordable: !tooCostly,
+                                        ),
                                       ),
                                   ],
                                 ),
@@ -4069,6 +4506,38 @@ class _SpellBook extends StatelessWidget {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// The mana price of a hand card, in its top-left corner. Red when the caster
+/// can't pay it — the visible half of the affordability gate that keeps a
+/// player from casting into the peer's `insufficient_mana_for_spell` forfeit.
+class _ManaCostBadge extends StatelessWidget {
+  const _ManaCostBadge({required this.cost, required this.affordable});
+
+  final int cost;
+  final bool affordable;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = affordable ? const Color(0xFF6FC3FF) : const Color(0xFFE05A4A);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+      decoration: BoxDecoration(
+        color: const Color(0xFF130C04).withValues(alpha: 0.85),
+        borderRadius: BorderRadius.circular(3),
+        border: Border.all(color: color.withValues(alpha: 0.7), width: 0.5),
+      ),
+      child: Text(
+        '$cost',
+        style: TextStyle(
+          fontFamily: 'serif',
+          fontSize: 9,
+          fontWeight: FontWeight.w700,
+          color: color,
+        ),
       ),
     );
   }

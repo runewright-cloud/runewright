@@ -13,7 +13,7 @@ import 'package:path_provider/path_provider.dart';
 
 // ── Artifact loadout ──────────────────────────────────────────────────────────
 
-// NOTE: the Air-typed slot is the Rod of Spreading (design v3.0 §Artifacts): a
+// NOTE: the Air-typed slot is the Rod of Wind (design v3.0 §Artifacts): a
 // one-shot consumable that adds +1 effective radius to the next spell's effects
 // (and one size rung to a summoned minion). It replaced the v2.4 "absorption /
 // deflection rod" whose status-nullify role now survives only through the

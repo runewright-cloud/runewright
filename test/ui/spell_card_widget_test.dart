@@ -256,5 +256,45 @@ void main() {
 
       expect(find.text('COUNTERED'), findsNothing);
     });
+
+    testWidgets('flashes red on entry, then settles to invisible', (tester) async {
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () => showSpellCardFullscreen(
+                context,
+                _sample(),
+                countered: true,
+              ),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ));
+      await tester.tap(find.text('open'));
+      // One frame in, then partway through the 520ms flash — before the
+      // dialog's own grow-in animation even matters, since [countered] is
+      // only ever true on the animated (growFrom-set) resolution-reveal
+      // path in practice; this harness omits growFrom and exercises the
+      // flash in isolation.
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      final flashColor =
+          tester.widget<Container>(find.byKey(const Key('countered-flash'))).color;
+      expect(flashColor, isNotNull);
+      expect((flashColor!.a * 255.0).round(), greaterThan(0),
+          reason: 'mid-flash the overlay should be visibly red');
+
+      await tester.pumpAndSettle();
+
+      final settledColor =
+          tester.widget<Container>(find.byKey(const Key('countered-flash'))).color;
+      expect((settledColor!.a * 255.0).round(), equals(0),
+          reason: 'the flash must fully fade, leaving only the static ribbon');
+      // The persistent ribbon is unaffected by the flash settling.
+      expect(find.text('COUNTERED'), findsOneWidget);
+    });
   });
 }

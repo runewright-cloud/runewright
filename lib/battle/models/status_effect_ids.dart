@@ -14,6 +14,15 @@ abstract final class StatusEffectId {
   static const speedUp = 'speedUp';
   static const speedDown = 'speedDown';
 
+  // Rod of Wind passive (docs/ARTIFACT_SYSTEM_PLAN.md §2.8): +1 movement
+  // for one turn, rolled at Phase 6 for the FOLLOWING turn. Its own ID rather
+  // than reusing [speedUp] because TurnLoop._addStatus replaces any existing
+  // effect of the same ID — a rod roll must not silently clobber a spell's
+  // speed buff, or vice versa. Read by WizardAvatar.effectiveMoveSpeed
+  // alongside speedUp/speedDown, so the two stack additively.
+  // modifiers: {'speedDelta': +int}
+  static const rodMobility = 'rodMobility';
+
   // High-mobility: caster may spend HP for extra tiles during move selection.
   // modifiers: {'freeExtraTiles': int}   (0 or 1 under potency)
   // Sorcerer seam: pedometer rate scales with extra-tile count.

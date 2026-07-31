@@ -26,6 +26,8 @@ _setup({
   Map<HexCoord, TileEffect> tileEffects = const {},
   HexCoord dummyPos = const HexCoord(0, 5),
   int radius = 6,
+  MovementPlayback? onMovementResolved,
+  void Function(TurnPhase)? onPhase,
 }) {
   const localId = 'local';
   const dummyId = 'dummy';
@@ -71,6 +73,8 @@ _setup({
     state: state,
     session: SoloBattleSession(state: state),
     localPlayerId: localId,
+    onMovementResolved: onMovementResolved,
+    onPhase: onPhase,
   );
   return (state: state, loop: loop, local: local);
 }
@@ -193,6 +197,90 @@ void main() {
       expect(hexDistance(local.path.last, const HexCoord(2, 0)), greaterThan(1));
       expect(local.lungeTile, isNull);
       expect(local.path.last, ctx.local.position);
+    });
+  });
+
+  // ── Playback timing (onMovementResolved) ──────────────────────────────────
+  //
+  // The record above is only half the fix for teleporting tokens. The other
+  // half is *when* the UI gets it: the engine mutates BattleState in place and
+  // then keeps awaiting network exchanges, while the battlefield painter
+  // redraws every frame off a free-running controller. Hand the walk over after
+  // runTurn returns and the token has already been drawn at its destination for
+  // however long the rest of the turn took — the walk then reads as a snap-back
+  // and a replay. These tests pin the handover point.
+
+  group('onMovementResolved', () {
+    test('fires with positions already applied', () async {
+      // The callback is what installs the animation, and the animation is what
+      // holds the token at its origin — so the engine must have finished moving
+      // before it fires, or the UI has nothing to animate *from*.
+      List<AvatarMoveEvent>? delivered;
+      HexCoord? positionAtPlayback;
+      WizardAvatar? localAvatar;
+      final ctx = _setup(
+        onMovementResolved: (moves) async {
+          delivered = moves;
+          positionAtPlayback = localAvatar!.position;
+        },
+      );
+      localAvatar = ctx.local;
+
+      await ctx.loop.runTurn(
+        TurnInput(
+          action: PassAction(),
+          movePath: const [HexCoord(1, 0), HexCoord(2, 0)],
+        ),
+      );
+
+      expect(delivered, isNotNull);
+      expect(
+        delivered!.firstWhere((e) => e.playerId == 'local').path,
+        const [HexCoord(0, 0), HexCoord(1, 0), HexCoord(2, 0)],
+      );
+      expect(positionAtPlayback, const HexCoord(2, 0));
+    });
+
+    test('the turn waits for playback before resolving anything else',
+        () async {
+      // The await is the whole point. If the turn ran on past the callback, the
+      // melee prompt (and every later phase) would be reading — and asking the
+      // player about — a board whose walk hasn't been shown yet.
+      final order = <String>[];
+      final ctx = _setup(
+        onMovementResolved: (moves) async {
+          order.add('playback-start');
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          order.add('playback-end');
+        },
+        onPhase: (phase) => order.add('phase-${phase.name}'),
+      );
+
+      await ctx.loop.runTurn(
+        TurnInput(action: PassAction(), movePath: const [HexCoord(1, 0)]),
+      );
+
+      expect(order.take(2), ['playback-start', 'playback-end']);
+      // Phase 4 (cloud drift) onward all happen after the walk has been shown.
+      expect(order, contains('phase-${TurnPhase.summons.name}'));
+      expect(
+        order.indexOf('playback-end'),
+        lessThan(order.indexOf('phase-${TurnPhase.summons.name}')),
+      );
+    });
+
+    test('still fires on a turn where nobody moved', () async {
+      // The filtering ("did this wizard actually go anywhere?") is the UI's
+      // call, not the engine's — same contract as lastAvatarMoveEvents itself.
+      var calls = 0;
+      final ctx = _setup(onMovementResolved: (moves) async {
+        calls++;
+        expect(moves.every((e) => e.path.length == 1), isTrue);
+      });
+
+      await ctx.loop.runTurn(TurnInput(action: PassAction()));
+
+      expect(calls, 1);
     });
   });
 }

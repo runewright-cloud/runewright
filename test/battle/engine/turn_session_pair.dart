@@ -80,6 +80,10 @@ class TurnSessionPair {
   var _bMoveCommit = Completer<Uint8List>();
   var _aMoveReveal = Completer<Uint8List>();
   var _bMoveReveal = Completer<Uint8List>();
+  var _aArtifactCommit = Completer<Uint8List>();
+  var _bArtifactCommit = Completer<Uint8List>();
+  var _aArtifactReveal = Completer<Uint8List>();
+  var _bArtifactReveal = Completer<Uint8List>();
   var _aMeleeCommit = Completer<Uint8List>();
   var _bMeleeCommit = Completer<Uint8List>();
   var _aMeleeReveal = Completer<Uint8List>();
@@ -113,6 +117,10 @@ class TurnSessionPair {
     _bMoveCommit = Completer();
     _aMoveReveal = Completer();
     _bMoveReveal = Completer();
+    _aArtifactCommit = Completer();
+    _bArtifactCommit = Completer();
+    _aArtifactReveal = Completer();
+    _bArtifactReveal = Completer();
     _aMeleeCommit = Completer();
     _bMeleeCommit = Completer();
     _aMeleeReveal = Completer();
@@ -285,6 +293,30 @@ class PairedSession implements BattleTurnSession {
     } else {
       _pair._bMoveReveal.complete(ourReveal);
       return _pair._aMoveReveal.future;
+    }
+  }
+
+  // ── Phase 0 artifact-activation commit-reveal ─────────────────────────────
+
+  @override
+  Future<Uint8List> exchangeArtifactActivationCommit(Uint8List ourCommit) {
+    if (isA) {
+      _pair._aArtifactCommit.complete(ourCommit);
+      return _pair._bArtifactCommit.future;
+    } else {
+      _pair._bArtifactCommit.complete(ourCommit);
+      return _pair._aArtifactCommit.future;
+    }
+  }
+
+  @override
+  Future<Uint8List> exchangeArtifactActivationReveal(Uint8List ourReveal) {
+    if (isA) {
+      _pair._aArtifactReveal.complete(ourReveal);
+      return _pair._bArtifactReveal.future;
+    } else {
+      _pair._bArtifactReveal.complete(ourReveal);
+      return _pair._aArtifactReveal.future;
     }
   }
 

@@ -93,6 +93,17 @@ class CastingEnhancements {
   /// accelerates as quality drops toward qFizzle rather than scaling linearly.
   static const double rampExponent = 2.2;
 
+  /// The largest [manaCostMultiplier] [fromSorcererQuality] can ever return —
+  /// the fizzle bracket's value, which is also the ceiling of the penalty ramp
+  /// (`1.01 + eased × (1.50 − 1.01)` tops out here as `eased → 1`).
+  ///
+  /// Exists because the UI has to gate affordability *before* the voice
+  /// capture that produces the score: TurnLoop.previewSpellCost prices a
+  /// sorcerer-mode cast at this multiplier so a badly-spoken incantation can
+  /// never turn an affordable spell into one the peer forfeits over. Keep it
+  /// in step with the fizzle bracket above.
+  static const double maxManaCostMultiplier = 1.50;
+
   /// Derive enhancements from a per-cast [VocalScore].
   ///
   /// Reads only [VocalScore.pronunciationU8]/[VocalScore.volumeU8] — the

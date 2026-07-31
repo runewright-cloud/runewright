@@ -97,6 +97,21 @@ abstract class BattleTurnSession {
   Future<Uint8List> exchangeDelayedSpellReveals(Uint8List ourReveals);
   Future<Uint8List> exchangeStateHash(Uint8List ourHash);
 
+  /// Phase 0 artifact-activation commit-reveal (ARTIFACT_SYSTEM_PLAN.md §4.2).
+  ///
+  /// The first exchange of the turn, ahead of the Phase 1 action commit: each
+  /// player secretly commits which artifact (if any) they are spending this
+  /// turn, then both reveal simultaneously. Shape mirrors
+  /// [exchangeMeleeCommit]/[exchangeMeleeReveal] exactly, and like them it is
+  /// sent uniformly every turn — `[0x00]` means "declaring nothing" — so the
+  /// frame sequence is identical on both clients regardless of who spent what.
+  ///
+  /// Commit-reveal rather than a plain send-then-await because the declaration
+  /// is a simultaneous decision: with a plain exchange a peer could stall,
+  /// read our declaration, and then choose theirs.
+  Future<Uint8List> exchangeArtifactActivationCommit(Uint8List ourCommit);
+  Future<Uint8List> exchangeArtifactActivationReveal(Uint8List ourReveal);
+
   /// Resolution-phase melee commit-reveal: after movement has resolved (so
   /// both final positions are known), each player secretly commits an
   /// optional adjacent melee target, then both reveal simultaneously. Mirrors
@@ -512,6 +527,22 @@ class BattleSession implements BattleTurnSession {
   Future<Uint8List> exchangeMoveReveal(Uint8List ourReveal) async {
     send(BattleMsgType.moveReveal, ourReveal);
     final frame = await framesOfType(BattleMsgType.moveReveal).first;
+    return frame.payload;
+  }
+
+  // ── Phase 0 artifact-activation commit-reveal ───────────────────────────────
+
+  @override
+  Future<Uint8List> exchangeArtifactActivationCommit(Uint8List ourCommit) async {
+    send(BattleMsgType.artifactCommit, ourCommit);
+    final frame = await framesOfType(BattleMsgType.artifactCommit).first;
+    return frame.payload;
+  }
+
+  @override
+  Future<Uint8List> exchangeArtifactActivationReveal(Uint8List ourReveal) async {
+    send(BattleMsgType.artifactReveal, ourReveal);
+    final frame = await framesOfType(BattleMsgType.artifactReveal).first;
     return frame.payload;
   }
 

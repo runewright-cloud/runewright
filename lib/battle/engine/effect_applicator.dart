@@ -72,7 +72,7 @@ class ApplyContext {
   final BattleState state;
   final Random rng;
 
-  /// Rod of Spreading bonus: +1 effective radius applied to this spell's
+  /// Rod of Wind bonus: +1 effective radius applied to this spell's
   /// spatial effects (0 when no rod was activated). Set once for the whole
   /// cast in TurnLoop. See EffectApplicator.apply's footprint expansion.
   // TODO(velocity): the Air "Velocity (+2 range)" enhancement — a documented
@@ -121,7 +121,7 @@ class EffectApplicator {
   /// Apply [ctx.descriptor.spellEffect] to [ctx.state], targeting
   /// [ctx.targetTile].
   ///
-  /// Rod of Spreading ([ApplyContext.effectiveRadiusBonus] > 0) enlarges a
+  /// Rod of Wind ([ApplyContext.effectiveRadiusBonus] > 0) enlarges a
   /// spell's *spatial* effects by that many rings. Three shapes of expansion:
   ///
   ///   1. Radius-carrying effects (splash damage, clouds) grow their own
@@ -178,7 +178,7 @@ class EffectApplicator {
         DivinationEffect e => _applyDivination(ctx, e),
       };
 
-  // ── Rod of Spreading: footprint expansion ─────────────────────────────────
+  // ── Rod of Wind: footprint expansion ─────────────────────────────────
 
   /// If [effect] already carries its own AoE radius (splash damage, clouds),
   /// returns a copy with that radius grown by [bonus]; otherwise null (the
@@ -865,6 +865,8 @@ class EffectApplicator {
       personality: source.personality,
       forceCloseToAttack: true,
       sizeBonus: source.sizeBonus,
+      // Wears the original's card art, tinted (Minion.copiedFromMinionId).
+      copiedFromMinionId: source.copiedFromMinionId ?? source.id,
     ));
   }
 
@@ -1159,7 +1161,7 @@ class EffectApplicator {
 
   static void _knockbackMinion(Minion m, ApplyContext ctx) {
     // Any multi-tile body is immovable by exterior forces — naturally Big
-    // (EEEE) or enlarged by a Rod of Spreading. Keying off the footprint (not
+    // (EEEE) or enlarged by a Rod of Wind. Keying off the footprint (not
     // the ability) keeps a rod-grown creature consistent with a born-Big one.
     if (m.occupiedTiles.length > 1) return;
     final dir = _pushDir(ctx.caster.position, m.position);

@@ -4,7 +4,7 @@
 // accoutrements (WizardAvatar.bookmarkCount + 1), not a fixed MatchConfig
 // value, and reacts mid-battle when an effect creates or destroys a bookmark
 // (TurnLoop._reconcileHandSize). Exercises the real cast pipeline end-to-end
-// via SoloBattleSession (see rod_of_spreading_test.dart for the pattern),
+// via SoloBattleSession (see rod_of_wind_test.dart for the pattern),
 // so the formula-to-effect resolution (ArtifactsInteractionEffect, Water-
 // Earth per effect_kind.dart) is real, not stubbed.
 

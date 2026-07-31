@@ -28,7 +28,6 @@ class PendingDelayedSpell {
     required this.origin,
     this.isPotent = false,
     this.isVelocity = false,
-    this.isRodOfSpreading = false,
   });
 
   /// Unique identifier: hex of the first 16 bytes of [commitment].
@@ -55,10 +54,11 @@ class PendingDelayedSpell {
   final bool isPotent;
   final bool isVelocity;
 
-  /// Whether the caster asked to spend a Rod of Spreading when this delayed
-  /// spell fires (see SpellCastAction.isRodOfSpreading). Realised only if the
-  /// caster still owns an unused rod at fire time.
-  final bool isRodOfSpreading;
+  // A Rod of Wind is NOT carried through from commit time any more
+  // (docs/ARTIFACT_SYSTEM_PLAN.md §3.1): the rod is declared at Phase 0 of the
+  // turn the delayed spell FIRES, like every other activation, so a Mystery
+  // cast can't reserve one for three turns while its owner spends the
+  // activation budget elsewhere.
 
   /// Last turn the spell may fire. After this turn ends, spell is forfeited.
   int get maxTurn => castTurn + 3;

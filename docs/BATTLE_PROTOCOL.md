@@ -118,6 +118,8 @@ reassembly logic.
 | `actionReveal` | 0x36 | both→both | nonce(16) ‖ action\_bytes | reveal after entropy exchange; verified against earlier commit |
 | `delayedSpellReveal` | 0x37 | both→both | `[count:1][id:16, coord:4, delay:1, nonce:16 per entry]` | pending delayed spells firing this turn; `[0x00]` if none |
 | `forcedReveal` | 0x43 | both→both | `[count:1]` then per entry: `[position:2][commitment:32][t:2][formula_len:2+bytes][name_len:2+bytes][isSummon:1][personality_len:2+bytes][proof_len:4+bytes][merkle_depth:1][depth × (sibling:32, direction:1)]` | wild magic's Spontaneous Combustion (docs/WILD_MAGIC_PLAN.md §9.5). **Not a uniform per-turn slot** — sent only on turns where a forced cast fires. Both clients derive the triggering wild magic from the same certified proof outputs, so they always reach it together. Slots are chosen PUBLICLY first from the position-only `DrawSchedule`, so the revealer cannot shop for a favourable spell; the receiver forfeits on a slot mismatch, a short count (`withheld_forced_reveal`), or a malformed payload |
+| `artifactCommit` | 0x44 | both→both | 32 bytes: SHA-256(activation\_bytes ‖ nonce) | **Phase 0** — the FIRST exchange of the turn, ahead of `actionCommit` (docs/ARTIFACT_SYSTEM_PLAN.md §4). Sent uniformly every turn |
+| `artifactReveal` | 0x45 | both→both | nonce(16) ‖ `[0x00]` (none) or `[0x01][kind:1]` | `kind` is the `AccoutrementKind` index. The declaration names a KIND, never an accoutrement id — the engine consumes the owner's first match by sorted id, so a peer cannot name an id it does not own. Commit-reveal rather than a plain exchange because it is a simultaneous decision: a plain send-then-await would let a peer stall, read the other's declaration, then choose. An invalid declaration (a kind not held, `counterCharm`, a summon-only kind) is silently discarded as no-activation on BOTH devices rather than forfeiting — a desync here is indistinguishable from a stale client |
 | `forfeit` | 0x40 | sender→peer | UTF-8 reason: `"withheld_reveal"` \| `"concede"` | ends match; peer wins |
 | `matchEnd` | 0x41 | both→both | JSON: `{"winningTeamId":"…","finalStateHash":"…"}` | both send after win condition met |
 
@@ -168,12 +170,20 @@ The effect table hard-codes exactly **when** each effect may call `refreshEntrop
 clients must hit the call at the same deterministic point in the resolution sequence.
 A client that withholds its reveal at 0x23 receives `forfeit("withheld_refresh_reveal:<reason>")`.
 
-The seam is wired (`BattleSession`, `SoloBattleSession`) but **not yet called by any
-effect** — this is the integration point for future interactive spells.
+**First caller (2026-07-31):** `TurnLoop.beginArtifactEntropy()` calls
+`refreshEntropy('artifact_phase')` unconditionally at the top of every turn, dedicating this
+exchange's output to the Rod of Wind's movement passive and the Bookmark burn's hand redraw —
+both need entropy that exists *before* this turn's own movement commit, which the main
+per-turn entropy structurally cannot provide (§3, "entropy revealed AFTER all player decisions
+are locked in"). See `docs/ARTIFACT_SYSTEM_PLAN.md` §13.2 for the reasoning and why this
+doesn't reopen the B-5 look-ahead concern: the resulting entropy is never used for anything
+spell-resolution-adjacent (retargeting, burn targeting, summon collision), only for a player's
+own rod roll and their own bookmark redraw.
 
-**Hardening TODO (B-3 / B-7 scope):** `0x22` and `0x23` are new peer-to-peer surface
-added mid-B-5, outside the original audit. Before shipping interactive spells that call
-this path, the B-3/B-7 pass must cover:
+**Hardening TODO (B-3 / B-7 scope) — still open, now load-bearing rather than speculative:**
+`0x22` and `0x23` are peer-to-peer surface added mid-B-5, outside the original audit, and as
+of the artifact-phase caller above they run on every single turn rather than never. The
+B-3/B-7 pass still needs to cover:
 - Frame payload length cap (B-7)
 - Unknown-type handling (drop vs forfeit)
 - `matchId` / `turnNumber` binding in the refresh nonce (same domain-separation

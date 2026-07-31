@@ -596,6 +596,22 @@ bool _hasCustomArt(SpellAsset spell) {
   return spell.spellHashHex.isNotEmpty;
 }
 
+/// Desaturates to luminance, then re-tints it cold blue — the "phantasmal"
+/// treatment for a creature that is a copy of another rather than a real cast
+/// (Reflections' mirror summon, Illusions' clone). It wears the original's
+/// card art so players can see *what* it is at a glance; this filter is what
+/// says it isn't the genuine article.
+///
+/// Luminance weights are the usual Rec. 709 triple; the per-channel scales
+/// (0.38 / 0.66 / 1.05) tint toward blue while the additive offsets lift the
+/// shadows so dark art doesn't collapse into an unreadable black square.
+const ColorFilter kPhantasmalFilter = ColorFilter.matrix(<double>[
+  0.0808, 0.2718, 0.0274, 0, 8,
+  0.1403, 0.4720, 0.0477, 0, 14,
+  0.2232, 0.7510, 0.0758, 0, 30,
+  0, 0, 0, 1, 0,
+]);
+
 /// Opens a full-screen overlay of [spell]'s card art, dismissed by tapping
 /// anywhere. Exposed publicly so callers that need a custom gesture mapping
 /// (e.g. long-press instead of tap) can trigger it directly rather than
@@ -610,7 +626,12 @@ bool _hasCustomArt(SpellAsset spell) {
 /// "HP: current/max" instead of just the formula-derived max, so players can
 /// see how much damage their creature has taken. Null (the default, and
 /// always the case for a library/hand card, which has no battlefield HP yet)
-/// shows just the max, as before.
+/// shows just the max, as before. [liveMaxHp] overrides the denominator with
+/// the creature's actual max, which differs from the card's formula-derived
+/// one for a copy (an Illusions clone is maxHp 1 whatever it copied).
+/// [phantasmal] renders the whole card under [kPhantasmalFilter] — set for a
+/// copied creature, which wears the original's art (see Minion
+/// .copiedFromMinionId).
 /// [countered] stamps a "COUNTERED" ribbon across the card and dims/desaturates
 /// it — battle_screen.dart's resolution reveal sets this for a cast a bound
 /// counter charm nullified (TurnLoop.ResolvedSpellEvent.wasCountered).
@@ -621,10 +642,12 @@ Future<void> showSpellCardFullscreen(
   SpellAsset spell, {
   Duration? autoDismissAfter,
   int? liveHp,
+  int? liveMaxHp,
   Offset? growFrom,
   Offset? shrinkTo,
   bool countered = false,
   String? counteredByLabel,
+  bool phantasmal = false,
 }) {
   return showDialog<void>(
     context: context,
@@ -641,10 +664,12 @@ Future<void> showSpellCardFullscreen(
       emblemPainter: _painterFor(spell),
       autoDismissAfter: autoDismissAfter,
       liveHp: liveHp,
+      liveMaxHp: liveMaxHp,
       growFrom: growFrom,
       shrinkTo: shrinkTo,
       countered: countered,
       counteredByLabel: counteredByLabel,
+      phantasmal: phantasmal,
     ),
   );
 }
@@ -662,16 +687,19 @@ class _FullscreenSpellCard extends StatefulWidget {
     required this.emblemPainter,
     this.autoDismissAfter,
     this.liveHp,
+    this.liveMaxHp,
     this.growFrom,
     this.shrinkTo,
     this.countered = false,
     this.counteredByLabel,
+    this.phantasmal = false,
   });
 
   final SpellAsset spell;
   final SpellCardPainter emblemPainter;
   final Duration? autoDismissAfter;
   final int? liveHp;
+  final int? liveMaxHp;
 
   /// Global-screen point the card should grow out of on entry (the tile a
   /// resolution-phase spell just hit). Null → the card fades in centered, the
@@ -687,6 +715,7 @@ class _FullscreenSpellCard extends StatefulWidget {
   /// See [showSpellCardFullscreen]'s doc comment.
   final bool countered;
   final String? counteredByLabel;
+  final bool phantasmal;
 
   @override
   State<_FullscreenSpellCard> createState() => _FullscreenSpellCardState();
@@ -700,6 +729,7 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
   Timer? _autoDismissTimer;
   late final AnimationController _intro;
   late final AnimationController _flip;
+  late final AnimationController _flash;
   bool _exiting = false;
 
   bool get _hasArt => _hasCustomArt(widget.spell);
@@ -723,6 +753,15 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
       duration: const Duration(milliseconds: 420),
       value: 1.0,
     );
+    // A double-pulse of rubric red across the whole card, played once on
+    // entry when this cast was countered — reads as a hit landing before the
+    // card settles into the static COUNTERED ribbon (_CounteredOverlay).
+    // Idle at 0 (invisible) for every non-countered card.
+    _flash = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 520),
+    );
+    if (widget.countered) _flash.forward();
     // Grow out of the hit point when we have one; otherwise present instantly
     // (manual card views keep their original, un-animated appearance).
     if (widget.growFrom != null) {
@@ -741,6 +780,7 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
     _autoDismissTimer?.cancel();
     _intro.dispose();
     _flip.dispose();
+    _flash.dispose();
     super.dispose();
   }
 
@@ -768,6 +808,12 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
     await _intro.reverse();
     if (mounted) Navigator.of(context).pop();
   }
+
+  /// Cold-blue monochrome for a copied creature's card; a pass-through for
+  /// every other card. See [kPhantasmalFilter].
+  Widget _tinted(Widget child) => widget.phantasmal
+      ? ColorFiltered(colorFilter: kPhantasmalFilter, child: child)
+      : child;
 
   /// The card content, transformed so it blooms out of [widget.growFrom] on
   /// entry and reverse-blooms into [widget.shrinkTo] on exit (scale + fade,
@@ -835,23 +881,44 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
                       height: h,
                       child: Stack(
                         children: [
-                          AnimatedBuilder(
-                            animation: _flip,
-                            builder: (_, _) => _CardFrame(
-                              spell: widget.spell,
-                              emblemPainter: widget.emblemPainter,
-                              showEmblem: _showEmblem,
-                              prevShowEmblem: _prevShowEmblem,
-                              flipT: _flip.value,
-                              hasArt: _hasArt,
-                              fullArtFuture: _fullArtFuture,
-                              liveHp: widget.liveHp,
+                          // The phantasmal tint wraps the card itself, not the
+                          // overlays: a countered copy still needs its red
+                          // ribbon to read as red.
+                          _tinted(
+                            AnimatedBuilder(
+                              animation: _flip,
+                              builder: (_, _) => _CardFrame(
+                                spell: widget.spell,
+                                emblemPainter: widget.emblemPainter,
+                                showEmblem: _showEmblem,
+                                prevShowEmblem: _prevShowEmblem,
+                                flipT: _flip.value,
+                                hasArt: _hasArt,
+                                fullArtFuture: _fullArtFuture,
+                                liveHp: widget.liveHp,
+                                liveMaxHp: widget.liveMaxHp,
+                              ),
                             ),
                           ),
                           if (widget.countered)
                             Positioned.fill(
                               child: _CounteredOverlay(
                                 sublabel: widget.counteredByLabel,
+                              ),
+                            ),
+                          if (widget.countered)
+                            Positioned.fill(
+                              child: IgnorePointer(
+                                child: AnimatedBuilder(
+                                  animation: _flash,
+                                  builder: (_, _) => Container(
+                                    key: const Key('countered-flash'),
+                                    color: kRubricRed.withValues(
+                                      alpha: _kCounteredFlashCurve
+                                          .transform(_flash.value),
+                                    ),
+                                  ),
+                                ),
                               ),
                             ),
                         ],
@@ -879,6 +946,19 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
     );
   }
 }
+
+/// Opacity curve for [_FullscreenSpellCardState._flash]: two quick pulses of
+/// full-bleed red (0→0.85→0.1→0.75→0) over the controller's 520ms, landing at
+/// 0 so the card is left showing only the persistent [_CounteredOverlay]
+/// dim+ribbon underneath once it settles.
+final Animatable<double> _kCounteredFlashCurve = TweenSequence<double>([
+  TweenSequenceItem(tween: Tween(begin: 0.0, end: 0.85), weight: 15),
+  TweenSequenceItem(tween: Tween(begin: 0.85, end: 0.85), weight: 5),
+  TweenSequenceItem(tween: Tween(begin: 0.85, end: 0.10), weight: 20),
+  TweenSequenceItem(tween: Tween(begin: 0.10, end: 0.75), weight: 15),
+  TweenSequenceItem(tween: Tween(begin: 0.75, end: 0.75), weight: 5),
+  TweenSequenceItem(tween: Tween(begin: 0.75, end: 0.0), weight: 40),
+]);
 
 /// Dims the card and stamps a rubric-red "COUNTERED" ribbon diagonally
 /// across it — battle_screen.dart's resolution reveal shows this over a
@@ -1037,6 +1117,7 @@ class _CardFrame extends StatelessWidget {
     required this.hasArt,
     required this.fullArtFuture,
     this.liveHp,
+    this.liveMaxHp,
   });
 
   final SpellAsset spell;
@@ -1064,6 +1145,10 @@ class _CardFrame extends StatelessWidget {
   /// Current battlefield HP for a live summon — see [showSpellCardFullscreen]'s
   /// doc comment. Null shows just the formula-derived max (unchanged default).
   final int? liveHp;
+
+  /// The creature's real max HP, when it differs from the card's
+  /// formula-derived one (a copy). Only read alongside [liveHp].
+  final int? liveMaxHp;
 
   @override
   Widget build(BuildContext context) {
@@ -1221,7 +1306,10 @@ class _CardFrame extends StatelessWidget {
           runSpacing: 4,
           children: [
             liveHp != null
-                ? _statChipText('HP', '$liveHp/${spec.stats.maxHp}')
+                ? _statChipText(
+                    'HP',
+                    '$liveHp/${liveMaxHp ?? spec.stats.maxHp}',
+                  )
                 : _statChip('HP', spec.stats.maxHp),
             _statChip('DMG', spec.stats.damage),
             _statChip('Move', spec.stats.moveSpeed),

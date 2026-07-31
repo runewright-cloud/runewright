@@ -69,6 +69,7 @@ SpellAsset _spell({
 /// Single-avatar solo setup (no peer) — for a caster countering their own cast.
 ({BattleState state, TurnLoop loop, WizardAvatar local}) _soloSetup({
   List<Accoutrement> accoutrements = const [],
+  AccoutrementKind? Function()? declare,
 }) {
   const id = 'local';
   final local = WizardAvatar(
@@ -94,6 +95,7 @@ SpellAsset _spell({
     state: state,
     session: SoloBattleSession(state: state),
     localPlayerId: id,
+    artifactActivationPicker: (_) async => declare?.call(),
   );
   return (state: state, loop: loop, local: local);
 }
@@ -260,6 +262,56 @@ void main() {
       expect(ctx.local.accoutrements.single.counterCharmRevealed, isTrue);
       expect(ctx.dummy.accoutrements.single.counterCharmRevealed, isFalse,
           reason: 'only one charm consumed per countered cast');
+    });
+  });
+
+  // The Phase-0 gate (docs/ARTIFACT_SYSTEM_PLAN.md §2.2). Spending ANY
+  // artifact drops the spender's OWN charms for that turn — not the caster's.
+  // The tension is meant to be internal to the charm holder: "do I want that
+  // 100 mana badly enough to open a window this turn?"
+  group('a charm does not fire on a turn its owner spent an artifact', () {
+    test('the cast resolves, the charm survives, and it fires the next turn',
+        () async {
+      final grid = '0x${'11' * 32}';
+      AccoutrementKind? next = AccoutrementKind.manaGem;
+      final ctx = _soloSetup(
+        accoutrements: [
+          _charm('c1', target: grid),
+          const Accoutrement(id: 'g1', kind: AccoutrementKind.manaGem),
+        ],
+        declare: () => next,
+      );
+
+      await ctx.loop.runTurn(TurnInput(
+        action: SpellCastAction(
+          spell: _spell(commitmentHex: grid),
+          targetHex: ctx.local.position,
+        ),
+      ));
+
+      expect(ctx.loop.lastResolvedSpells.single.wasCountered, isFalse,
+          reason: 'the gem burst opened this wizard’s own guard for the turn');
+      final charm = ctx.local.accoutrements
+          .firstWhere((a) => a.kind == AccoutrementKind.counterCharm);
+      expect(charm.counterCharmRevealed, isFalse,
+          reason: 'a charm that never fired is not spent');
+
+      // Same grid, next turn, nothing declared: the guard is back up.
+      next = null;
+      await ctx.loop.runTurn(TurnInput(
+        action: SpellCastAction(
+          spell: _spell(commitmentHex: grid),
+          targetHex: ctx.local.position,
+        ),
+      ));
+
+      expect(ctx.loop.lastResolvedSpells.single.wasCountered, isTrue);
+      expect(
+        ctx.local.accoutrements
+            .firstWhere((a) => a.kind == AccoutrementKind.counterCharm)
+            .counterCharmRevealed,
+        isTrue,
+      );
     });
   });
 

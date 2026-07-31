@@ -293,6 +293,32 @@ class EffectBloom {
   final Set<String> minionIds;
 }
 
+/// Which battlefield handles existed *before* the turn currently resolving
+/// began — clouds by id, terrain by hex, creatures by id.
+///
+/// The engine mutates [BattleState] in place while `runTurn` is still awaiting
+/// its next network exchange, and this painter repaints every frame off the
+/// free-running pulse controller (not off widget rebuilds). Without a baseline
+/// a cloud conjured in Phase 5 is therefore drawn the instant the applicator
+/// creates it — several hundred milliseconds before the resolution sequence
+/// gets to hide it again and bloom it out of its cast tile, which reads as the
+/// effect flickering in, vanishing, then arriving properly.
+///
+/// So while a turn is resolving, anything *not* in this snapshot is held back
+/// exactly like [BattlefieldPainter.hiddenCloudIds] holds it back afterwards.
+/// Null means no turn is resolving and everything on the field may draw.
+class ResolutionBaseline {
+  const ResolutionBaseline({
+    required this.cloudIds,
+    required this.tileHexes,
+    required this.minionIds,
+  });
+
+  final Set<String> cloudIds;
+  final Set<HexCoord> tileHexes;
+  final Set<String> minionIds;
+}
+
 // ── Painter ───────────────────────────────────────────────────────────────────
 
 class BattlefieldPainter extends CustomPainter {
@@ -322,6 +348,7 @@ class BattlefieldPainter extends CustomPainter {
     this.hiddenCloudIds = const {},
     this.hiddenTileHexes = const {},
     this.hiddenMinionIds = const {},
+    this.resolutionBaseline,
     this.effectBloom,
     this.effectBloomAnimation,
     this.terrainBeneath = false,
@@ -422,6 +449,12 @@ class BattlefieldPainter extends CustomPainter {
   final Set<String> hiddenCloudIds;
   final Set<HexCoord> hiddenTileHexes;
   final Set<String> hiddenMinionIds;
+
+  /// The same hold-back, applied *during* the turn rather than after it: while
+  /// this is non-null, any cloud/terrain/creature that wasn't on the field when
+  /// the turn started is skipped. Hands off to the three sets above the moment
+  /// `runTurn` returns. See [ResolutionBaseline].
+  final ResolutionBaseline? resolutionBaseline;
 
   /// The effect group currently blooming into view (one spell's freshly
   /// revealed creations), scaled up out of [EffectBloom.origin] by
@@ -590,7 +623,7 @@ class BattlefieldPainter extends CustomPainter {
     // Held-back terrain (not yet revealed by its spell's card) is skipped;
     // terrain currently blooming in scales up out of the cast tile.
     for (final entry in tileEffects.entries) {
-      if (hiddenTileHexes.contains(entry.key)) continue;
+      if (_tileHeldBack(entry.key)) continue;
       _bloomWrap(
         canvas,
         center,
@@ -645,7 +678,7 @@ class BattlefieldPainter extends CustomPainter {
     // is held back until its card resolves, then blooms out of the cast tile.
     for (final m in minions) {
       if (!m.isAlive) continue;
-      if (hiddenMinionIds.contains(m.id)) continue;
+      if (_minionHeldBack(m.id)) continue;
       final friendly = m.teamId == localTeamId;
       _bloomWrap(canvas, center, () {
         for (final tile in m.occupiedTiles) {
@@ -687,7 +720,7 @@ class BattlefieldPainter extends CustomPainter {
     // freshly conjured cloud is held back until its card resolves, then
     // blooms out of the cast tile.
     for (final cloud in clouds) {
-      if (hiddenCloudIds.contains(cloud.id)) continue;
+      if (_cloudHeldBack(cloud.id)) continue;
       _bloomWrap(
         canvas,
         center,
@@ -751,6 +784,33 @@ class BattlefieldPainter extends CustomPainter {
         _drawConveyorChainAnimation(canvas, center, anim, t);
       }
     }
+  }
+
+  // ── Reveal hold-back ──────────────────────────────────────────────────────
+  //
+  // Two sources, checked together: the post-turn per-spell sets, and — while a
+  // turn is still resolving — "anything born since the turn started". These are
+  // evaluated at *paint* time rather than being folded into one set by the
+  // caller, because the painter repaints off the pulse controller between
+  // widget rebuilds: a set computed in build() would already be stale by the
+  // time the applicator conjures the cloud. See [ResolutionBaseline].
+
+  bool _cloudHeldBack(String id) {
+    if (hiddenCloudIds.contains(id)) return true;
+    final base = resolutionBaseline;
+    return base != null && !base.cloudIds.contains(id);
+  }
+
+  bool _tileHeldBack(HexCoord hex) {
+    if (hiddenTileHexes.contains(hex)) return true;
+    final base = resolutionBaseline;
+    return base != null && !base.tileHexes.contains(hex);
+  }
+
+  bool _minionHeldBack(String id) {
+    if (hiddenMinionIds.contains(id)) return true;
+    final base = resolutionBaseline;
+    return base != null && !base.minionIds.contains(id);
   }
 
   /// Runs [draw] normally, unless the effect it renders (identified by exactly
@@ -1663,6 +1723,7 @@ class BattlefieldPainter extends CustomPainter {
       old.hiddenCloudIds.length != hiddenCloudIds.length ||
       old.hiddenTileHexes.length != hiddenTileHexes.length ||
       old.hiddenMinionIds.length != hiddenMinionIds.length ||
+      !identical(old.resolutionBaseline, resolutionBaseline) ||
       old.terrainBeneath != terrainBeneath ||
       old.avatarMoveAnimations.length != avatarMoveAnimations.length ||
       !identical(old.avatarAtlas, avatarAtlas) ||

@@ -2,15 +2,37 @@
 //
 // wizard_avatar.dart — WizardAvatar, Accoutrement, and StatusEffect models.
 //
-// Accoutrement kinds (design doc §artifacts):
-//   Water — Mana Gems (+100 pool / +10 regen each, on top of the wizard's
-//            innate MatchConfig.innateManaPool; all gems are destructible —
-//            the old indestructible "core gem" is gone)
-//   Fire  — Counter Charms (keyed to a spell's commitmentHex; commit-reveal)
-//   Air   — Bookmarks (hand size; auto-retarget on use — SpellDraw)
-//   Earth — Absorption Rods: when hit by an enemy spell, all time-based
+// Accoutrement kinds (design doc §artifacts, as reworked by
+// docs/ARTIFACT_SYSTEM_PLAN.md). Every LOADOUT artifact is now **passive +
+// one consumable activation**: the passive runs for free while the artifact
+// is carried, and the owner may spend it — at most one artifact per player
+// per turn, declared publicly in Phase 0 — for a one-shot effect that
+// destroys it. Activating anything disables that wizard's counter charms for
+// the turn ([declaredActivation]), which is the trade the whole rework exists
+// to create.
+//
+//   Water — Mana Gems.   Passive: +100 pool / +10 regen each, on top of the
+//            wizard's innate MatchConfig.innateManaPool; all gems are
+//            destructible — the old indestructible "core gem" is gone.
+//            Activation: consume one gem to instantly restore 100 mana. The
+//            pool shrinks FIRST, so the burst is worthless at near-full mana.
+//   Fire  — Counter Charms (keyed to a spell's commitmentHex; commit-reveal).
+//            Passive: each UNSPENT charm gives 5% for this wizard's successful
+//            melee to destroy a victim's mana gem or wither one of their
+//            in-hand spells ([activeCounterCharmCount]).
+//            Activation: none — charms auto-fire on their attuned spell, and
+//            a charm that fires is spent and stops feeding the melee proc.
+//   Earth — Bookmarks. Passive: +1 hand size each (handSize == bookmarkCount
+//            + 1; auto-retarget on use — SpellDraw).
+//            Activation: burn one to redraw the entire hand, resolved at
+//            Phase 6 and available the following turn.
+//   Air   — Rods of Spreading. Passive: 10% per rod for +1 movement next turn.
+//            Activation: +1 effect radius (or one summon size rung) on this
+//            turn's cast.
+//   (summoned) Absorption Rods: when hit by an enemy spell, all time-based
 //            effects from that spell have their duration halved (rounded up);
-//            consumes 1 rod per spell hit.
+//            consumes 1 rod per spell hit. Summon-only — no loadout presence,
+//            and deliberately NOT part of the passive/active split.
 //   (summoned) Deflection Totem: functionally identical to Absorption Rod;
 //            summoned by Water-Earth/Earth (ArtifactsInteractionEffect).
 //
@@ -257,6 +279,17 @@ class WizardAvatar {
   int get manaGemsEquipped =>
       accoutrements.where((a) => a.kind == AccoutrementKind.manaGem).length;
 
+  /// Counter charms still holding their charge — the ones that have not yet
+  /// fired. This, not [accoutrements]'s raw charm count, is what the melee
+  /// proc rate keys off (ARTIFACT_SYSTEM_PLAN.md §2.4: a charm that fires its
+  /// counter is spent and stops contributing, so a 12-charm loadout decays
+  /// 60% → 55% → 50% as it counters things rather than getting full coverage
+  /// and a full proc rate for free).
+  int get activeCounterCharmCount => accoutrements
+      .where((a) =>
+          a.kind == AccoutrementKind.counterCharm && !a.counterCharmRevealed)
+      .length;
+
   /// Passive mana regained per turn: [MatchConfig.manaGemRegenPerGem] per
   /// equipped gem, and nothing else. A wizard carrying no gems regenerates
   /// nothing passively and must meditate (design v3.0 §artifacts).
@@ -296,7 +329,8 @@ class WizardAvatar {
     for (final fx in activeStatusEffects) {
       if (fx.isDormant) continue;
       if (fx.effectTypeId == StatusEffectId.speedUp ||
-          fx.effectTypeId == StatusEffectId.speedDown) {
+          fx.effectTypeId == StatusEffectId.speedDown ||
+          fx.effectTypeId == StatusEffectId.rodMobility) {
         speed += fx.modifiers['speedDelta'] ?? 0;
       }
     }
@@ -467,6 +501,22 @@ class WizardAvatar {
     toRemove.forEach(barriers.remove);
     return freeMove;
   }
+
+  /// The artifact kind this wizard declared in **Phase 0** of the current
+  /// turn, or null if they declared nothing (ARTIFACT_SYSTEM_PLAN.md §4).
+  /// Turn-scoped, like [pendingFreeMoveBurst] — set by TurnLoop's artifact
+  /// phase, cleared at the very end of the turn.
+  ///
+  /// Non-null means two things at once: *which* artifact is being spent, and
+  /// **this wizard's counter charms are down for the turn** (§2.2 — the charm
+  /// holder's own activation opens their own window, deliberately not the
+  /// caster's). That second meaning is why this is hashed into
+  /// [BattleState.toCanonicalBytes]: both devices gate charm firing on it at
+  /// Phase 5 and must agree.
+  ///
+  /// Only ever [AccoutrementKind.manaGem], [AccoutrementKind.bookmark], or
+  /// [AccoutrementKind.rodOfSpreading] — see TurnLoop's activation validation.
+  AccoutrementKind? declaredActivation;
 
   /// Set by [absorbDamage] when a barrier with [BarrierState.freeMoveOnCollapse]
   /// is destroyed by damage this turn ("burst" — as distinct from expiring

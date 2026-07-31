@@ -5,6 +5,9 @@
 // This does not assert pixel output (procedural Canvas drawing has no
 // snapshot baseline here) -- it exists to catch the paint()-time crash class
 // (unhandled variant in a switch, clipPath/save-restore mismatch, etc).
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rune_duel/battle/models/terrain.dart';
@@ -135,5 +138,89 @@ void main() {
 
     expect(tester.takeException(), isNull);
     expect(find.byType(CustomPaint), findsWidgets);
+  });
+
+  // ── Resolution hold-back ────────────────────────────────────────────────
+  //
+  // Pixels, not smoke, because "was it drawn?" is the entire question here.
+  // The painter repaints every frame off the pulse controller while the engine
+  // is still mutating BattleState between network awaits, so an effect the
+  // applicator has created but no card has revealed yet must be skipped on the
+  // strength of the baseline alone — a hidden-set the caller computed in
+  // build() is already stale by then. See ResolutionBaseline.
+
+  group('ResolutionBaseline', () {
+    final cloud = CloudObject(
+      id: 'conjured-this-turn',
+      position: const HexCoord(0, 0),
+      kind: const ToxicCloud(),
+      remainingTurns: 2,
+      ownerId: 'p1',
+    );
+
+    Future<Uint8List> render(
+      WidgetTester tester, {
+      required List<CloudObject> clouds,
+      ResolutionBaseline? baseline,
+    }) async {
+      late Uint8List bytes;
+      await tester.runAsync(() async {
+        final recorder = ui.PictureRecorder();
+        BattlefieldPainter(
+          radius: 3,
+          hexSize: 24,
+          occupancy: const {},
+          clouds: clouds,
+          resolutionBaseline: baseline,
+        ).paint(Canvas(recorder), const Size(300, 300));
+        final image = await recorder.endRecording().toImage(300, 300);
+        final data = await image.toByteData(format: ui.ImageByteFormat.png);
+        bytes = data!.buffer.asUint8List();
+      });
+      return bytes;
+    }
+
+    testWidgets('holds back a cloud that post-dates the snapshot',
+        (tester) async {
+      final empty = await render(tester, clouds: const []);
+      final held = await render(
+        tester,
+        clouds: [cloud],
+        // Snapshot taken before the cloud existed — i.e. at turn submission.
+        baseline: const ResolutionBaseline(
+          cloudIds: {},
+          tileHexes: {},
+          minionIds: {},
+        ),
+      );
+
+      expect(held, equals(empty),
+          reason: 'a cloud created mid-turn must draw nothing until its '
+              'spell card reveals it');
+    });
+
+    testWidgets('draws a cloud that was already on the field', (tester) async {
+      final empty = await render(tester, clouds: const []);
+      final shown = await render(
+        tester,
+        clouds: [cloud],
+        baseline: ResolutionBaseline(
+          cloudIds: {cloud.id},
+          tileHexes: const {},
+          minionIds: const {},
+        ),
+      );
+
+      expect(shown, isNot(equals(empty)),
+          reason: 'the hold-back must not swallow clouds that predate the turn');
+    });
+
+    testWidgets('draws everything once the baseline is released',
+        (tester) async {
+      final empty = await render(tester, clouds: const []);
+      final released = await render(tester, clouds: [cloud]);
+
+      expect(released, isNot(equals(empty)));
+    });
   });
 }
