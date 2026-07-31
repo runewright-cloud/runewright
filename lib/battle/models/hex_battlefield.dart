@@ -22,7 +22,7 @@ import 'dart:math';
 
 import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/battle/models/terrain.dart'
-    show TileEffect, ImpassableTile, SlowTile;
+    show TileEffect, ImpassableTile, SlowTile, tileBlocksMovement;
 
 // ── Hex distance / neighbor helpers ──────────────────────────────────────────
 
@@ -124,11 +124,27 @@ class Battlefield {
   ///
   /// [paths] maps playerId → ordered list of tiles to enter (not including origin).
   /// [speeds] maps playerId → effective move speed (base 2 + status effects).
+  ///
+  /// [flyingPlayerIds] are wizards under wild magic's Updraft: they ignore
+  /// terrain entirely while moving (WILD_MAGIC_PLAN.md A11), matching
+  /// TurnLoop._walkAvatar. They still contest destination tiles normally.
+  ///
+  /// **Ice sliding is deliberately NOT modelled here.** The returned
+  /// [MovementResult.paths] are re-walked verbatim as DECLARED STEPS by
+  /// TurnLoop._walkAvatar, so injecting the slid-through tiles would make that
+  /// walk re-enter each of them — sliding the avatar back and forth. So this
+  /// preview arbitrates on the pre-slide destination and the real walk slides
+  /// afterwards. That costs a little arbitration accuracy on iced ground (two
+  /// players may be judged not to contest a tile they both slide off anyway)
+  /// and costs nothing in lockstep, because both clients run identical code on
+  /// both halves, and the real walk's occupancy check stops a second slider
+  /// short rather than stacking them.
   MovementResult resolveMovement(
     Map<String, List<HexCoord>> paths,
     Map<String, int> speeds, {
     int maxTilesPerTurn = 2,
     Map<HexCoord, TileEffect> tileEffects = const {},
+    Set<String> flyingPlayerIds = const {},
   }) {
     final origins = Map<String, HexCoord>.from(occupancy);
 
@@ -144,12 +160,17 @@ class Battlefield {
       var current   = origin;
       final walked  = <HexCoord>[origin];
 
+      final flying = flyingPlayerIds.contains(id);
+
       for (final step in path) {
         if (remaining <= 0) break;
         if (!isInBounds(step)) break;
         if (hexDistance(current, step) != 1) break; // path must be step-adjacent
-        final effect = tileEffects[step];
-        if (effect is ImpassableTile) break;
+        final effect = flying ? null : tileEffects[step];
+        // ChasmTile blocks movement like a wall (but not targeting — see
+        // terrain.dart). Missing it here would let the preview arbitrate a
+        // destination the real walk can never reach.
+        if (tileBlocksMovement(effect)) break;
         final cost = 1 + (effect is SlowTile ? effect.extraMoveCost : 0);
         if (cost > remaining) break;
         current    = step;
@@ -249,7 +270,7 @@ class Battlefield {
   }) {
     if (from == to) return const [];
     if (!isInBounds(to)) return null;
-    if (tileEffects[to] is ImpassableTile) return null;
+    if (tileBlocksMovement(tileEffects[to])) return null;
 
     // BFS tracking previous-tile for path reconstruction.
     final prev  = <HexCoord, HexCoord?>{from: null};
@@ -260,7 +281,7 @@ class Battlefield {
     while (queue.isNotEmpty) {
       final current = queue.removeAt(0);
       for (final next in neighbors(current)) {
-        if (tileEffects[next] is ImpassableTile) continue;
+        if (tileBlocksMovement(tileEffects[next])) continue;
         if (prev.containsKey(next)) continue;
         prev[next] = current;
         if (next == to) {

@@ -21,6 +21,7 @@ import 'key_packing.dart';
 
 const _kSeedStorageKey = 'runewright.identity.ed25519_seed_v1';
 const _kWizardNameKey = 'runewright.identity.wizard_name_v1';
+const _kCommunitySeedKey = 'runewright.identity.community_seed_v1';
 
 /// A loaded Ed25519 identity: the keypair plus its circuit-facing encoding.
 class Identity {
@@ -49,12 +50,32 @@ class Identity {
     return _storage.read(key: _kWizardNameKey);
   }
 
+  /// Persists the player's leyline seed word — the community word folded into
+  /// every spell's wild-magic hash (see WildMagic.seedHex). Stored RAW as
+  /// typed, so the settings UI can echo back their own spelling; normalization
+  /// happens at hash time.
+  ///
+  /// Rotating this word is the ratified anti-grinder lever
+  /// (docs/WILD_MAGIC_PLAN.md §2.6), so it is changeable at any time — but
+  /// changing it gives EVERY spell in the library different wild magic, which
+  /// the UI must warn about. Recipe (formula) effects are unaffected.
+  static Future<void> saveCommunitySeed(String seed) async {
+    await _storage.write(key: _kCommunitySeedKey, value: seed);
+  }
+
+  /// Returns the stored raw leyline seed word, or null if none has been set
+  /// (callers should fall back to [kDefaultCommunitySeed]).
+  static Future<String?> loadCommunitySeed() async {
+    return _storage.read(key: _kCommunitySeedKey);
+  }
+
   /// Wipes the on-device identity and wizard name — debug / testing use only.
   /// After calling this, [exists] returns false and the app will show
   /// onboarding on next launch (or navigate there manually).
   static Future<void> deleteOnDevice() async {
     await _storage.delete(key: _kSeedStorageKey);
     await _storage.delete(key: _kWizardNameKey);
+    await _storage.delete(key: _kCommunitySeedKey);
   }
 
   /// Read-only boot check: is there already a Runekey on this device? Unlike

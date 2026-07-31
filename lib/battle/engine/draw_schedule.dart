@@ -135,4 +135,31 @@ class DrawSchedule {
     final newWithered = Set<int>.from(withered)..removeAll(positions);
     return DrawSchedule._(hand: hand, remaining: remaining, withered: newWithered);
   }
+
+  /// Returns the ENTIRE hand to [remaining] in canonical order, then draws a
+  /// fresh hand of [handSize] — wild magic's Scattered Gusts. The exact mirror
+  /// of [SpellDraw.redrawHand]: same removeSlot-based return loop, same
+  /// one-at-a-time draw, so the same seed bytes yield the same positions in
+  /// both structures.
+  ///
+  /// Withered flags on returned positions are cleared by [removeSlot] as it
+  /// goes — a spell blown back into the deck stops being a withered *hand*
+  /// card, matching how [useSlotAtPosition] clears it on a cast.
+  DrawSchedule redrawHand(int handSize, HashRng rng) {
+    var pool = this;
+    while (pool.hand.isNotEmpty) {
+      pool = pool.removeSlot(0);
+    }
+    final remainingPool = List<int>.from(pool.remaining);
+    final dealSize = handSize < remainingPool.length ? handSize : remainingPool.length;
+    final newHand = <int>[];
+    for (var i = 0; i < dealSize; i++) {
+      newHand.add(remainingPool.removeAt(rng.nextInt(remainingPool.length)));
+    }
+    return DrawSchedule._(
+      hand: newHand,
+      remaining: remainingPool,
+      withered: pool.withered,
+    );
+  }
 }

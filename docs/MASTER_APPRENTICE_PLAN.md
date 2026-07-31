@@ -132,21 +132,27 @@ gap in the battle system that nothing else has needed yet.
 
 | Phase | What | Gate |
 |---|---|---|
-| **A** | Match end + signed outcome (§4) | `flutter test`; a two-device duel that actually *ends* |
-| **B** | Apprenticeship model, protocol, offer/accept/renew (§5, §6) | `flutter test`; `flutter run -d linux` walkthrough |
-| **C** | Graduation: bequest + battle pact + settlement (§7) | `flutter test`; two-device graduation |
+| **A** | Match end + signed outcome (§4) — **DONE 2026-07-29** | `flutter test`; a two-device duel that actually *ends* |
+| **B** | Apprenticeship model, protocol, offer/accept/renew (§5, §6) — **DONE 2026-07-30** | `flutter test`; `flutter run -d linux` walkthrough |
+| **C** | Graduation: bequest + battle pact + settlement (§7) — **DONE 2026-07-30** | `flutter test`; two-device graduation |
 | **D** | UI polish + library/chapter labelling (§8) | visual pass |
 
 ---
 
-## 4. Phase A — match end and the signed outcome
+## 4. Phase A — match end and the signed outcome — **DONE 2026-07-29**
 
-**This does not exist today.** `TurnLoop.runTurn` returns a `WinCheckResult?`
-(`lib/battle/engine/turn_loop.dart:1495`), and `battle_screen.dart:1368` discards it.
-`BattleSession.sendMatchEnd` (`battle_session.dart:635`) has **no callers**. A graduation
-battle cannot move ownership until both devices agree, in writing, on who won.
+Built as planned, with one deliberate simplification over the design below (kept here so
+the reasoning isn't re-litigated): **DONE**. `TurnLoop.runTurn` used to return a
+`WinCheckResult?` (`lib/battle/engine/turn_loop.dart`) that `battle_screen.dart` discarded,
+and `BattleSession.sendMatchEnd` had no callers. Both are now wired end-to-end —
+`lib/battle/models/match_outcome.dart`, `BattleSession.exchangeMatchOutcome`
+(`battle_wire.dart`'s `matchResultSig(0x42)`), and `battle_screen.dart`'s `_handleMatchEnd`
++ `_MatchEndOverlay`. Tests: `test/battle/models/match_outcome_test.dart`,
+`test/battle/networking/match_outcome_exchange_test.dart`,
+`test/battle/engine/turn_loop_win_condition_test.dart`. Full `flutter test` (792 tests) and
+`flutter analyze` both green.
 
-### 4.1 `lib/battle/models/match_outcome.dart` (new)
+### 4.1 `lib/battle/models/match_outcome.dart`
 
 ```dart
 class MatchOutcome {
@@ -155,9 +161,20 @@ class MatchOutcome {
   final String loserPubkeyHex;
   final String finalStateHashHex;
   final String pactIdHex;         // 'none' for an ordinary duel; §7.2 for graduation
-  final DateTime endedAt;
+  final int endedAtTurn;          // BattleState.turnNumber, NOT a wall-clock timestamp
 }
 ```
+
+**Deviation from the original draft of this section:** it originally spec'd a `DateTime
+endedAt` requiring a host-proposes/guest-adopts handshake so both sides' signed bytes would
+match. Building it, `endedAtTurn: int` (`state.turnNumber` when `checkWinCondition()` fired)
+is strictly better: it's already a value the per-turn state-hash lockstep
+(`BattleSession.exchangeStateHash`) guarantees is byte-identical on both devices, so *every*
+field of `MatchOutcome` is now independently derivable — no round trip needed to agree on
+anything before signing. This turned `exchangeMatchOutcome` into a single simultaneous
+exchange, the same shape as every other per-turn exchange in `battle_session.dart`, rather
+than a special-cased host-first one. If you're reading this while building Phase B/C: there
+is no host/guest asymmetry anywhere in the match-outcome path, on purpose.
 
 Canonical signed message, null-byte delimited, hex lowercased — same discipline as
 `SpellPermission._buildMessage`:
@@ -169,22 +186,22 @@ utf8("RUNEWRIGHT_MATCH_OUTCOME_V1\x00")
 || utf8(loserPubkeyHex)    || 0x00
 || utf8(finalStateHashHex) || 0x00
 || utf8(pactIdHex)         || 0x00
-|| utf8(endedAt.toUtc().toIso8601String())
+|| utf8(endedAtTurn.toString())
 ```
 
-`SignedMatchOutcome { MatchOutcome outcome; String rawPubkeyBase64; String signatureBase64; }`
-with `isSignatureValid()` mirroring `SpellPermission.isSignatureValid` — verify the raw key
-binds to the claimed pubkey hex via `Identity.ownerPubkeyMatches`, then verify Ed25519.
+`SignedMatchOutcome { MatchOutcome outcome; String signerPubkeyHex; String rawPubkeyBase64; String signatureBase64; }`
+— `isSignatureValid()` mirrors `SpellPermission.isSignatureValid`: verify the raw key binds
+to `signerPubkeyHex` via `Identity.ownerPubkeyMatches`, then verify Ed25519.
 
 `MatchOutcomeRecord { MatchOutcome outcome; SignedMatchOutcome mine; SignedMatchOutcome theirs; }`
 persists to `<docs>/outcomes/<matchIdHex>.json`, file-per-record like every other asset.
-**This record is the portable, durable artifact** — §7.4 settlement consumes it, and a
-future ELO/match-history feature gets it for free.
+`isFullyValid()` checks both signatures verify, both signers are named parties in `outcome`,
+and the two signers are *different* parties (two copies of one side's signature must never
+count as agreement). **This record is the portable, durable artifact** — §7.4 settlement
+consumes it, and a future ELO/match-history feature gets it for free.
 
-> `endedAt` must be agreed, not independently generated, or the two signed messages will
-> never match. The **host** puts its `endedAt` in its message; the guest, on receiving the
-> host's signed outcome, adopts the host's `endedAt` verbatim before signing its own.
-> Everything else both sides derive independently and must agree on.
+`MatchOutcome.sameFieldsAs(other)` is the field-equality check a caller runs before trusting
+a peer's returned outcome — hex fields compared case-insensitively, everything else exactly.
 
 ### 4.2 `BattleSession.exchangeMatchOutcome`
 
@@ -195,50 +212,82 @@ One new `BattleMsgType`: **`matchResultSig(0x42)`** (0x41 `matchEnd` is the last
 Future<SignedMatchOutcome> exchangeMatchOutcome(SignedMatchOutcome mine);
 ```
 
-Host sends first, guest replies (§4.1's `endedAt` adoption makes it strictly ordered — do
-not make it symmetric). On receipt, **reject unless all of**:
+Symmetric, like `exchangeStateHash` — both sides send and await simultaneously (see §4.1's
+deviation note for why no host-first ordering is needed). The method itself is a pure
+transport: it does not validate what comes back. The caller (`battle_screen.dart`'s
+`_handleMatchEnd`) **rejects unless all of**:
 
-- the peer's signature verifies;
-- the peer's raw pubkey binds to the `peerOwnerPubkeyHex` **already authenticated** by the
-  existing challenge/response (`authChallenge 0x17` / `authResponse 0x18`,
-  `docs/BATTLE_AUTH_PLAN.md` §3) — do not accept a fresh key here;
-- every field of their `MatchOutcome` equals mine.
+- `MatchOutcome.sameFieldsAs` — every field of the peer's outcome equals mine;
+- the peer's raw pubkey/signer hex match `widget.peerRawPubkey` /
+  `widget.peerOwnerPubkeyHex` — the identity **already authenticated** by
+  `exchangeIdentityAuth` at duel setup (`docs/BATTLE_AUTH_PLAN.md` §3), never a fresh claim
+  accepted here;
+- `MatchOutcomeRecord.isFullyValid()` on the combined pair.
 
-Any mismatch → no record is written, and the UI says the outcome was disputed. **Never
-settle stakes on a one-sided signature.**
+Any mismatch → no record is written, and the overlay shows *"Not settled: ‹reason›"*
+without disputing the LOCAL win/loss verdict — this device's own `TurnLoop` is still
+authoritative for what this device displays; unsettled only means nobody else can yet prove
+it (see `_MatchEndSummary`'s doc comment in `battle_screen.dart`). **Never settle stakes on
+a one-sided signature.**
 
-### 4.3 Wiring the end of the match
+Scoped to real 1v1 duels only: solo/practice sessions and a draw (`winningTeamId == null`)
+both skip signing entirely (nothing to settle, or no single victor to sign over); a battle
+with more than two avatars also skips signing, since "the loser" isn't a single well-defined
+party yet — team battles aren't a graduation-duel shape this plan covers.
 
-In `battle_screen.dart`'s `_submitTurn`, capture `runTurn`'s return:
+### 4.3 Wiring the end of the match — as built
 
-```dart
-final win = await _loop.runTurn(input);
-...
-if (win != null && win.isOver) { /* enter the end-of-match path */ }
-```
+`_submitTurn` captures `runTurn`'s return and sets `_matchEnded = true` synchronously (in
+the same `setState` that already resets turn-submission state) the instant `win.isOver` —
+this is what blocks a further `_submitTurn` call, before the async settlement work below
+even starts. `_handleMatchEnd(win)` then runs unawaited: it derives the local verdict from
+`win.winningTeamId` + `widget.state.avatars` (no network needed for this part — every
+device's own `TurnLoop` already agrees, via lockstep, on who won), and for a real 1v1 duel
+additionally signs, exchanges, and validates the `MatchOutcome` per §4.2. Either way it ends
+by populating `_matchEndSummary`, which `build()` renders as a full-screen
+`_MatchEndOverlay` (victory/defeat/draw + settlement status + a Leave Battle button) stacked
+over the existing battlefield UI.
 
-Then: freeze input, play out the existing reveal sequence, show a victory/defeat overlay
-(manuscript theme, mirroring the existing dialogs), and on the LAN path call
-`session.sendMatchEnd(...)` followed by `exchangeMatchOutcome(...)`, persisting the
-`MatchOutcomeRecord`. On the solo path (`SoloBattleSession`) show the overlay and skip all
-of the signing.
+**`sendMatchEnd`/`matchEnd (0x41)` was NOT called from this path.** It's the older,
+unauthenticated advisory message (a bare `{winningTeamId, finalStateHash}` JSON blob, no
+signature) and now has no callers — `matchResultSig (0x42)`'s signed, mutually-validated
+exchange fully supersedes what it was for. Deleting `sendMatchEnd`/`matchEnd` outright is a
+reasonable follow-up if nothing else claims it, but wasn't done here to keep Phase A's diff
+additive only.
 
-Also handle the existing `forfeit` message as an outcome source (victor = the non-forfeiter)
-so a conceded graduation battle still settles. A **disconnect** is not an outcome: no
-signatures, no settlement, stakes stay put. That asymmetry is deliberate and should be
-stated in the graduation UI.
+**Deferred, not built: forfeit as an outcome source.** The original draft of this section
+called for treating an incoming `forfeit (0x40)` frame as "victor = the non-forfeiter."
+Investigating it turned up that nothing in the codebase listens for that frame today —
+`sendForfeit` is called by the side that *detects* a protocol violation, but the receiving
+side never subscribes to it, so a forfeit currently only ever surfaces as the honest side's
+own `StateError` (the existing "Turn error: …" snackbar in `_submitTurn`'s catch block).
+Wiring real forfeit-as-outcome handling is a separate, decently-sized piece of plumbing
+(subscribing to `BattleMsgType.forfeit` outside the turn-submission flow, plus deciding what
+UI a "your opponent's client just violated the protocol" event gets) that doesn't naturally
+fit the mutual-signature model anyway — a forfeiting/cheating peer is exactly the peer who
+won't cooperate with counter-signing. Left as a named follow-up rather than silently
+dropped; a graduation battle's counterweight for this gap is already covered by §7.4's "a
+disconnect settles nothing" rule, which a forfeit is a special case of.
 
 ### 4.4 Phase A tests
 
-- `test/battle/models/match_outcome_test.dart` — canonical message round-trip; tampering any
-  field (especially `victorPubkeyHex` and `pactIdHex`) invalidates the signature; record
-  JSON round-trips.
+- `test/battle/models/match_outcome_test.dart` — tampering any field (`victorPubkeyHex`,
+  `pactIdHex`, `endedAtTurn`) after signing invalidates the signature; a presented rawPubkey
+  that doesn't hash to the claimed signer is rejected; `MatchOutcomeRecord.isFullyValid`
+  rejects a signer not named in the outcome and rejects two copies of one side's signature;
+  JSON round-trips including `save()`/`loadByMatchId()`.
 - `test/battle/networking/match_outcome_exchange_test.dart` — over `InMemoryTransport` with
-  two ephemeral identities: agreeing outcomes produce a record on both sides; a peer that
-  signs a *different* victor is rejected; a peer signing with a key other than the
-  authenticated one is rejected.
-- Extend an existing turn-loop test to assert `runTurn` returns `isOver` when one side's
-  avatars are all dead (guards the wiring the UI now depends on).
+  two ephemeral identities: both sides receive exactly what the other sent and the resulting
+  record validates; a dishonest peer's outcome (different victor) still carries a valid
+  signature over *its own* claim, but fails `MatchOutcome.sameFieldsAs` — the field-agreement
+  check, not signature validity, is what actually stops it (matching how the real call site
+  in `_handleMatchEnd` gates on `sameFieldsAs` before ever checking signatures).
+- `test/battle/engine/turn_loop_win_condition_test.dart` (new file, not an extension of an
+  existing one) — `runTurn` returns `isOver: true` with the correct `winningTeamId` once one
+  side has 0 hp, and returns `null` while both sides are alive. Uses the existing
+  `turn_session_pair.dart` fixture (two independently-driven `TurnLoop`s, real lockstep, no
+  network I/O) so the assertion is on genuine two-client agreement, not a single loop's
+  self-consistent view.
 
 ---
 
@@ -497,6 +546,42 @@ critically, a plain-language note: *"These runes are lent, not given. You will b
 cast them but never to see how they were drawn, and they fade in 30 days unless your master
 renews them."*
 
+### Phase B status — **DONE 2026-07-30**
+
+Built as planned: `lib/apprentice/{apprenticeship,apprentice_wire,apprentice_session,
+apprentice_discovery}.dart`, `chapterEligibleForApprenticeLoan` in `spell_authorization.dart`
+(plus a `ChapterAsset.delete()` addition it needed), `lib/ui/{apprenticeship_screen,
+apprentice_offer_screen}.dart`, and `commune_screen.dart` wired live. 35 new tests across
+`test/apprentice/` + `test/spells/chapter_eligibility_test.dart`; full suite is 827 passing
+(up from Phase A's 792); `flutter analyze` clean. `flutter run -d linux` boots cleanly with
+no compile or runtime errors — **not** independently click-driven end-to-end, though: this
+sandbox has no `xdotool`/`scrot`, a limitation already documented elsewhere in this repo
+(`docs/M4_findings.md`), so "boots clean" is what CLAUDE.md's verification hierarchy allows
+here without real hardware.
+
+**One finding worth carrying into Phase C/D:** `ApprenticeshipScreen`'s `FutureBuilder`
+(loading `ApprenticeshipRecord.loadAll()` via real `dart:io` File/Directory calls) **never
+resolves under `WidgetTester.pump()`/`pumpAndSettle()`**, and wrapping the wait in
+`tester.runAsync()` does not fix it either (the `Future` is already constructed against the
+fake test zone by the time `initState` runs, before `runAsync` gets a chance to bridge
+anything). This is the same characteristic already noted for `LibraryScreen`
+(`test/ui/commune_trade_navigation_test.dart`'s header comment) — apparently a general
+property of this pattern (FutureBuilder + real file I/O) under this project's widget-test
+harness, not something specific to either screen. **Any new FutureBuilder-backed screen
+Phase C/D adds (a graduation-pact list, a settlement queue, etc.) will hit the same wall.**
+The workaround used here: widget-test only that navigation *reaches* the screen (a static
+AppBar title, present before the FutureBuilder resolves) via a couple of bounded,
+duration-stepped `pump()` calls to carry the push-route transition — never `pumpAndSettle()`
+on a screen with one of these. Full behavioral coverage of the loaded state lives in the
+plain (non-widget) tests against the data layer instead
+(`test/apprentice/apprenticeship_test.dart`, `apprentice_session_test.dart`). If this is
+worth actually fixing (e.g. some FutureBuilder-friendly fake-clock shim), that's a
+testing-infrastructure task orthogonal to this feature — flagged, not fixed, here.
+
+Not built in Phase B (out of scope, per §3's table — Phase C's job): graduation buttons on
+the hub (`REQUEST GRADUATION`/`BEQUEATH`/`CHALLENGE`) are visible but disabled, matching the
+app's own established convention for a shipped-but-incomplete skeleton.
+
 ---
 
 ## 7. Phase C — graduation
@@ -608,6 +693,80 @@ escrow.
   signature is rejected.
 - `test/apprentice/apprentice_constraints_test.dart` — a device with an active mastership
   refuses to offer an apprenticeship and refuses a second master.
+
+### Phase C status — **DONE 2026-07-30**
+
+Built as planned, with a few real findings worth carrying forward:
+
+- `lib/apprentice/graduation_pact.dart` (new) — `GraduationPact`, `SignedGraduationPact`,
+  `unresolvableStakeCommitments`, and `resolveGraduationSettlement` (the pre-settlement trust
+  gate §7.4 describes — pactIdHex match, both pact signatures valid, both outcome signatures
+  valid, victor is one of the two named parties).
+- `ApprenticeSession` gained: `sendGraduationOffer`/`awaitGraduationOffer`/
+  `respondToGraduationOffer`/`awaitGraduationResponse` (§7.2), `sendTransferBundle`/
+  `receiveTransferBundleAndSave` (the shared low-level transfer primitive §7.1/§7.4 both sit
+  on), and the four orchestration wrappers `sendBequest`/`receiveBequestAndSave`/
+  `sendStakeSettlement`/`receiveStakeSettlementAndSave`.
+- `lib/ui/graduation_screen.dart` (new) — one screen, one `GraduationMode` enum (`bequest`,
+  `challenge`, `respond`, `receiveGrant`, `settle`), not four separate near-duplicate pairing
+  screens — the pairing boilerplate is identical across all four flows.
+- `pactIdHex` threaded as a single optional field on `BattleLobbyScreen` and `BattleScreen`,
+  landing in the signed `MatchOutcome` at match end — exactly the "minimal plumbing" this
+  section called for. `runDuelSetup` was NOT touched — the pact is already fully signed
+  before the duel starts, so the duel handshake itself has no need to know about it.
+- Hub screen (`apprenticeship_screen.dart`) gained a "RECEIVE GRANT" action (apprentice
+  side) and an "Awaiting settlement" section that scans `SignedGraduationPact.loadAll()` for
+  ones with a matching, still-unapplied `MatchOutcomeRecord`.
+- 26 new tests across `graduation_pact_test.dart`, `graduation_bequest_test.dart`,
+  `graduation_settlement_test.dart`, `apprentice_constraints_test.dart`, plus 6 added to
+  `apprenticeship_test.dart`. Combined with Phase B, `test/apprentice/` is 75 tests. Full
+  suite: 849 tests, 5 failing — all five are `inscribe_test.dart`/`gate_runner_test.dart`/
+  `turn_loop_proof_verification_test.dart` timing out on the real network SRS download
+  (`reqwest::Error { kind: Decode, source: TimedOut }`), confirmed pre-existing (last touched
+  by an unrelated commit before this session) and unrelated to anything in this phase — no
+  file this phase touched is anywhere near the FFI/proving path. `flutter analyze` clean
+  (same pre-existing, unrelated warnings only). `flutter run -d linux` boots cleanly.
+
+**Two real bugs found and fixed while building this, not just findings — both fixed in
+place, not deferred:**
+
+1. **`ApprenticeshipRecord.forPeer` needed to be side-aware.** The original (Phase B)
+   signature matched a peer against EITHER `masterPubkeyHex` OR `apprenticePubkeyHex` with no
+   way to say which one the caller meant. This is invisible on a real single-identity device
+   (a device only ever holds one relevant record per peer), but it produced a genuine wrong-
+   record bug the moment a device held both a master-side AND an apprentice-side record
+   touching the same peer pubkey — which the graduation-settlement test setup (both
+   directions of a relationship exercised in one test run) hit immediately. Fixed by adding a
+   required `side` parameter; every call site (5 in `apprentice_session.dart`, 1 in
+   `apprentice_offer_screen.dart`) now says which side it means. See
+   `apprenticeship_test.dart`'s "forPeer never crosses sides" test for the exact shape.
+2. **`receiveBequestAndSave`'s original draft gated the wire handshake on local bookkeeping**
+   (checked `ApprenticeshipRecord.forPeer` before ever reading the incoming frame), which
+   deadlocks the sender — `sendTransferBundle`'s `await ackFuture` never resolves if the
+   receiver never gets far enough to send `settlementAck`. Same class of bug the Phase B
+   `_nextFrame` buffering fix was protecting against, in a new spot: **the frame must always
+   be read and acked before any local validation that could early-return.** Fixed by
+   reordering; `receiveTransferBundleAndSave` (which does the actual read+ack) now always
+   runs first, unconditionally, in every caller.
+
+**One deliberate reversion, not a bug:** an early draft added a protocol-level guard to
+`sendChapterOffer` refusing to offer while the caller's own device has an active mastership
+(the master-side half of §2.2 decision 4). Removed it — `ApprenticeshipRecord.activeMastership()`
+reads ALL locally-saved records with no identity scoping (correct for the real
+one-identity-per-device model this whole app assumes), so the guard is only meaningfully
+testable with per-identity-isolated storage, which this test harness's shared-fake-
+filesystem convention (both simulated devices in one directory, used throughout
+`test/apprentice/` and every other protocol test in this codebase) doesn't have. It tripped
+a false positive on the FIRST unrelated renewal test that exercised it. The constraint is
+enforced at the UI layer instead (`apprenticeship_screen.dart` disables "Offer an
+Apprenticeship" while `activeMastership() != null`) — matching how §6.2 itself originally
+framed this as a UI-layer disablement, not a protocol one.
+
+**`REQUEST GRADUATION` stays disabled, on purpose.** §7 never gives the apprentice a wire
+message to initiate a pact with — only the master ever calls `sendGraduationOffer`; the
+apprentice can only review and accept/decline (`respondToGraduationOffer`) or receive a
+unilateral bequest. There is nothing this button could actually send. Said so directly in
+the UI (a caption, not silence) rather than pretending otherwise.
 
 ---
 

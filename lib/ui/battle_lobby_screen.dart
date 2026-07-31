@@ -24,6 +24,8 @@ import 'package:flutter/material.dart';
 
 import '../battle/networking/duel_setup.dart';
 import '../battle/models/match_config.dart';
+import '../battle/models/wild_magic_effect.dart'
+    show kDefaultCommunitySeed, normalizeCommunitySeed;
 import '../battle/networking/match_discovery.dart';
 import '../identity/identity.dart';
 import '../protocol/lan_socket_transport.dart';
@@ -39,7 +41,20 @@ import 'spell_test_lab_screen.dart';
 enum _LobbyMode { idle, hosting, joining, connecting, preparingDuel }
 
 class BattleLobbyScreen extends StatefulWidget {
-  const BattleLobbyScreen({super.key});
+  const BattleLobbyScreen({super.key, this.pactIdHex});
+
+  /// Set only when this duel is a graduation battle
+  /// (docs/MASTER_APPRENTICE_PLAN.md §7.3) — the already-agreed
+  /// GraduationPact's id, threaded straight through to [BattleScreen] so it
+  /// lands in the signed MatchOutcome at match end. Null for an ordinary
+  /// duel. Not otherwise used by this screen or by `runDuelSetup` — the
+  /// pact was already agreed (both signatures) before this screen was ever
+  /// reached, so there is nothing for the duel HANDSHAKE itself to know
+  /// about it. Per the ratified terms (the apprentice sets a graduation
+  /// battle's terms), the apprentice is expected to tap Host and the master
+  /// to tap Join; this is a UI convention, not enforced in code here (see
+  /// "do not build a general match metadata system," §7.3).
+  final String? pactIdHex;
 
   @override
   State<BattleLobbyScreen> createState() => _BattleLobbyScreenState();
@@ -245,6 +260,25 @@ class _BattleLobbyScreenState extends State<BattleLobbyScreen> {
         hostConfig: _hostConfig ?? const MatchConfig(),
       );
       if (!mounted) return;
+      // The host is authoritative over MatchConfig (DECISION 3), so the guest
+      // simply adopts the host's leyline seed word — no mismatch is possible,
+      // but the guest must be TOLD, because it silently changes every spell in
+      // their book's wild magic for this duel (WILD_MAGIC_PLAN.md §7.5: a
+      // difference should read as "you follow different traditions", not as an
+      // error).
+      if (_role == DuelRole.guest) {
+        final theirs = normalizeCommunitySeed(result.state.config.communitySeed);
+        final mine = normalizeCommunitySeed(
+          await Identity.loadCommunitySeed() ?? kDefaultCommunitySeed,
+        );
+        if (mounted && theirs != mine) {
+          _showError(
+            'Your host follows a different tradition — this duel is fought '
+            'under "$theirs". Your spells will find different wild magic.',
+          );
+        }
+      }
+      if (!mounted) return;
       // BattleScreen now owns the session/transport lifecycle — see dispose().
       _handedOff = true;
       Navigator.of(context).pushReplacement(
@@ -260,6 +294,7 @@ class _BattleLobbyScreenState extends State<BattleLobbyScreen> {
             peerOwnerPubkeyHex: result.peer.ownerPubkeyHex,
             peerRawPubkey: result.peer.rawPubkey,
             peerPermissions: result.peerPermissions,
+            pactIdHex: widget.pactIdHex,
           ),
         ),
       );

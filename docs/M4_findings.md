@@ -3297,3 +3297,318 @@ flag exists.
 3. Delete `test/battle/engine/proofless_spell_flag_test.dart`.
 4. Purge the `[TEST] ` spells (Library → test-spell list) so nothing proofless
    remains castable.
+
+---
+
+## 2026-07-30 — Measured: bb's UltraHonk prover is NOT byte-deterministic
+
+Run while evaluating whether the Wild Magic seed hash could be taken over the
+**proof bytes** instead of the proof's public inputs (`docs/WILD_MAGIC_PLAN.md`
+§4.1). The appeal: a grinder searching for wild-magic trigger patterns would
+have to generate a real proof per candidate (seconds + ~700 MB) instead of just
+running the stepper (microseconds). That only works if a given witness maps to a
+stable proof — so it was worth measuring rather than assuming.
+
+### Result
+
+**Three proofs of the same witness produce three different byte strings.** Both
+on a toy circuit and on the real `ca_v2_4_tier12`:
+
+```
+$ bb prove -b ca_v2_4_tier12.json -w ca_v2_4_tier12.gz -k vk_t12/vk   # ×3
+d50feb43…  t12_1/proof     ← all three differ
+2e2f1941…  t12_2/proof
+f3296ced…  t12_3/proof
+
+ef2ed006…  t12_1/public_inputs   ← all three IDENTICAL
+ef2ed006…  t12_2/public_inputs
+ef2ed006…  t12_3/public_inputs
+```
+
+**Public inputs are byte-stable; only the proof body varies.** Expected — the
+public inputs are a function of the statement, the randomness lives in the body.
+
+### The source is the ZK blinding, confirmed directly
+
+`bb` exposes ZK and no-ZK verifier targets. Same circuit, same witness:
+
+| `-t` target | 2 runs identical? |
+|---|---|
+| `noir-recursive` (poseidon2, **ZK**) | **no** |
+| `noir-recursive-no-zk` (poseidon2, no ZK) | **yes** — byte-identical |
+
+### The app cannot opt out, and must not want to
+
+`noir_rs`'s `settings_ultra_honk_poseidon2()` (the settings
+`prove_ultra_honk` uses — `ffi/src/api/prover.rs:506`) hardcodes:
+
+```rust
+ProofSystemSettings { oracle_hash_type: "poseidon2", disable_zk: false, … }
+```
+
+Note the asymmetry in that crate: `prove_ultra_honk_keccak` takes a `disable_zk`
+parameter, `prove_ultra_honk` (the poseidon2 path we use) does **not**. Turning
+ZK off would mean forking `noir_rs` — and is categorically off the table anyway,
+since ZK is exactly what stops a proof leaking the grid, and the secret grid is
+the entire game.
+
+### Consequences (recorded so this isn't re-derived)
+
+1. **Proof bytes are not a safe consensus input** for anything that must be a
+   stable property of a spell. `spellHashHex = Poseidon2(commitment, T)` is
+   identical across re-proofs, so the save-time dedupe key cannot even
+   distinguish them.
+2. **Cast-time proof substitution is live, not theoretical.** `BookCommitment`
+   leaves are `commitmentHex` only (`book_commitment.dart:10`), so K
+   independently-generated proofs of one grid all verify, all match the
+   commitment check in `_verifyPeerSpellCast`, and all satisfy the *same* Merkle
+   path. Any future feature deriving anything from proof bytes must first bind
+   the proof into the chapter leaf.
+3. **Re-proving is cheap:** ~4.0–4.3 s wall, ~690 MB peak for tier-12 on this
+   12-thread desktop (vs the 8.9 s / 717 MB Pixel 6 figure from the M2 spike).
+
+### Toolchain note
+
+`/tmp/nargo` was gone again (reboot, as CLAUDE.md warns). Not needed —
+`circuits/*/target/*.json` (compiled circuit) and `*.gz` (witness) were already
+committed, and `bb write_vk` + `bb prove` run straight off them. `bb write_vk`
+on tier-12 takes ~1.9 s, so a determinism re-check costs under a minute.
+
+---
+
+## 2026-07-30 — Cloud desync report: engine cleared, cause is a one-sided turn abort
+
+Report from a two-device duel (Spell Test Lab spells, so the proofless dev-flag
+path): **(1)** a Water-Fire cloud was drawn only on the caster's device;
+**(2)** the player standing in that cloud had no adjacent-only cast
+restriction. Follow-up answers pinned down that both symptoms were on the *same*
+device — the one that could not see the cloud — which means that device's
+`BattleState.clouds` was empty, not that its renderer dropped a cloud it had.
+
+### What was ruled out (don't re-tread this)
+
+Four throwaway reproductions, all green:
+
+1. **Proofless path, two real `TurnLoop`s over `TurnSessionPair`.** Caster and
+   peer each end the turn with 1 cloud and the *same* cloud id
+   (`player_a_cl_foxs04` on both — `EffectApplicator._uid` draws from the shared
+   `HashRng`, so ids are consensus data, not device-local).
+2. **Same, with a 5-leaf chapter** so `_appendSpellProofTail` emits a real
+   multi-level Merkle path rather than the degenerate single-leaf one. No
+   decode divergence.
+3. **Certified path**, driven by synthetic proof bytes assembled to
+   `proof_intake.dart`'s wire format (`dominance_trajectory = [fire, water,
+   fire]` → `FormulaTracker` → one `(fire, water, fire)` triplet → clouds). The
+   peer resolves from `TrajectoryParser`, the caster from the wire formula, and
+   they agree.
+4. **UI, non-caster's device**: real `BattleScreen` + `SoloBattleSession(
+   dummyAutoCast: true, dummyCastFormula: ['fire','water','fire'])`, so the
+   local device is *not* the caster. After resolution the painter has
+   `clouds=1, hiddenCloudIds={}` — the reveal hold-back
+   (`_playResolvedSpellSequence` → `_bloomSpellEffects`) clears correctly for a
+   peer-cast effect. With the cloud dropped on the local player's own tile the
+   painter gets `spellRangeRadius=1`, and `_onTapBattlefield`'s
+   `_maxCastRange` gate rejects out-of-range taps.
+
+Engine-side the restriction is enforced for *every* caster in
+`_resolveActions` (`_cloudBoundToAdjacent`, turn_loop.dart), and a long-range
+cast out of a cloud fizzles identically on both devices.
+
+### Why "the cloud is missing on one device" is necessarily a turn abort
+
+`BattleState.toCanonicalBytes()` serializes clouds (id, position,
+remainingTurns, kind, radius), and `BattleSession.exchangeStateHash` is a real
+exchange — so a cloud existing on only one device cannot survive to the end of
+that turn: it forfeits with `state_hash_mismatch`. And a mismatch *throw*
+happens after resolution, so it can't be what removed the cloud either.
+
+That leaves one shape: **the losing device threw before `_resolveActions` ran**
+— entropy/reveal verification, the scry or spell-reveal openings, or the
+`_verifyPeerSpellCast` family — so it never applied the peer's cast at all,
+while the caster's device applied it in full. Every one of those paths sends a
+forfeit and throws; `_submitTurn` caught the throw, showed a 4-second snackbar,
+and let play continue from a permanently diverged state. That is why the
+symptom presents as a rendering bug several turns later.
+
+Note for the proofless case specifically: `_verifyPeerSpellCast` returns early
+on `allowProoflessSpells`, *before* membership/authorization/mana, so the
+Test-Lab-spell path skips most of those throws — which makes a version skew
+between the two devices (`kAllowProoflessSpells` off on one → instant
+`missing_spell_proof` forfeit, exactly as `dev_flags.dart` warns) the first
+thing to rule out.
+
+### Change made
+
+`battle_screen.dart`: a throw out of `runTurn` in a **real duel** now sets
+`_turnError` and renders the blocking `_blockingError` screen (same fail-closed
+doctrine as `_verifierInitError`), with the message selectable so it can be
+read off the device. Solo/practice keeps the snackbar — a local throw there is
+recoverable and desyncs nothing. Until this landed, every lockstep break in a
+LAN duel was a 4-second toast.
+
+---
+
+## M4.x — Wild Magic implementation (2026-07-30)
+
+Implements `docs/WILD_MAGIC_PLAN.md` in full: all three phases, all twelve
+effects, the forced reveal-and-cast primitive, and the leyline seed word.
+`RULESET_VERSION` deliberately **not** bumped (nothing about the CA, the
+circuit, the grid, or the commitment changed — see the plan's §11).
+
+### Traps paid for here, worth not paying twice
+
+1. **`FormulaTracker` does not commit one activation per generation.** Three
+   *consecutive* fire generations commit exactly ONE activation, not three:
+   rule 1 only fires on a **lead change**, and rules 2/3 need supreme dominance
+   or a cadence pulse (gen % 4 == 0). Any test fixture that wants N activations
+   of one element has to interleave neutrals (`[1,0,1,0,1]`) so each is a fresh
+   lead change, or set the supreme flags. The first draft of
+   `wild_magic_resolution_test.dart` used `[1,1,1]`, got zero formulas, and
+   therefore zero eligible elements and no wild magic at all — which looked
+   exactly like a broken seed hash.
+
+2. **`CreatureSpec` gives a creature `maxHp == the number of EARTH
+   activations`.** A pure-fire summon spawns at 0 HP and is reaped the same
+   turn by `_reapDead`. Pre-existing design, not a wild-magic bug, but it makes
+   "pure fire" a bad default for any summon test fixture.
+
+3. **The movement preview's output is re-walked as DECLARED STEPS.** Modelling
+   ice sliding inside `Battlefield.resolveMovement` looked right — the preview
+   is what arbitrates contested tiles, so it "should" know where sliders end
+   up. But `MovementResult.paths` feeds straight back into
+   `TurnLoop._walkAvatar` as the cleared path, so the slid-through tiles became
+   declared steps and the avatar slid *back down its own slide*: enter (0,2),
+   slide to (0,0), then "walk" the injected (0,1) step and slide to (0,2)
+   again. **Reverted**: the preview arbitrates on the pre-slide destination and
+   the real walk slides afterward. Costs a little arbitration accuracy on iced
+   ground, costs nothing in lockstep (both clients run identical code on both
+   halves, and the real walk's occupancy check stops a second slider short
+   rather than stacking them). Anything that adds free movement to `_walkAvatar`
+   in future faces the same trap.
+
+4. **`FlutterSecureStorage` has no platform channel under `flutter test`.**
+   Awaiting `Identity.loadCommunitySeed()` inside `SettingsScreen._load` left
+   the whole screen on its spinner and broke an unrelated credits test with
+   `pumpAndSettle timed out`. Any new identity read from a widget's `initState`
+   must be loaded *separately* from whatever gates the first paint, and guarded
+   (`try/catch`, or `.catchError` on the `.then`) — an unhandled rejection there
+   fails whichever test happens to be running.
+
+5. **A `const` map cannot be keyed by `HexCoord`** (it overrides `==`), so test
+   fixtures want `{coord: const Tile()}`, not `const {coord: Tile()}`.
+
+### Decisions taken during implementation, beyond the plan
+
+- **`tileBlocksMovement(TileEffect?)` / `tileIsIndestructible(...)` in
+  `terrain.dart`.** The plan's §8.2 says to grep `ImpassableTile` and touch
+  every site deliberately. Rather than leave ~15 open-coded `is ImpassableTile`
+  checks that a future tile variant would have to re-audit one by one, every
+  MOVEMENT site now routes through one predicate, and the two
+  TARGETING/line-of-sight sites (traversal damage stopping at a wall,
+  `_spreadTiles`' wall-shadowed BFS) deliberately do **not** — that is exactly
+  the chasm's "no bearing on targeting" rule, now expressed as one decision
+  rather than fifteen.
+
+- **`_resolveActions` and `_applySpell` are now `async`.** The plan flagged this
+  (§9.5) as a possible prerequisite. It was: Spontaneous Combustion's reveal
+  round trip has to land *after* wild magic fires and *before* the triggering
+  spell's own formula effects, which is mid-`_applySpell`. The applicator stays
+  synchronous and **queues** forced casts; `_applySpell` awaits
+  `_drainForcedCasts` at exactly that seam.
+
+- **Rippling Reflections' doubling wraps the FORMULA LOOP, not the method.**
+  A7/invariant 7 says a doubled spell must not re-fire wild magic. Rather than
+  passing `fireWildMagic: false` and trusting it, the `repeatWholeSpell` loop
+  sits *inside* `_applySpell` around the formula iteration, so a doubled
+  application structurally cannot reach the wild-magic seam or re-roll the coin.
+
+- **Zephyr does not route landings through `resolveTileEntry`.** The plan (§8.4
+  item 6) asked for a decision either way. Cascading conveyor pushes in entity
+  order after a simultaneous board-wide teleport would make the final board
+  depend on iteration order in a way that is much harder to keep in lockstep
+  than the lost flavour is worth. A teleport onto a conveyor is pushed by
+  `_endOfTurn`'s standing-on-a-conveyor sweep instead — same outcome, one phase
+  later.
+
+- **Mana Flood sets `mana = maxMana` directly** rather than going through
+  `_applyManaGain`. The plan suggested the helper so the gain fires Reflections'
+  `manaMirror` trigger; but an effect that already fills EVERY bar leaves a
+  mirror nothing to add, and routing through the helper would double-count.
+
+- **`MatchConfig.matches` compares the NORMALIZED seed**, so two duelists who
+  typed `"Rivendell!"` and `"rivendell"` agree at the handshake exactly when
+  their spells would hash identically. `normalizeCommunitySeed` therefore lives
+  in the models layer (`wild_magic_effect.dart`) with `WildMagic` delegating to
+  it — one implementation, since a second copy of that regex is a consensus bug.
+
+- **Guest-side seed surfacing.** The LAN path is host-authoritative
+  (DECISION 3), so a *mismatch* is structurally impossible: the guest adopts the
+  host's word. What the guest gets instead is a notice when the host's tradition
+  differs from their own — the plan's §7.5 intent, adapted to the protocol we
+  actually have.
+
+### Still outstanding
+
+- **The two-device LAN pass has NOT been run.** Per CLAUDE.md's verification
+  hierarchy this is required before Phase 3 is called done: a whole-match run
+  where at least one wild-magic effect fires on each side and the per-turn state
+  hashes agree throughout. Force a trigger with a dev-only seed word chosen to
+  put `000` in a test spell's hash (the search takes seconds — see the fixture
+  comments in `wild_magic_test.dart`).
+- **Spontaneous Combustion has never crossed a real wire.** `forcedReveal`
+  (0x43) is unit-tested through a fake host and exercised in solo (where it
+  short-circuits to local-only), but the actual two-device reveal round trip is
+  untested. It is also the one conditional (non-uniform) frame in the protocol,
+  so it is the most likely place for a frame-sequence divergence.
+
+**Late fix, worth knowing:** `_verifyPeerSpellCast` both **forfeits on** and
+**deducts** the certified mana cost. Routing a forced reveal through it
+unchanged would therefore have charged a player for a cast they never chose to
+make — and, worse, forfeited the match against anyone who happened to be
+holding a spell they couldn't afford. The mana block is now skipped under
+`forcedCast: true`, alongside the duplicate-grid guard. Any future caller of
+that method for a cast the player did not choose needs the same treatment:
+the checks it runs assume a *voluntary* cast.
+
+---
+
+## 2026-07-30 — Core gem removed: the mana pool is innate
+
+**The change.** The "core gem" — a mandatory, indestructible first Mana Gem that
+`accoutrementsFromArtifacts` silently prepended to every loadout — is gone. Its only real job
+was making sure a wizard had a mana pool at all, and it did that by charging an artifact slot
+and then carving a hole in the burn rules to protect it. The pool is now intrinsic:
+`MatchConfig.innateManaPool` (default 100), with gems as pure optional capacity on top.
+
+Soren's ruling on the two open questions: **gems stay** (+100 pool / +10 regen each, unchanged),
+and **regen stays gem-only** — the innate pool has *no* passive regeneration. A gemless wizard
+refills by meditating (+25/phase, +50/turn, already implemented). Capacity is free; throughput
+is bought with gems or with your turn.
+
+**Two things this touched that were not obvious from the request:**
+
+1. **`maxMana` is stored state, not a derivation** — and it is hashed into
+   `toCanonicalBytes()`. Burning a gem removed the accoutrement but never lowered the pool.
+   That staleness was *reachable before this change* (any non-core gem could be burned), but
+   the core gem made it look benign. With every gem burnable it becomes a live desync source
+   the moment two clients disagree about a clamp. Fixed via `EffectApplicator._syncMaxMana`,
+   which recomputes and re-clamps; every add/remove gem path now goes through it. Note this is
+   also §6.2 of `ARTIFACT_SYSTEM_PLAN.md` — that plan's gem *activation* must reuse the same
+   helper rather than open-coding `maxMana -= 100`.
+
+2. **`kBattleProtocolVersion` 1 → 2 is load-bearing here.** Removing the `isCoreGem` byte
+   changes the state-hash encoding, and `MatchConfig` gained a negotiated field. The nasty part
+   is the config: a v1 peer simply *omits* `innateManaPool`, so `fromJson` fills in our default
+   and **config agreement passes** — then the peer derives a different `maxMana` and hashes an
+   extra byte per accoutrement, desyncing on the first state-hash exchange. Field-by-field
+   config agreement does not protect you from a peer that never sends the field. The version
+   gate is what catches this class, so bump it whenever `toCanonicalBytes` or the negotiated
+   `MatchConfig` shape moves.
+
+**Also worth knowing:** `WizardAvatar.maxManaFromGems`/`manaRegenPerTurn` hardcoded 100/10 while
+`MatchConfig` carried the same numbers as knobs — two sources of truth that happened to agree at
+defaults. They are now `maxManaFor(config)` / `manaRegenFor(config)`, so the knobs are real.
+
+Coverage: `test/battle/models/innate_mana_pool_test.dart` (gemless pool, gem stacking, gem-only
+regen, no inserted core gem, burn taking the last gem and shrinking the pool). Full suite: 987
+green.

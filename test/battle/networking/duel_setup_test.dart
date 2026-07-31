@@ -170,10 +170,10 @@ void main() {
         parseHex(hostOwnerHex) < parseHex(guestOwnerHex) ? hostOwnerHex : guestOwnerHex;
     expect(hostResult.state.avatars.first.playerId, equals(expectedBottom));
 
-    // Each avatar carries its own real artifact loadout, not a stub —
-    // 3 host artifacts (2 gems collapse to 1 core + rest, so 3 total
-    // accoutrements: core gem + 2nd gem + bookmark) vs 2 guest artifacts
-    // (core gem + rod).
+    // Each avatar carries its own real artifact loadout, not a stub, and the
+    // mapping is one-for-one (nothing is inserted — the mana pool is innate,
+    // there is no auto-added core gem): 3 host artifacts (2 gems + bookmark)
+    // vs 2 guest artifacts (gem + rod).
     final hostAvatar =
         hostResult.state.avatars.firstWhere((a) => a.playerId == hostOwnerHex);
     final guestAvatar =

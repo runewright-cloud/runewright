@@ -15,6 +15,9 @@
 import 'package:flutter/material.dart';
 
 import '../battle/models/match_config.dart';
+import '../battle/models/wild_magic_effect.dart'
+    show kDefaultCommunitySeed, normalizeCommunitySeed;
+import '../identity/identity.dart';
 import '../spells/chapter_asset.dart';
 import 'manuscript_theme.dart';
 import 'widgets/chapter_picker.dart';
@@ -38,17 +41,43 @@ class _DuelHostSettingsScreenState extends State<DuelHostSettingsScreen> {
   int _gridRadius = 4;
   bool _sorcererMode = false;
 
+  /// The leyline seed word this duel runs under. Prefilled from the device's
+  /// own saved word (Settings) but editable here, because the host is
+  /// authoritative over the whole MatchConfig (DECISION 3) and two travelling
+  /// players may want to duel under one agreed tradition for a single match
+  /// without either of them permanently rotating their own.
+  final _seedController = TextEditingController(text: kDefaultCommunitySeed);
+
   static const _hpMin = 8;
   static const _hpMax = 48;
   static const _hpStep = 4;
   static const _gridRadiusMin = 2;
   static const _gridRadiusMax = 6;
 
+  @override
+  void initState() {
+    super.initState();
+    // Guarded: secure storage has no platform channel under `flutter test`,
+    // and an unhandled rejection here would fail unrelated widget tests. A
+    // failure just leaves the default word in the field.
+    Identity.loadCommunitySeed().then((seed) {
+      if (!mounted || seed == null) return;
+      setState(() => _seedController.text = seed);
+    }).catchError((_) {});
+  }
+
+  @override
+  void dispose() {
+    _seedController.dispose();
+    super.dispose();
+  }
+
   MatchConfig get _config => MatchConfig(
         playerHp: _hp,
         gridRadius: _gridRadius,
         maxPlayers: 2,
         sorcererMode: _sorcererMode,
+        communitySeed: _seedController.text.trim(),
       );
 
   void _onReady() {
@@ -108,6 +137,8 @@ class _DuelHostSettingsScreenState extends State<DuelHostSettingsScreen> {
               ),
               const SizedBox(height: 28),
               _buildSorcererModeToggle(),
+              const SizedBox(height: 28),
+              _buildSeedWordField(),
               const Spacer(),
               SizedBox(
                 height: 52,
@@ -134,6 +165,44 @@ class _DuelHostSettingsScreenState extends State<DuelHostSettingsScreen> {
           ),
         ),
       ),
+    );
+  }
+
+  /// The leyline seed word for this duel. The guest adopts it verbatim with
+  /// the rest of the host's config (DECISION 3), and is told which tradition
+  /// they're dueling under if it differs from their own (BattleLobbyScreen).
+  Widget _buildSeedWordField() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('LEYLINE SEED WORD', style: manuscriptCaptionStyle()),
+        const SizedBox(height: 2),
+        Text(
+          'The tradition this duel is fought under — it decides '
+          'every spell’s wild magic',
+          style: manuscriptCaptionStyle(
+            color: kInkMutedColor.withValues(alpha: 0.7),
+          ),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _seedController,
+          decoration: const InputDecoration(
+            border: OutlineInputBorder(),
+            isDense: true,
+          ),
+          onChanged: (_) => setState(() {}),
+        ),
+        const SizedBox(height: 4),
+        // Echo the normalized form so "Rivendell!" → rivendell is never a
+        // surprise at the point it starts mattering.
+        Text(
+          'Reads as: ${normalizeCommunitySeed(_seedController.text)}',
+          style: manuscriptCaptionStyle(
+            color: kInkMutedColor.withValues(alpha: 0.7),
+          ),
+        ),
+      ],
     );
   }
 

@@ -14,6 +14,7 @@ import 'package:rune_duel/battle/models/battle_state.dart';
 import 'package:rune_duel/battle/models/effect_kind.dart' show SpellAffinity;
 import 'package:rune_duel/battle/models/hex_battlefield.dart' show Battlefield;
 import 'package:rune_duel/battle/models/match_config.dart';
+import 'package:rune_duel/battle/models/terrain.dart' show FloorIsLava;
 import 'package:rune_duel/battle/models/wizard_avatar.dart';
 import 'package:rune_duel/battle/networking/solo_battle_session.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
@@ -22,6 +23,7 @@ import 'package:rune_duel/engine/hex_grid.dart';
   int airBarrierHp = 2,
   FreeMoveDirectionPicker? freeMovePicker,
   bool dummyCasts = true,
+  bool localOnLava = false,
 }) {
   const localId = 'local';
   const dummyId = 'dummy';
@@ -70,6 +72,9 @@ import 'package:rune_duel/engine/hex_grid.dart';
     ],
     battlefield: battlefield,
   );
+  if (localOnLava) {
+    state.tileEffects[localPos] = const FloorIsLava(damage: 4);
+  }
 
   final loop = TurnLoop(
     state: state,
@@ -138,6 +143,55 @@ void main() {
       expect(pickerCalled, isFalse);
       expect(ctx.local.position, startPos);
       expect(ctx.local.barriers[SpellAffinity.air]?.hp, 6);
+    });
+
+    test('an end-of-turn burst is granted in the same turn, by the Phase 6.5 window',
+        () async {
+      // Phase 6 (lava) bursts the barrier *after* Phase 5.5's window has
+      // closed. The second window catches it in the same turn rather than
+      // dropping the grant or leaking it into the next turn's Phase 5.5.
+      var promptCount = 0;
+      final ctx = _setup(
+        airBarrierHp: 2,
+        dummyCasts: false, // no spell damage — only the end-of-turn lava tick
+        localOnLava: true,
+        freeMovePicker: (candidates) async {
+          promptCount++;
+          return candidates.first;
+        },
+      );
+      final startPos = ctx.local.position;
+
+      await ctx.loop.runTurn(TurnInput(action: PassAction()));
+      expect(ctx.local.barriers.containsKey(SpellAffinity.air), isFalse,
+          reason: 'lava (4) burst the 2 HP barrier at end of turn');
+      expect(promptCount, 1,
+          reason: 'Phase 6.5 offers the step Phase 5.5 was too early to see');
+      expect(ctx.local.position, isNot(startPos), reason: 'stepped off the lava');
+      expect(ctx.local.pendingFreeMoveBurst, isFalse);
+
+      // Off the lava now, so nothing bursts on turn 2 — and crucially the
+      // turn-1 grant must not reappear.
+      await ctx.loop.runTurn(TurnInput(action: PassAction()));
+      expect(promptCount, 1, reason: 'no stale prompt on the following turn');
+    });
+
+    test('a Phase 5 burst does not also prompt again in the Phase 6.5 window',
+        () async {
+      // The one-shot clear at the end of each round is what prevents the same
+      // burst being offered twice in one turn.
+      var promptCount = 0;
+      final ctx = _setup(
+        airBarrierHp: 2,
+        freeMovePicker: (candidates) async {
+          promptCount++;
+          return candidates.first;
+        },
+      );
+
+      await ctx.loop.runTurn(TurnInput(action: PassAction()));
+
+      expect(promptCount, 1, reason: 'one burst grants exactly one step');
     });
 
     test('no prompt when no damage is dealt at all', () async {

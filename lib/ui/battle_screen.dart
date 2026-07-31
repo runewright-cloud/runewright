@@ -8,23 +8,30 @@
 //   Opponent strip — compact HP/mana for each non-local avatar (if any);
 //     swaps to a single tapped enemy creature's HP when one is inspected
 //     (see _updateInspection / _inspectedMinion)
-//   Battlefield  — LayoutBuilder → BattlefieldPainter (Expanded, tappable)
+//   Battlefield  — LayoutBuilder → BattlefieldPainter (Expanded, tappable),
+//     with the 4 artifact corner tiles overlaid on the empty space around
+//     the hex map (see _ArtifactCornerTile): Counter Charms top-left, Rod
+//     of Wind top-right, Mana Gems bottom-right, Bookmarks bottom-left.
+//     Long-press activates (currently wired for Rod of Wind only — the
+//     rest await the artifact-activation rework, docs/ARTIFACT_SYSTEM_PLAN.md).
 //   Action bar  — PASS / spell name / CAST
 //   Player HP/MP bars
-//   Artifact row — 4 icon+count chips
 //   Spell book  — horizontal scroll of SpellCardWidgets (tap → select)
 
 import 'dart:async' show Completer, unawaited;
+import 'dart:convert' show base64Encode;
 import 'dart:math';
 import 'dart:typed_data';
 import 'dart:ui' as ui show Image;
 
+import 'package:cryptography/cryptography.dart' show Sha256;
 import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
 import '../battle/engine/tile_entry_resolver.dart' show predictAvatarMove;
 import '../battle/engine/turn_loop.dart';
+import '../battle/engine/wild_magic_applicator.dart' show WildMagicEvent;
 import '../battle/models/battle_state.dart';
 import '../battle/models/barrier.dart';
 import '../battle/models/casting_enhancements.dart';
@@ -38,9 +45,10 @@ import '../battle/models/effect_kind.dart'
         kAffinityLabel,
         primaryFormulaAffinity;
 import '../battle/models/hex_battlefield.dart' show hexDistance;
+import '../battle/models/match_outcome.dart';
 import '../battle/models/minion.dart' show Minion;
 import '../battle/models/pending_delayed_spell.dart' show PendingDelayedSpell;
-import '../battle/models/terrain.dart' show ImpassableTile, SlowTile;
+import '../battle/models/terrain.dart' show SlowTile, tileBlocksMovement;
 import '../battle/models/status_effect_ids.dart';
 import '../battle/models/wizard_avatar.dart';
 import '../battle/networking/battle_session.dart';
@@ -137,39 +145,48 @@ List<SightingCapture> sightingsFromResolved(
       continue;
     }
 
-    captures.add(SightingCapture(
-      opponentPubkeyHex: avatar.ownerPubkeyHex,
-      commitmentHex: ev.spell.commitmentHex,
-      spellName: ev.spell.name,
-      formula: ev.spell.formula,
-      t: ev.spell.t,
-      tier: ev.spell.tier,
-      manaCost: certifiedBaseManaCosts[ev.spell.commitmentHex] ?? 0,
-    ));
+    captures.add(
+      SightingCapture(
+        opponentPubkeyHex: avatar.ownerPubkeyHex,
+        commitmentHex: ev.spell.commitmentHex,
+        spellName: ev.spell.name,
+        formula: ev.spell.formula,
+        t: ev.spell.t,
+        tier: ev.spell.tier,
+        manaCost: certifiedBaseManaCosts[ev.spell.commitmentHex] ?? 0,
+      ),
+    );
   }
   return captures;
 }
 
+/// 0x-prefixed lowercase hex — matches duel_setup.dart's `_bytesToRootHex`
+/// convention, needed here for MatchOutcome's hex-string fields.
+String _bytesToHex(Uint8List bytes) =>
+    '0x${bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join()}';
+
+bool _hexEq(String a, String b) {
+  BigInt parse(String s) =>
+      BigInt.parse(s.startsWith('0x') ? s.substring(2) : s, radix: 16);
+  return parse(a) == parse(b);
+}
+
 enum _InputPhase { action, movement, pickingDirection }
 
-// ── Artifact display table ────────────────────────────────────────────────────
+// ── Artifact corner tiles ─────────────────────────────────────────────────────
+//
+// The 4 loadout artifacts (chapter_asset.dart's ArtifactKind — manaGem,
+// bookmark, rodOfSpreading, counterCharm), one per corner of the battlefield.
+// absorptionRod/deflectionTotem are deliberately excluded: they're summon-only
+// (never in a loadout — accoutrement_loadout.dart never emits absorptionRod)
+// and out of scope per ARTIFACT_SYSTEM_PLAN.md §1.
 
-const _kArtifacts = [
-  (AccoutrementKind.manaGem, Icons.diamond_outlined, Color(0xFF2B4D8C), 'Gems'),
-  (
-    AccoutrementKind.bookmark,
-    Icons.bookmark_outlined,
-    Color(0xFF5588BB),
-    'Marks',
-  ),
-  (
-    AccoutrementKind.absorptionRod,
-    Icons.shield_outlined,
-    Color(0xFF7A6040),
-    'Rods',
-  ),
-  (AccoutrementKind.counterCharm, Icons.block, Color(0xFFB84040), 'Charms'),
-];
+// Short labels — the triangular corner tiles below only have room near their
+// right-angle vertex (see _ArtifactCornerTile), not a full word or two.
+const _kCounterCharmDisplay = (Icons.block, Color(0xFFB84040), 'Charms');
+const _kRodOfWindDisplay = (Icons.air, Color(0xFFB8D8D8), 'Wind');
+const _kManaGemDisplay = (Icons.diamond_outlined, Color(0xFF2B4D8C), 'Gems');
+const _kBookmarkDisplay = (Icons.bookmark_outlined, Color(0xFF5588BB), 'Marks');
 
 // ── Status effect display tables ─────────────────────────────────────────────
 
@@ -229,6 +246,7 @@ class BattleScreen extends StatefulWidget {
     this.peerOwnerPubkeyHex,
     this.peerRawPubkey,
     this.peerPermissions,
+    this.pactIdHex,
   });
 
   final BattleState state;
@@ -259,6 +277,14 @@ class BattleScreen extends StatefulWidget {
   final String? peerOwnerPubkeyHex;
   final Uint8List? peerRawPubkey;
   final List<SpellPermission>? peerPermissions;
+
+  /// Set only when this duel is a graduation battle
+  /// (docs/MASTER_APPRENTICE_PLAN.md §7.3) — the already-agreed
+  /// GraduationPact's id, carried into the signed [MatchOutcome] at match
+  /// end (`_handleMatchEnd`) so the settlement step can find it. Null for
+  /// an ordinary duel, matching [MatchOutcome.pactIdHex]'s own
+  /// [kNoGraduationPact] default.
+  final String? pactIdHex;
 
   @override
   State<BattleScreen> createState() => _BattleScreenState();
@@ -292,6 +318,14 @@ class _BattleScreenState extends State<BattleScreen>
   // of ever falling back to trusting peer casts unverified.
   String? _verifierInitError;
 
+  // Same gate, one phase later: set when TurnLoop.runTurn throws mid-turn in
+  // a REAL duel (state hash mismatch, a failed reveal/proof check, a peer
+  // forfeit). At that point this device's state and the peer's have already
+  // diverged, so the match cannot be played on — see the catch in
+  // [_submitTurn]. Null in solo/practice, where a turn error is local and
+  // recoverable and stays a snackbar.
+  String? _turnError;
+
   // Cast animation — glowing orb(s) for the spell(s) resolved on the most
   // recent turn. Fixed for one playback of _castAnimController; replaced
   // (and the controller restarted) each time a new turn resolves with casts.
@@ -322,6 +356,23 @@ class _BattleScreenState extends State<BattleScreen>
   List<HexCoord> _movePath = const []; // movement path (movement phase)
   bool _isBusy = false;
 
+  // ── Match end (MASTER_APPRENTICE_PLAN.md §4) ────────────────────────────────
+  //
+  // Set the instant TurnLoop.runTurn reports the win condition fired, so no
+  // further turn is submittable (_submitTurn checks this alongside _isBusy).
+  // _matchEndSummary is populated slightly later, once _handleMatchEnd's
+  // (possibly async, real-duel-only) signed MatchOutcome exchange settles --
+  // see that method's doc comment. Kept separate from _isBusy because a
+  // match-ending turn already resets _isBusy via _resetTurn, and the two
+  // states are not otherwise coupled.
+  bool _matchEnded = false;
+  _MatchEndSummary? _matchEndSummary;
+
+  /// Loaded once for a real duel (see _initTurnLoop) — kept only to sign the
+  /// end-of-match MatchOutcome (_handleMatchEnd). Null for solo/practice,
+  /// where there is no peer to settle an outcome with.
+  Identity? _localIdentity;
+
   // Airy Scrying Pool reveal (MESH_ARCHITECTURE.md §13b): the opponent's
   // committed spell-target tile for this turn, if an active DivinationLink
   // resolved one. Set asynchronously by _beginTurnAndRevealScry once
@@ -345,6 +396,14 @@ class _BattleScreenState extends State<BattleScreen>
   bool _pickingMelee = false;
   List<HexCoord> _meleeCandidates = const [];
   Completer<HexCoord?>? _meleePickCompleter;
+
+  // Post-resolution Airy Barrier burst prompt: set by _pickFreeMoveDirection
+  // (TurnLoop's freeMoveDirectionPicker callback, invoked after every spell
+  // for the turn has resolved). Same shape and the same _isBusy caveat as the
+  // melee prompt above.
+  bool _pickingFreeMove = false;
+  List<HexCoord> _freeMoveCandidates = const [];
+  Completer<HexCoord?>? _freeMovePickCompleter;
 
   // UI-facing phase label for the phase banner, driven by TurnLoop.onPhase
   // for the two internal phases (Summons, Resolution) the pre-submission
@@ -371,14 +430,48 @@ class _BattleScreenState extends State<BattleScreen>
   // _selectedSpell.supremeTags; see _EnhancementPicker.
   String? _selectedEnhancement;
 
-  // Cast-time Rod of Spreading toggle — spend one Air artifact to add +1 effect
-  // radius (or one minion size rung) to this cast. Only offered when the local
-  // avatar carries an unused rod; realised at resolution iff still owned (the
-  // engine's trust boundary, TurnLoop._consumeRodOfSpreading). Reset after each
-  // committed cast.
+  // Rod of Wind toggle — long-press the top-right corner tile to spend one
+  // Air artifact, adding +1 effect radius (or one minion size rung) to this
+  // cast. Only takes effect with a spell selected and an unused rod; realised
+  // at resolution iff still owned (the engine's trust boundary,
+  // TurnLoop._consumeRodOfSpreading). Reset after each committed cast.
   bool _useRodOfSpreading = false;
 
   bool get _localOwnsRod => (_local?.rodOfSpreadingCount ?? 0) > 0;
+
+  int _accoutrementCount(WizardAvatar? avatar, AccoutrementKind kind) =>
+      avatar?.accoutrements.where((a) => a.kind == kind).length ?? 0;
+
+  /// Long-press on the top-right corner tile. Only Rod of Wind has a real
+  /// activation today; gating mirrors the old cast-time checkbox's
+  /// conditions (spell selected, action phase, rod owned) so the toggle
+  /// still only ever applies to a spell about to be cast.
+  void _onRodOfWindLongPress() {
+    if (!_localOwnsRod) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No Rod of Wind in your loadout.')),
+      );
+      return;
+    }
+    if (_phase != _InputPhase.action || _selectedSpell == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select a spell to use a Rod of Wind.')),
+      );
+      return;
+    }
+    setState(() => _useRodOfSpreading = !_useRodOfSpreading);
+  }
+
+  /// Long-press on the other 3 corner tiles. None of them has an activation
+  /// yet — that arrives with the artifact rework (docs/ARTIFACT_SYSTEM_PLAN.md)
+  /// — so this just says so rather than silently doing nothing.
+  void _onArtifactCornerLongPress(String label) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('$label activation arrives with the artifact rework.'),
+      ),
+    );
+  }
 
   // Earth/Mystery only: chosen delay in turns (0 = fire immediately).
   int _mysteryDelay = 0;
@@ -556,15 +649,22 @@ class _BattleScreenState extends State<BattleScreen>
     if (isRealDuel) {
       try {
         final tier = widget.state.config.tier;
-        final vkData = await rootBundle.load('assets/circuits/ca_v2_4_tier$tier.vk');
+        final vkData = await rootBundle.load(
+          'assets/circuits/ca_v2_4_tier$tier.vk',
+        );
         vkBytes = vkData.buffer.asUint8List();
-        final circuitJson = await rootBundle.loadString('assets/circuits/ca_v2_4_tier$tier.json');
+        final circuitJson = await rootBundle.loadString(
+          'assets/circuits/ca_v2_4_tier$tier.json',
+        );
         final bytecode = await prover.extractBytecode(circuitJson);
         await prover.initSrsCached(bytecode, cachePath: await srsCachePath());
         verifyProof = prover.verifyProof;
 
         final identity = await Identity.loadOrCreate();
         signMessage = (message) => identity.sign(message);
+        // Kept for the end-of-match signed MatchOutcome exchange
+        // (MASTER_APPRENTICE_PLAN.md §4) -- see _handleMatchEnd.
+        _localIdentity = identity;
       } catch (e) {
         if (!mounted) return;
         setState(() => _verifierInitError = '$e');
@@ -589,6 +689,7 @@ class _BattleScreenState extends State<BattleScreen>
       peerRawPubkey: widget.peerRawPubkey,
       isSorcererMode: widget.state.config.sorcererMode,
       meleeTargetPicker: _pickMeleeTarget,
+      freeMoveDirectionPicker: _pickFreeMoveDirection,
       onPhase: _onEnginePhase,
       // DEV FLAG (lib/dev_flags.dart) — the only site that turns proofless
       // peer casts on. Delete this argument with the flag.
@@ -725,8 +826,9 @@ class _BattleScreenState extends State<BattleScreen>
   /// casts render here too, not just the local player's own.
   List<PendingCastOrb> get _pendingCastOrbs {
     final orbs = <PendingCastOrb>[];
-    final orderedPlayerIds =
-        widget.state.avatars.map((a) => a.playerId).toList();
+    final orderedPlayerIds = widget.state.avatars
+        .map((a) => a.playerId)
+        .toList();
     final origin = _pendingCastOrigin;
     final affinity = _pendingCastAffinity;
     if (origin != null && affinity != null) {
@@ -788,7 +890,11 @@ class _BattleScreenState extends State<BattleScreen>
   static double _hexSizeFromConstraints(Size available, int radius) {
     final byWidth = available.width / (3 * radius + 2);
     final byHeight = available.height / (sqrt(3) * (2 * radius + 1));
-    return min(byWidth, byHeight).clamp(6.0, 36.0);
+    // Upper bound raised from 36 now that the artifact tiles are corner
+    // triangles hugging the literal corners (see _ArtifactCornerTile) rather
+    // than a rectangle reserving a safe margin — the map is free to grow
+    // under/behind them.
+    return min(byWidth, byHeight).clamp(6.0, 56.0);
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -853,12 +959,36 @@ class _BattleScreenState extends State<BattleScreen>
     return result;
   }
 
+  /// TurnLoop's [FreeMoveDirectionPicker]: an Airy Barrier burst this turn
+  /// earned the local wizard one reactive step. Highlights the legal adjacent
+  /// tiles and waits for the player to tap one (see _onTapBattlefield's
+  /// _pickingFreeMove branch) or to pass (_ActionBar's onDeclineFreeMove).
+  /// Only ever called when [candidates] is non-empty.
+  Future<HexCoord?> _pickFreeMoveDirection(List<HexCoord> candidates) async {
+    if (!mounted) return null;
+    final completer = Completer<HexCoord?>();
+    setState(() {
+      _pickingFreeMove = true;
+      _freeMoveCandidates = candidates;
+      _freeMovePickCompleter = completer;
+    });
+    final result = await completer.future;
+    if (mounted) {
+      setState(() {
+        _pickingFreeMove = false;
+        _freeMoveCandidates = const [];
+        _freeMovePickCompleter = null;
+      });
+    }
+    return result;
+  }
+
   /// Phase banner text — "Summons" / "Main" / "Move" / "Resolution".
   /// Pre-submission phases come straight from [_phase] (this UI already
   /// knows which one it's in); the two mid-submission phases come from
   /// [_submittingPhase], set by [_onEnginePhase].
   String get _phaseLabel {
-    if (_pickingMelee) return 'Resolution';
+    if (_pickingMelee || _pickingFreeMove) return 'Resolution';
     if (_isBusy) {
       return _submittingPhase == TurnPhase.actionResolve
           ? 'Resolution'
@@ -879,7 +1009,8 @@ class _BattleScreenState extends State<BattleScreen>
   /// §7) and only the slot disambiguates which copy this is.
   void _selectSpell(int handIndex, SpellAsset spell) {
     if (_isBusy || _phase != _InputPhase.action) return;
-    if (_loop.isHandSlotWithered(handIndex)) return; // §9: withered, not castable
+    if (_loop.isHandSlotWithered(handIndex))
+      return; // §9: withered, not castable
     setState(() {
       if (_selectedHandIndex == handIndex) {
         _selectedSpell = null;
@@ -1260,6 +1391,16 @@ class _BattleScreenState extends State<BattleScreen>
       return;
     }
 
+    // Same reasoning as the melee branch: the Airy Barrier burst prompt also
+    // fires from inside the in-flight runTurn() call — see
+    // _pickFreeMoveDirection.
+    if (_pickingFreeMove) {
+      if (_freeMoveCandidates.contains(hex)) {
+        _freeMovePickCompleter?.complete(hex);
+      }
+      return;
+    }
+
     if (_isBusy) return;
 
     if (_phase == _InputPhase.pickingDirection) {
@@ -1319,7 +1460,7 @@ class _BattleScreenState extends State<BattleScreen>
       if (hexDistance(tip, hex) != 1) return;
       // Must not be impassable.
       final tileEffect = widget.state.tileEffects[hex];
-      if (tileEffect is ImpassableTile) return;
+      if (tileBlocksMovement(tileEffect)) return;
       // Must fit within remaining move budget (pushes are free, already
       // reflected in prediction.budgetRemaining).
       final stepCost =
@@ -1340,7 +1481,7 @@ class _BattleScreenState extends State<BattleScreen>
     List<HexCoord> movePath = const [],
     bool meditateInMove = false,
   }) async {
-    if (_isBusy) return;
+    if (_isBusy || _matchEnded) return;
     setState(() {
       _isBusy = true;
       // Summons is the first internal phase runTurn will actually reach;
@@ -1376,7 +1517,7 @@ class _BattleScreenState extends State<BattleScreen>
     final staged = _stagedMysterySecret;
 
     try {
-      await _loop.runTurn(input);
+      final win = await _loop.runTurn(input);
       if (!mounted) return;
       _myPendingMysterySecrets.removeWhere(dueSecrets.contains);
       if (staged != null) _myPendingMysterySecrets.add(staged);
@@ -1391,15 +1532,20 @@ class _BattleScreenState extends State<BattleScreen>
           .map((e) => ConveyorChainAnimation(path: e.path, killed: e.killed))
           .toList();
       final resolved = List<ResolvedSpellEvent>.from(_loop.lastResolvedSpells);
+      // Wild magic is untelegraphed by design, so this snapshot is the ONLY
+      // channel through which either player learns a global effect fired.
+      final wildMagic = List<WildMagicEvent>.from(_loop.lastWildMagicEvents);
       // LAN-only (§1.3): SoloBattleSession casts are scripted dummies with a
       // sentinel commitment — never record them. Snapshot the base-cost map
       // synchronously (it's reset at the top of the next runTurn, and this
       // capture runs fire-and-forget).
       if (widget.session != null && widget.session is! SoloBattleSession) {
-        unawaited(_recordSightings(
-          resolved,
-          Map<String, int>.from(_loop.lastCertifiedBaseManaCosts),
-        ));
+        unawaited(
+          _recordSightings(
+            resolved,
+            Map<String, int>.from(_loop.lastCertifiedBaseManaCosts),
+          ),
+        );
       }
       // Hold every effect created this turn off the field; the reveal sequence
       // un-hides each spell's set (and blooms it) only once that spell's card
@@ -1420,9 +1566,20 @@ class _BattleScreenState extends State<BattleScreen>
         _hiddenTileHexes = hiddenTiles;
         _hiddenMinionIds = hiddenMinions;
         _effectBloom = null;
+        // Set synchronously, in the same setState _resetTurn runs in, so no
+        // further turn is submittable the instant win condition fires — even
+        // though _handleMatchEnd's summary (and, for a real duel, its signed
+        // MatchOutcome exchange) resolves slightly later. See _matchEnded's
+        // doc comment.
+        if (win != null && win.isOver) _matchEnded = true;
       });
-      if (resolved.isNotEmpty || chains.isNotEmpty) {
-        unawaited(_playResolvedSpellSequence(resolved, castEvents, chains));
+      if (resolved.isNotEmpty || chains.isNotEmpty || wildMagic.isNotEmpty) {
+        unawaited(
+          _playResolvedSpellSequence(resolved, castEvents, chains, wildMagic),
+        );
+      }
+      if (win != null && win.isOver) {
+        unawaited(_handleMatchEnd(win));
       }
     } catch (e) {
       if (!mounted) return;
@@ -1431,10 +1588,148 @@ class _BattleScreenState extends State<BattleScreen>
       // for (dueSecrets are left in place; they'll be retried next submit).
       _stagedMysterySecret = null;
       setState(_resetTurn);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Turn error: $e')));
+      if (_isRealDuel) {
+        // Fail-closed, same doctrine as [_verifierInitError]. In a LAN duel
+        // every throw out of runTurn is a lockstep break: the turn is
+        // half-applied on THIS device (TurnLoop mutates state as it goes) and
+        // fully applied on the peer's, or vice versa. TurnLoop has already
+        // sent a forfeit for the checks it owns. Continuing from here means
+        // playing two different matches that agree on nothing but the frames
+        // they exchange — and the divergence surfaces later as effects that
+        // exist on one screen only (a cloud drawn on the caster's device but
+        // not the target's, a cast the target's device never applied and so
+        // never range-restricts). A 4-second snackbar is exactly how that
+        // stays invisible until it looks like an unrelated rendering bug, so
+        // this stops the duel and shows what actually broke.
+        setState(() => _turnError = '$e');
+      } else {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Turn error: $e')));
+      }
     }
+  }
+
+  // ── Match end (MASTER_APPRENTICE_PLAN.md §4) ────────────────────────────────
+
+  /// Builds the local result from [win] and, for a real duel between exactly
+  /// two avatars, signs a [MatchOutcome] and exchanges it with the peer via
+  /// [BattleSession.exchangeMatchOutcome] before persisting a
+  /// [MatchOutcomeRecord] — the two-signature artifact a future graduation-
+  /// battle settlement (docs/MASTER_APPRENTICE_PLAN.md §7.4) can trust.
+  ///
+  /// Never blocks the local win/loss/draw display on the network exchange:
+  /// [_matchEnded] (and the summary's own [_MatchEndSummary.isLocalVictor])
+  /// are this device's own TurnLoop's verdict, which is authoritative for
+  /// THIS device regardless of whether the peer cooperates with signing.
+  /// [_MatchEndSummary.settled] just says whether that verdict is now also
+  /// PROVABLE to a third party.
+  ///
+  /// Solo/practice (no real peer) and team battles (more than two avatars,
+  /// where "the loser" isn't a single well-defined party) both skip signing
+  /// entirely and report an unsettled result — see the two early returns.
+  Future<void> _handleMatchEnd(WinCheckResult win) async {
+    if (win.winningTeamId == null) {
+      if (!mounted) return;
+      setState(
+        () => _matchEndSummary = const _MatchEndSummary(
+          isDraw: true,
+          isLocalVictor: false,
+        ),
+      );
+      return;
+    }
+
+    final avatars = widget.state.avatars;
+    final isLocalVictor = avatars.any(
+      (a) =>
+          a.teamId == win.winningTeamId && a.playerId == widget.localPlayerId,
+    );
+
+    if (!_isRealDuel || avatars.length != 2) {
+      if (!mounted) return;
+      setState(
+        () => _matchEndSummary = _MatchEndSummary(
+          isDraw: false,
+          isLocalVictor: isLocalVictor,
+        ),
+      );
+      return;
+    }
+
+    final identity = _localIdentity;
+    final matchId = widget.matchId;
+    final peerOwnerPubkeyHex = widget.peerOwnerPubkeyHex;
+    final peerRawPubkey = widget.peerRawPubkey;
+    String? settlementError;
+    var settled = false;
+
+    if (identity == null ||
+        matchId == null ||
+        peerOwnerPubkeyHex == null ||
+        peerRawPubkey == null) {
+      // Should be unreachable when _isRealDuel is true (all four are set
+      // together — see widget.peerBookRoot's doc comment) but fail closed
+      // rather than crash on a future refactor that breaks that invariant.
+      settlementError = 'missing real-duel identity/peer data';
+    } else {
+      try {
+        final victorAvatar = avatars.firstWhere(
+          (a) => a.teamId == win.winningTeamId,
+        );
+        final loserAvatar = avatars.firstWhere(
+          (a) => a.teamId != win.winningTeamId,
+        );
+        final stateHash = await Sha256().hash(widget.state.toCanonicalBytes());
+        final outcome = MatchOutcome(
+          matchIdHex: _bytesToHex(matchId),
+          victorPubkeyHex: victorAvatar.ownerPubkeyHex,
+          loserPubkeyHex: loserAvatar.ownerPubkeyHex,
+          finalStateHashHex: _bytesToHex(Uint8List.fromList(stateHash.bytes)),
+          pactIdHex: widget.pactIdHex ?? kNoGraduationPact,
+          endedAtTurn: widget.state.turnNumber,
+        );
+        final mine = await SignedMatchOutcome.sign(
+          outcome: outcome,
+          signerIdentity: identity,
+        );
+        final theirs = await (widget.session! as BattleSession)
+            .exchangeMatchOutcome(mine);
+
+        if (!outcome.sameFieldsAs(theirs.outcome)) {
+          settlementError =
+              'peer reported a different match outcome — not settled';
+        } else if (theirs.rawPubkeyBase64 != base64Encode(peerRawPubkey) ||
+            !_hexEq(theirs.signerPubkeyHex, peerOwnerPubkeyHex)) {
+          settlementError =
+              'peer outcome not signed by the authenticated peer identity';
+        } else {
+          final record = MatchOutcomeRecord(
+            outcome: outcome,
+            mine: mine,
+            theirs: theirs,
+          );
+          if (!await record.isFullyValid()) {
+            settlementError = 'match outcome record failed validation';
+          } else {
+            await record.save();
+            settled = true;
+          }
+        }
+      } catch (e) {
+        settlementError = 'match outcome exchange failed: $e';
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _matchEndSummary = _MatchEndSummary(
+        isDraw: false,
+        isLocalVictor: isLocalVictor,
+        settled: settled,
+        settlementError: settlementError,
+      );
+    });
   }
 
   // ── Sightings capture (docs/SIGHTINGS_PLAN.md §4) ───────────────────────────
@@ -1489,11 +1784,38 @@ class _BattleScreenState extends State<BattleScreen>
   /// in the same resolution order (a resolved spell has an orb only when its
   /// formula has an elemental affinity), so a single advancing cursor matches
   /// each spell to its orb — see the (casterId, targetHex) guard below.
+  /// Shows one wild-magic reveal for 2.5 seconds (or until tapped away), then
+  /// returns. Serialised by the caller so two effects from a balanced spell
+  /// read one at a time rather than stacking.
+  Future<void> _showWildMagicBanner(WildMagicEvent event) async {
+    final casterLabel = event.casterId == widget.localPlayerId
+        ? 'your own rune'
+        : "your opponent's rune";
+    final navigator = Navigator.of(context);
+    final entry = OverlayEntry(
+      builder: (_) => _WildMagicBanner(event: event, casterLabel: casterLabel),
+    );
+    navigator.overlay?.insert(entry);
+    await Future<void>.delayed(const Duration(milliseconds: 2500));
+    entry.remove();
+  }
+
   Future<void> _playResolvedSpellSequence(
     List<ResolvedSpellEvent> events,
     List<SpellCastEvent> castEvents,
     List<ConveyorChainAnimation> chains,
+    List<WildMagicEvent> wildMagic,
   ) async {
+    if (!mounted) return;
+    // Wild magic resolves BEFORE formula effects (design v3.0 L746), so it is
+    // revealed first — and on its own full-screen banner rather than folded
+    // into the spell cards, because it is a global, symmetric effect that has
+    // nothing to do with the tile the spell was aimed at. See
+    // _WildMagicBanner's doc comment for why this reveal is load-bearing.
+    for (final ev in wildMagic) {
+      if (!mounted) return;
+      await _showWildMagicBanner(ev);
+    }
     if (!mounted) return;
     // Reserve the tray for the whole reveal if any incantation will land in it,
     // so even the first one's card can measure the tray and shrink into its
@@ -1540,8 +1862,9 @@ class _BattleScreenState extends State<BattleScreen>
               color: BattlefieldPainter.colorForWizard(
                 cast.casterId,
                 localPlayerId: widget.localPlayerId,
-                orderedPlayerIds:
-                    widget.state.avatars.map((a) => a.playerId).toList(),
+                orderedPlayerIds: widget.state.avatars
+                    .map((a) => a.playerId)
+                    .toList(),
               ),
             ),
           ],
@@ -1560,8 +1883,8 @@ class _BattleScreenState extends State<BattleScreen>
         countered: ev.wasCountered,
         counteredByLabel: ev.wasCountered
             ? (ev.counterCharmOwnerId == widget.localPlayerId
-                ? 'Blocked by your ward'
-                : "Blocked by the opponent's ward")
+                  ? 'Blocked by your ward'
+                  : "Blocked by the opponent's ward")
             : null,
       );
       if (!mounted) return;
@@ -1689,6 +2012,36 @@ class _BattleScreenState extends State<BattleScreen>
 
   // ── Build ───────────────────────────────────────────────────────────────────
 
+  /// Full-screen, non-dismissable failure state — the only thing this screen
+  /// renders once a duel is unsafe to play (verifier init failed, or lockstep
+  /// broke mid-turn). Deliberately a dead end with one way out: there is no
+  /// "continue anyway" for a match whose two devices disagree.
+  Widget _blockingError(String message) => Scaffold(
+    backgroundColor: const Color(0xFF1A1008),
+    body: Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.error_outline, color: Colors.redAccent, size: 48),
+            const SizedBox(height: 16),
+            SelectableText(
+              message,
+              style: manuscriptBodyStyle(fontSize: 14, color: kParchmentColor),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 24),
+            OutlinedButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Leave'),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
   @override
   Widget build(BuildContext context) {
     // Stage 2 fail-closed gate (see _initTurnLoop): never render the
@@ -1696,30 +2049,17 @@ class _BattleScreenState extends State<BattleScreen>
     // proceed if verifier init failed.
     final initError = _verifierInitError;
     if (initError != null) {
-      return Scaffold(
-        backgroundColor: const Color(0xFF1A1008),
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.error_outline, color: Colors.redAccent, size: 48),
-                const SizedBox(height: 16),
-                Text(
-                  'Could not prepare this duel for play:\n$initError',
-                  style: manuscriptBodyStyle(fontSize: 14, color: kParchmentColor),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 24),
-                OutlinedButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('Leave'),
-                ),
-              ],
-            ),
-          ),
-        ),
+      return _blockingError(
+        'Could not prepare this duel for play:\n$initError',
+      );
+    }
+    // Same gate for a mid-turn lockstep break (see _submitTurn's catch): the
+    // two devices have diverged, so there is nothing safe left to render.
+    final turnError = _turnError;
+    if (turnError != null) {
+      return _blockingError(
+        'This duel broke lockstep and cannot continue — the two devices no '
+        'longer agree on the battlefield:\n\n$turnError',
       );
     }
     if (!_loopReady) {
@@ -1735,7 +2075,7 @@ class _BattleScreenState extends State<BattleScreen>
     final config = widget.state.config;
     final foes = _opponents;
 
-    return Scaffold(
+    final scaffold = Scaffold(
       backgroundColor: const Color(0xFF1A1008),
       appBar: AppBar(
         backgroundColor: kInkColor,
@@ -1758,7 +2098,8 @@ class _BattleScreenState extends State<BattleScreen>
           // DEV FLAG (lib/dev_flags.dart): a duel running without proof
           // verification must never be mistakable for a real one. Delete
           // this with the flag.
-          if (kAllowProoflessSpells && _isRealDuel) const _UnverifiedPlayBanner(),
+          if (kAllowProoflessSpells && _isRealDuel)
+            const _UnverifiedPlayBanner(),
 
           // Phase banner — always visible, so it's never ambiguous whether
           // the battle is waiting on the local player's Main/Move decision
@@ -1782,99 +2123,195 @@ class _BattleScreenState extends State<BattleScreen>
           else if (foes.isNotEmpty)
             _OpponentHudRow(avatars: foes, maxHp: config.playerHp),
 
-          // Battlefield — tappable
+          // Battlefield — tappable, with the 4 artifact corner tiles
+          // floating over the empty space around the hex map (see
+          // _ArtifactCornerTile) so they don't cost the map any of the
+          // Expanded area's height.
           Expanded(
-            child: LayoutBuilder(
-              builder: (ctx, constraints) {
-                final size = Size(constraints.maxWidth, constraints.maxHeight);
-                final hSize = _hexSizeFromConstraints(size, config.gridRadius);
-                final center = Offset(size.width / 2, size.height / 2);
-                // Store for tap handler (accessed on next frame — safe because
-                // the values only change on resize, not during a turn).
-                _hexSize = hSize;
-                _fieldCenter = center;
-                return GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTapUp: (d) => _onTapBattlefield(d.localPosition),
-                  onLongPressStart: (d) =>
-                      _onLongPressBattlefield(d.localPosition),
-                  // Cosmetic terrain backdrop, drawn first and on the same
-                  // hex geometry as the battlefield so playable tiles sit
-                  // squarely on their terrain. See lib/ui/scenery/.
-                  child: CustomPaint(
-                    painter: SceneryBackdropPainter(
-                      map: _sceneryFor(size, hSize),
-                      atlas: _sceneryAtlas,
-                      hexSize: hSize,
-                      playRadius: config.gridRadius,
-                    ),
-                    child: CustomPaint(
-                      key: _battlefieldKey,
-                      painter: BattlefieldPainter(
-                        radius: config.gridRadius,
-                        hexSize: hSize,
-                        // Wash the playable tiles instead of filling them, so
-                        // the scenery shows through inside the grid. Falls back
-                        // to the opaque board if the atlas never loaded.
-                        terrainBeneath: _sceneryAtlas != null,
-                        occupancy: widget.state.battlefield.occupancy,
-                        localPlayerId: widget.localPlayerId,
-                        highlightHex: _targetHex,
-                        // Renders the *simulated* path (including any free
-                        // conveyor push-throughs), not just the raw tiles
-                        // tapped, so the player sees where they'll actually
-                        // end up -- see predictAvatarMove.
-                        movePath: _local != null
-                            ? predictAvatarMove(
-                                state: widget.state,
-                                origin: _local!.position,
-                                declaredPath: _movePath,
-                                budget: _localMoveBudget,
-                              ).path.skip(1).toList()
-                            : _movePath,
-                        spellRangeRadius: _selectedSpell != null && _local != null
-                            ? _maxCastRange(_local!, _local!.position)
-                            : 0,
-                        casterPos: _local?.position,
-                        minions: widget.state.minions
-                            .where((m) => m.isAlive)
-                            .toList(),
-                        localTeamId: _local?.teamId,
-                        barrierRings: _barrierRings(),
-                        pulseAnimation: _pulseController,
-                        castAnimations: _castAnimations,
-                        castAnimation: _castAnimController,
-                        tileEffects: widget.state.tileEffects,
-                        clouds: widget.state.clouds,
-                        directionPickHexes:
-                            _phase == _InputPhase.pickingDirection &&
-                                _conveyorPickOrigin != null
-                            ? HexGrid.directions
-                                  .map(
-                                    (d) => HexCoord(
-                                      _conveyorPickOrigin!.q + d.q,
-                                      _conveyorPickOrigin!.r + d.r,
-                                    ),
-                                  )
-                                  .toList()
-                            : const [],
-                        conveyorChainAnimations: _conveyorChainAnimations,
-                        pendingCastOrbs: _pendingCastOrbs,
-                        scryRevealHex: _scryRevealedTile,
-                        meleePickHexes: _pickingMelee
-                            ? _meleeCandidates
-                            : const [],
-                        hiddenCloudIds: _hiddenCloudIds,
-                        hiddenTileHexes: _hiddenTileHexes,
-                        hiddenMinionIds: _hiddenMinionIds,
-                        effectBloom: _effectBloom,
-                        effectBloomAnimation: _effectBloomController,
-                      ),
-                      child: const SizedBox.expand(),
-                    ),
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: LayoutBuilder(
+                    builder: (ctx, constraints) {
+                      final size = Size(
+                        constraints.maxWidth,
+                        constraints.maxHeight,
+                      );
+                      final hSize = _hexSizeFromConstraints(
+                        size,
+                        config.gridRadius,
+                      );
+                      final center = Offset(size.width / 2, size.height / 2);
+                      // Store for tap handler (accessed on next frame — safe
+                      // because the values only change on resize, not during
+                      // a turn).
+                      _hexSize = hSize;
+                      _fieldCenter = center;
+                      return Stack(
+                        children: [
+                          GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTapUp: (d) => _onTapBattlefield(d.localPosition),
+                            onLongPressStart: (d) =>
+                                _onLongPressBattlefield(d.localPosition),
+                            // Cosmetic terrain backdrop, drawn first and on the
+                            // same hex geometry as the battlefield so playable
+                            // tiles sit squarely on their terrain. See
+                            // lib/ui/scenery/.
+                            child: CustomPaint(
+                              painter: SceneryBackdropPainter(
+                                map: _sceneryFor(size, hSize),
+                                atlas: _sceneryAtlas,
+                                hexSize: hSize,
+                                playRadius: config.gridRadius,
+                              ),
+                              child: CustomPaint(
+                                key: _battlefieldKey,
+                                painter: BattlefieldPainter(
+                                  radius: config.gridRadius,
+                                  hexSize: hSize,
+                                  // Wash the playable tiles instead of filling
+                                  // them, so the scenery shows through inside the
+                                  // grid. Falls back to the opaque board if the
+                                  // atlas never loaded.
+                                  terrainBeneath: _sceneryAtlas != null,
+                                  occupancy: widget.state.battlefield.occupancy,
+                                  localPlayerId: widget.localPlayerId,
+                                  highlightHex: _targetHex,
+                                  // Renders the *simulated* path (including any
+                                  // free conveyor push-throughs), not just the
+                                  // raw tiles tapped, so the player sees where
+                                  // they'll actually end up -- see
+                                  // predictAvatarMove.
+                                  movePath: _local != null
+                                      ? predictAvatarMove(
+                                          state: widget.state,
+                                          origin: _local!.position,
+                                          declaredPath: _movePath,
+                                          budget: _localMoveBudget,
+                                        ).path.skip(1).toList()
+                                      : _movePath,
+                                  spellRangeRadius:
+                                      _selectedSpell != null && _local != null
+                                      ? _maxCastRange(_local!, _local!.position)
+                                      : 0,
+                                  casterPos: _local?.position,
+                                  minions: widget.state.minions
+                                      .where((m) => m.isAlive)
+                                      .toList(),
+                                  localTeamId: _local?.teamId,
+                                  barrierRings: _barrierRings(),
+                                  pulseAnimation: _pulseController,
+                                  castAnimations: _castAnimations,
+                                  castAnimation: _castAnimController,
+                                  tileEffects: widget.state.tileEffects,
+                                  clouds: widget.state.clouds,
+                                  directionPickHexes:
+                                      _phase == _InputPhase.pickingDirection &&
+                                          _conveyorPickOrigin != null
+                                      ? HexGrid.directions
+                                            .map(
+                                              (d) => HexCoord(
+                                                _conveyorPickOrigin!.q + d.q,
+                                                _conveyorPickOrigin!.r + d.r,
+                                              ),
+                                            )
+                                            .toList()
+                                      : const [],
+                                  conveyorChainAnimations:
+                                      _conveyorChainAnimations,
+                                  pendingCastOrbs: _pendingCastOrbs,
+                                  scryRevealHex: _scryRevealedTile,
+                                  meleePickHexes: _pickingMelee
+                                      ? _meleeCandidates
+                                      : const [],
+                                  freeMovePickHexes: _pickingFreeMove
+                                      ? _freeMoveCandidates
+                                      : const [],
+                                  hiddenCloudIds: _hiddenCloudIds,
+                                  hiddenTileHexes: _hiddenTileHexes,
+                                  hiddenMinionIds: _hiddenMinionIds,
+                                  effectBloom: _effectBloom,
+                                  effectBloomAnimation: _effectBloomController,
+                                ),
+                                child: const SizedBox.expand(),
+                              ),
+                            ),
+                          ),
+                          // Non-interactive: long-press is still hit-tested
+                          // manually via _onLongPressBattlefield above, using
+                          // pixelToHex on the raw tap position, so these
+                          // thumbnails must never intercept a pointer event.
+                          IgnorePointer(
+                            child: _MinionArtOverlay(
+                              minions: widget.state.minions
+                                  .where((m) => m.isAlive)
+                                  .toList(),
+                              spellByMinionId: _summonSpellByMinionId,
+                              localTeamId: _local?.teamId,
+                              center: center,
+                              hexSize: hSize,
+                            ),
+                          ),
+                        ],
+                      );
+                    },
                   ),
-                );
-              },
+                ),
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  child: _ArtifactCornerTile(
+                    corner: _TileCorner.topLeft,
+                    icon: _kCounterCharmDisplay.$1,
+                    color: _kCounterCharmDisplay.$2,
+                    label: _kCounterCharmDisplay.$3,
+                    count: _accoutrementCount(
+                      local,
+                      AccoutrementKind.counterCharm,
+                    ),
+                    onLongPress: () =>
+                        _onArtifactCornerLongPress('Counter Charm'),
+                  ),
+                ),
+                Positioned(
+                  top: 0,
+                  right: 0,
+                  child: _ArtifactCornerTile(
+                    corner: _TileCorner.topRight,
+                    icon: _kRodOfWindDisplay.$1,
+                    color: _kRodOfWindDisplay.$2,
+                    label: _kRodOfWindDisplay.$3,
+                    count: local?.rodOfSpreadingCount ?? 0,
+                    active: _useRodOfSpreading,
+                    onLongPress: _onRodOfWindLongPress,
+                  ),
+                ),
+                Positioned(
+                  bottom: 0,
+                  right: 0,
+                  child: _ArtifactCornerTile(
+                    corner: _TileCorner.bottomRight,
+                    icon: _kManaGemDisplay.$1,
+                    color: _kManaGemDisplay.$2,
+                    label: _kManaGemDisplay.$3,
+                    count: _accoutrementCount(local, AccoutrementKind.manaGem),
+                    onLongPress: () => _onArtifactCornerLongPress('Mana Gem'),
+                  ),
+                ),
+                Positioned(
+                  bottom: 0,
+                  left: 0,
+                  child: _ArtifactCornerTile(
+                    corner: _TileCorner.bottomLeft,
+                    icon: _kBookmarkDisplay.$1,
+                    color: _kBookmarkDisplay.$2,
+                    label: _kBookmarkDisplay.$3,
+                    count: _accoutrementCount(local, AccoutrementKind.bookmark),
+                    onLongPress: () => _onArtifactCornerLongPress('Bookmark'),
+                  ),
+                ),
+              ],
             ),
           ),
 
@@ -1896,29 +2333,28 @@ class _BattleScreenState extends State<BattleScreen>
               onDelayChanged: (d) => setState(() => _mysteryDelay = d),
             ),
 
-          // Cast-time Rod of Spreading toggle — only when a spell is selected
-          // and the local avatar carries an unused rod. Spends one rod to add
-          // +1 effect radius (or one minion size rung) to this cast.
+          // Rod of Wind armed indicator — toggled via long-press on the
+          // top-right corner tile (_ArtifactCornerTile), not here. Read-only
+          // feedback so spending the rod at resolution is never a surprise.
           if (_phase == _InputPhase.action &&
               _selectedSpell != null &&
-              _localOwnsRod)
-            CheckboxListTile(
-              dense: true,
-              controlAffinity: ListTileControlAffinity.leading,
-              value: _useRodOfSpreading,
-              onChanged: (v) =>
-                  setState(() => _useRodOfSpreading = v ?? false),
-              activeColor: kParchmentColor,
-              checkColor: const Color(0xFF2A1E12),
-              secondary: const Icon(Icons.open_in_full, color: kParchmentColor),
-              title: Text(
-                'Rod of Spreading  ×${_local?.rodOfSpreadingCount ?? 0}',
-                style: manuscriptBodyStyle(fontSize: 14, color: kParchmentColor),
-              ),
-              subtitle: Text(
-                '+1 effect radius (or minion size) — consumes one rod',
-                style: manuscriptBodyStyle(
-                    fontSize: 11, color: kParchmentColor.withValues(alpha: 0.7)),
+              _useRodOfSpreading)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Row(
+                children: [
+                  const Icon(Icons.air, size: 16, color: kParchmentColor),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Rod of Wind armed — +1 effect radius (or minion size) this cast',
+                      style: manuscriptBodyStyle(
+                        fontSize: 12,
+                        color: kParchmentColor,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
 
@@ -1946,6 +2382,7 @@ class _BattleScreenState extends State<BattleScreen>
             movePathLength: _movePath.length,
             isBusy: _isBusy || _isCapturingVoice,
             pickingMelee: _pickingMelee,
+            pickingFreeMove: _pickingFreeMove,
             onDash: _onDash,
             onMeditateMain: _onMeditateMain,
             onCast: _onCast,
@@ -1961,6 +2398,7 @@ class _BattleScreenState extends State<BattleScreen>
             onCancelMove: () => setState(() => _movePath = const []),
             onCancelDirectionPick: () => _conveyorPickCompleter?.complete(null),
             onDeclineMelee: () => _meleePickCompleter?.complete(null),
+            onDeclineFreeMove: () => _freeMovePickCompleter?.complete(null),
           ),
 
           // Incantation thumbnail tray — neutral space outside the grid for
@@ -1980,9 +2418,6 @@ class _BattleScreenState extends State<BattleScreen>
             isLocal: _inspectedAvatar == null,
           ),
 
-          // Artifact counts
-          _ArtifactRow(avatar: local),
-
           // Spell hand (SPELL_DRAW_WIRING_PLAN.md §5) — the live hand, not
           // the whole chapter; deck count is the small HUD readout the plan
           // calls out as a nice-to-have.
@@ -1995,6 +2430,259 @@ class _BattleScreenState extends State<BattleScreen>
             deckCount: _loop.localSpellDraw?.remaining.length,
           ),
         ],
+      ),
+    );
+
+    final summary = _matchEndSummary;
+    if (summary == null) return scaffold;
+    return Stack(
+      children: [
+        scaffold,
+        _MatchEndOverlay(
+          summary: summary,
+          onLeave: () => Navigator.of(context).pop(),
+        ),
+      ],
+    );
+  }
+}
+
+/// Renders each live summon's card art as a tiny thumbnail on its battlefield
+/// tile, in place of the plain affinity-letter token painted underneath by
+/// [BattlefieldPainter]. Purely decorative — sits under an [IgnorePointer] so
+/// the existing long-press hit-testing (`_onLongPressBattlefield`, which
+/// already opens the full card via [showSpellCardFullscreen]) is unaffected.
+///
+/// Only minions with a recorded [SpellAsset] in [spellByMinionId] get a
+/// thumbnail (see its doc comment for why some don't, e.g. mirror-copied
+/// creatures); everything else falls back to the painter's plain token.
+class _MinionArtOverlay extends StatelessWidget {
+  const _MinionArtOverlay({
+    required this.minions,
+    required this.spellByMinionId,
+    required this.localTeamId,
+    required this.center,
+    required this.hexSize,
+  });
+
+  final List<Minion> minions;
+  final Map<String, SpellAsset> spellByMinionId;
+  final String? localTeamId;
+  final Offset center;
+  final double hexSize;
+
+  @override
+  Widget build(BuildContext context) {
+    final size = hexSize * 0.62;
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        for (final m in minions)
+          if (spellByMinionId[m.id] case final spell?)
+            Positioned(
+              left: hexToPixel(m.position, center, hexSize).dx - size / 2,
+              top: hexToPixel(m.position, center, hexSize).dy - size / 2,
+              width: size,
+              height: size,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  border: Border.all(
+                    color: m.teamId == localTeamId
+                        ? kIlluminationGold
+                        : kRubricRed,
+                    width: 1.5,
+                  ),
+                  borderRadius: BorderRadius.circular(size * 0.16),
+                  boxShadow: const [
+                    BoxShadow(color: Colors.black45, blurRadius: 2),
+                  ],
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(size * 0.12),
+                  child: SpellCardWidget(
+                    spell: spell,
+                    size: size,
+                    interactive: false,
+                  ),
+                ),
+              ),
+            ),
+      ],
+    );
+  }
+}
+
+/// The banner shown when a wild-magic effect fires (docs/WILD_MAGIC_PLAN.md
+/// §7.6 item 4).
+///
+/// Wild magic is untelegraphed by design — neither player sees it coming, and
+/// nothing on the board explains why it happened. So this reveal is the ONLY
+/// place either of them learns it fired at all, which makes it load-bearing
+/// rather than decoration: a global effect the player cannot see happen is a
+/// bug. It deliberately names the effect and states the consequence in the
+/// symmetric voice ("all players"), because the first thing a player needs to
+/// understand is that it hit them too.
+class _WildMagicBanner extends StatelessWidget {
+  const _WildMagicBanner({required this.event, required this.casterLabel});
+
+  final WildMagicEvent event;
+  final String casterLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: const Color(0xCC1A1008),
+      alignment: Alignment.center,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'WILD MAGIC',
+              style: manuscriptCaptionStyle(color: kIlluminationGold),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 10),
+            Text(
+              event.label.toUpperCase(),
+              style: manuscriptHeaderStyle(
+                fontSize: 28,
+                color: kParchmentColor,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              event.description,
+              style: const TextStyle(
+                fontFamily: 'serif',
+                fontSize: 15,
+                height: 1.4,
+                color: kParchmentColor,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            if (event.bracketSteps > 0) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Amplified ×${event.bracketSteps + 1}',
+                style: manuscriptCaptionStyle(color: kIlluminationGold),
+              ),
+            ],
+            const SizedBox(height: 14),
+            Text(
+              'Loosed by $casterLabel — and it spares no one.',
+              style: manuscriptCaptionStyle(
+                color: kParchmentColor.withValues(alpha: 0.7),
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// What to show once TurnLoop.runTurn reports the match is over — see
+/// _BattleScreenState._handleMatchEnd. Populated asynchronously (a real duel
+/// signs and exchanges a MatchOutcome before this exists); [_matchEnded]
+/// alone is what blocks further input in the meantime.
+class _MatchEndSummary {
+  const _MatchEndSummary({
+    required this.isDraw,
+    required this.isLocalVictor,
+    this.settled = false,
+    this.settlementError,
+  });
+
+  final bool isDraw;
+
+  /// Meaningless when [isDraw] is true.
+  final bool isLocalVictor;
+
+  /// True iff a [MatchOutcomeRecord] was built, mutually validated, and
+  /// saved — i.e. this result is provable to a third party (a graduation
+  /// battle's settlement, MASTER_APPRENTICE_PLAN.md §7.4). Always false for
+  /// solo/practice (nothing to settle with) and for a draw (no victor/loser
+  /// pair to sign over).
+  final bool settled;
+
+  /// Set iff a real duel's signed-outcome exchange ran but failed to
+  /// validate (peer disagreed, bad signature, or the exchange itself
+  /// errored/disconnected). The local win/loss/draw result shown to the
+  /// player is still whatever this device's own TurnLoop computed —
+  /// unsettled just means nobody else can yet prove it.
+  final String? settlementError;
+}
+
+/// Full-screen scrim shown once [_MatchEndSummary] exists — blocks
+/// interaction with the battlefield beneath it (in addition to
+/// [_BattleScreenState._matchEnded] already refusing new turns) and reports
+/// the result, including whether it was mutually signed
+/// (docs/MASTER_APPRENTICE_PLAN.md §4).
+class _MatchEndOverlay extends StatelessWidget {
+  const _MatchEndOverlay({required this.summary, required this.onLeave});
+
+  final _MatchEndSummary summary;
+  final VoidCallback onLeave;
+
+  @override
+  Widget build(BuildContext context) {
+    final String title;
+    final Color titleColor;
+    if (summary.isDraw) {
+      title = 'DRAW';
+      titleColor = kParchmentColor;
+    } else if (summary.isLocalVictor) {
+      title = 'VICTORY';
+      titleColor = kIlluminationGold;
+    } else {
+      title = 'DEFEAT';
+      titleColor = kRubricRed;
+    }
+
+    String? subtitle;
+    if (!summary.isDraw) {
+      if (summary.settled) {
+        subtitle = 'Recorded — both wizards signed this outcome.';
+      } else if (summary.settlementError != null) {
+        subtitle = 'Not settled: ${summary.settlementError}';
+      }
+    }
+
+    return Container(
+      color: const Color(0xCC1A1008),
+      alignment: Alignment.center,
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              title,
+              style: manuscriptHeaderStyle(fontSize: 32, color: titleColor),
+            ),
+            if (subtitle != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                subtitle,
+                textAlign: TextAlign.center,
+                style: manuscriptBodyStyle(
+                  fontSize: 13,
+                  color: kParchmentColor.withValues(alpha: 0.8),
+                ),
+              ),
+            ],
+            const SizedBox(height: 28),
+            OutlinedButton(
+              onPressed: onLeave,
+              style: OutlinedButton.styleFrom(foregroundColor: kParchmentColor),
+              child: const Text('Leave Battle'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2041,6 +2729,7 @@ class _ActionBar extends StatelessWidget {
     required this.movePathLength,
     required this.isBusy,
     required this.pickingMelee,
+    required this.pickingFreeMove,
     required this.onDash,
     required this.onMeditateMain,
     required this.onCast,
@@ -2050,6 +2739,7 @@ class _ActionBar extends StatelessWidget {
     required this.onCancelMove,
     required this.onCancelDirectionPick,
     required this.onDeclineMelee,
+    required this.onDeclineFreeMove,
   });
 
   final _InputPhase phase;
@@ -2063,6 +2753,11 @@ class _ActionBar extends StatelessWidget {
   /// -submission by the time this fires.
   final bool pickingMelee;
 
+  /// Post-resolution Airy Barrier burst prompt (see
+  /// _BattleScreenState._pickFreeMoveDirection) — same override as
+  /// [pickingMelee]; the two are never true at once (different phases).
+  final bool pickingFreeMove;
+
   final VoidCallback onDash;
   final VoidCallback onMeditateMain;
   final VoidCallback onCast;
@@ -2072,9 +2767,40 @@ class _ActionBar extends StatelessWidget {
   final VoidCallback onCancelMove;
   final VoidCallback onCancelDirectionPick;
   final VoidCallback onDeclineMelee;
+  final VoidCallback onDeclineFreeMove;
 
   @override
   Widget build(BuildContext context) {
+    if (pickingFreeMove) {
+      return Container(
+        color: const Color(0xFF0F0804),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: Row(
+          children: [
+            _ActionButton(
+              label: 'STAND',
+              color: kInkMutedColor,
+              enabled: true,
+              onTap: onDeclineFreeMove,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Your airy barrier bursts — step free? '
+                'Tap a highlighted tile, or stand fast',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontFamily: 'serif',
+                  fontSize: 13,
+                  color: kParchmentColor.withValues(alpha: 0.90),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     if (pickingMelee) {
       return Container(
         color: const Color(0xFF0F0804),
@@ -2610,11 +3336,7 @@ class _RevealedHandRow extends StatelessWidget {
           final spell = spells[i];
           return GestureDetector(
             onTap: () => showSpellCardFullscreen(context, spell),
-            child: SpellCardWidget(
-              spell: spell,
-              size: 36,
-              interactive: false,
-            ),
+            child: SpellCardWidget(spell: spell, size: 36, interactive: false),
           );
         },
       ),
@@ -2664,8 +3386,8 @@ class _OpponentChip extends StatelessWidget {
     final name = avatar.wizardName.isNotEmpty
         ? avatar.wizardName
         : (avatar.playerId.length > 10
-            ? '${avatar.playerId.substring(0, 9)}…'
-            : avatar.playerId);
+              ? '${avatar.playerId.substring(0, 9)}…'
+              : avatar.playerId);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2850,7 +3572,8 @@ class _ChainIndicator extends StatelessWidget {
     // is always a discount, never a surcharge -- the Air-flavor curse is a
     // separate one-shot chainSurcharge status effect, already surfaced via
     // the ordinary status-badge row.
-    final discountPct = ((1.0 - avatar.chainCostMultiplier(element)) * 100).round();
+    final discountPct = ((1.0 - avatar.chainCostMultiplier(element)) * 100)
+        .round();
     final name = element.name;
     final label =
         '${name[0].toUpperCase()}${name.substring(1)} ×${avatar.chainLength} (−$discountPct%)';
@@ -2865,11 +3588,7 @@ class _ChainIndicator extends StatelessWidget {
         const SizedBox(width: 6),
         Text(
           label,
-          style: TextStyle(
-            fontFamily: 'serif',
-            fontSize: 10,
-            color: color,
-          ),
+          style: TextStyle(fontFamily: 'serif', fontSize: 10, color: color),
         ),
       ],
     );
@@ -2935,84 +3654,199 @@ class _StatBar extends StatelessWidget {
   }
 }
 
-// ── Artifact row ──────────────────────────────────────────────────────────────
+// ── Artifact corner tile ──────────────────────────────────────────────────────
+//
+// Floats over the empty space around the hex map (see the Stack in build()),
+// right-angle vertex flush with the true screen corner and hypotenuse facing
+// the map center — the shape hugs the corner instead of squaring off a
+// rectangle of dead space. Long-press is the activation gesture ahead of the
+// artifact-activation rework (docs/ARTIFACT_SYSTEM_PLAN.md) — only Rod of
+// Wind has a real activation today, so the other three surface a "not yet"
+// toast instead of silently doing nothing.
 
-class _ArtifactRow extends StatelessWidget {
-  const _ArtifactRow({required this.avatar});
+enum _TileCorner { topLeft, topRight, bottomRight, bottomLeft }
 
-  final WizardAvatar? avatar;
-
-  int _count(AccoutrementKind kind) =>
-      avatar?.accoutrements.where((a) => a.kind == kind).length ?? 0;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      color: const Color(0xFF221508),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          for (final entry in _kArtifacts)
-            _ArtifactChip(
-              icon: entry.$2,
-              color: entry.$3,
-              count: _count(entry.$1),
-              label: entry.$4,
-            ),
-        ],
-      ),
-    );
+/// Triangle with the right angle at [corner] and the hypotenuse running
+/// between the two adjacent box corners — i.e. cutting off the corner that
+/// points at the map center. Shared by the clipper (hit-testing) and the
+/// painter (fill + active border) so they can never disagree on the shape.
+Path _cornerTrianglePath(_TileCorner corner, Size size) {
+  final w = size.width;
+  final h = size.height;
+  final path = Path();
+  switch (corner) {
+    case _TileCorner.topLeft:
+      path
+        ..moveTo(0, 0)
+        ..lineTo(w, 0)
+        ..lineTo(0, h);
+    case _TileCorner.topRight:
+      path
+        ..moveTo(w, 0)
+        ..lineTo(w, h)
+        ..lineTo(0, 0);
+    case _TileCorner.bottomRight:
+      path
+        ..moveTo(w, h)
+        ..lineTo(0, h)
+        ..lineTo(w, 0);
+    case _TileCorner.bottomLeft:
+      path
+        ..moveTo(0, h)
+        ..lineTo(0, 0)
+        ..lineTo(w, h);
   }
+  path.close();
+  return path;
 }
 
-class _ArtifactChip extends StatelessWidget {
-  const _ArtifactChip({
+class _CornerTriangleClipper extends CustomClipper<Path> {
+  const _CornerTriangleClipper(this.corner);
+
+  final _TileCorner corner;
+
+  @override
+  Path getClip(Size size) => _cornerTrianglePath(corner, size);
+
+  @override
+  bool shouldReclip(covariant _CornerTriangleClipper old) =>
+      old.corner != corner;
+}
+
+class _CornerTrianglePainter extends CustomPainter {
+  _CornerTrianglePainter({
+    required this.corner,
+    required this.fill,
+    this.borderColor,
+  });
+
+  final _TileCorner corner;
+  final Color fill;
+  final Color? borderColor;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final path = _cornerTrianglePath(corner, size);
+    canvas.drawPath(path, Paint()..color = fill);
+    final border = borderColor;
+    if (border != null) {
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = border
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _CornerTrianglePainter old) =>
+      old.corner != corner ||
+      old.fill != fill ||
+      old.borderColor != borderColor;
+}
+
+class _ArtifactCornerTile extends StatelessWidget {
+  const _ArtifactCornerTile({
+    required this.corner,
     required this.icon,
     required this.color,
     required this.count,
     required this.label,
+    this.active = false,
+    this.onLongPress,
   });
 
+  final _TileCorner corner;
   final IconData icon;
   final Color color;
   final int count;
   final String label;
+  final bool active;
+  final VoidCallback? onLongPress;
+
+  // Sized so a short label anchored at the right-angle vertex stays clear of
+  // the hypotenuse (see the module comment's geometry note above).
+  static const double _w = 104;
+  static const double _h = 104;
+
+  Alignment get _contentAlign => switch (corner) {
+    _TileCorner.topLeft => Alignment.topLeft,
+    _TileCorner.topRight => Alignment.topRight,
+    _TileCorner.bottomRight => Alignment.bottomRight,
+    _TileCorner.bottomLeft => Alignment.bottomLeft,
+  };
+
+  bool get _startAligned =>
+      corner == _TileCorner.topLeft || corner == _TileCorner.bottomLeft;
 
   @override
   Widget build(BuildContext context) {
-    final active = count > 0;
-    final fg = active ? color : kInkMutedColor.withValues(alpha: 0.35);
+    final hasAny = count > 0;
+    final fg = hasAny ? color : kInkMutedColor.withValues(alpha: 0.35);
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Row(
-          mainAxisSize: MainAxisSize.min,
+    return SizedBox(
+      width: _w,
+      height: _h,
+      child: GestureDetector(
+        onLongPress: onLongPress,
+        child: Stack(
           children: [
-            Icon(icon, size: 16, color: fg),
-            const SizedBox(width: 4),
-            Text(
-              '$count',
-              style: TextStyle(
-                fontFamily: 'serif',
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
-                color: fg,
+            Positioned.fill(
+              child: ClipPath(
+                clipper: _CornerTriangleClipper(corner),
+                child: CustomPaint(
+                  painter: _CornerTrianglePainter(
+                    corner: corner,
+                    fill: const Color(0xFF221508).withValues(alpha: 0.78),
+                    borderColor: active ? kParchmentColor : null,
+                  ),
+                ),
+              ),
+            ),
+            Align(
+              alignment: _contentAlign,
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Column(
+                  crossAxisAlignment: _startAligned
+                      ? CrossAxisAlignment.start
+                      : CrossAxisAlignment.end,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(icon, size: 16, color: fg),
+                        const SizedBox(width: 4),
+                        Text(
+                          '$count',
+                          style: TextStyle(
+                            fontFamily: 'serif',
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                            color: fg,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Text(
+                      label,
+                      style: TextStyle(
+                        fontFamily: 'serif',
+                        fontSize: 9,
+                        letterSpacing: 0.5,
+                        color: fg.withValues(alpha: 0.75),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ],
         ),
-        Text(
-          label,
-          style: TextStyle(
-            fontFamily: 'serif',
-            fontSize: 9,
-            letterSpacing: 0.5,
-            color: fg.withValues(alpha: 0.75),
-          ),
-        ),
-      ],
+      ),
     );
   }
 }
@@ -3068,7 +3902,10 @@ class _SpellBook extends StatelessWidget {
                 )
               : ListView.builder(
                   scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 6,
+                  ),
                   itemCount: spells.length,
                   itemBuilder: (_, i) {
                     final spell = spells[i];
@@ -3088,7 +3925,10 @@ class _SpellBook extends StatelessWidget {
                               Container(
                                 decoration: BoxDecoration(
                                   border: selected
-                                      ? Border.all(color: kIlluminationGold, width: 2)
+                                      ? Border.all(
+                                          color: kIlluminationGold,
+                                          width: 2,
+                                        )
                                       : null,
                                   borderRadius: BorderRadius.circular(4),
                                 ),
@@ -3112,7 +3952,9 @@ class _SpellBook extends StatelessWidget {
                               SizedBox(
                                 width: 72,
                                 child: Text(
-                                  spell.name.isNotEmpty ? spell.name : 'Unnamed',
+                                  spell.name.isNotEmpty
+                                      ? spell.name
+                                      : 'Unnamed',
                                   textAlign: TextAlign.center,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
@@ -3198,7 +4040,9 @@ class _StatusEffectPanel extends StatelessWidget {
     final opponentName = (avatar?.wizardName.isNotEmpty ?? false)
         ? avatar!.wizardName
         : (avatar?.playerId ?? '?');
-    final label = isLocal ? 'YOUR STATUS' : '$opponentName STATUS'.toUpperCase();
+    final label = isLocal
+        ? 'YOUR STATUS'
+        : '$opponentName STATUS'.toUpperCase();
 
     return Container(
       color: const Color(0xFF160E06),

@@ -225,7 +225,7 @@ Future<void> _bindCounterCharmOnSpell(
 const _kArtifactLabel = {
   ArtifactKind.manaGem: 'Mana Gem',
   ArtifactKind.bookmark: 'Bookmark',
-  ArtifactKind.rodOfSpreading: 'Rod of Spreading',
+  ArtifactKind.rodOfSpreading: 'Rod of Wind',
   ArtifactKind.counterCharm: 'Counter Charm',
 };
 
@@ -1932,7 +1932,7 @@ class _AddArtifactDialog extends StatelessWidget {
             ),
             _ArtifactOption(
               icon: Icons.open_in_full,
-              label: 'Rod of Spreading',
+              label: 'Rod of Wind',
               description: 'Single use: +1 effect radius (or +1 minion size) on your next spell',
               onTap: () => Navigator.pop(context, ArtifactKind.rodOfSpreading),
             ),

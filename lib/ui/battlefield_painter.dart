@@ -172,6 +172,7 @@ class BattlefieldPainter extends CustomPainter {
     this.pendingCastOrbs = const [],
     this.scryRevealHex,
     this.meleePickHexes = const [],
+    this.freeMovePickHexes = const [],
     this.hiddenCloudIds = const {},
     this.hiddenTileHexes = const {},
     this.hiddenMinionIds = const {},
@@ -294,6 +295,12 @@ class BattlefieldPainter extends CustomPainter {
   /// player can see which tiles are valid melee targets.
   final List<HexCoord> meleePickHexes;
 
+  /// Adjacent free tiles offered during the post-resolution Airy Barrier
+  /// burst prompt (battle_screen.dart's [_pickingFreeMove] state) — air
+  /// -colored so it reads as the barrier's own element, and so it's never
+  /// confused with the rubric-red melee prompt.
+  final List<HexCoord> freeMovePickHexes;
+
   static const _kScryReveal = Color(0xFF9B5FC0); // violet — third-eye glimpse
   static const _kMeleePick = Color(0xFF7A1F1F); // rubric red — melee prompt
 
@@ -374,6 +381,10 @@ class BattlefieldPainter extends CustomPainter {
     ImpassableTile() => _kElementColor[SpellAffinity.earth]!,
     SlowTile() => _kElementColor[SpellAffinity.water]!,
     ConveyorTile() => _kElementColor[SpellAffinity.air]!,
+    // Wild magic (Glacier / Chasm) follows the same rule: the elemental flavor
+    // of the effect that creates it. Glacier is Water, Chasm is Earth.
+    IceTile() => _kElementColor[SpellAffinity.water]!,
+    ChasmTile() => _kElementColor[SpellAffinity.earth]!,
   };
 
   Color _colorForCloudKind(CloudKind kind) => switch (kind) {
@@ -449,6 +460,10 @@ class BattlefieldPainter extends CustomPainter {
     // Resolution-phase melee prompt candidates.
     for (final hex in meleePickHexes) {
       _drawHighlight(canvas, hex, center, _kMeleePick);
+    }
+    // Post-resolution Airy Barrier burst free-move candidates.
+    for (final hex in freeMovePickHexes) {
+      _drawHighlight(canvas, hex, center, _kElementColor[SpellAffinity.air]!);
     }
 
     // Pass 3 — minion tokens (Big/EEEE creatures draw one token per
@@ -780,6 +795,10 @@ class BattlefieldPainter extends CustomPainter {
         } else {
           _drawConveyorPending(canvas, pos, color);
         }
+      case IceTile():
+        _drawIceSheen(canvas, pos, color);
+      case ChasmTile():
+        _drawChasmRift(canvas, coord, pos);
     }
     canvas.restore();
 
@@ -817,6 +836,57 @@ class BattlefieldPainter extends CustomPainter {
         ..color = emberColor.withValues(alpha: 0.6)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.2,
+    );
+  }
+
+  /// Glacier's ice: a few bright, parallel slide-lines, deliberately all in
+  /// one direction so the tile reads as "you will keep going" rather than as
+  /// a wall.
+  void _drawIceSheen(Canvas canvas, Offset pos, Color color) {
+    final paint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.55)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.1;
+    final s = hexSize * 0.7;
+    for (var i = -1; i <= 1; i++) {
+      final off = i * hexSize * 0.32;
+      canvas.drawLine(
+        Offset(pos.dx - s, pos.dy + off - s * 0.25),
+        Offset(pos.dx + s, pos.dy + off + s * 0.25),
+        paint,
+      );
+    }
+    canvas.drawCircle(
+      pos,
+      hexSize * 0.5,
+      Paint()
+        ..color = color.withValues(alpha: 0.18)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, hexSize * 0.25),
+    );
+  }
+
+  /// Chasm: a dark jagged rift. Drawn as a void rather than a wall — this
+  /// tile blocks movement but not targeting, so it must not read like the
+  /// Earth crosshatch that also blocks line of sight.
+  void _drawChasmRift(Canvas canvas, HexCoord coord, Offset pos) {
+    canvas.drawCircle(
+      pos,
+      hexSize * 0.62,
+      Paint()..color = const Color(0xFF120C08).withValues(alpha: 0.75),
+    );
+    final rift = Path()..moveTo(pos.dx - hexSize * 0.55, pos.dy);
+    for (var i = 1; i <= 4; i++) {
+      final t = i / 4.0;
+      final jitter = (_pseudoRandom(coord.q, coord.r, i) - 0.5) * hexSize * 0.5;
+      rift.lineTo(pos.dx - hexSize * 0.55 + hexSize * 1.1 * t, pos.dy + jitter);
+    }
+    canvas.drawPath(
+      rift,
+      Paint()
+        ..color = Colors.black.withValues(alpha: 0.9)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = hexSize * 0.16
+        ..strokeCap = StrokeCap.round,
     );
   }
 
@@ -1281,6 +1351,7 @@ class BattlefieldPainter extends CustomPainter {
       !_cloudsMatch(old.clouds, clouds) ||
       old.directionPickHexes.length != directionPickHexes.length ||
       old.meleePickHexes.length != meleePickHexes.length ||
+      old.freeMovePickHexes.length != freeMovePickHexes.length ||
       old.conveyorChainAnimations.length != conveyorChainAnimations.length ||
       old.hiddenCloudIds.length != hiddenCloudIds.length ||
       old.hiddenTileHexes.length != hiddenTileHexes.length ||

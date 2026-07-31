@@ -9,6 +9,8 @@ import 'package:rune_duel/engine/hex_grid.dart';
 
 import '../battle/models/match_config.dart';
 import '../battle/models/solo_battle_setup.dart';
+import '../battle/models/wild_magic_effect.dart' show kDefaultCommunitySeed;
+import '../identity/identity.dart';
 import '../battle/networking/solo_battle_session.dart';
 import '../spells/chapter_asset.dart';
 import 'battle_screen.dart';
@@ -32,17 +34,32 @@ class _SoloPracticeSettingsScreenState
   int _gridRadius = 4;
   bool _sorcererMode = false;
 
+  /// Solo practice runs under the device's own leyline seed word, so wild
+  /// magic behaves here exactly as it will in a duel this player hosts.
+  String _communitySeed = kDefaultCommunitySeed;
+
   static const _hpMin = 8;
   static const _hpMax = 48;
   static const _hpStep = 4;
   static const _gridRadiusMin = 2;
   static const _gridRadiusMax = 6;
 
+  @override
+  void initState() {
+    super.initState();
+    // Guarded — see DuelHostSettingsScreen.initState for why.
+    Identity.loadCommunitySeed().then((seed) {
+      if (!mounted || seed == null) return;
+      setState(() => _communitySeed = seed);
+    }).catchError((_) {});
+  }
+
   MatchConfig get _config => MatchConfig(
         playerHp: _hp,
         gridRadius: _gridRadius,
         maxPlayers: 2,
         sorcererMode: _sorcererMode,
+        communitySeed: _communitySeed,
       );
 
   @override

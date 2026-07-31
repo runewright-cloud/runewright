@@ -291,10 +291,10 @@ Requirements:
   real artifact loadout, exchanged at handshake — in Stage 1, not Stage 2.**
   Verified against `BattleState.toCanonicalBytes()`
   (`battle_state.dart:214-229`): every avatar's full accoutrement list (id, kind,
-  isCoreGem, targetCommitmentHex) is serialized into the per-turn state hash, and
+  targetCommitmentHex) is serialized into the per-turn state hash, and
   `maxMana`/`mana` (`:208-209`, also hashed) are derived directly from the
-  mana-gem count (`solo_battle_setup.dart`'s `manaGems * config.manaGemPoolPerGem`).
-  A placeholder single-core-gem peer loadout diverges from the peer's actual
+  mana-gem count (`solo_battle_setup.dart`'s `config.innateManaPool + manaGems *
+  config.manaGemPoolPerGem`). A placeholder peer loadout diverges from the peer's actual
   chapter on the **very first** state-hash exchange — this is a guaranteed
   lockstep failure, not a theoretical one. Fix is cheap: `ArtifactEntry` already
   has `toJson()`/`fromJson()` (`chapter_asset.dart:36-44`), and an artifact

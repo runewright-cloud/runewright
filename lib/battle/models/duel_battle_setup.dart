@@ -85,7 +85,7 @@ DuelBattleSetup buildDuelBattleState({
   }) {
     final accoutrements = accoutrementsFromArtifacts(artifacts, idPrefix: idPrefix);
     final manaGems = accoutrements.where((a) => a.kind == AccoutrementKind.manaGem).length;
-    final maxMana = manaGems * config.manaGemPoolPerGem;
+    final maxMana = config.innateManaPool + manaGems * config.manaGemPoolPerGem;
     return WizardAvatar(
       playerId: ownerHex,
       ownerPubkeyHex: ownerHex,

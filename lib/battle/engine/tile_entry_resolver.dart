@@ -155,7 +155,7 @@ TileEntryOutcome resolveTileEntry({
 }) {
   bool canEnter(HexCoord hex) {
     if (!state.battlefield.isInBounds(hex)) return false;
-    if (state.tileEffects[hex] is ImpassableTile) return false;
+    if (tileBlocksMovement(state.tileEffects[hex])) return false;
     if (footprintValid != null && !footprintValid(hex)) return false;
     return true;
   }
@@ -251,7 +251,7 @@ MovePathPrediction predictAvatarMove({
     if (!state.battlefield.isInBounds(step)) break;
     if (hexDistance(current, step) != 1) break;
     final effect = state.tileEffects[step];
-    if (effect is ImpassableTile) break;
+    if (tileBlocksMovement(effect)) break;
     final cost = 1 + (effect is SlowTile ? effect.extraMoveCost : 0);
     if (cost > remaining) break;
     remaining -= cost;
@@ -304,7 +304,7 @@ HexCoord? _findLoopExit(
   final candidates = _neighborsOf(loopTile).where((n) {
     if (loop.contains(n)) return false;
     if (!state.battlefield.isInBounds(n)) return false;
-    if (state.tileEffects[n] is ImpassableTile) return false;
+    if (tileBlocksMovement(state.tileEffects[n])) return false;
     if (_isOccupied(state, n)) return false;
     if (footprintValid != null && !footprintValid(n)) return false;
     return true;
@@ -410,7 +410,7 @@ TileEntryOutcome _resolveCrashIntoBlocker({
     for (final n in _neighborsOf(loopTile)) {
       if (loop.contains(n) || !seen.add(n)) continue;
       if (!state.battlefield.isInBounds(n)) continue;
-      if (state.tileEffects[n] is ImpassableTile) continue;
+      if (tileBlocksMovement(state.tileEffects[n])) continue;
       if (footprintValid != null && !footprintValid(n)) continue;
       final occ = _entityAt(state, n);
       if (occ != null) {

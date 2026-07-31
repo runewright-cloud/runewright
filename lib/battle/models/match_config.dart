@@ -12,6 +12,9 @@
 //
 // See docs/BATTLE_PROTOCOL.md §2 (matchConfig message) and §9 (caps/tiers).
 
+import 'package:rune_duel/battle/models/wild_magic_effect.dart'
+    show kDefaultCommunitySeed, normalizeCommunitySeed;
+
 // ── Win condition ─────────────────────────────────────────────────────────────
 
 enum WinCondition {
@@ -33,12 +36,14 @@ class MatchConfig {
     this.rulesetVersion = 2,
     this.tier = 24,
     this.accoutrementLoadoutId,
+    this.innateManaPool = 100,
     this.manaGemPoolPerGem = 100,
     this.manaGemRegenPerGem = 10,
     this.winCondition = WinCondition.lastTeamStanding,
     this.maxPlayers = 2,
     this.experimentalMultiplayer = false,
     this.sorcererMode = false,
+    this.communitySeed = kDefaultCommunitySeed,
   })  : assert(tier == 12 || tier == 24 || tier == 48, 'tier must be 12, 24, or 48'),
         assert(maxPlayers >= 1, 'maxPlayers must be ≥ 1'),
         assert(!experimentalMultiplayer || maxPlayers <= 6, 'LAN cap is 6');
@@ -64,12 +69,24 @@ class MatchConfig {
   // TODO(battle): validate existence; for now just carried as a string.
   final String? accoutrementLoadoutId;
 
-  // ── Mana model knobs (fields only; no balance logic) ──────────────────────
+  // ── Mana model knobs ──────────────────────────────────────────────────────
 
-  /// Max mana pool contribution per Mana Gem. Default 100.
+  /// Every wizard's innate max mana pool, before any Mana Gem. Default 100.
+  ///
+  /// This replaces the old "core gem" — a mandatory, indestructible first gem
+  /// that every wizard was silently handed so they'd have a pool at all. The
+  /// pool is now intrinsic to the wizard; gems are purely optional capacity on
+  /// top, and every gem is destructible. A gemless wizard has no passive regen
+  /// (see [manaGemRegenPerGem]) and refills by meditating.
+  final int innateManaPool;
+
+  /// Max mana pool contribution per Mana Gem, on top of [innateManaPool].
+  /// Default 100.
   final int manaGemPoolPerGem;
 
-  /// Mana regeneration per turn per Mana Gem. Default 10.
+  /// Mana regeneration per turn per Mana Gem. Default 10. There is
+  /// deliberately no innate regen: a wizard carrying no gems regains mana by
+  /// meditating (+25 per phase) rather than passively.
   final int manaGemRegenPerGem;
 
   // TODO(battle): Fire-Air HP-per-mana conversion rate field — add once
@@ -90,6 +107,23 @@ class MatchConfig {
   /// Wire format: adds a 3-byte sorcerer suffix to spell action payloads.
   final bool sorcererMode;
 
+  /// The leyline seed word (design doc: "Community Seed Word") folded into
+  /// every spell's wild-magic hash — see WildMagic.seedHex. Stored RAW as the
+  /// player typed it; normalized at hash time so the settings UI can echo back
+  /// their own spelling.
+  ///
+  /// Both sides must agree or the session aborts, which is exactly right: two
+  /// players from different traditions must explicitly settle on one word
+  /// before dueling, and a pre-wild-magic client fails agreement at the
+  /// handshake rather than silently desyncing mid-match.
+  ///
+  /// Rotating this word is the ratified anti-grinder lever
+  /// (WILD_MAGIC_PLAN.md §2.6): it invalidates every previously ground trigger
+  /// at zero cost and forces a grinder to start over after the new word is
+  /// announced. Recipe (formula) effects are deliberately unaffected, so a
+  /// travelling player's spellbook stays valid under any tradition.
+  final String communitySeed;
+
   // ── Agreement check ───────────────────────────────────────────────────────
 
   /// True when [other] has identical values on every negotiated field.
@@ -99,12 +133,19 @@ class MatchConfig {
       baseRange == other.baseRange &&
       rulesetVersion == other.rulesetVersion &&
       tier == other.tier &&
+      innateManaPool == other.innateManaPool &&
       manaGemPoolPerGem == other.manaGemPoolPerGem &&
       manaGemRegenPerGem == other.manaGemRegenPerGem &&
       winCondition == other.winCondition &&
       maxPlayers == other.maxPlayers &&
       experimentalMultiplayer == other.experimentalMultiplayer &&
-      sorcererMode == other.sorcererMode;
+      sorcererMode == other.sorcererMode &&
+      // Compared NORMALIZED, so two duelists who typed "Rivendell!" and
+      // "rivendell" agree exactly when their spells would hash identically.
+      // A genuine mismatch here means they follow different traditions — the
+      // UI should say so rather than reporting a protocol error.
+      normalizeCommunitySeed(communitySeed) ==
+          normalizeCommunitySeed(other.communitySeed);
 
   // ── Serialisation (wire + on-disk) ────────────────────────────────────────
 
@@ -115,12 +156,14 @@ class MatchConfig {
         'rulesetVersion': rulesetVersion,
         'tier': tier,
         if (accoutrementLoadoutId != null) 'accoutrementLoadoutId': accoutrementLoadoutId,
+        'innateManaPool': innateManaPool,
         'manaGemPoolPerGem': manaGemPoolPerGem,
         'manaGemRegenPerGem': manaGemRegenPerGem,
         'winCondition': winCondition.name,
         'maxPlayers': maxPlayers,
         'experimentalMultiplayer': experimentalMultiplayer,
         'sorcererMode': sorcererMode,
+        'communitySeed': communitySeed,
       };
 
   static MatchConfig fromJson(Map<String, dynamic> j) => MatchConfig(
@@ -130,6 +173,7 @@ class MatchConfig {
         rulesetVersion: j['rulesetVersion'] as int? ?? 2,
         tier: j['tier'] as int? ?? 24,
         accoutrementLoadoutId: j['accoutrementLoadoutId'] as String?,
+        innateManaPool: j['innateManaPool'] as int? ?? 100,
         manaGemPoolPerGem: j['manaGemPoolPerGem'] as int? ?? 100,
         manaGemRegenPerGem: j['manaGemRegenPerGem'] as int? ?? 10,
         winCondition: WinCondition.values.firstWhere(
@@ -139,5 +183,10 @@ class MatchConfig {
         maxPlayers: j['maxPlayers'] as int? ?? 2,
         experimentalMultiplayer: j['experimentalMultiplayer'] as bool? ?? false,
         sorcererMode: j['sorcererMode'] as bool? ?? false,
+        // A pre-wild-magic peer omits this field entirely and lands on
+        // 'universal'. If they are actually running an unpatched client, the
+        // rest of the handshake (toCanonicalBytes' new suffix) diverges anyway
+        // — see WILD_MAGIC_PLAN.md §11.
+        communitySeed: j['communitySeed'] as String? ?? kDefaultCommunitySeed,
       );
 }

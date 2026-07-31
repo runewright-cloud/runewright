@@ -23,6 +23,14 @@ abstract final class StatusEffectId {
   // modifiers: {'freeExtraTiles': int}
   static const highLiquidity = 'highLiquidity';
 
+  // Flying (wild magic, Updraft — row 2 Air): the bearer ignores terrain
+  // entirely while moving — ChasmTile, ImpassableTile, FloorIsLava, SlowTile's
+  // extra cost and mana drain, IceTile sliding, and ConveyorTile pushes. Same
+  // semantics as SummonAbility.flying / ignoresTerrain already carries for
+  // spirit minions, and the `flying:` parameter resolveTileEntry already takes.
+  // No modifiers.
+  static const flying = 'flying';
+
   // ── Spell range ───────────────────────────────────────────────────────────
   // modifiers: {'rangeDelta': ±int}
   static const rangeUp = 'rangeUp';

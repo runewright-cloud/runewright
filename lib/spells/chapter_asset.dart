@@ -225,6 +225,16 @@ class ChapterAsset {
     return file;
   }
 
+  /// Deletes this chapter's persisted JSON file. Silently no-ops if already
+  /// gone. Does NOT clear [loadActiveChapterId] if this happened to be the
+  /// active chapter — callers (e.g. apprenticeship abandonment,
+  /// docs/MASTER_APPRENTICE_PLAN.md §5.8) are responsible for that.
+  Future<void> delete() async {
+    final dir = await _chaptersDir();
+    final file = File('${dir.path}/$id.json');
+    if (await file.exists()) await file.delete();
+  }
+
   static Future<ChapterAsset?> loadById(String id) async {
     final dir = await _chaptersDir();
     final file = File('${dir.path}/$id.json');

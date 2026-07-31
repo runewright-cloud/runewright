@@ -262,7 +262,7 @@ The 16 base effect types, mapped to second-third element combinations (first ele
 | Earth-Water | Tile Modification [may place second effect in adjacent tile] | Floor is Lava (2 damage to pass through) | Impassable terrain that also blocks spells from passing through for line of sight| Costs 2 movement to enter and drains mana on entry |Conveyor tiles force-move whatever stands on them; direction chosen at effect resolution and permanent|
 | Earth-Air | Range Modification | Penetrating: spells can't be blocked by walls; 1 damage to anything in hexes en route, 2[3] turns | Reduce spell range by 1 for 3[4] turns | Turbulent: next spell fires in intended direction but range randomized 1–max, 3[4] turns | Increase spell range by 1 for 2[3] turns |
 | Water-Fire |Clouds, tiles covered by clouds can only be targeted by adjacent entities entities in clouds can only target adjacent tiles. Clouds are radius 1 for 2[3] turns|Entities entering or ending turn in cloud take 1 damage| Entities that leave this cloud may still only target adjacent tiles for 2 additional turns (is a status effect)| Cloud radius 2 | Cloud will move 1 tile during summon phase every turn to try and center itself on closest enemy entity, preferring players over summons|
-| Water-Earth | Artifacts Interaction | Burn Random Player Artifact to deal 1[2] damage *(random target via joint entropy; can't hit core gem; burning a counter charm reveals its target)* | Summon 1[2] Rod of Spreading| Summon 1[2] mana gems | Summon 1[2] bookmarks |
+| Water-Earth | Artifacts Interaction | Burn Random Player Artifact to deal 1[2] damage *(random target via joint entropy; any artifact is fair game, including the last mana gem; burning a counter charm reveals its target)* | Summon 1[2] Rod of Spreading| Summon 1[2] mana gems | Summon 1[2] bookmarks |
 | Water-Air | Illusions |Copy target summon, it attacks aggressively and only has 1 hitpoint| Copy Terrain and expand it to all adjacent tiles without terrain already, the copies have 1 hitpoint.| Create 3 Illusions of the wizard spaced evenly in the surrounding radius. If the wizard is subjected to a spell or attack, on a chance equal to 1/number of illusions remaining, the wizard is hit with the effect, otherwise destroy a random illusion and move the wizard to that tile.| Non wizard entity becomes an illusion with 1 hit point.|
 | Air-Fire | Multiplier cycles | Your next air effect is twice [thrice] as powerful |Your next fire effect is twice[thrice] as powerful| Your next earth effect is twice [thrice] as powerful | Your next water effect is twice [thrice] as powerful|
 | Air-Earth | melee attack Interaction, 2[3] turns | Stacking fire DoT, damage = turns remaining, 2 turns at a time | Target move speed reduced by 1 | Target status effects lose a turn | Bonus damage equal to spaces moved toward target |
@@ -405,10 +405,52 @@ The inscription proof guarantees a spell's outputs came from *some* valid grid e
 After proof verification, both players compute deterministically:
 
 ```
-seed = SHA256(commitment || border_activations || trajectory || community_seed)
+wild_magic_seed_hex = lowercase_hex( SHA256(
+      commitment                        // 32 bytes, big-endian raw Field bytes
+                                        //   (public-input field index 3)
+    ‖ uint8(T)                          // 1 byte, 1..48
+    ‖ utf8(normalized_community_seed)   // variable length, LAST — so it needs
+                                        //   no length prefix
+) )
 ```
 
-This hash is scanned for wild-magic patterns (see Wild Magic).
+This hash is scanned for wild-magic patterns (see Wild Magic). It is a
+cross-client contract, not prose: both devices must produce byte-identical
+output or the per-turn state hash diverges. `lib/battle/engine/wild_magic.dart`
+is the single implementation; `test/battle/engine/wild_magic_test.dart` pins
+fixed vectors.
+
+> **`[SIMPLIFIED — 2026-07-30]`** This formula previously read
+> `SHA256(commitment || border_activations || trajectory || community_seed)`.
+> `border_activations` and `dominance_trajectory` are both pure, deterministic
+> functions of `(grid, T)` — exactly as `commitment` already is — so hashing
+> them added preimage bytes without adding distinguishing power: they cannot
+> separate two things `commitment` and `T` do not already separate. Dropping
+> them preserves the invariant that matters (same grid + same T + same seed ⇒
+> same hash, always) with a smaller fixed-size preimage.
+>
+> **`T` is an explicit field and must never be inferred** from trajectory
+> length or from border activations. That is what guarantees kin-spell
+> disambiguation — the same grid inscribed at T=8 and T=14 gets two independent
+> wild-magic rolls — even in the edge case where the CA's border activity has
+> saturated and produces identical output for two different T values. Pin it
+> directly; don't rely on the CA output happening to vary.
+>
+> The preimage is also trivially **tier-independent**: nothing in it is a
+> function of `tier_max`, so the same spell hashes alike in a tier-24 and a
+> tier-48 match by construction.
+
+> **`[RESOLVED — 2026-07-30]` Hashing the PROOF BYTES instead was evaluated and
+> rejected.** It would force a trigger-grinder to generate a real proof per
+> candidate instead of just running the stepper — but bb's UltraHonk prover is
+> not byte-deterministic (ZK blinding, not disableable through `noir_rs`'s
+> poseidon2 entry point; see `docs/M4_findings.md`), so re-inscribing one grid
+> ~1,150 times would put any Row-3 effect on an already-perfect spell,
+> undetectably. Hashing the *statement* is the stronger design precisely
+> because it welds the wild magic to the **grid**: a grinder finds a trigger
+> quickly, but the grid they find is random, and a *good* spell that also
+> carries a trigger means searching the intersection. The ratified mitigation
+> is the community seed word (below), not a costlier hash.
 
 ### Community Seed Word
 
@@ -417,7 +459,22 @@ An optional word factored into the wild-magic hash, creating local magical tradi
 - Recipe effects remain universal across all communities (players travel without invalidating their spellbook for recipe purposes)
 - Local communities develop unique wild-magic optimizations as "home-turf advantage"
 - Default seed: `"universal"`; communities choose their own; tournaments announce a seed at event start for equal footing
-- Case-insensitive, stripped of whitespace and punctuation before hashing
+- Case-insensitive, stripped of whitespace and punctuation before hashing; a
+  seed that normalizes to the empty string falls back to `"universal"`
+
+> **`[RATIFIED — 2026-07-30]` This is the anti-grinder mechanism, not just
+> flavour.** Public-input hashing is cheap to grind (see Spell Effect Hash), and
+> the seed word is the *only* lever a community has against a foundry warping
+> its local meta: **changing the word invalidates every previously ground
+> trigger at zero cost**, and a grinder cannot start until the new word is
+> announced. That only works if changing it is easy and obvious, so it is built
+> as a first-class control (Settings → Leyline Seed Word, and the host's
+> pre-duel settings), changeable at any time, with a warning that every spell in
+> the library finds different wild magic afterwards. Recipe effects are
+> untouched, so a travelling player's spellbook stays valid under any tradition.
+>
+> **Naming:** the in-world register is the **leyline seed word** (used in all UI
+> copy); the code identifier stays `communitySeed`.
 
 ---
 
@@ -507,7 +564,8 @@ Players may attach a spell name and image shown when the spell is used in battle
 ### artifacts
 
 Select 12 artifacts across 4 element-typed kinds:
-- **Water — Mana Gems:** first selected is the indestructible **core gem**. Each gem provides 10 mana/turn and +100 max mana pool.
+- **Water — Mana Gems:** each gem provides 10 mana/turn and +100 max mana pool. Every gem is destructible.
+  - **`[RESOLVED — 2026-07-30]` The mana pool is innate; there is no core gem.** Every wizard starts with an innate **100 max mana** whether or not they carry a gem, so no artifact slot is spent on the privilege of having a pool at all — a gemless wizard is a legal (if slow) build, and all 12 slots are genuinely free. The old "first gem is the indestructible core gem" rule is gone: burn effects can now take a wizard's *last* gem. **Regen is still gem-only** — the innate pool comes with **no passive regeneration**. A gemless wizard refills by **meditating** (+25 per phase, up to +50/turn), which is the deliberate trade: capacity is free, throughput is bought with gems or with your turn.
 - **Fire — Counter Charms:** name a known spell (by its Poseidon hash = its initial grid state). If that spell is cast during the battle it fizzles — action wasted, mana returned. The countered spell isn't publicly revealed until it activates.
   - **`[RESOLVED]` Targeting rule:** a counter charm fires against **any spell sharing the same initial grid-state hash**, regardless of owner, T, loan status, or custody chain. Requires commit-reveal with salt (above).
   - a counter charm keyed to the original commitment also fizzles a *copied* cast of it.
@@ -515,7 +573,7 @@ Select 12 artifacts across 4 element-typed kinds:
 - **Earth — Bookmarks:** each bookmark tracks a spell within the spellbook no matter how it hides; once used it auto-finds a new random spell to track. Players toggle between bookmarked spells for casting (effectively hand size).
 
 > **`[RESOLVED — v2.3 review §1 + your ruling]` No dedicated artifact-defense, by choice; Burn-artifacts interactions specified.** The rod's redefinition (from "neutralizes spells that interact with artifacts" to "nullifies one turn of a status effect") removed the only answer to artifact attacks — at the same revision that added Water-Earth's **Burn Random Player artifacts**. **This is intentional:** a single attack vector on artifacts isn't worth dedicating a quarter of all artifact slots to defending them, and the burn is fine *unguarded* because its random targeting (EV ≈ 1/12 against any specific artifact) makes it **diffuse attrition that punishes hoarding twelve eggs in one basket**, not a "deny my opponent all mana" denial strategy. Its real role is letting a drawn-out game eventually grind through a killer counter charm. Required interaction spec:
-> - **Cannot hit the core gem** (indestructible by definition).
+> - **Every artifact is a legal target**, including a wizard's last mana gem — the core gem carve-out was removed 2026-07-30 along with the core gem itself. Losing your last gem costs 100 max pool and all passive regen, but never the innate 100 pool.
 > - **Burning a counter charm reveals what spell it was countering** — a great consolation prize and information leak.
 > - **Burn target is drawn from joint commit-reveal entropy** — otherwise the victim's client quietly picks its own least-valuable artifact.
 > - **`[DECISION — needs Soren]` "Absorption totem"** (named in the Water-Earth/Earth effect cell) is currently undefined — either define it (a deployable that absorbs the next artifact-targeting effect?) or rename the cell to summon an Absorption Rod.
@@ -527,9 +585,9 @@ Select 12 artifacts across 4 element-typed kinds:
 > mana_cost = ceil( starting_active_cells × 1.25^( max(0, T − 4) ) )
 > ```
 > - **4 free turns:** the exponent is 0 for `T ≤ 4`. Four generations is the fastest the border (ring 12) can first be reached from the inscribable edge (ring 8), crossing the un-inscribable buffer rings 9–11 one per generation — so no formula can form before T=4, and no spell is penalized for the minimum viable run-up. *(Golden test vectors should still confirm the exact dominance-onset generation in `stepper.dart`; T−4 is the design intent.)*
-> - **base 1.25 (intentionally steep):** the curve is *meant* to make big multi-effect spells a periodic payoff, not a per-turn option. A full mana loadout caps at **1,200 pool / 120 per turn**.
+> - **base 1.25 (intentionally steep):** the curve is *meant* to make big multi-effect spells a periodic payoff, not a per-turn option. A full mana loadout (12 gems on top of the innate 100) caps at **1,300 pool / 120 per turn**; the floor is the gemless **100 pool / 0 per turn**, refilled only by meditating.
 >
-> Reference cost for a 10-cell rune (vs. that 1,200 / 120 loadout):
+> Reference cost for a 10-cell rune (vs. that 1,300 / 120 loadout):
 >
 > | T | mana cost | ≈ full-regen turns | ≈ % of max pool |
 > |---|---|---|---|
@@ -537,10 +595,10 @@ Select 12 artifacts across 4 element-typed kinds:
 > | 5 | 13 | 0.1 | 1% |
 > | 7 | 20 | 0.2 | 2% |
 > | 10 | 39 | 0.3 | 3% |
-> | 15 | 117 | 1.0 | 10% |
-> | 20 | 356 | 3.0 | 30% |
+> | 15 | 117 | 1.0 | 9% |
+> | 20 | 356 | 3.0 | 27% |
 >
-> So a T=20, multi-formula spell runs ~30% of a maxed pool — castable, but only after **mana ramping or efficient chain-discount building**, and not every turn. That is the design goal. (A community wanting a gentler local variant can drop the base toward 1.15–1.20, but **1.25 is canonical.**) `[TODO — playtest]` confirm it feels like "ramp toward a big spell," not "locked out of long sims."
+> So a T=20, multi-formula spell runs ~27% of a maxed pool — castable, but only after **mana ramping or efficient chain-discount building**, and not every turn. That is the design goal. (A community wanting a gentler local variant can drop the base toward 1.15–1.20, but **1.25 is canonical.**) `[TODO — playtest]` confirm it feels like "ramp toward a big spell," not "locked out of long sims."
 
 > **`[RESOLVED — v2.3 discussion]` Why exponential, and what the chain actually buys.** The exponential is *not* just a cost — it's a **cognitive-load throttle on effect count**. A turn where ten formula-effects resolve in CA order, interacting with status effects, terrain, summons, and wild magic, is homework for *both* players, every turn, across a café table; a linear cost would make those multi-formula monsters routine, and routine is exactly what they must not be. The chain discount then does something elegant: a maxed chain (~65% off at length 10) offsets roughly **4–5 generations** of exponential growth (`1.25^4.6 ≈ 2.9 ≈ 1/0.35`), so **chains are functionally the currency that purchases T**. A big spell isn't priced in mana, it's priced in *turns of disciplined same-affinity play beforehand* — a far more interesting cost than a number. (And one extra active cell multiplies the whole `1.25^T` term, so a counter-dodging burn cell costs dozens of mana on a long spell but pocket change on a short one — the exponential makes *famous long spells specifically* expensive to keep safe. Good.)
 
@@ -586,15 +644,59 @@ A parallel-to-recipes effect system based on hash-pattern scanning.
 > **Design intent — wild magic is global and double-edged.** Unlike recipe effects (which place onto a single committed tile), wild-magic effects are designed to **mostly affect all players, minions, and the whole field at once, wherever they are** — they ignore the tile-targeting rule entirely. They are a *double-edged sword*: the same "all mana bars fill" or "everyone teleports" hits you and your opponent alike. The skill of a wild-magic build is not aiming it but being **positioned and prepared to benefit from the symmetric effect more than your opponent does** (e.g. triggering a board-wide teleport when you're the one who wanted to escape a corner). Build *around* the double edge; don't expect to point it.
 
 ### Eligibility
+
+> **`[RATIFIED — 2026-07-30]` Eligibility is a tally of COMPLETED FORMULA
+> AFFINITIES** — count the first entry of each completed formula triplet; the
+> most frequent element wins, and on a tie every tied element is eligible. Not
+> `border_activations`, not generations-dominant. This reuses the certified
+> `ParsedFormula` list the trajectory parser already produces, so it adds no
+> new certified surface. A **zero-formula spell has no eligible element** and
+> therefore fires no wild magic, which lands on "void effects entirely removed"
+> for free, with no special case.
+
 Determined by the spell's overall dominant element (cumulative across all formulas):
 - Single-affinity spells: scan the hash for that element's patterns
 - Perfectly balanced spells (multiple elements equally dominant): eligible for *all* balanced elements' patterns simultaneously — the "wild magic specialist" archetype
 - **Void eligibility `[RESOLVED]`:** Void effects entirely removed for now
 
 ### Trigger Patterns
-Scan the spell-hash hex string for two pattern types per element:
-- **Repeating numerals** (For example 111, 222, AAAA): assigned per element, no overlap
-- **Ascending runs** (3456, F012, BCDE): F wraps to 0; first numeral must be the element's designated trigger
+
+> **`[RATIFIED — 2026-07-30]` The table is LITERAL.** The 64-char hex hash is
+> scanned for the same three patterns regardless of element; **eligibility
+> selects which COLUMN(s) of the table you read**, not which digits you look
+> for. The earlier "assigned per element, no overlap" / "first numeral must be
+> the element's designated trigger" language was dead text from a previous
+> revision and has been struck.
+
+| Row | Pattern | Fires when | Bracket steps | ≈ odds per spell |
+|---|---|---|---|---|
+| 1 | `000` | longest **maximal** run of `'0'` has length ≥ 3 | `len − 3` | 1.4% (1 in 70) |
+| 2 | `111` | longest **maximal** run of `'1'` has length ≥ 3 | `len − 3` | 1.4% (1 in 70) |
+| 3 | `0123` | longest **maximal** ascending run **starting at `'0'`** has length ≥ 4 | `len − 4` (unused) | 0.087% (1 in 1,150) |
+
+An ascending run is a **maximal** sequence where each character equals the
+previous plus one **mod 16** — `F` wraps to `0`, and `0123456789abcdef0` is a
+valid run of length 17. Maximality is load-bearing: in `def012` the maximal
+ascending run starts at `d`, so it does **not** qualify even though `012`
+appears inside it. Find maximal runs first, then filter on the start character.
+Likewise `0000` is one run of 4, not two overlapping runs of 3.
+
+Each row fires **at most once** per cast, taking the **longest** qualifying
+occurrence — two `000` runs do not double a global effect, because bracket
+scaling is meant to be the only power axis.
+
+> **`[RATIFIED — 2026-07-30]` Row 3's trigger is `0123`, down from `012345`.**
+> Soren: *"I intended those effects to be rare, but probably not that rare."*
+> Pinning the start digit is worth exactly one length step (both are a factor
+> of 16), so this is one knob, not two. At 1-in-1,150 a 20-spell chapter has a
+> ~1.7% chance of holding a Row 3, so someone in a dozen-player community has
+> one — "legendary but real". At the old `012345` (1 in 300,000) nobody would
+> ever see one without tooling. The knob barely moves a grinder; what it
+> controls is whether a hand-crafter ever meets these four effects.
+>
+> Amplifier worth knowing: **kin spells each get an independent roll**, since
+> `T` is its own preimage field. A player who inscribes a favourite grid at
+> several lengths is buying extra tickets.
 
 ### Wild Magic Effects (intentionally short while core effects are playtested)
 Sequences continuing past the minimum 3 scale per the brackets.
@@ -603,10 +705,8 @@ Sequences continuing past the minimum 3 scale per the brackets.
 |---|---|---|---|---|
 | 000 | Burning Hot - All spell effects next turn deal +1 fire damage [+1 damage per effect] | Mountains - All adjacent cells become earth walls 2 turns [+1 turn] | Mana Flood - All mana bars immediately fill | Zephyr - All players and minions teleported to random locations |
 | 111 |Spontaneous combustion - Each player has another [+1] bookmarked spell immediately go off without mana cost targeting a random in range tile |Chasm - A randomly drawn line bisects the battlefield.  It is impassible (without flying), and indestructible for 2[+1] turns, but has no bearing on targeting.| Glacier - Tiles without existing terrain all become Ice tiles for 2 [+1] turns, when moving onto ice a players continue moving that direction.| Updraft - All players gain flying for 2 [+1] turns.|
-|---|---|---|---|---|
-012345| Phoenix - all players gain "The next time they would die, the respawn with 1 hitpoint instead"|Statuesque - All players return to full health and mana each turn, the effect is lost if they move or cast a spell.|
+| `0123` | Phoenix - all players gain "The next time they would die, the respawn with 1 hitpoint instead"|Statuesque - All players return to full health and mana each turn, the effect is lost if they move or cast a spell.|Rippling Reflections - Going forward upon spell resolution, every spell has a 50% chance to fizzle and do nothing and a 50% chance to resolve twice. Every time a spell fizzles the odds shift 10% (e.g. 40 60, 30 70 etc...) towards doubling instead of fizzles and vice versa.| Scattered Gusts - Going forward every time a player casts a spell all their bookmarks blown out of place and they randomly find a new set of spells to mark|
 
-T
 > **`[TODO — playtest]` Wild-magic table is a stub** by design. When expanding, remember (review §6) that wild magic is *locally* optimal via seed words — a spell tuned for one community's seed is mistuned for another's, which is what makes traveling wizards mechanically real. Protect that property.
 >
 > **`[RESOLVED — Chaos column deleted]`** Chaos was a 13-state cell type the 2-state pivot removed, and nothing routed to it (eligibility goes only to the four element affinities or to void). Deleted rather than given a contrived trigger: a balanced spell already fires **up to four element wild-magic effects at once**, which is reward enough for perfect balance — no separate Chaos domain needed.
@@ -753,7 +853,7 @@ Optional future feature: maps with tile-modifying terrain present from the start
 
 ---
 
-## Multi-Player (3+ Players)
+## Multi-Player (3-6 Players)
 
 > Initial pass. Wizard-mode mechanics scale cleanly; resolved parts are `[APPLIED — confirm]`, with win-condition / teams / N-way records flagged as future-session work. (Not required for first playtest.)
 

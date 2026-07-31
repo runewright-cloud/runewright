@@ -66,6 +66,15 @@ const kRunewrightTradeServiceType = '_rw-trade._tcp';
 /// characters and would fail the same validation.
 const kRunewrightSyncArtServiceType = '_rw-syncart._tcp';
 
+/// Distinct service type for Master/Apprentice pairing
+/// (docs/MASTER_APPRENTICE_PLAN.md §5.3) — kept separate from the three
+/// above so a device browsing for a duel, trade, or sync-art peer never
+/// lists an apprenticeship-only peer, and vice versa.
+///
+/// `rw-appr` is 7 characters, well inside the same 15-character label cap
+/// that made `runewright-trade` fail validation.
+const kRunewrightApprenticeServiceType = '_rw-appr._tcp';
+
 /// Advertises this device as a duel host at [port] (the port a prior
 /// `LanSocketTransport.bind()` returned). Returns the active
 /// `Registration` -- pass it to [stopAdvertisingDuelHost] when the host

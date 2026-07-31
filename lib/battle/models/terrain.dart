@@ -8,8 +8,15 @@
 //   SlowTile       — Water flavor: costs extra movement + mana drain on entry
 //   ConveyorTile   — Air flavor: force-moves occupants one tile per turn
 //
-// Tile effects are permanent (no turn limit); they persist until removed by
-// another effect or match end.
+// Tile effects placed by spells are permanent (no turn limit); they persist
+// until removed by another effect or match end. The two WILD-MAGIC variants
+// below (IceTile, ChasmTile) are the exception: they expire, and their expiry
+// turn lives in BattleState.expiringTiles rather than on the tile, so every
+// TileEffect stays immutable.
+//
+//   IceTile   — Glacier (wild magic, row 2 Water): entering slides you on
+//   ChasmTile — Chasm   (wild magic, row 2 Earth): blocks movement, NOT
+//                        targeting; indestructible while it lives
 //
 // CloudObject variants (placed by Water-Fire / clouds spells; design doc v3.0
 // Effect Table, Water-Fire row):
@@ -87,6 +94,54 @@ class ConveyorTile extends TileEffect {
 
   ConveyorTile withDirection(HexCoord dir) => ConveyorTile(direction: dir);
 }
+
+/// Wild magic, Glacier (row 2, Water): "tiles without existing terrain all
+/// become Ice tiles for 2 [+1] turns; when moving onto ice a player continues
+/// moving that direction."
+///
+/// The slide continues in the entry direction, FREE of movement budget, until
+/// the next tile is out of bounds, occupied, or not ice (WILD_MAGIC_PLAN.md
+/// A12 — mirroring ConveyorTile's free cascading push, the closest existing
+/// precedent). Flying entities do not slide.
+///
+/// Expiry lives in BattleState.expiringTiles, not here.
+class IceTile extends TileEffect {
+  const IceTile();
+}
+
+/// Wild magic, Chasm (row 2, Earth): "a randomly drawn line bisects the
+/// battlefield. It is impassible (without flying), and indestructible for
+/// 2[+1] turns, but has no bearing on targeting."
+///
+/// Deliberately NOT an [ImpassableTile] (WILD_MAGIC_PLAN.md A9): that class
+/// blocks line-of-sight and is destructible, and a chasm is neither. Every
+/// consumer of ImpassableTile had to be audited and decided individually —
+/// movement yes, targeting no, terrain destruction no. If you add a new
+/// ImpassableTile consumer, make the same decision for this class explicitly.
+///
+/// Expiry lives in BattleState.expiringTiles, not here.
+class ChasmTile extends TileEffect {
+  const ChasmTile();
+}
+
+// ── Shared terrain predicates ─────────────────────────────────────────────────
+
+/// True when a non-flying entity may not enter a tile carrying [e].
+///
+/// Use this at EVERY movement, push, and placement site rather than testing
+/// `is ImpassableTile` directly — that is what makes "which tiles block?" a
+/// single decision. Targeting and line-of-sight sites deliberately do NOT use
+/// it: a [ChasmTile] blocks movement but has *no bearing on targeting*
+/// (design v3.0 §Wild Magic), so a spell may be aimed across a chasm even
+/// though nobody can walk over it.
+bool tileBlocksMovement(TileEffect? e) => e is ImpassableTile || e is ChasmTile;
+
+/// True when [e] must not be removed or overwritten by another effect.
+///
+/// A chasm is indestructible for as long as it lives (it expires on its own
+/// via BattleState.expiringTiles). Terrain-destruction effects and tile
+/// placements both check this.
+bool tileIsIndestructible(TileEffect? e) => e is ChasmTile;
 
 // ── Cloud object ──────────────────────────────────────────────────────────────
 

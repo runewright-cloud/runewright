@@ -277,8 +277,8 @@ class SpellInteractionEffect extends SpellEffect {
 ///   Earth affinity: burn [burnLife] HP; reactivate [reactivateSpellCount]
 ///                   withered hand spell(s)
 ///   Water affinity: burn [burnMana] mana; gain [gainLife] HP
-///   Air affinity:   burn [burnArtifactCount] random artifact(s) (not the
-///                   core gem); gain [gainMana] mana
+///   Air affinity:   burn [burnArtifactCount] random artifact(s) — any of
+///                   them, including the last mana gem; gain [gainMana] mana
 class FuelTransmutationEffect extends SpellEffect {
   const FuelTransmutationEffect({
     required this.affinity,

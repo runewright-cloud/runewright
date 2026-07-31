@@ -203,6 +203,12 @@ class SoloBattleSession implements BattleTurnSession {
   Future<Uint8List> exchangeSpellRevealOpen(Uint8List ourFrame) async =>
       Uint8List.fromList([0x00]);
 
+  /// No peer exists in solo/practice, so there is nothing to reveal and
+  /// nothing to await. Null tells ForcedCast to resolve only the local
+  /// player's picks — see that method's doc comment.
+  @override
+  Future<Uint8List?> exchangeForcedReveal(Uint8List ourFrame) async => null;
+
   static Uint8List _be4(int v) => Uint8List(4)
     ..[0] = (v >> 24) & 0xFF
     ..[1] = (v >> 16) & 0xFF

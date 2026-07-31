@@ -270,6 +270,20 @@ class EffectApplicator {
   // ── Damage (Fire-Fire) ────────────────────────────────────────────────────
 
   static void _applyDamage(ApplyContext ctx, DamageEffect e) {
+    // Burning Hot (wild magic, row 1 Fire): "all spell effects next turn deal
+    // +1 fire damage [+1 damage per effect]". Applied here, at the single
+    // damage chokepoint, so it lands once per damage EFFECT — a three-formula
+    // spell gets it three times — and on EVERY player's spells, caster
+    // included (wild magic is symmetric).
+    final bonus = ctx.state.wildMagic.spellDamageBonusFor(ctx.state.turnNumber);
+    if (bonus > 0) {
+      e = DamageEffect(
+        amount: e.amount + bonus,
+        kind: e.kind,
+        splashRadius: e.splashRadius,
+        knockback: e.knockback,
+      );
+    }
     switch (e.kind) {
       case DamageKind.direct:
         for (final av in _avatarsAt(ctx.state, ctx.targetTile)) {
@@ -532,6 +546,12 @@ class EffectApplicator {
   // ── Tile Modification (Earth-Water) ──────────────────────────────────────
 
   static void _applyTileModification(ApplyContext ctx, TileModificationEffect e) {
+    // A live chasm is indestructible for its duration (wild magic, row 2
+    // Earth): it must not be removed by a terrain-destruction effect, nor
+    // paved over by another tile effect landing on it. Silently no-ops rather
+    // than erroring — the caster aimed at a legal tile, the ground just
+    // refused the spell.
+    if (tileIsIndestructible(ctx.state.tileEffects[ctx.targetTile])) return;
     var effect = e.tileEffect;
     if (effect is ConveyorTile && !effect.directionSet) {
       final dir = ctx.chosenConveyorDirection ?? _randomDirection(ctx.rng);
@@ -610,7 +630,7 @@ class EffectApplicator {
             final kind = pool[ctx.rng.nextInt(pool.length)];
             av.accoutrements.add(Accoutrement(id: _uid(ctx, 'ft'), kind: kind));
             if (kind == AccoutrementKind.manaGem) {
-              av.maxMana = av.maxManaFromGems;
+              av.maxMana = av.maxManaFor(ctx.state.config);
             }
           }
 
@@ -623,7 +643,10 @@ class EffectApplicator {
           av.hp += e.gainLife;
 
         case SpellAffinity.air:
-          final burnable = av.accoutrements.where((a) => !a.isCoreGem).toList();
+          // Every artifact is burnable — there is no indestructible core gem
+          // any more, so a wizard's last gem can be taken. Recompute maxMana
+          // afterwards or the pool would keep the burned gem's capacity.
+          final burnable = av.accoutrements.toList();
           var burned = 0;
           while (burned < e.burnArtifactCount && burnable.isNotEmpty) {
             final idx = ctx.rng.nextInt(burnable.length);
@@ -631,6 +654,7 @@ class EffectApplicator {
             av.accoutrements.remove(burnTarget);
             burned++;
           }
+          _syncMaxMana(av, ctx);
           av.mana = (av.mana + e.gainMana).clamp(0, av.maxMana);
       }
     }
@@ -681,6 +705,15 @@ class EffectApplicator {
     }
   }
 
+  /// Recomputes [av]'s stored [WizardAvatar.maxMana] from its current gem
+  /// count and clamps current mana into the new pool. Call after any effect
+  /// that adds or removes a mana gem: maxMana is hashed state, not a live
+  /// derivation, so a stale value desyncs the two clients' state hashes.
+  static void _syncMaxMana(WizardAvatar av, ApplyContext ctx) {
+    av.maxMana = av.maxManaFor(ctx.state.config);
+    if (av.mana > av.maxMana) av.mana = av.maxMana;
+  }
+
   // ── Artifacts Interaction (Water-Earth) ───────────────────────────────────
 
   static void _applyArtifactsInteraction(ApplyContext ctx, ArtifactsInteractionEffect e) {
@@ -692,10 +725,9 @@ class EffectApplicator {
           if (_prepareForHit(av, ctx) == null) continue; // redirected onto an illusion decoy
           int burned = 0;
           while (burned < e.count) {
-            // Find burnable accoutrements (not core gems).
-            final burnable = av.accoutrements
-                .where((a) => !a.isCoreGem)
-                .toList();
+            // Every artifact is burnable — the indestructible core gem is
+            // gone, so an unlucky victim can lose their last mana gem.
+            final burnable = av.accoutrements.toList();
             if (burnable.isEmpty) break;
             final idx = ctx.rng.nextInt(burnable.length);
             final target = burnable[idx];
@@ -706,6 +738,8 @@ class EffectApplicator {
             // is simply that the accoutrement is removed.)
             burned++;
           }
+          // A burned gem shrinks the pool; see _syncMaxMana.
+          _syncMaxMana(av, ctx);
         }
 
       case SpellAffinity.earth:
@@ -732,7 +766,7 @@ class EffectApplicator {
               kind: AccoutrementKind.manaGem,
             ));
             // Update max mana to reflect the new gem.
-            av.maxMana = av.maxManaFromGems;
+            av.maxMana = av.maxManaFor(ctx.state.config);
           }
         }
 
@@ -1088,7 +1122,7 @@ class EffectApplicator {
       // Bounce: step back one tile along the path they walked this turn.
       final bounceTarget = path[path.length - 2];
       if (ctx.state.battlefield.isInBounds(bounceTarget) &&
-          ctx.state.tileEffects[bounceTarget] is! ImpassableTile) {
+          !tileBlocksMovement(ctx.state.tileEffects[bounceTarget])) {
         landed = bounceTarget;
       }
     }
@@ -1098,7 +1132,7 @@ class EffectApplicator {
       if (dir == null) return null;
       final pushed = HexCoord(av.position.q + dir.q, av.position.r + dir.r);
       if (!ctx.state.battlefield.isInBounds(pushed)) return null;
-      if (ctx.state.tileEffects[pushed] is ImpassableTile) return null;
+      if (tileBlocksMovement(ctx.state.tileEffects[pushed])) return null;
       return pushed;
     }();
     if (landed == null) return;
@@ -1132,7 +1166,7 @@ class EffectApplicator {
     if (dir == null) return;
     final pushed = HexCoord(m.position.q + dir.q, m.position.r + dir.r);
     if (!ctx.state.battlefield.isInBounds(pushed)) return;
-    if (ctx.state.tileEffects[pushed] is ImpassableTile) return;
+    if (tileBlocksMovement(ctx.state.tileEffects[pushed])) return;
 
     final flying = m.abilities.contains(SummonAbility.flying);
     final outcome = resolveTileEntry(
@@ -1162,7 +1196,7 @@ class EffectApplicator {
     final flying = m.abilities.contains(SummonAbility.flying);
     for (final t in footprintFor(center, m.abilities, m.sizeBonus)) {
       if (!state.battlefield.isInBounds(t)) return false;
-      if (!flying && state.tileEffects[t] is ImpassableTile) return false;
+      if (!flying && tileBlocksMovement(state.tileEffects[t])) return false;
     }
     return true;
   }
@@ -1241,7 +1275,7 @@ class EffectApplicator {
   }
 
   static bool _isTileOpen(BattleState state, HexCoord hex) {
-    if (state.tileEffects[hex] is ImpassableTile) return false;
+    if (tileBlocksMovement(state.tileEffects[hex])) return false;
     if (state.avatars.any((av) => av.position == hex)) return false;
     if (state.minions.any((m) => m.isAlive && m.occupiedTiles.contains(hex))) return false;
     return true;

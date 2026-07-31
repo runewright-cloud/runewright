@@ -117,6 +117,7 @@ reassembly logic.
 | `actionCommit` | 0x35 | both→both | 32 bytes: SHA-256(action\_bytes ‖ nonce) | action sealed before entropy; nonce is 16 bytes (`_kRevealNonceBytes`) |
 | `actionReveal` | 0x36 | both→both | nonce(16) ‖ action\_bytes | reveal after entropy exchange; verified against earlier commit |
 | `delayedSpellReveal` | 0x37 | both→both | `[count:1][id:16, coord:4, delay:1, nonce:16 per entry]` | pending delayed spells firing this turn; `[0x00]` if none |
+| `forcedReveal` | 0x43 | both→both | `[count:1]` then per entry: `[position:2][commitment:32][t:2][formula_len:2+bytes][name_len:2+bytes][isSummon:1][personality_len:2+bytes][proof_len:4+bytes][merkle_depth:1][depth × (sibling:32, direction:1)]` | wild magic's Spontaneous Combustion (docs/WILD_MAGIC_PLAN.md §9.5). **Not a uniform per-turn slot** — sent only on turns where a forced cast fires. Both clients derive the triggering wild magic from the same certified proof outputs, so they always reach it together. Slots are chosen PUBLICLY first from the position-only `DrawSchedule`, so the revealer cannot shop for a favourable spell; the receiver forfeits on a slot mismatch, a short count (`withheld_forced_reveal`), or a malformed payload |
 | `forfeit` | 0x40 | sender→peer | UTF-8 reason: `"withheld_reveal"` \| `"concede"` | ends match; peer wins |
 | `matchEnd` | 0x41 | both→both | JSON: `{"winningTeamId":"…","finalStateHash":"…"}` | both send after win condition met |
 
@@ -273,6 +274,12 @@ All integers big-endian. No floats anywhere. Strings length-prefixed as
 `[uint16 byte-count][UTF-8 bytes]`. Lists sorted as noted so both clients
 produce byte-identical output regardless of local insertion order.
 
+> **Changed in `kBattleProtocolVersion` 2 (2026-07-30):** the per-accoutrement
+> `isCoreGem` byte is gone — the core gem was removed as a mechanic and the mana
+> pool is now innate (`MatchConfig.innateManaPool`). `MatchConfig` also gained
+> `innateManaPool` as a negotiated field. Both are silent-desync changes against
+> a v1 client, which is why the capability gate aborts on version mismatch.
+
 ```
 [uint32]  turnNumber
 [uint8]   winCondition ordinal  (0 = lastTeamStanding, 1 = captureTheFlag)
@@ -290,7 +297,6 @@ for each avatar sorted by playerId:
   for each accoutrement sorted by id:
     [uint16+bytes]  id (UTF-8)
     [uint8]         kind ordinal  (0=manaGem 1=counterCharm 2=bookmark 3=absorptionRod)
-    [uint8]         isCoreGem     (0 or 1)
     [uint8]         counterCharmRevealed  (0 or 1)
     [uint8]         hasTargetCommitment   (0 or 1)
     if hasTargetCommitment = 1:
@@ -309,7 +315,36 @@ for each team sorted by id:
   [uint16]        playerIds count
   for each playerId in insertion order:
     [uint16+bytes]  playerId (UTF-8)
+
+... minions, tileEffects, clouds, pendingDelayedSpells, reflectionLinks,
+... divinationLinks, wizardIllusions, illusionTerrainTiles
+... (see BattleState.toCanonicalBytes — this listing is abbreviated)
+
+--- wild magic (docs/WILD_MAGIC_PLAN.md §7.4) --------------------------------
+[int32]   wildMagic.spellDamageBonusAmount     (Burning Hot)
+[int32]   wildMagic.spellDamageBonusTurn       (-1 = never)
+[uint16]  phoenixPlayerIds count
+  for each, SORTED:              [uint16+bytes] playerId (UTF-8)
+[uint16]  statuesquePlayerIds count
+  for each, SORTED:              [uint16+bytes] playerId (UTF-8)
+[uint16]  pendingStatuesquePlayerIds count
+  for each, SORTED:              [uint16+bytes] playerId (UTF-8)
+[uint8]   ripplingFizzlePct present  (0 or 1)
+  if present = 1:                [int32] ripplingFizzlePct
+[uint8]   scatteredGusts             (0 or 1)
+[uint16]  expiringTiles count
+  for each, SORTED by (q, r):    [int16] q  [int16] r  [int32] lastActiveTurn
 ```
+
+**Tile-effect tags** (the `[uint8]` written per `tileEffects` entry):
+`0 = FloorIsLava, 1 = ImpassableTile, 2 = SlowTile, 3 = ConveyorTile,
+4 = IceTile, 5 = ChasmTile`. **Never renumber an existing tag** — a tag change
+silently reinterprets both clients' state bytes. Append new variants only.
+
+Every `Set`/`Map` above is sorted before writing. Dart iterates both in
+insertion order, so two clients that reached identical game state by different
+routes would otherwise produce different bytes — this is the single largest
+desync risk in the wild-magic system.
 
 All game-model values (hp, mana, remainingTurns, modifier values) are stored as
 integers at the model level — no `double` fields exist in `BattleState` or its

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // commune_trade_navigation_test.dart — drives the real widget tree for the
-// Commune UI (docs/COMMUNE_TRADE_PLAN.md, lib/trade/sync_art_session.dart):
-// MenuScreen -> tap "Commune" -> CommuneScreen -> tap "TRADE"/"SYNC ART" ->
+// Commune UI (docs/COMMUNE_TRADE_PLAN.md, docs/MASTER_APPRENTICE_PLAN.md,
+// lib/trade/sync_art_session.dart): MenuScreen -> tap "Commune" ->
+// CommuneScreen -> tap "TRADE"/"CREATE AN APPRENTICESHIP"/"SYNC ART" ->
 // each screen's idle state. Real Navigator transitions, real build()
 // methods -- only secure storage and the documents directory are faked (no
 // native Keystore/filesystem under the headless test engine), same approach
@@ -21,6 +22,20 @@
 // something introduced here. Its data layer (SpellPermission.loadAll,
 // localIdentityMayUse, SpellAsset.gridWithheld) is covered directly in
 // test/trade/trade_session_test.dart and test/spells/spell_authorization_test.dart.
+//
+// The same characteristic applies to ApprenticeshipScreen
+// (docs/MASTER_APPRENTICE_PLAN.md §6.2): its FutureBuilder loads
+// ApprenticeshipRecord data via real dart:io File/Directory calls, and a
+// diagnostic run confirmed the underlying Future never resolves under
+// WidgetTester.pump()/pumpAndSettle() (nor does wrapping the wait in
+// tester.runAsync() bridge it, since the Future is already created against
+// the fake test zone by the time initState runs) -- it just spins the
+// CircularProgressIndicator forever. So this file only confirms navigation
+// REACHES the screen (its AppBar title, which renders independently of the
+// FutureBuilder); it does not drive past the loading state into the
+// offer/pairing screen. That data layer and the full protocol round-trip
+// are covered directly in test/apprentice/apprenticeship_test.dart and
+// test/apprentice/apprentice_session_test.dart.
 
 import 'dart:io';
 
@@ -65,18 +80,32 @@ void main() {
     expect(find.text('CREATE AN APPRENTICESHIP'), findsOneWidget);
     expect(find.text('SYNC ART'), findsOneWidget);
 
-    // Create an Apprenticeship is still visible but disabled this milestone
-    // (docs/COMMUNE_TRADE_PLAN.md §1) -- confirm it doesn't navigate.
-    await tester.tap(find.text('CREATE AN APPRENTICESHIP'));
-    await tester.pumpAndSettle();
-    expect(find.text('COMMUNE'), findsOneWidget); // still on the Commune screen
-
     await tester.tap(find.text('TRADE'));
     await tester.pumpAndSettle();
 
     expect(find.text('TRADE'), findsWidgets); // AppBar title + nothing else conflicting
     expect(find.text('HOST A TRADE'), findsOneWidget);
     expect(find.text('JOIN A TRADE'), findsOneWidget);
+  });
+
+  testWidgets('Menu -> Commune -> Create an Apprenticeship reaches the hub screen', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: MenuScreen()));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Commune'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('CREATE AN APPRENTICESHIP'));
+    // Deliberately bounded pump()s rather than pumpAndSettle() -- see this
+    // file's header comment on ApprenticeshipScreen's FutureBuilder never
+    // settling under WidgetTester. A few duration-stepped pumps carry the
+    // push-route transition to completion (the AppBar title renders once
+    // that finishes, independent of the underlying, never-resolving-here
+    // data load) without ever waiting on the stuck Future.
+    await tester.pump(); // starts the push transition
+    await tester.pump(const Duration(milliseconds: 300)); // transition duration
+
+    expect(find.text('APPRENTICESHIP'), findsOneWidget);
   });
 
   testWidgets('Menu -> Commune -> Sync Art renders the idle host/join state', (tester) async {

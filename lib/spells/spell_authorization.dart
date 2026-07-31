@@ -2,7 +2,7 @@
 //
 // spell_authorization.dart — ownership and loan-permission checks.
 //
-// Two contexts:
+// Three contexts:
 //
 //   localIdentityMayUse — call this before ChapterAsset.withEntry to enforce
 //     that only owned or loaned spells enter a chapter.
@@ -12,9 +12,19 @@
 //     Each matching permission's signature is verified before granting access.
 //     The exchange is wired through BattleSession.exchangeSpellPermissions
 //     (BattleMsgType.spellPermissions), invoked from runDuelSetup step 5.
+//
+//   chapterEligibleForApprenticeLoan — call this before offering a chapter as
+//     a Master/Apprentice loan (docs/MASTER_APPRENTICE_PLAN.md §2.1 decision
+//     3, §5.2). Deliberately separate from localIdentityMayUse, which is
+//     permissive by design (it lets a loaned-in spell enter your own chapter
+//     for personal casting) — the apprentice-loan gate is the opposite: only
+//     NATIVELY owned spells (or shipped Basic spells) may be lent onward, so
+//     a master can't launder a spell they only hold on loan into a "new"
+//     grant to someone else.
 
 import '../identity/identity.dart';
 import 'basic_spells.dart' show isBasicGridAndT, isBasicSpell;
+import 'chapter_asset.dart' show ChapterAsset;
 import 'spell_asset.dart';
 import 'spell_permission.dart';
 
@@ -89,4 +99,61 @@ Future<bool> castingPlayerMayUse({
     }
   }
   return false;
+}
+
+// ── Master/Apprentice chapter-loan eligibility ──────────────────────────────
+
+/// Result of [chapterEligibleForApprenticeLoan]: whether the whole chapter
+/// may be offered, and — for the picker UI's benefit, MASTER_APPRENTICE_PLAN
+/// §6.3's "greyed out with the reason" treatment — one human-readable reason
+/// per entry that failed.
+class ChapterEligibility {
+  const ChapterEligibility({required this.eligible, this.reasons = const []});
+
+  final bool eligible;
+  final List<String> reasons;
+}
+
+/// True iff every spell in [chapter] is either a shipped Basic spell (public
+/// grids anyone may use — no grant is ever needed or emitted for them, see
+/// apprentice_session.dart) or natively owned by [master]
+/// (`spell.ownerPubkeyHex == master's own ownerPubkeyHex`) — never merely
+/// usable via a loan or transfer grant.
+///
+/// This is a NEW, stricter gate than [localIdentityMayUse] — that check is
+/// deliberately permissive (a loaned-in spell may enter your own chapter for
+/// personal casting); reusing it here would let a master re-lend a spell
+/// they themselves only hold on loan, laundering it into a "new" grant whose
+/// expiry the original owner never agreed to. See this file's header
+/// comment and docs/MASTER_APPRENTICE_PLAN.md §2.1 decision 3.
+///
+/// An empty chapter is ineligible ("nothing to teach"). Call this both in
+/// the chapter picker AND immediately before signing grants — the same
+/// belt-and-braces discipline `COMMUNE_TRADE_PLAN.md`'s offer-eligibility
+/// filter uses.
+Future<ChapterEligibility> chapterEligibleForApprenticeLoan({
+  required ChapterAsset chapter,
+  required List<SpellAsset> localSpells,
+  required Identity master,
+}) async {
+  if (chapter.entries.isEmpty) {
+    return const ChapterEligibility(eligible: false, reasons: ['nothing to teach']);
+  }
+  final byId = {for (final s in localSpells) s.id: s};
+  final myOwnerPubkeyHex = await master.ownerPubkeyHex();
+  final reasons = <String>[];
+
+  for (final entry in chapter.entries) {
+    final spell = byId[entry.spellId];
+    if (spell == null) {
+      reasons.add('spell no longer in library');
+      continue;
+    }
+    if (isBasicSpell(spell)) continue;
+    if (!_hexEq(spell.ownerPubkeyHex, myOwnerPubkeyHex)) {
+      reasons.add("'${spell.name}' is held on loan, not owned");
+    }
+  }
+
+  return ChapterEligibility(eligible: reasons.isEmpty, reasons: reasons);
 }

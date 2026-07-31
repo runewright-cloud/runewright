@@ -134,7 +134,10 @@ import '../models/terrain.dart'
         MobileCloud,
         CloudObject,
         SlowTile,
-        ConveyorTile;
+        ConveyorTile,
+        IceTile,
+        tileBlocksMovement;
+import '../models/wild_magic_effect.dart';
 import '../models/wizard_avatar.dart';
 import '../networking/battle_session.dart';
 import '../../identity/identity.dart';
@@ -149,6 +152,9 @@ import 'proof_intake.dart';
 import 'spell_draw.dart';
 import 'tile_entry_resolver.dart';
 import 'trajectory_parser.dart';
+import 'wild_magic.dart';
+import 'wild_magic_applicator.dart';
+import 'forced_cast.dart';
 import '../../sorcerer/vocal_score.dart';
 
 // ── Turn input / action types ─────────────────────────────────────────────────
@@ -455,7 +461,11 @@ typedef FreeMoveDirectionPicker =
 
 Future<HexCoord?> _defaultNoFreeMove(List<HexCoord> candidates) async => null;
 
-class TurnLoop {
+/// Implements [WildMagicHooks] and [ForcedCastHost] so wild-magic effects that
+/// must re-enter turn-loop machinery (re-dealing a hand, forcing a reveal and
+/// cast) reach it through a narrow named seam instead of the applicator
+/// importing this file.
+class TurnLoop implements WildMagicHooks, ForcedCastHost {
   TurnLoop({
     required this.state,
     required this.session,
@@ -950,6 +960,37 @@ class TurnLoop {
   /// repopulated at the start of every turn.
   List<ConveyorChainEvent> lastConveyorChainEvents = [];
 
+  /// Wild-magic effects that fired during the most recent [runTurn] call, in
+  /// resolution order. Cleared and repopulated at the start of every turn.
+  ///
+  /// **A global effect the player cannot see happen is a bug**, not a missing
+  /// UI nicety: wild magic is untelegraphed by design, so battle_screen.dart's
+  /// resolution reveal is the only place either player learns it fired at all.
+  List<WildMagicEvent> lastWildMagicEvents = [];
+
+  /// Per-turn counter folded into every 0x09 wild-magic seed, so two casts in
+  /// the same turn never share an RNG stream. Same pattern as
+  /// [_consumeDrawNonce]; reset at the start of each turn because the seed
+  /// already includes the turn number.
+  int _wildMagicNonce = 0;
+
+  int _consumeWildMagicNonce() => _wildMagicNonce++;
+
+  /// Per-match counter folded into the 0x0A Rippling Reflections coin, so two
+  /// spells resolving in the same turn get independent flips.
+  int _ripplingNonce = 0;
+
+  /// Forced casts queued by [WildMagicApplicator] during the synchronous
+  /// wild-magic sweep, drained (with their network round trip) before the
+  /// triggering spell's own formula effects resolve. See [ForcedCast].
+  final List<ForcedCastRequest> _pendingForcedCasts = [];
+
+  /// This turn's revealed joint entropy, stashed so the [WildMagicHooks] /
+  /// [ForcedCastHost] callbacks (which the applicator invokes without an
+  /// entropy argument) can derive their seeds from it. Set in [runTurn] right
+  /// after the Phase 3 reveal; null before the first turn.
+  Uint8List? _turnEntropy;
+
   // ── Pending action state (set by beginTurn, consumed by runTurn) ─────────
   //
   // Lets the UI call beginTurn() as soon as the local player locks in their
@@ -1161,7 +1202,9 @@ class TurnLoop {
     lastCastEvents = [];
     lastResolvedSpells = [];
     lastConveyorChainEvents = [];
+    lastWildMagicEvents = [];
     lastCertifiedBaseManaCosts = {};
+    _wildMagicNonce = 0;
 
     // Turn-scoped map from commitmentHex → certified ParsedFormulas derived from
     // the peer's verified proof. Populated by _verifyPeerSpellCast; consumed by
@@ -1179,6 +1222,12 @@ class TurnLoop {
     // certified flat element sequence a peer's creature must be derived
     // from, keyed and cleared identically to [certifiedPeerFormulas].
     final certifiedPeerElementSequences = <String, List<BorderZone>>{};
+
+    // Parallel map for wild magic (docs/WILD_MAGIC_PLAN.md §4.6): the triggers
+    // derived from the peer's CERTIFIED proof public outputs, never from the
+    // wire SpellAsset. Same lifecycle, same clearing, same 3+-player caveat as
+    // [certifiedPeerFormulas] above.
+    final certifiedPeerWildMagic = <String, List<WildMagicTrigger>>{};
 
     // ── Phase 1: Action commit ─────────────────────────────────────────────
     // Committed before entropy is revealed so a modified client cannot
@@ -1281,6 +1330,9 @@ class TurnLoop {
     // All player decisions for this turn are committed. Reveal joint entropy
     // now; it seeds all resolution RNG in phases 4–6.
     final entropy = await _resolveEntropy();
+    // Stashed for the WildMagicHooks / ForcedCastHost callbacks, which the
+    // applicator invokes without an entropy argument.
+    _turnEntropy = entropy;
 
     // Opening hand/deck deal (SPELL_DRAW_WIRING_PLAN.md §3) — once only, the
     // first time localChapterSpells has resolved (in practice, turn 1).
@@ -1386,6 +1438,7 @@ class TurnLoop {
         merkleProof,
         certifiedPeerFormulas,
         certifiedPeerElementSequences,
+        certifiedPeerWildMagic,
       );
     }
 
@@ -1448,7 +1501,7 @@ class TurnLoop {
         state.turnNumber,
       ),
     );
-    _resolveActions(
+    await _resolveActions(
       myAction,
       peerAction,
       preMovPos,
@@ -1458,6 +1511,7 @@ class TurnLoop {
       delayedFires: [...localFires, ...peerFires],
       certifiedPeerFormulas: certifiedPeerFormulas,
       certifiedPeerElementSequences: certifiedPeerElementSequences,
+      certifiedPeerWildMagic: certifiedPeerWildMagic,
     );
 
     // ── Phase 5b: Summons act ───────────────────────────────────────────────
@@ -1480,61 +1534,19 @@ class TurnLoop {
     // has fully resolved. This is deliberately *not* interleaved mid-
     // resolution: an interactive version that could let the bearer dodge a
     // second spell landing on the same tile later in the same turn would
-    // need a new mid-loop suspension point (and, for real duels, a fresh
-    // network round trip per burst rather than one fixed one) for a niche
-    // payoff — not worth it unless playtesting shows Airy Barrier is
-    // underpowered without it. This version still lets the bearer step off
+    // need a new mid-loop suspension point (and a network round trip whose
+    // *count* varies with how many barriers burst, unlike the two fixed
+    // rounds here — a variable-length frame sequence is a much bigger change
+    // than a second fixed one) for a niche payoff. Not worth it unless
+    // playtesting says otherwise. This window still lets the bearer step off
     // hazardous terrain (FloorIsLava, clouds, fire-barrier aura) before
-    // Phase 6's position-dependent damage applies.
+    // Phase 6's position-dependent damage applies; Phase 6.5 below catches
+    // barriers that burst on that damage.
     //
     // Shape mirrors the Phase 4b melee commit-reveal exactly. Only prompted
     // when the local avatar actually earned a burst and has a legal tile to
     // step to; everyone else implicitly declines with no prompt shown.
-    final localFreeMoveCandidates = _localAvatar().pendingFreeMoveBurst
-        ? _freeMoveCandidates(_localAvatar())
-        : const <HexCoord>[];
-    final localFreeMoveTarget = localFreeMoveCandidates.isEmpty
-        ? null
-        : await freeMoveDirectionPicker(localFreeMoveCandidates);
-    final freeMoveNonce = CommitRevealEntropy.generateNonce().sublist(
-      0,
-      _kRevealNonceBytes,
-    );
-    final freeMoveBytes = _encodeOptionalTarget(localFreeMoveTarget);
-    final freeMoveCommit = await Sha256()
-        .hash(Uint8List.fromList([...freeMoveBytes, ...freeMoveNonce]))
-        .then((h) => Uint8List.fromList(h.bytes));
-    final peerFreeMoveCommit = await session.exchangeFreeMoveCommit(
-      freeMoveCommit,
-    );
-
-    final myFreeMoveReveal = Uint8List.fromList([
-      ...freeMoveNonce,
-      ...freeMoveBytes,
-    ]);
-    final peerFreeMoveReveal = await session.exchangeFreeMoveReveal(
-      myFreeMoveReveal,
-    );
-    await _verifyReveal(peerFreeMoveReveal, peerFreeMoveCommit, 'freeMove');
-    final peerFreeMoveTarget = _decodeOptionalTarget(
-      peerFreeMoveReveal,
-      _kRevealNonceBytes,
-    );
-
-    if (localFreeMoveTarget != null) {
-      _applyFreeMove(_localAvatar(), localFreeMoveTarget);
-    }
-    if (peerId != null && peerFreeMoveTarget != null) {
-      final peerAvatarForFreeMove = _avatarById(peerId);
-      if (peerAvatarForFreeMove != null) {
-        _applyFreeMove(peerAvatarForFreeMove, peerFreeMoveTarget);
-      }
-    }
-    // One-shot opportunity: clear regardless of whether it was used, so it
-    // never rolls over to a later turn.
-    for (final av in state.avatars) {
-      av.pendingFreeMoveBurst = false;
-    }
+    await _runFreeMoveRound(peerId);
 
     // ── Phase 6: End of turn ──────────────────────────────────────────────
     final eotRng = HashRng(
@@ -1542,7 +1554,28 @@ class TurnLoop {
     );
     _endOfTurn(preMovPos, eotRng);
 
+    // ── Phase 6.5: Second free-move window ────────────────────────────────
+    // Phase 6 deals damage too — fire-barrier aura, FloorIsLava, conveyor
+    // collisions, cloud damage-per-turn, haymaker DoT — so it can burst a
+    // barrier *after* Phase 5.5's window has already closed. Without this
+    // round that grant is either silently lost or (worse) leaks into the
+    // next turn's Phase 5.5, prompting a step the bearer didn't earn.
+    //
+    // Costs one more commit-reveal pair per turn. That's the same fixed cost
+    // Phase 5.5 already pays unconditionally (both rounds run every turn and
+    // encode "no move" when nobody qualifies), and the sorcerer-mode budget
+    // in SORCERER_REALTIME_PLAN.md §1.1 puts a 6-player mesh two-plus orders
+    // of magnitude inside its bandwidth headroom — bytes are not the
+    // constraint here. §1.2's real constraint is lockstep barrier stalls, and
+    // this adds one more sync point per turn, which is the number to watch if
+    // turn latency ever becomes a complaint.
+    await _runFreeMoveRound(peerId);
+
     await _exchangeStateHash();
+
+    // Last chance for a Phoenix save before the match can be declared over —
+    // a wizard who dies to end-of-turn damage must still rise.
+    _applyPhoenixSaves();
 
     final result = state.checkWinCondition();
     return result.isOver ? result : null;
@@ -1646,6 +1679,7 @@ class TurnLoop {
     }
     state.resetMinionActions();
     _reapDead(rng);
+    _applyPhoenixSaves();
   }
 
   /// Air-flavor Clouds (Water-Fire) auto-seek: move 1 tile toward the nearest
@@ -1926,7 +1960,7 @@ class TurnLoop {
     final flying = creature.abilities.contains(SummonAbility.flying);
     for (final t in footprintFor(center, creature.abilities)) {
       if (!state.battlefield.isInBounds(t)) return false;
-      if (!flying && state.tileEffects[t] is ImpassableTile) return false;
+      if (!flying && tileBlocksMovement(state.tileEffects[t])) return false;
     }
     return true;
   }
@@ -2067,6 +2101,10 @@ class TurnLoop {
       movePaths,
       speeds,
       tileEffects: state.tileEffects,
+      flyingPlayerIds: {
+        for (final av in state.avatars)
+          if (av.isFlying) av.playerId,
+      },
     );
     final walked = <String, List<HexCoord>>{};
     for (final av in state.avatars) {
@@ -2084,6 +2122,12 @@ class TurnLoop {
         budget,
         rng,
       );
+      // Statuesque (wild magic, row 3 Earth) breaks on a VOLUNTARY move. A
+      // path longer than [origin] means at least one declared step was taken;
+      // involuntary displacement (knockback, ice slide, Zephyr) happens
+      // elsewhere and deliberately does not break the latch. A conveyor push
+      // appended to a voluntary step is already a move they chose to make.
+      if (path.length > 1) _breakStatuesque(av.playerId);
       av.position = path.last;
       state.battlefield.occupancy[av.playerId] = path.last;
       walked[av.playerId] = path;
@@ -2111,12 +2155,20 @@ class TurnLoop {
     var remaining = budget;
     final path = <HexCoord>[origin];
 
+    // Updraft (wild magic, row 2 Air): a flying wizard ignores terrain
+    // entirely — chasms, walls, lava, slow tiles, ice sliding, and conveyor
+    // pushes (A11). Same semantics SummonAbility.flying already gives spirit
+    // minions, and the `flying:` flag resolveTileEntry already takes.
+    final flying = av.isFlying;
+
     for (final step in declaredPath) {
       if (remaining <= 0 || !av.isAlive) break;
       if (!state.battlefield.isInBounds(step)) break;
       if (hexDistance(current, step) != 1) break; // path must be step-adjacent
-      final effect = state.tileEffects[step];
-      if (effect is ImpassableTile) break;
+      final effect = flying ? null : state.tileEffects[step];
+      // ChasmTile blocks movement exactly like a wall — but NOT targeting;
+      // that distinction is the entire reason it is its own class (A9).
+      if (tileBlocksMovement(effect)) break;
       final cost = 1 + (effect is SlowTile ? effect.extraMoveCost : 0);
       if (cost > remaining) break;
       remaining -= cost;
@@ -2129,7 +2181,16 @@ class TurnLoop {
       if (effect is FloorIsLava) {
         av.absorbDamage(effect.damage);
       }
-      if (effect is ConveyorTile && effect.directionSet) {
+      if (effect is IceTile) {
+        // Glacier: keep going in the entry direction, FREE of movement budget
+        // (A12 — mirroring ConveyorTile's free cascading push, the closest
+        // existing precedent), until the next tile is out of bounds, occupied,
+        // or not ice.
+        current = _slideOnIce(av, path, current, rng);
+      }
+      if (state.tileEffects[current] is ConveyorTile &&
+          (state.tileEffects[current] as ConveyorTile).directionSet &&
+          !flying) {
         final outcome = resolveTileEntry(
           state: state,
           rng: rng,
@@ -2156,9 +2217,61 @@ class TurnLoop {
     return path;
   }
 
+  /// Glacier's slide (wild magic, row 2 Water). [av] has just entered an
+  /// [IceTile] at [current], arriving from `path[path.length - 2]`; keep
+  /// stepping in that same direction, free of movement budget, until the next
+  /// tile is out of bounds, occupied, or not ice.
+  ///
+  /// Appends every slid-through tile to [path] — knockback's
+  /// bounce-back-along-your-path reference reads that list, so a slide the
+  /// path doesn't record would bounce the victim to the wrong tile. Returns
+  /// the final position.
+  ///
+  /// The iteration bound is belt-and-braces: the loop already terminates on
+  /// the board edge, but a coordinate-math slip becoming an infinite loop
+  /// would hang a live match mid-turn, which is much worse than stopping a
+  /// slide early.
+  HexCoord _slideOnIce(
+    WizardAvatar av,
+    List<HexCoord> path,
+    HexCoord current,
+    HashRng rng,
+  ) {
+    if (path.length < 2) return current;
+    final from = path[path.length - 2];
+    final delta = HexCoord(current.q - from.q, current.r - from.r);
+    if (delta.q == 0 && delta.r == 0) return current;
+
+    var pos = current;
+    final maxSteps = state.config.gridRadius * 4;
+    for (var i = 0; i < maxSteps; i++) {
+      final next = HexCoord(pos.q + delta.q, pos.r + delta.r);
+      if (!state.battlefield.isInBounds(next)) break;
+      if (state.tileEffects[next] is! IceTile) break;
+      if (state.avatars.any((a) => a.isAlive && a.playerId != av.playerId && a.position == next)) {
+        break;
+      }
+      if (state.minions.any((m) => m.isAlive && m.occupiedTiles.contains(next))) {
+        break;
+      }
+      pos = next;
+      path.add(pos);
+    }
+    // A slide that ends ON a conveyor hands off to the normal entry
+    // resolution, exactly as the conveyor path in [_walkAvatar] does — the
+    // caller checks `state.tileEffects[current]` after this returns, so
+    // nothing extra is needed here. (rng is threaded for symmetry with that
+    // path and for any future slide-time randomness.)
+    return pos;
+  }
+
   // ── Phase 4: Action resolution ────────────────────────────────────────────
 
-  void _resolveActions(
+  /// Async because a wild-magic Spontaneous Combustion fires a forced
+  /// reveal-and-cast mid-resolution, which needs a protocol round trip for the
+  /// peer's private hand (docs/WILD_MAGIC_PLAN.md §9.5). Every other path
+  /// through here is still synchronous.
+  Future<void> _resolveActions(
     TurnAction myAction,
     TurnAction peerAction,
     Map<String, HexCoord> preMovPos,
@@ -2168,7 +2281,8 @@ class TurnLoop {
     List<(WizardAvatar, SpellCastAction)> delayedFires = const [],
     Map<String, List<ParsedFormula>> certifiedPeerFormulas = const {},
     Map<String, List<BorderZone>> certifiedPeerElementSequences = const {},
-  }) {
+    Map<String, List<WildMagicTrigger>> certifiedPeerWildMagic = const {},
+  }) async {
     final peerId = _peerId();
     final peerAvatar = peerId != null ? _avatarById(peerId) : null;
 
@@ -2276,6 +2390,11 @@ class TurnLoop {
           :final vocalScore,
           :final conveyorDirection,
         ):
+          // Statuesque (wild magic, row 3 Earth) breaks on a cast — a choice,
+          // unlike Pass / Dash / Meditate / melee, which leave it standing.
+          // Broken here, before resolution, so it covers a fizzled or
+          // countered cast too: the wizard still chose to cast.
+          _breakStatuesque(actor.playerId);
           // isSorcererMode + non-null vocalScore is checked at both ends of
           // the wire (commit-time mana deduction above, here at resolution),
           // so the two are always in lockstep — see CastingEnhancements
@@ -2368,20 +2487,28 @@ class TurnLoop {
                   _consumeDrawNonce(actor.playerId),
                 ),
               );
-              final summoned = _applySpell(
+              final summoned = await _applySpell(
                 actor,
                 spell,
                 targetHex,
                 enhancements,
                 rng,
+                entropy,
                 traversedPaths: traversedPaths,
                 certFormulas: certifiedPeerFormulas[spell.commitmentHex],
                 certElementSequence:
                     certifiedPeerElementSequences[spell.commitmentHex],
+                certWildMagic: certifiedPeerWildMagic[spell.commitmentHex],
                 conveyorDirection: conveyorDirection,
                 witherRng: witherRng,
                 rodRequested: isRodOfSpreading,
               );
+              // Scattered Gusts (wild magic, row 3 Air): once active, every
+              // cast blows the caster's bookmarks loose and they find a new
+              // set. Free casts are exempt (A8) — they never reach here.
+              if (state.wildMagic.scatteredGusts) {
+                _redrawHand(actor.playerId, entropy);
+              }
               // A cloud born this turn would otherwise sit dead-still until
               // *next* turn's Phase 4 (_moveClouds already ran, ahead of this
               // spell resolution, before the cloud existed) — give it its
@@ -2452,6 +2579,7 @@ class TurnLoop {
     }
 
     _reapDead(rng);
+    _applyPhoenixSaves();
   }
 
   // ── Mystery / delayed spell helpers ──────────────────────────────────────
@@ -2630,19 +2758,72 @@ class TurnLoop {
 
   /// Returns the [Minion] just summoned, if [spell.isSummon] and the cast
   /// actually produced a creature (see [_castSummon]); null otherwise.
-  Minion? _applySpell(
+  ///
+  /// [fireWildMagic] is **the recursion guard for the whole wild-magic
+  /// system**. It is false for Spontaneous Combustion's free casts (A8) and
+  /// for Rippling Reflections' doubled application (A7). Without it one
+  /// Spontaneous Combustion can fan out into an unbounded cast cascade, and a
+  /// doubled spell fires its global effect twice. Do not remove it, and do not
+  /// add a caller that leaves it true for a cast the player did not choose.
+  Future<Minion?> _applySpell(
     WizardAvatar actor,
     SpellAsset spell,
     HexCoord targetHex,
     CastingEnhancements enhancements,
-    HashRng rng, {
+    HashRng rng,
+    Uint8List entropy, {
     Map<String, List<HexCoord>> traversedPaths = const {},
     List<ParsedFormula>? certFormulas,
     List<BorderZone>? certElementSequence,
+    List<WildMagicTrigger>? certWildMagic,
     HexCoord? conveyorDirection,
     HashRng? witherRng,
     bool rodRequested = false,
-  }) {
+    bool fireWildMagic = true,
+    bool subjectToRippling = true,
+    bool skipChainUpdate = false,
+  }) async {
+    // ── Wild magic (docs/WILD_MAGIC_PLAN.md §4.5) ─────────────────────────
+    // Design doc L746: "Within a single player's spell: wild magic first, then
+    // formula effects in the order the CA created them." So this runs BEFORE
+    // the isSummon early return (A2 — a summon spell still has a certified
+    // trajectory and formulas, and its wild magic fires) and before the
+    // formula loop. Countered and fizzled casts never reach _applySpell at
+    // all, so A1 ("no wild magic on a countered or fizzled cast") holds for
+    // free — do not add a hook upstream of the counter check.
+    if (fireWildMagic) {
+      await _fireWildMagic(actor, spell, certWildMagic, entropy);
+    }
+
+    // ── Rippling Reflections (row 3, Water) ───────────────────────────────
+    // Once active there is no third outcome: every spell either fizzles or
+    // resolves twice. Rolled after wild magic, before the formula loop.
+    var repeatWholeSpell = 1;
+    if (subjectToRippling && state.wildMagic.ripplingFizzlePct != null) {
+      final pct = state.wildMagic.ripplingFizzlePct!;
+      final coin = HashRng(
+        _playerPhaseSeed(
+          entropy,
+          matchId,
+          state.turnNumber,
+          0x0A,
+          actor.playerId,
+          _ripplingNonce++,
+        ),
+      ).nextInt(100);
+      if (coin < pct) {
+        // Fizzle: no formula effects at all, drift 10% toward doubling.
+        // Treated as a fizzle for chain purposes, matching the existing
+        // enhancements.fizzle branch in _resolveActions.
+        state.wildMagic.ripplingFizzlePct = (pct - 10).clamp(0, 100);
+        _regressChain(actor);
+        return null;
+      }
+      // Double: apply the formula effects twice, drift 10% toward fizzling.
+      state.wildMagic.ripplingFizzlePct = (pct + 10).clamp(0, 100);
+      repeatWholeSpell = 2;
+    }
+
     // design doc "Summons": a summon-mode spell's element sequence is read
     // as a creature instead of being resolved as incantation effects.
     // Bypasses EffectResolver/EffectApplicator entirely -- summoning is
@@ -2659,7 +2840,9 @@ class TurnLoop {
         rng,
         rodRequested: rodRequested,
       );
-      _updateChainState(actor, spell, certElementSequence: sequence);
+      if (!skipChainUpdate) {
+        _updateChainState(actor, spell, certElementSequence: sequence);
+      }
       return minion;
     }
 
@@ -2688,6 +2871,11 @@ class TurnLoop {
     // per-turn list once for the UI's belt/loop animation.
     final conveyorEvents = <ConveyorChainEvent>[];
 
+    // Rippling Reflections' "resolve twice" wraps the FORMULA LOOP, not the
+    // whole method — structuring it here means a doubled spell physically
+    // cannot reach the wild-magic seam or re-roll the coin (A7), rather than
+    // relying on a flag to stop it.
+    for (var pass = 0; pass < repeatWholeSpell; pass++) {
     for (final formula in formulas) {
       final descriptor = EffectResolver.resolve(formula, enhancements);
 
@@ -2721,11 +2909,328 @@ class TurnLoop {
         );
       }
     }
+    }
     lastConveyorChainEvents.addAll(conveyorEvents);
 
-    // Update chain state after casting.
-    _updateChainState(actor, spell, certFormulas: certFormulas);
+    // Update chain state after casting. A forced free cast (A8) skips this —
+    // it neither builds nor breaks the chain.
+    if (!skipChainUpdate) {
+      _updateChainState(actor, spell, certFormulas: certFormulas);
+    }
     return null;
+  }
+
+  // ── Wild magic (docs/WILD_MAGIC_PLAN.md) ──────────────────────────────────
+
+  /// Resolves every wild-magic trigger this cast carries, in row-then-element
+  /// order, then drains any forced casts they queued.
+  ///
+  /// [certified] is the peer path: triggers derived by [_verifyPeerSpellCast]
+  /// from the peer's VERIFIED proof public outputs. Null means the local
+  /// player's own cast (or a delayed fire / the kAllowProoflessSpells dev
+  /// flag) — see [_wildMagicFromOwnProof].
+  Future<void> _fireWildMagic(
+    WizardAvatar actor,
+    SpellAsset spell,
+    List<WildMagicTrigger>? certified,
+    Uint8List entropy,
+  ) async {
+    final triggers = certified ?? _wildMagicFromOwnProof(spell);
+    if (triggers.isEmpty) return;
+
+    for (final trigger in triggers) {
+      final rng = HashRng(
+        _playerPhaseSeed(
+          entropy,
+          matchId,
+          state.turnNumber,
+          0x09,
+          actor.playerId,
+          _consumeWildMagicNonce(),
+        ),
+      );
+      WildMagicApplicator.apply(
+        WildMagicApplyContext(
+          state: state,
+          caster: actor,
+          rng: rng,
+          trigger: trigger,
+          events: lastWildMagicEvents,
+          hooks: this,
+        ),
+      );
+    }
+
+    // Spontaneous Combustion's reveal round trip sits HERE: after wild magic
+    // has fired, before the triggering spell's own formula effects resolve
+    // (WILD_MAGIC_PLAN.md §9.5). The applicator queues rather than resolving
+    // because it is synchronous and this needs the network.
+    await _drainForcedCasts(entropy);
+  }
+
+  /// Wild-magic triggers for a spell whose proof this device authored.
+  ///
+  /// Parses our OWN proof bytes (verification skipped — see
+  /// [ProofIntake.parseOwn]) and re-derives the formulas from the certified
+  /// trajectory rather than the wire `spell.formula`, so this produces
+  /// byte-identical triggers to the peer path for the same proof. One
+  /// derivation, two call sites — §10 invariant 2.
+  ///
+  /// Returns empty when there are no proof bytes. That covers the peer
+  /// delayed-fire and `kAllowProoflessSpells` cases, which already fall
+  /// through with `certFormulas == null`: both devices see the same (absent)
+  /// proof bytes and both fire nothing, so it is desync-SAFE even though it is
+  /// not trust-safe. That is precisely the pre-existing TODO(B-1) hole — do
+  /// not widen it and do not invent a second policy for it.
+  // TODO(B-1): once full peer verification lands, a null certWildMagic for a
+  //   current-turn peer spell must forfeit rather than fall through here.
+  List<WildMagicTrigger> _wildMagicFromOwnProof(SpellAsset spell) {
+    if (spell.proofBytes.isEmpty) return const [];
+    try {
+      final outputs = ProofIntake.parseOwn(spell.proofBytes, tier);
+      return WildMagic.triggersFor(
+        outputs,
+        TrajectoryParser.parse(outputs).formulas,
+        state.config.communitySeed,
+      );
+    } on ProofIntakeException {
+      // A malformed local proof is a bug, not an attack; firing no wild magic
+      // is the same outcome on both devices (they parse the same bytes).
+      return const [];
+    }
+  }
+
+  /// Phoenix (wild magic, row 3 Fire): a player in the phoenix set who would
+  /// die instead respawns at 1 HP, consuming their one-shot save.
+  ///
+  /// Called everywhere avatar HP can reach zero — beside every [_reapDead]
+  /// (which only reaps minions) and immediately before the win check, so a
+  /// save can never be missed by the match ending first.
+  void _applyPhoenixSaves() {
+    if (state.wildMagic.phoenixPlayerIds.isEmpty) return;
+    // Sorted so the (rare) case of two simultaneous saves consumes the set in
+    // one order on both devices.
+    final saved = <String>[];
+    for (final av in List<WizardAvatar>.from(state.avatars)
+      ..sort((a, b) => a.playerId.compareTo(b.playerId))) {
+      if (av.isAlive) continue;
+      if (!state.wildMagic.phoenixPlayerIds.remove(av.playerId)) continue;
+      av.hp = 1;
+      saved.add(av.playerId);
+    }
+    for (final id in saved) {
+      lastWildMagicEvents.add(
+        WildMagicEvent(
+          effect: WildMagicEffectKind.phoenix,
+          casterId: id,
+          bracketSteps: 0,
+          affectedPlayerIds: [id],
+          note: 'risen from the ashes at 1 HP',
+        ),
+      );
+    }
+  }
+
+  /// Statuesque (wild magic, row 3 Earth): the latch breaks the moment a
+  /// player *chooses* to move or cast. Involuntary movement (knockback,
+  /// conveyor, ice slide, Zephyr) does NOT break it — "if they move" reads as
+  /// a choice.
+  void _breakStatuesque(String playerId) {
+    state.wildMagic.statuesquePlayerIds.remove(playerId);
+    state.wildMagic.pendingStatuesquePlayerIds.remove(playerId);
+  }
+
+  // ── WildMagicHooks ────────────────────────────────────────────────────────
+
+  @override
+  void queueForcedCast(
+    Set<String> playerIds,
+    int countPerPlayer,
+    String reasonTag,
+  ) {
+    _pendingForcedCasts.add(
+      ForcedCastRequest(
+        affectedPlayerIds: playerIds,
+        countPerPlayer: countPerPlayer,
+        reasonTag: reasonTag,
+      ),
+    );
+  }
+
+  /// Re-deals [playerId]'s entire hand: every card returns to `remaining` in
+  /// canonical commitmentHex order (that sortedness is a load-bearing
+  /// invariant — see spell_draw.dart's header), then a fresh hand of the same
+  /// size is drawn.
+  ///
+  /// Mirrors [_advanceDrawState]'s dual-structure update exactly: the public
+  /// [_drawSchedules] entry always advances; [localSpellDraw]'s real CONTENTS
+  /// only when [playerId] is the local player. Both use independently
+  /// constructed HashRng instances over the SAME seed bytes — never a shared
+  /// mutable instance — which is what keeps positions and contents in
+  /// agreement (see this class's hand/deck header comment).
+  void _redrawHand(String playerId, Uint8List entropy) {
+    final schedule = _drawSchedules[playerId];
+    if (schedule == null) return;
+    final handSize = schedule.hand.length;
+    if (handSize == 0) return;
+    final seed = _playerPhaseSeed(
+      entropy,
+      matchId,
+      state.turnNumber,
+      0x05,
+      playerId,
+      _consumeDrawNonce(playerId),
+    );
+    _drawSchedules[playerId] = schedule.redrawHand(handSize, HashRng(seed));
+    if (playerId == localPlayerId) {
+      final draw = localSpellDraw;
+      if (draw != null) {
+        localSpellDraw = draw.redrawHand(handSize, HashRng(seed));
+      }
+    }
+  }
+
+  // ── ForcedCastHost ────────────────────────────────────────────────────────
+
+  /// Drains every forced cast queued during the wild-magic sweep. Each runs
+  /// the full public-slot-selection → reveal → verify → resolve sequence.
+  Future<void> _drainForcedCasts(Uint8List entropy) async {
+    if (_pendingForcedCasts.isEmpty) return;
+    // Copy and clear FIRST: a forced cast's own resolution must not be able to
+    // queue another one (A8 exempts free casts from wild magic entirely, so
+    // this should be unreachable — belt and braces against an unbounded
+    // cascade if a future effect forgets).
+    final requests = List<ForcedCastRequest>.from(_pendingForcedCasts);
+    _pendingForcedCasts.clear();
+    for (final request in requests) {
+      await ForcedCast.run(
+        request,
+        this,
+        (playerId) => HashRng(
+          _playerPhaseSeed(
+            entropy,
+            matchId,
+            state.turnNumber,
+            0x09,
+            playerId,
+            _consumeWildMagicNonce(),
+          ),
+        ),
+      );
+    }
+  }
+
+  @override
+  List<int> publicHandPositions(String playerId) =>
+      List<int>.from(_drawSchedules[playerId]?.hand ?? const <int>[]);
+
+  @override
+  Uint8List forcedCastSeed(String playerId, String reasonTag) {
+    final entropy = _turnEntropy ?? Uint8List(32);
+    final buf = BytesBuilder(copy: false)
+      ..add(
+        _playerPhaseSeed(
+          entropy,
+          matchId,
+          state.turnNumber,
+          0x09,
+          playerId,
+          _consumeWildMagicNonce(),
+        ),
+      )
+      ..add(utf8.encode(reasonTag));
+    return Uint8List.fromList(sha256.convert(buf.toBytes()).bytes);
+  }
+
+  @override
+  bool isLocalPlayer(String playerId) => playerId == localPlayerId;
+
+  @override
+  SpellAsset? localSpellAt(int position) {
+    final chapter = localChapterSpells;
+    if (chapter == null) return null;
+    final canonical = List<SpellAsset>.from(chapter)
+      ..sort((a, b) => a.commitmentHex.compareTo(b.commitmentHex));
+    if (position < 0 || position >= canonical.length) return null;
+    return canonical[position];
+  }
+
+  @override
+  MembershipProof? localMembershipProofAt(int position) {
+    final commitments = localChapterCommitments;
+    if (commitments == null) return null;
+    return BookCommitment.proveMembershipAt(commitments, position);
+  }
+
+  @override
+  Future<Uint8List?> exchangeForcedReveal(Uint8List ours) =>
+      session.exchangeForcedReveal(ours);
+
+  @override
+  Future<void> verifyForcedReveal(
+    String playerId,
+    int position,
+    SpellAsset spell,
+    MembershipProof? merkleProof,
+  ) async {
+    // Runs the SAME path a normal peer cast takes. The duplicate-grid guard is
+    // deliberately bypassed (see _verifyPeerSpellCast's forcedCast flag): a
+    // forced cast is not the player's choice, so it must not consume their
+    // once-per-match right to cast that grid, nor trip the duplicate forfeit.
+    await _verifyPeerSpellCast(
+      SpellCastAction(spell: spell, targetHex: const HexCoord(0, 0)),
+      merkleProof,
+      <String, List<ParsedFormula>>{},
+      <String, List<BorderZone>>{},
+      <String, List<WildMagicTrigger>>{},
+      forcedCast: true,
+    );
+  }
+
+  @override
+  Future<void> resolveForcedCast(ForcedCastPick pick, HashRng rng) async {
+    final actor = _avatarById(pick.playerId);
+    if (actor == null || !actor.isAlive) return;
+    final target = _randomTileInRange(actor, rng);
+    final entropy = _turnEntropy ?? Uint8List(32);
+    // A8, the load-bearing recursion guard: a free cast fires NO wild magic,
+    // is not subject to Rippling Reflections, does not trigger Scattered
+    // Gusts, does not build or break the chain, and is not consumed from hand.
+    await _applySpell(
+      actor,
+      pick.spell,
+      target,
+      const CastingEnhancements(),
+      rng,
+      entropy,
+      fireWildMagic: false,
+      subjectToRippling: false,
+      skipChainUpdate: true,
+    );
+  }
+
+  @override
+  void forfeitMatch(String reason) => session.sendForfeit(reason);
+
+  /// A random tile within [av]'s effective spell range, drawn from a SORTED
+  /// candidate list so both devices pick the same one from the same RNG.
+  HexCoord _randomTileInRange(WizardAvatar av, HashRng rng) {
+    final range = av.effectiveSpellRange;
+    final candidates = <HexCoord>[];
+    for (var dq = -range; dq <= range; dq++) {
+      for (var dr = -range; dr <= range; dr++) {
+        final h = HexCoord(av.position.q + dq, av.position.r + dr);
+        if (!state.battlefield.isInBounds(h)) continue;
+        if (hexDistance(av.position, h) > range) continue;
+        candidates.add(h);
+      }
+    }
+    if (candidates.isEmpty) return av.position;
+    candidates.sort((a, b) {
+      final qc = a.q.compareTo(b.q);
+      return qc != 0 ? qc : a.r.compareTo(b.r);
+    });
+    return candidates[rng.nextInt(candidates.length)];
   }
 
   /// Rod of Spreading (Air artifact): if [requested] and [actor] carries an
@@ -2842,7 +3347,7 @@ class TurnLoop {
     bool footprintOpen(HexCoord center) {
       for (final t in footprintFor(center, abilities, sizeBonus)) {
         if (!state.battlefield.isInBounds(t)) return false;
-        if (state.tileEffects[t] is ImpassableTile) return false;
+        if (tileBlocksMovement(state.tileEffects[t])) return false;
         if (state.avatars.any((av) => av.isAlive && av.position == t))
           return false;
         if (state.minions.any((m) => m.isAlive && m.occupiedTiles.contains(t)))
@@ -3102,10 +3607,12 @@ class TurnLoop {
       }
     }
 
-    // Mana regeneration (gems + Water barrier bonus).
+    // Mana regeneration (gems + Water barrier bonus). There is no innate
+    // regen: a gemless wizard regains mana only by meditating.
     for (final av in state.avatars) {
       if (!av.isAlive) continue;
-      final regen = av.manaRegenPerTurn + av.barrierManaRegenFor(av.maxMana);
+      final regen =
+          av.manaRegenFor(state.config) + av.barrierManaRegenFor(av.maxMana);
       _applyManaGain(av, regen);
     }
 
@@ -3116,6 +3623,49 @@ class TurnLoop {
           .firstOrNull;
       if (dot != null && !dot.isDormant) {
         av.absorbDamage(dot.remainingTurns); // damage = turns remaining
+      }
+    }
+
+    // ── Wild magic, end of turn ─────────────────────────────────────────
+    //
+    // Statuesque (row 3, Earth). A6: the latch begins at the END of the turn
+    // it fires, so the triggering cast cannot break its own effect — promote
+    // the pending set here, then refill everyone still standing. Sorted, since
+    // both sets are Sets and their iteration order is insertion order.
+    if (state.wildMagic.pendingStatuesquePlayerIds.isNotEmpty) {
+      final promoted = state.wildMagic.pendingStatuesquePlayerIds.toList()..sort();
+      state.wildMagic.statuesquePlayerIds.addAll(promoted);
+      state.wildMagic.pendingStatuesquePlayerIds.clear();
+    }
+    for (final id in state.wildMagic.statuesquePlayerIds.toList()..sort()) {
+      final av = _avatarById(id);
+      if (av == null || !av.isAlive) continue;
+      av.hp = state.config.playerHp;
+      _applyManaGain(av, av.maxMana - av.mana);
+    }
+    // A dead player can never break the latch by moving or casting, so drop
+    // them rather than leaving a permanent entry in the state hash.
+    state.wildMagic.statuesquePlayerIds.removeWhere(
+      (id) => !(_avatarById(id)?.isAlive ?? false),
+    );
+
+    // Expiring terrain (Mountains, Chasm, Glacier). expiringTiles maps a coord
+    // to the LAST turn its effect is active, so sweep once that turn ends.
+    // Sorted so the two devices remove in one order (the map is keyed by
+    // coord, so the result is order-independent — but the habit is cheap and
+    // the next expiring effect may not be).
+    if (state.expiringTiles.isNotEmpty) {
+      final expired = state.expiringTiles.entries
+          .where((e) => e.value <= state.turnNumber)
+          .map((e) => e.key)
+          .toList()
+        ..sort((a, b) {
+          final qc = a.q.compareTo(b.q);
+          return qc != 0 ? qc : a.r.compareTo(b.r);
+        });
+      for (final tile in expired) {
+        state.expiringTiles.remove(tile);
+        state.tileEffects.remove(tile);
       }
     }
 
@@ -3131,6 +3681,7 @@ class TurnLoop {
     state.tickClouds();
 
     _reapDead(rng);
+    _applyPhoenixSaves();
 
     // Expire mystery spells whose reveal window has passed (castTurn + 3).
     // Mana is already spent; caster chose not to reveal.
@@ -4187,12 +4738,21 @@ class TurnLoop {
   /// TrajectoryParser.certifiedElementSequence). [_resolveActions] reads
   /// these entries when calling [_applySpell], replacing the untrusted wire
   /// formula (B-1 fix).
+  ///
+  /// [forcedCast] marks a reveal the peer did not choose to make (wild magic's
+  /// Spontaneous Combustion — see [ForcedCast]). It exempts the reveal from
+  /// the duplicate-grid guard: a forced cast must not consume that player's
+  /// once-per-match right to cast the grid, nor trip the duplicate forfeit.
+  /// Everything else — proof verification, commitment-vs-wire, Merkle
+  /// membership — applies unchanged.
   Future<void> _verifyPeerSpellCast(
     TurnAction action,
     MembershipProof? merkleProof,
     Map<String, List<ParsedFormula>> certifiedPeerFormulas,
     Map<String, List<BorderZone>> certifiedPeerElementSequences,
-  ) async {
+    Map<String, List<WildMagicTrigger>> certifiedPeerWildMagic, {
+    bool forcedCast = false,
+  }) async {
     final vk = vkBytes;
     final verify = verifyProof;
     final bookRoot = peerBookRoot;
@@ -4260,7 +4820,8 @@ class TurnLoop {
 
     // 2. Duplicate grid detection — skipped for a shipped Basic spell, which
     // may legitimately be cast more than once per match.
-    if (!isBasicGridAndT(outputs.commitmentHex, outputs.t) &&
+    if (!forcedCast &&
+        !isBasicGridAndT(outputs.commitmentHex, outputs.t) &&
         !_seenPeerCommitments.add(outputs.commitmentHex)) {
       session.sendForfeit('duplicate_spell_cast:${outputs.commitmentHex}');
       throw StateError(
@@ -4276,6 +4837,15 @@ class TurnLoop {
     certifiedPeerFormulas[spell.commitmentHex] = certFormulas;
     final certElementSequence = TrajectoryParser.certifiedElementSequence(outputs);
     certifiedPeerElementSequences[spell.commitmentHex] = certElementSequence;
+    // Wild magic, same trust boundary (WILD_MAGIC_PLAN.md §4.6): derived from
+    // the VERIFIED public outputs + the certified formulas, never from the
+    // wire SpellAsset. The community seed comes from the agreed MatchConfig,
+    // so both devices hash the same preimage.
+    certifiedPeerWildMagic[spell.commitmentHex] = WildMagic.triggersFor(
+      outputs,
+      certFormulas,
+      state.config.communitySeed,
+    );
     // Retained for Sightings capture (docs/SIGHTINGS_PLAN.md §2/§4) — the
     // clean bestiary base cost, independent of this cast's modifiers. Read
     // by battle_screen.dart's capture hook after runTurn returns.
@@ -4380,9 +4950,15 @@ class TurnLoop {
     // effectCount, chain discount, sorcerer multiplier, and nextSpellCostDouble
     // all come from _certifiedManaCost — no untrusted wire values — so both
     // devices deduct the same amount and the mana ledger stays consistent.
+    //
+    // Skipped entirely for a FORCED cast (wild magic's Spontaneous
+    // Combustion): it is free by definition, so charging for it would drain
+    // mana the caster never chose to spend — and worse, the shortfall check
+    // would forfeit the match against a player who simply happened to be
+    // holding an expensive spell they were never given the option to not cast.
     final peerId = _peerId();
     final peerAvatar = peerId != null ? _avatarById(peerId) : null;
-    if (peerAvatar != null) {
+    if (peerAvatar != null && !forcedCast) {
       final verifiedCost = _certifiedManaCost(
         outputs,
         certFormulas,
@@ -4613,7 +5189,7 @@ class TurnLoop {
     HexCoord? best;
     var bestDist = hexDistance(from, to);
     for (final n in _neighbors(from)) {
-      if (state.tileEffects[n] is ImpassableTile) continue;
+      if (tileBlocksMovement(state.tileEffects[n])) continue;
       final d = hexDistance(n, to);
       if (d < bestDist) {
         bestDist = d;
@@ -4730,7 +5306,7 @@ class TurnLoop {
     final candidates = <HexCoord>[];
     for (final tile in hexNeighbors(actor.position)) {
       if (!state.battlefield.isInBounds(tile)) continue;
-      if (state.tileEffects[tile] is ImpassableTile) continue;
+      if (tileBlocksMovement(state.tileEffects[tile])) continue;
       if (state.avatars.any((av) => av.isAlive && av.position == tile))
         continue;
       if (state.minions.any((m) => m.isAlive && m.position == tile)) continue;
@@ -4752,6 +5328,55 @@ class TurnLoop {
     if (!_freeMoveCandidates(av).contains(target)) return;
     av.position = target;
     state.battlefield.occupancy[av.playerId] = target;
+  }
+
+  /// One free-move commit-reveal round: prompt the local player if their
+  /// barrier burst, exchange with the peer, apply both steps, then clear the
+  /// one-shot flag so it can never roll into a later window.
+  ///
+  /// Called twice per turn — Phase 5.5 (spell-resolution bursts) and Phase
+  /// 6.5 (end-of-turn bursts). Both calls run unconditionally, encoding "no
+  /// move" when nobody qualifies, so the frame sequence is identical on both
+  /// clients regardless of who burst what. That fixed shape is what makes the
+  /// second round safe on the wire: [BattleFrameReader.framesOfType] is a
+  /// per-type FIFO queue that buffers rather than drops, so round 2 consumes
+  /// round 2's frame even if it arrived while round 1 was still resolving.
+  Future<void> _runFreeMoveRound(String? peerId) async {
+    final localCandidates = _localAvatar().pendingFreeMoveBurst
+        ? _freeMoveCandidates(_localAvatar())
+        : const <HexCoord>[];
+    final localTarget = localCandidates.isEmpty
+        ? null
+        : await freeMoveDirectionPicker(localCandidates);
+    final nonce = CommitRevealEntropy.generateNonce().sublist(
+      0,
+      _kRevealNonceBytes,
+    );
+    final bytes = _encodeOptionalTarget(localTarget);
+    final commit = await Sha256()
+        .hash(Uint8List.fromList([...bytes, ...nonce]))
+        .then((h) => Uint8List.fromList(h.bytes));
+    final peerCommit = await session.exchangeFreeMoveCommit(commit);
+
+    final myReveal = Uint8List.fromList([...nonce, ...bytes]);
+    final peerReveal = await session.exchangeFreeMoveReveal(myReveal);
+    await _verifyReveal(peerReveal, peerCommit, 'freeMove');
+    final peerTarget = _decodeOptionalTarget(peerReveal, _kRevealNonceBytes);
+
+    if (localTarget != null) {
+      _applyFreeMove(_localAvatar(), localTarget);
+    }
+    if (peerId != null && peerTarget != null) {
+      final peerAvatar = _avatarById(peerId);
+      if (peerAvatar != null) {
+        _applyFreeMove(peerAvatar, peerTarget);
+      }
+    }
+    // One-shot opportunity: clear regardless of whether it was used, so it
+    // never rolls over to a later window or a later turn.
+    for (final av in state.avatars) {
+      av.pendingFreeMoveBurst = false;
+    }
   }
 
   List<HexCoord> _neighbors(HexCoord h) => state.battlefield.neighbors(h);

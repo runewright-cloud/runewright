@@ -262,6 +262,10 @@ class _TamperingSession implements BattleTurnSession {
       _inner.exchangeSpellRevealOpen(ourFrame);
 
   @override
+  Future<Uint8List?> exchangeForcedReveal(Uint8List ourFrame) =>
+      _inner.exchangeForcedReveal(ourFrame);
+
+  @override
   Future<Uint8List> refreshEntropy(String reason) => _inner.refreshEntropy(reason);
 
   @override

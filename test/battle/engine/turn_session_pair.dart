@@ -20,6 +20,36 @@ import 'package:rune_duel/spells/spell_permission.dart';
 /// identical RNG seeds regardless of their randomly-generated local nonces.
 final fixedJointEntropy = Uint8List(32)..fillRange(0, 32, 0x5A);
 
+/// A one-directional FIFO of payloads, used for exchanges that happen more
+/// than once per turn. Mirrors production's `BattleFrameReader.framesOfType`
+/// semantics: a value that arrives before the peer waits for it is buffered
+/// rather than dropped, and waiters are served in order — so round 2 of a
+/// repeated exchange can never consume round 1's payload.
+class _ByteQueue {
+  final _pending = <Uint8List>[];
+  final _waiters = <Completer<Uint8List>>[];
+
+  void push(Uint8List value) {
+    if (_waiters.isNotEmpty) {
+      _waiters.removeAt(0).complete(value);
+    } else {
+      _pending.add(value);
+    }
+  }
+
+  Future<Uint8List> pop() {
+    if (_pending.isNotEmpty) return Future.value(_pending.removeAt(0));
+    final waiter = Completer<Uint8List>();
+    _waiters.add(waiter);
+    return waiter.future;
+  }
+
+  void clear() {
+    _pending.clear();
+    _waiters.clear();
+  }
+}
+
 /// Two coordinated [BattleTurnSession] implementations that simulate a real
 /// two-client commit-reveal exchange without any network I/O.
 ///
@@ -27,6 +57,11 @@ final fixedJointEntropy = Uint8List(32)..fillRange(0, 32, 0x5A);
 /// session A writes its value and waits for B's, and session B does the
 /// same simultaneously, both Completers resolve and both futures return.
 /// This is the same causal structure as the real BattleSession over TCP.
+///
+/// One-shot Completers work because every phase exchanges exactly once per
+/// turn — except the free-move round, which runs twice (Phase 5.5 for
+/// spell-resolution bursts and Phase 6.5 for end-of-turn bursts). Those slots
+/// use [_ByteQueue] instead; see its doc comment.
 class TurnSessionPair {
   TurnSessionPair() {
     sessionA = PairedSession(this, isA: true);
@@ -49,10 +84,11 @@ class TurnSessionPair {
   var _bMeleeCommit = Completer<Uint8List>();
   var _aMeleeReveal = Completer<Uint8List>();
   var _bMeleeReveal = Completer<Uint8List>();
-  var _aFreeMoveCommit = Completer<Uint8List>();
-  var _bFreeMoveCommit = Completer<Uint8List>();
-  var _aFreeMoveReveal = Completer<Uint8List>();
-  var _bFreeMoveReveal = Completer<Uint8List>();
+  // Queues, not one-shot Completers: the free-move round runs twice per turn.
+  final _aFreeMoveCommit = _ByteQueue();
+  final _bFreeMoveCommit = _ByteQueue();
+  final _aFreeMoveReveal = _ByteQueue();
+  final _bFreeMoveReveal = _ByteQueue();
   var _aDelayed = Completer<Uint8List>();
   var _bDelayed = Completer<Uint8List>();
   var _aStateHash = Completer<Uint8List>();
@@ -65,6 +101,8 @@ class TurnSessionPair {
   var _bSpellRevealKey = Completer<Uint8List>();
   var _aSpellRevealOpen = Completer<Uint8List>();
   var _bSpellRevealOpen = Completer<Uint8List>();
+  var _aForcedReveal = Completer<Uint8List>();
+  var _bForcedReveal = Completer<Uint8List>();
 
   void reset() {
     _aActionCommit = Completer();
@@ -79,10 +117,10 @@ class TurnSessionPair {
     _bMeleeCommit = Completer();
     _aMeleeReveal = Completer();
     _bMeleeReveal = Completer();
-    _aFreeMoveCommit = Completer();
-    _bFreeMoveCommit = Completer();
-    _aFreeMoveReveal = Completer();
-    _bFreeMoveReveal = Completer();
+    _aFreeMoveCommit.clear();
+    _bFreeMoveCommit.clear();
+    _aFreeMoveReveal.clear();
+    _bFreeMoveReveal.clear();
     _aDelayed = Completer();
     _bDelayed = Completer();
     _aStateHash = Completer();
@@ -95,6 +133,8 @@ class TurnSessionPair {
     _bSpellRevealKey = Completer();
     _aSpellRevealOpen = Completer();
     _bSpellRevealOpen = Completer();
+    _aForcedReveal = Completer();
+    _bForcedReveal = Completer();
   }
 }
 
@@ -213,6 +253,17 @@ class PairedSession implements BattleTurnSession {
     }
   }
 
+  @override
+  Future<Uint8List?> exchangeForcedReveal(Uint8List ourFrame) {
+    if (isA) {
+      _pair._aForcedReveal.complete(ourFrame);
+      return _pair._bForcedReveal.future;
+    } else {
+      _pair._bForcedReveal.complete(ourFrame);
+      return _pair._aForcedReveal.future;
+    }
+  }
+
   // ── Move commit-reveal ────────────────────────────────────────────────────
 
   @override
@@ -266,22 +317,22 @@ class PairedSession implements BattleTurnSession {
   @override
   Future<Uint8List> exchangeFreeMoveCommit(Uint8List ourCommit) {
     if (isA) {
-      _pair._aFreeMoveCommit.complete(ourCommit);
-      return _pair._bFreeMoveCommit.future;
+      _pair._aFreeMoveCommit.push(ourCommit);
+      return _pair._bFreeMoveCommit.pop();
     } else {
-      _pair._bFreeMoveCommit.complete(ourCommit);
-      return _pair._aFreeMoveCommit.future;
+      _pair._bFreeMoveCommit.push(ourCommit);
+      return _pair._aFreeMoveCommit.pop();
     }
   }
 
   @override
   Future<Uint8List> exchangeFreeMoveReveal(Uint8List ourReveal) {
     if (isA) {
-      _pair._aFreeMoveReveal.complete(ourReveal);
-      return _pair._bFreeMoveReveal.future;
+      _pair._aFreeMoveReveal.push(ourReveal);
+      return _pair._bFreeMoveReveal.pop();
     } else {
-      _pair._bFreeMoveReveal.complete(ourReveal);
-      return _pair._aFreeMoveReveal.future;
+      _pair._bFreeMoveReveal.push(ourReveal);
+      return _pair._aFreeMoveReveal.pop();
     }
   }
 

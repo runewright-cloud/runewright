@@ -21,34 +21,27 @@ AccoutrementKind _toAccoutrementKind(ArtifactKind kind) => switch (kind) {
       ArtifactKind.counterCharm => AccoutrementKind.counterCharm,
     };
 
-/// Converts [artifacts] into a WizardAvatar's accoutrement list. The first
-/// mana gem becomes the indestructible core gem; every wizard gets one even
-/// if [artifacts] has no mana gem entry. [idPrefix] namespaces the generated
-/// ids (e.g. `'acc'` for the local avatar, `'peer_acc'` for a duel's peer
-/// avatar) so two avatars built from identical artifact lists don't collide.
+/// Converts [artifacts] into a WizardAvatar's accoutrement list, one-for-one
+/// and in order. [idPrefix] namespaces the generated ids (e.g. `'acc'` for the
+/// local avatar, `'peer_acc'` for a duel's peer avatar) so two avatars built
+/// from identical artifact lists don't collide.
+///
+/// A wizard carrying no mana gem is a legal loadout: the mana pool is innate
+/// (MatchConfig.innateManaPool), so nothing is silently inserted here. That
+/// replaces the old behaviour, which prepended a free indestructible "core
+/// gem" whenever the chapter declared none.
 List<Accoutrement> accoutrementsFromArtifacts(
   List<ArtifactEntry> artifacts, {
   required String idPrefix,
 }) {
   final accoutrements = <Accoutrement>[];
-  bool coreGemAdded = false;
   for (int i = 0; i < artifacts.length; i++) {
     final a = artifacts[i];
-    final kind = _toAccoutrementKind(a.kind);
-    final isCore = kind == AccoutrementKind.manaGem && !coreGemAdded;
-    if (isCore) coreGemAdded = true;
     accoutrements.add(Accoutrement(
       id: '${idPrefix}_$i',
-      kind: kind,
-      isCoreGem: isCore,
+      kind: _toAccoutrementKind(a.kind),
       targetCommitmentHex: a.targetCommitmentHex,
     ));
-  }
-  if (!coreGemAdded) {
-    accoutrements.insert(
-      0,
-      Accoutrement(id: '${idPrefix}_core', kind: AccoutrementKind.manaGem, isCoreGem: true),
-    );
   }
   return accoutrements;
 }

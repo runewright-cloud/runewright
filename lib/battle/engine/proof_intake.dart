@@ -147,6 +147,25 @@ class ProofIntake {
     return _parse(proofBytes, tier);
   }
 
+  /// Parse the public outputs of a proof **this device authored**, skipping
+  /// verification.
+  ///
+  /// ONLY valid for locally-created proofs. A peer's proof must always go
+  /// through [verifyAndParse] — skipping verification on untrusted bytes would
+  /// let a peer hand us arbitrary "public outputs" with no proof behind them.
+  ///
+  /// Exists so the local and peer wild-magic paths share one derivation:
+  /// `VerifiedSpellOutputs → WildMagic.triggersFor` on both sides, producing
+  /// identical triggers from identical proof bytes (WILD_MAGIC_PLAN.md §4.6).
+  /// Without it the local side would have to re-derive the seed hash from the
+  /// wire `SpellAsset`, which is a second derivation path and therefore a
+  /// desync waiting to happen.
+  ///
+  /// Throws [ProofIntakeException] on a malformed proof, exactly like
+  /// [verifyAndParse].
+  static VerifiedSpellOutputs parseOwn(Uint8List proofBytes, int tier) =>
+      _parse(proofBytes, tier);
+
   // ── Internal parser ──────────────────────────────────────────────────────
 
   static VerifiedSpellOutputs _parse(Uint8List proofBytes, int tier) {

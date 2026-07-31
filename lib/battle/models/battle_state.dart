@@ -25,9 +25,11 @@ import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/battle/models/terrain.dart'
     show CloudObject, TileEffect, CloudKind,
          ToxicCloud, DustCloud, WaterCloud, MobileCloud,
-         FloorIsLava, ImpassableTile, SlowTile, ConveyorTile;
+         FloorIsLava, ImpassableTile, SlowTile, ConveyorTile,
+         IceTile, ChasmTile;
 
 import 'match_config.dart';
+import 'wild_magic_state.dart';
 import 'pending_delayed_spell.dart';
 import 'reflection_link.dart';
 import 'divination_link.dart';
@@ -78,7 +80,11 @@ class BattleState {
     List<DivinationLink>? divinationLinks,
     List<WizardIllusionSet>? wizardIllusions,
     Set<HexCoord>? illusionTerrainTiles,
+    Map<HexCoord, int>? expiringTiles,
+    WildMagicState? wildMagic,
   })  : minions = minions ?? [],
+        expiringTiles = expiringTiles ?? {},
+        wildMagic = wildMagic ?? WildMagicState(),
         tileEffects = tileEffects ?? {},
         clouds = clouds ?? [],
         pendingDelayedSpells = pendingDelayedSpells ?? [],
@@ -127,6 +133,19 @@ class BattleState {
   /// terrain copy with 1 HP -- destroyed by any damage that touches the tile
   /// (see EffectApplicator._applyDamage).
   final Set<HexCoord> illusionTerrainTiles;
+
+  /// Temporary tile effects: coord → the LAST turn number the effect is active
+  /// (swept at the end of that turn, in Phase 6). The mechanism for the
+  /// wild-magic terrain effects — Mountains (2[3] turns), Chasm, Glacier —
+  /// every TileEffect predating wild magic is permanent and needed no such
+  /// thing. An entry here is always paired with a [tileEffects] entry on the
+  /// same coord; sweeping removes both.
+  final Map<HexCoord, int> expiringTiles;
+
+  /// Match-scoped wild-magic globals (Burning Hot's armed turn, Phoenix /
+  /// Statuesque player sets, Rippling Reflections' drift, Scattered Gusts).
+  /// All of it is consensus state — see [toCanonicalBytes].
+  final WildMagicState wildMagic;
 
   // TODO(battle): add SpellDrawState per player once SpellDraw is wired in.
   // TODO(battle): add CommitRevealState for the current turn's entropy.
@@ -217,7 +236,6 @@ class BattleState {
       for (final acc in sortedAcc) {
         buf.writeUtf8(acc.id);
         buf.writeUint8(acc.kind.index);
-        buf.writeUint8(acc.isCoreGem ? 1 : 0);
         buf.writeUint8(acc.counterCharmRevealed ? 1 : 0);
         final target = acc.targetCommitmentHex;
         if (target != null) {
@@ -396,14 +414,68 @@ class BattleState {
       buf.writeInt16(hex.r);
     }
 
+    // ── Wild magic (docs/WILD_MAGIC_PLAN.md §7.4) ────────────────────────
+    // Every field of WildMagicState is consensus state. Sort every collection:
+    // Set<String> iteration is INSERTION order in Dart, so two clients that
+    // added the same players in different orders would produce different bytes
+    // from identical game state.
+    buf.writeInt32(wildMagic.spellDamageBonusAmount);
+    buf.writeInt32(wildMagic.spellDamageBonusTurn);
+
+    final sortedPhoenix = wildMagic.phoenixPlayerIds.toList()..sort();
+    buf.writeUint16(sortedPhoenix.length);
+    for (final id in sortedPhoenix) {
+      buf.writeUtf8(id);
+    }
+
+    final sortedStatuesque = wildMagic.statuesquePlayerIds.toList()..sort();
+    buf.writeUint16(sortedStatuesque.length);
+    for (final id in sortedStatuesque) {
+      buf.writeUtf8(id);
+    }
+
+    // Pending (armed this turn, latching at end of turn — A6). Encoded too:
+    // it survives across the state-hash exchange point within the turn it is
+    // set, so leaving it out would let two clients agree on a hash while
+    // holding different pending sets.
+    final sortedPendingStatuesque = wildMagic.pendingStatuesquePlayerIds.toList()
+      ..sort();
+    buf.writeUint16(sortedPendingStatuesque.length);
+    for (final id in sortedPendingStatuesque) {
+      buf.writeUtf8(id);
+    }
+
+    final fizzlePct = wildMagic.ripplingFizzlePct;
+    buf.writeUint8(fizzlePct == null ? 0 : 1);
+    if (fizzlePct != null) buf.writeInt32(fizzlePct);
+
+    buf.writeUint8(wildMagic.scatteredGusts ? 1 : 0);
+
+    final sortedExpiring = expiringTiles.entries.toList()
+      ..sort((a, b) {
+        final qc = a.key.q.compareTo(b.key.q);
+        return qc != 0 ? qc : a.key.r.compareTo(b.key.r);
+      });
+    buf.writeUint16(sortedExpiring.length);
+    for (final entry in sortedExpiring) {
+      buf.writeInt16(entry.key.q);
+      buf.writeInt16(entry.key.r);
+      buf.writeInt32(entry.value);
+    }
+
     return buf.toBytes();
   }
 
+  /// Wire tags for the tile-effect variants. **Never renumber an existing
+  /// tag** — a tag change silently reinterprets both clients' state bytes.
+  /// Append new variants at the end.
   static int _tileEffectIndex(TileEffect e) => switch (e) {
         FloorIsLava() => 0,
         ImpassableTile() => 1,
         SlowTile() => 2,
         ConveyorTile() => 3,
+        IceTile() => 4,
+        ChasmTile() => 5,
       };
 
   static int _cloudKindIndex(CloudKind k) => switch (k) {

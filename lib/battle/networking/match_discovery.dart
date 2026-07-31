@@ -32,7 +32,15 @@ import '../../protocol/transport.dart';
 /// mismatch rather than risk two builds silently disagreeing about wire
 /// framing. Bump whenever a `BattleMsgType`/payload shape changes in a way
 /// that breaks an older client.
-const kBattleProtocolVersion = 1;
+///
+/// v2 (2026-07-30, core-gem removal): `BattleState.toCanonicalBytes()` dropped
+/// the per-accoutrement `isCoreGem` byte, and `MatchConfig` gained the
+/// negotiated `innateManaPool`. A v1 client omits `innateManaPool` (so config
+/// agreement still *passes* against our default) but derives a different
+/// `maxMana` and hashes an extra byte per accoutrement — i.e. it would desync
+/// on the first state-hash exchange instead of failing the handshake. Aborting
+/// at the gate is the whole point.
+const kBattleProtocolVersion = 2;
 
 /// The max circuit tier (12 / 24 / 48) this device can reliably prove.
 ///

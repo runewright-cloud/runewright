@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // commune_screen.dart — Commune hub: Trade, Create an Apprenticeship, Sync
-// Art. Trade (docs/COMMUNE_TRADE_PLAN.md) and Sync Art
-// (lib/trade/sync_art_session.dart) are functional; Create an Apprenticeship
-// is visible-but-disabled, matching menu_screen.dart's existing
-// About/Settings convention for not-yet-built destinations.
+// Art. All three are functional. Apprenticeship
+// (docs/MASTER_APPRENTICE_PLAN.md) opens the hub screen, which shows
+// current relationships and offers to start a new one — graduation (Phase
+// C) is not yet built and its buttons are disabled within that screen.
 
 import 'package:flutter/material.dart';
 
+import 'apprenticeship_screen.dart';
 import 'manuscript_theme.dart';
 import 'sync_art_screen.dart';
 import 'trade_screen.dart';
@@ -47,9 +48,12 @@ class CommuneScreen extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  const IlluminatedButton(
+                  IlluminatedButton(
                     label: 'CREATE AN APPRENTICESHIP',
-                    onTap: null,
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const ApprenticeshipScreen()),
+                    ),
                     primary: false,
                   ),
                   const SizedBox(height: 12),

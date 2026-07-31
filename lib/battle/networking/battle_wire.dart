@@ -82,7 +82,24 @@ enum BattleMsgType {
 
   // Match control (§2)
   forfeit(0x40),
-  matchEnd(0x41);
+  matchEnd(0x41),
+  // Signed match outcome (MASTER_APPRENTICE_PLAN.md §4) — each side's
+  // SignedMatchOutcome, exchanged after both agree the match is over. Not
+  // the same as matchEnd (0x41), which is an unauthenticated advisory only.
+  matchResultSig(0x42),
+
+  // Forced reveal-and-cast (docs/WILD_MAGIC_PLAN.md §9.5) — wild magic's
+  // Spontaneous Combustion is the first caller. A player's hand CONTENTS are
+  // private (DrawSchedule mirrors positions only), so an effect that resolves
+  // a spell out of the peer's hand needs them to reveal it, with its proof, on
+  // the spot. Slots are chosen publicly FIRST, from the position-only
+  // schedule, so the revealer cannot shop for a favourable spell.
+  //
+  // Sent ONLY on turns where a forced cast actually fires. That is safe
+  // because both clients derive the triggering wild magic from the same
+  // certified proof outputs and so reach the exchange together; this is NOT
+  // one of the uniform every-turn slots.
+  forcedReveal(0x43);
 
   const BattleMsgType(this.byte);
   final int byte;

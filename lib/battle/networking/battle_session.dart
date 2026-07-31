@@ -26,6 +26,7 @@ import '../../spells/spell_permission.dart';
 import '../engine/book_commitment.dart';
 import '../engine/commit_reveal.dart';
 import '../models/match_config.dart';
+import '../models/match_outcome.dart';
 import 'battle_wire.dart';
 import 'match_discovery.dart';
 
@@ -139,6 +140,20 @@ abstract class BattleTurnSession {
   /// local player's spell list this turn. [0x00] means "no active incoming
   /// reveal to open."
   Future<Uint8List> exchangeSpellRevealOpen(Uint8List ourFrame);
+
+  /// Forced reveal-and-cast (docs/WILD_MAGIC_PLAN.md §9.5): each side sends
+  /// the spells (with proofs and Merkle paths) for the hand slots that were
+  /// publicly selected out of its own hand, and receives the peer's.
+  ///
+  /// **Not a uniform per-turn slot** — unlike the scry exchanges, this is sent
+  /// only on turns where a forced cast actually fires. Both clients derive the
+  /// triggering wild magic from the same certified proof outputs, so they
+  /// always reach this call together or not at all.
+  ///
+  /// Returns null when there is no peer (solo/practice), so the caller
+  /// resolves only local picks rather than awaiting a reveal that will never
+  /// arrive.
+  Future<Uint8List?> exchangeForcedReveal(Uint8List ourFrame);
 
   /// Request a fresh commit-reveal entropy exchange during spell resolution.
   ///
@@ -594,6 +609,13 @@ class BattleSession implements BattleTurnSession {
     return frame.payload;
   }
 
+  @override
+  Future<Uint8List?> exchangeForcedReveal(Uint8List ourFrame) async {
+    send(BattleMsgType.forcedReveal, ourFrame);
+    final frame = await framesOfType(BattleMsgType.forcedReveal).first;
+    return frame.payload;
+  }
+
   // ── Mid-resolution entropy refresh ─────────────────────────────────────────
 
   @override
@@ -645,6 +667,30 @@ class BattleSession implements BattleTurnSession {
   void sendMatchEnd({required String winningTeamId, required String finalStateHashHex}) {
     final body = jsonEncode({'winningTeamId': winningTeamId, 'finalStateHash': finalStateHashHex});
     send(BattleMsgType.matchEnd, Uint8List.fromList(utf8.encode(body)));
+  }
+
+  /// Exchanges our signed [MatchOutcome] for the peer's (MASTER_APPRENTICE_
+  /// PLAN.md §4.2). Both sides send simultaneously — safe because, unlike a
+  /// wall-clock timestamp, every field of [mine] is a pure function of
+  /// state the per-turn lockstep already agreed on (see [MatchOutcome]'s doc
+  /// comment). This method only transports the exchange; the caller is
+  /// responsible for validating the returned [SignedMatchOutcome] before
+  /// trusting it — at minimum: signature valid, its raw pubkey binds to the
+  /// ALREADY-AUTHENTICATED peer identity (from [exchangeIdentityAuth], never
+  /// a bare claim here), its `outcome` fields equal [mine]'s, and its
+  /// `signerPubkeyHex` names the OTHER party to the match (not our own).
+  /// [MatchOutcomeRecord.isFullyValid] checks the signature/party shape of
+  /// the combined pair; matching field-for-field against [mine] is the
+  /// caller's job since this method has no opinion on what "ours" should be.
+  Future<SignedMatchOutcome> exchangeMatchOutcome(SignedMatchOutcome mine) async {
+    send(
+      BattleMsgType.matchResultSig,
+      Uint8List.fromList(utf8.encode(jsonEncode(mine.toJson()))),
+    );
+    final frame = await framesOfType(BattleMsgType.matchResultSig).first;
+    return SignedMatchOutcome.fromJson(
+      jsonDecode(utf8.decode(frame.payload)) as Map<String, dynamic>,
+    );
   }
 
   Future<void> close() async {

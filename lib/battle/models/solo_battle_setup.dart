@@ -41,7 +41,7 @@ SoloBattleSetup buildSoloBattleState(
   final accoutrements = accoutrementsFromArtifacts(chapter.artifacts, idPrefix: 'acc');
 
   final manaGems = accoutrements.where((a) => a.kind == AccoutrementKind.manaGem).length;
-  final maxMana = manaGems * config.manaGemPoolPerGem;
+  final maxMana = config.innateManaPool + manaGems * config.manaGemPoolPerGem;
 
   final battlefield = Battlefield(radius: config.gridRadius);
   final spawns = battlefield.spawnPositions(2); // [local=bottom, dummy=top]
@@ -64,10 +64,11 @@ SoloBattleSetup buildSoloBattleState(
     accoutrements: accoutrements,
   );
 
-  // Dummy opponent: one mana gem, stands still (SoloBattleSession always
-  // passes unless the caller opts into scripted casting — see SoloBattleSession
-  // .dummyAutoCast, used only by the Spell Test Lab).
-  final dummyMaxMana = config.manaGemPoolPerGem;
+  // Dummy opponent: one mana gem on top of its innate pool, stands still
+  // (SoloBattleSession always passes unless the caller opts into scripted
+  // casting — see SoloBattleSession.dummyAutoCast, used only by the Spell
+  // Test Lab).
+  final dummyMaxMana = config.innateManaPool + config.manaGemPoolPerGem;
   final dummy = WizardAvatar(
     playerId: dummyId,
     ownerPubkeyHex: '0x${'0' * 64}',
@@ -78,7 +79,7 @@ SoloBattleSetup buildSoloBattleState(
     teamId: 'foe',
     baseSpellRange: 3,
     accoutrements: [
-      const Accoutrement(id: 'dummy_gem', kind: AccoutrementKind.manaGem, isCoreGem: true),
+      const Accoutrement(id: 'dummy_gem', kind: AccoutrementKind.manaGem),
     ],
   );
 

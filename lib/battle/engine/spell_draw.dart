@@ -122,4 +122,28 @@ class SpellDraw {
     newRemaining.insert(i, removed);
     return SpellDraw._(hand: newHand, remaining: newRemaining);
   }
+
+  /// Returns the ENTIRE hand to [remaining] in canonical order, then draws a
+  /// fresh hand of [handSize] — wild magic's Scattered Gusts (row 3, Air):
+  /// "all their bookmarks are blown out of place and they randomly find a new
+  /// set of spells to mark."
+  ///
+  /// Reuses [removeSlot]'s sorted-insertion so [remaining] stays in canonical
+  /// order throughout (that sortedness is load-bearing — see this file's
+  /// header), and draws with the same one-at-a-time `removeAt(rng.nextInt(n))`
+  /// pattern [SpellDraw.opening] uses, so [DrawSchedule.redrawHand] driven
+  /// from the same seed picks the same positions.
+  SpellDraw redrawHand(int handSize, HashRng rng) {
+    var pool = this;
+    while (pool.hand.isNotEmpty) {
+      pool = pool.removeSlot(0);
+    }
+    final remainingPool = List<SpellAsset>.from(pool.remaining);
+    final dealSize = handSize < remainingPool.length ? handSize : remainingPool.length;
+    final newHand = <SpellAsset>[];
+    for (var i = 0; i < dealSize; i++) {
+      newHand.add(remainingPool.removeAt(rng.nextInt(remainingPool.length)));
+    }
+    return SpellDraw._(hand: newHand, remaining: remainingPool);
+  }
 }

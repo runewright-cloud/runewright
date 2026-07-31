@@ -3,7 +3,9 @@
 // wizard_avatar.dart — WizardAvatar, Accoutrement, and StatusEffect models.
 //
 // Accoutrement kinds (design doc §artifacts):
-//   Water — Mana Gems (first = indestructible core gem; +100 pool / +10 regen)
+//   Water — Mana Gems (+100 pool / +10 regen each, on top of the wizard's
+//            innate MatchConfig.innateManaPool; all gems are destructible —
+//            the old indestructible "core gem" is gone)
 //   Fire  — Counter Charms (keyed to a spell's commitmentHex; commit-reveal)
 //   Air   — Bookmarks (hand size; auto-retarget on use — SpellDraw)
 //   Earth — Absorption Rods: when hit by an enemy spell, all time-based
@@ -27,6 +29,7 @@ import 'dart:math' show pow;
 import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/battle/models/effect_kind.dart' show SpellAffinity;
 import 'package:rune_duel/battle/models/barrier.dart';
+import 'package:rune_duel/battle/models/match_config.dart';
 import 'package:rune_duel/battle/models/status_effect_ids.dart';
 
 // ── Accoutrement ──────────────────────────────────────────────────────────────
@@ -54,17 +57,12 @@ class Accoutrement {
   const Accoutrement({
     required this.id,
     required this.kind,
-    this.isCoreGem = false,
     this.targetCommitmentHex,
     this.counterCharmRevealed = false,
   });
 
   final String id;
   final AccoutrementKind kind;
-
-  /// [manaGem] only: true for the first gem — indestructible; never targeted
-  /// by burn effects (design doc: "can't hit core gem").
-  final bool isCoreGem;
 
   /// [counterCharm] only: the Poseidon2 grid-hash of the targeted spell.
   /// Triggers when the opponent casts a spell whose commitment matches —
@@ -96,7 +94,6 @@ class Accoutrement {
       Accoutrement(
         id: id,
         kind: kind,
-        isCoreGem: isCoreGem,
         targetCommitmentHex: targetCommitmentHex ?? this.targetCommitmentHex,
         counterCharmRevealed: counterCharmRevealed ?? this.counterCharmRevealed,
       );
@@ -260,9 +257,18 @@ class WizardAvatar {
   int get manaGemsEquipped =>
       accoutrements.where((a) => a.kind == AccoutrementKind.manaGem).length;
 
-  int get manaRegenPerTurn => manaGemsEquipped * 10;
+  /// Passive mana regained per turn: [MatchConfig.manaGemRegenPerGem] per
+  /// equipped gem, and nothing else. A wizard carrying no gems regenerates
+  /// nothing passively and must meditate (design v3.0 §artifacts).
+  int manaRegenFor(MatchConfig config) =>
+      manaGemsEquipped * config.manaGemRegenPerGem;
 
-  int get maxManaFromGems => manaGemsEquipped * 100;
+  /// Max mana pool: the wizard's innate pool plus each equipped gem's
+  /// contribution. Recompute and assign to [maxMana] whenever the gem count
+  /// changes mid-battle (summoned gems, burned gems) — [maxMana] is stored
+  /// state, hashed into BattleState.toCanonicalBytes(), not a live derivation.
+  int maxManaFor(MatchConfig config) =>
+      config.innateManaPool + manaGemsEquipped * config.manaGemPoolPerGem;
 
   int get absorptionRodCount => accoutrements
       .where((a) =>
@@ -332,6 +338,12 @@ class WizardAvatar {
 
   bool get isBlind => activeStatusEffects
       .any((fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.blind);
+
+  /// Wild magic (Updraft): this wizard ignores terrain while moving —
+  /// chasms, walls, lava, slow tiles, ice sliding, and conveyor pushes.
+  /// See StatusEffectId.flying.
+  bool get isFlying => activeStatusEffects
+      .any((fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.flying);
 
   bool get nextSpellCostDoubled => activeStatusEffects.any(
       (fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.nextSpellCostDouble);
