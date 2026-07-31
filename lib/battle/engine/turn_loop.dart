@@ -121,7 +121,8 @@ import '../models/pending_delayed_spell.dart';
 import '../models/reflection_link.dart';
 import '../models/divination_link.dart';
 import '../models/effect_descriptor.dart'; // exports SpellAffinity, spellAffinityFromZone
-import '../models/hex_battlefield.dart' show hexDistance, hexNeighbors;
+import '../models/hex_battlefield.dart'
+    show MovementContest, hexDistance, hexNeighbors;
 import '../models/minion.dart';
 import '../models/status_effect_ids.dart';
 import '../models/terrain.dart'
@@ -297,6 +298,44 @@ class SpellCastEvent {
   final HexCoord fromHex;
   final HexCoord toHex;
   final SpellAffinity affinity;
+}
+
+/// One avatar's movement this turn — UI-only bookkeeping so the battlefield
+/// can *walk* a wizard along the tiles they actually traversed instead of
+/// teleporting their token to the final position. Carries no gameplay effect;
+/// [TurnLoop] never reads these back. See [TurnLoop.lastAvatarMoveEvents].
+class AvatarMoveEvent {
+  const AvatarMoveEvent({
+    required this.playerId,
+    required this.path,
+    this.lungeTile,
+    this.wonContestAt,
+  });
+
+  final String playerId;
+
+  /// Every tile actually visited, in order, starting with the pre-move origin
+  /// (so `path.first` is where the token starts and `path.last` is where it
+  /// ends). Length 1 means "did not move" — no animation needed.
+  ///
+  /// This is TurnLoop._walkAvatar's return value verbatim, so it includes free
+  /// displacement the walk picked up along the way (conveyor pushes, ice
+  /// slides): the token follows the real route, not the declared one.
+  final List<HexCoord> path;
+
+  /// A contested tile this avatar reached for and lost (out-sped, or tied for
+  /// fastest so nobody claimed it). The UI lunges the token partway toward it
+  /// and recoils to [path]'s last tile. Null when no collision touched them.
+  ///
+  /// Only set when the recoil is geometrically sensible — the real walk ended
+  /// adjacent to the contested tile. If terrain carried the avatar somewhere
+  /// else entirely (conveyor, ice), a lunge would be a lie, so it's dropped.
+  final HexCoord? lungeTile;
+
+  /// A contested tile this avatar reached for and *kept*, by being strictly
+  /// faster than everyone else who wanted it. The UI marks the impact so a
+  /// speed win reads as a win rather than as the opponent simply stopping.
+  final HexCoord? wonContestAt;
 }
 
 /// One spell resolved this turn, in resolution order — drives the UI's
@@ -960,6 +999,15 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// repopulated at the start of every turn.
   List<ConveyorChainEvent> lastConveyorChainEvents = [];
 
+  /// Every avatar's walk during the most recent [runTurn] call — one entry per
+  /// living avatar, including those who stayed put — for the UI's movement
+  /// animation. Cleared and repopulated at the start of every turn.
+  ///
+  /// All entries share one playback timeline (see battle_screen.dart), which is
+  /// what makes a collision legible: the wizards converge on the contested tile
+  /// at the same instant, and the loser recoils off it. See [AvatarMoveEvent].
+  List<AvatarMoveEvent> lastAvatarMoveEvents = [];
+
   /// Wild-magic effects that fired during the most recent [runTurn] call, in
   /// resolution order. Cleared and repopulated at the start of every turn.
   ///
@@ -1202,6 +1250,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     lastCastEvents = [];
     lastResolvedSpells = [];
     lastConveyorChainEvents = [];
+    lastAvatarMoveEvents = [];
     lastWildMagicEvents = [];
     lastCertifiedBaseManaCosts = {};
     _wildMagicNonce = 0;
@@ -2131,8 +2180,47 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       av.position = path.last;
       state.battlefield.occupancy[av.playerId] = path.last;
       walked[av.playerId] = path;
+      lastAvatarMoveEvents.add(
+        _moveEventFor(av.playerId, path, preview.contests),
+      );
     }
     return walked;
+  }
+
+  /// Builds one avatar's UI movement record from their real walked [path] and
+  /// this turn's arbitration [contests]. Cosmetic only — see [AvatarMoveEvent].
+  ///
+  /// A player pushed back repeatedly appears in several contests; the FIRST one
+  /// they lost is the one they visibly reached furthest for, so that's the tile
+  /// the token lunges at. The lunge is dropped unless the walk actually ended
+  /// next to that tile: a conveyor or ice slide can carry the avatar somewhere
+  /// unrelated afterwards, and recoiling onto a tile they're nowhere near would
+  /// read as a rendering bug rather than as a collision.
+  AvatarMoveEvent _moveEventFor(
+    String playerId,
+    List<HexCoord> path,
+    List<MovementContest> contests,
+  ) {
+    HexCoord? lunge;
+    HexCoord? won;
+    for (final contest in contests) {
+      if (!contest.contestants.contains(playerId)) continue;
+      if (contest.winnerId == playerId) {
+        won ??= contest.tile;
+      } else {
+        lunge ??= contest.tile;
+      }
+    }
+    if (lunge != null && hexDistance(path.last, lunge) != 1) lunge = null;
+    // Likewise: a "win" the avatar didn't actually end up standing on (terrain
+    // moved them on afterwards) has nothing to mark.
+    if (won != null && path.last != won) won = null;
+    return AvatarMoveEvent(
+      playerId: playerId,
+      path: List.unmodifiable(path),
+      lungeTile: lunge,
+      wonContestAt: won,
+    );
   }
 
   /// Walks [declaredPath] from [origin] for [av], tile by tile, up to

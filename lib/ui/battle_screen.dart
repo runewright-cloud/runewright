@@ -68,6 +68,7 @@ import '../spells/spell_asset.dart';
 import '../spells/spell_permission.dart';
 import '../spells/supreme_tags.dart' show deriveSupremeTags;
 import '../dev_flags.dart' show kAllowProoflessSpells;
+import 'avatars/avatar_sprites.dart' show AvatarAssignment, AvatarAtlas;
 import 'scenery/scenery_map.dart';
 import 'scenery/scenery_painter.dart';
 import 'battlefield_painter.dart';
@@ -333,6 +334,27 @@ class _BattleScreenState extends State<BattleScreen>
   List<CastAnimation> _castAnimations = const [];
   List<ConveyorChainAnimation> _conveyorChainAnimations = const [];
 
+  // Wizard movement — this turn's walks, played back before anything else in
+  // the resolution sequence (movement is Phase 3; casts are Phase 4+, so this
+  // ordering is the turn's real chronology, not a presentation choice).
+  //
+  // Cleared the moment playback ends. That is load-bearing: knockback, Zephyr
+  // and friends move the same wizards later in the same turn, and a lingering
+  // animation would pin their token to where the movement phase left them. See
+  // BattlefieldPainter.avatarMoveAnimations.
+  late AnimationController _moveAnimController;
+  List<AvatarMoveAnimation> _avatarMoveAnimations = const [];
+
+  /// Decoded wizard sprite sheet, or null until it lands (or if it failed) —
+  /// the painter falls back to the placeholder disc tokens either way.
+  ui.Image? _avatarAtlas;
+
+  /// Which sprite each wizard wears. Const-default today: every wizard gets a
+  /// deterministic Hero from their playerId, identically on both devices. The
+  /// avatar picker fills this in later — see AvatarAssignment.explicit for the
+  /// one constraint that work has to respect.
+  final AvatarAssignment _avatarAssignment = const AvatarAssignment();
+
   // Phase A of the local player's own in-flight cast this turn: the held,
   // pulsing orb at the cast tile, set the instant the cast is confirmed and
   // cleared once the turn resolves and _castAnimations takes over for the
@@ -558,7 +580,15 @@ class _BattleScreenState extends State<BattleScreen>
       vsync: this,
       duration: const Duration(milliseconds: 500),
     );
+    // One walk, however many tiles it covers — see _walkStateAt. Long enough
+    // that a two-tile move reads as walking, short enough that it never feels
+    // like a wait before the spells resolve.
+    _moveAnimController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    );
     _initScenery();
+    unawaited(_loadAvatarAtlas());
     _loadSpells();
     if (widget.state.config.sorcererMode) {
       _initSorcererMode();
@@ -581,6 +611,18 @@ class _BattleScreenState extends State<BattleScreen>
         ? scenerySeedFromBytes(matchId)
         : Random().nextInt(1 << 31);
     unawaited(_loadSceneryAtlas());
+  }
+
+  /// Decodes the wizard sprite sheet. Same fail-soft contract as the scenery
+  /// atlas: a missing or corrupt pack must never take the battle down, it just
+  /// leaves every wizard as the placeholder disc token.
+  Future<void> _loadAvatarAtlas() async {
+    try {
+      final image = await AvatarAtlas.load();
+      if (mounted) setState(() => _avatarAtlas = image);
+    } catch (e) {
+      debugPrint('avatars: atlas load failed — $e');
+    }
   }
 
   Future<void> _loadSceneryAtlas() async {
@@ -752,6 +794,7 @@ class _BattleScreenState extends State<BattleScreen>
     _pulseController.dispose();
     _castAnimController.dispose();
     _effectBloomController.dispose();
+    _moveAnimController.dispose();
     _vocalScorer?.dispose();
     super.dispose();
   }
@@ -1531,6 +1574,21 @@ class _BattleScreenState extends State<BattleScreen>
       final chains = _loop.lastConveyorChainEvents
           .map((e) => ConveyorChainAnimation(path: e.path, killed: e.killed))
           .toList();
+      // Only wizards something actually happened to. A wizard who stayed put
+      // and was in no collision is drawn from occupancy exactly as before, so
+      // including them would buy nothing — and a turn where NOBODY moved skips
+      // the movement beat entirely rather than holding on a still board.
+      final moves = _loop.lastAvatarMoveEvents
+          .where((e) => e.path.length > 1 || e.lungeTile != null)
+          .map(
+            (e) => AvatarMoveAnimation(
+              playerId: e.playerId,
+              path: e.path,
+              lungeTile: e.lungeTile,
+              wonContestAt: e.wonContestAt,
+            ),
+          )
+          .toList();
       final resolved = List<ResolvedSpellEvent>.from(_loop.lastResolvedSpells);
       // Wild magic is untelegraphed by design, so this snapshot is the ONLY
       // channel through which either player learns a global effect fired.
@@ -1562,6 +1620,7 @@ class _BattleScreenState extends State<BattleScreen>
         _resetTurn();
         _castAnimations = const [];
         _conveyorChainAnimations = chains;
+        _avatarMoveAnimations = moves;
         _hiddenCloudIds = hiddenClouds;
         _hiddenTileHexes = hiddenTiles;
         _hiddenMinionIds = hiddenMinions;
@@ -1573,9 +1632,18 @@ class _BattleScreenState extends State<BattleScreen>
         // doc comment.
         if (win != null && win.isOver) _matchEnded = true;
       });
-      if (resolved.isNotEmpty || chains.isNotEmpty || wildMagic.isNotEmpty) {
+      if (resolved.isNotEmpty ||
+          chains.isNotEmpty ||
+          wildMagic.isNotEmpty ||
+          moves.isNotEmpty) {
         unawaited(
-          _playResolvedSpellSequence(resolved, castEvents, chains, wildMagic),
+          _playResolvedSpellSequence(
+            resolved,
+            castEvents,
+            chains,
+            wildMagic,
+            moves,
+          ),
         );
       }
       if (win != null && win.isOver) {
@@ -1805,8 +1873,18 @@ class _BattleScreenState extends State<BattleScreen>
     List<SpellCastEvent> castEvents,
     List<ConveyorChainAnimation> chains,
     List<WildMagicEvent> wildMagic,
+    List<AvatarMoveAnimation> moves,
   ) async {
     if (!mounted) return;
+    // Wizards walk first, because that is when they walked: movement is the
+    // turn's Phase 3 and every cast below resolved in Phase 4 or later. Cleared
+    // as soon as it finishes so post-movement displacement (knockback, Zephyr)
+    // isn't overridden by a spent animation — see _avatarMoveAnimations.
+    if (moves.isNotEmpty) {
+      await _moveAnimController.forward(from: 0);
+      if (!mounted) return;
+      setState(() => _avatarMoveAnimations = const []);
+    }
     // Wild magic resolves BEFORE formula effects (design v3.0 L746), so it is
     // revealed first — and on its own full-screen banner rather than folded
     // into the spell cards, because it is a global, symmetric effect that has
@@ -2204,6 +2282,10 @@ class _BattleScreenState extends State<BattleScreen>
                                   pulseAnimation: _pulseController,
                                   castAnimations: _castAnimations,
                                   castAnimation: _castAnimController,
+                                  avatarMoveAnimations: _avatarMoveAnimations,
+                                  moveAnimation: _moveAnimController,
+                                  avatarAtlas: _avatarAtlas,
+                                  avatarAssignment: _avatarAssignment,
                                   tileEffects: widget.state.tileEffects,
                                   clouds: widget.state.clouds,
                                   directionPickHexes:

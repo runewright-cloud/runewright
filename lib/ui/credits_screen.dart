@@ -55,6 +55,33 @@ class CreditsScreen extends StatelessWidget {
             ),
             _PackLicenceDetail(licence: kPainterlyLicence),
             const SizedBox(height: 28),
+            // CC BY 3.0 *requires* attribution — unlike the CC0 battle-scenery
+            // terrain, which is credited nowhere because it needs no credit.
+            // If the wizard sprites ship, this section ships with them; see
+            // assets/art_pack/avatars/ATTRIBUTION.md.
+            const _CreditSection(
+              title: 'Wizard Character Sprites',
+              body: [
+                _CreditRow(
+                  label: 'Author',
+                  value: 'Svetlana Kushnariova (lana-chan@yandex.ru)',
+                ),
+                _CreditRow(
+                  label: 'Work',
+                  value: '24x32 characters with faces (big pack)',
+                ),
+                _CreditRow(label: 'Source', value: 'opengameart.org'),
+                _CreditRow(label: 'Licence', value: 'CC BY 3.0'),
+                _CreditRow(
+                  label: 'Modifications',
+                  value:
+                      'Walk frames cropped from the source charsets, the '
+                      'colour key replaced with an alpha channel, and edge '
+                      'colour bled outward; assembled into a single atlas.',
+                ),
+              ],
+            ),
+            const SizedBox(height: 28),
             const _CreditSection(
               title: 'Piper Text-to-Speech',
               body: [

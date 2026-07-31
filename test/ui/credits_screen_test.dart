@@ -37,6 +37,18 @@ void main() {
     }
   });
 
+  // CC BY 3.0 makes this credit a licence condition, not a courtesy — a build
+  // that ships assets/art_pack/avatars/ without it is out of compliance.
+  testWidgets('renders the required wizard sprite attribution', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: CreditsScreen()));
+
+    expect(find.textContaining('Svetlana Kushnariova'), findsOneWidget);
+    expect(find.textContaining('CC BY 3.0'), findsOneWidget);
+    expect(find.textContaining('24x32 characters'), findsOneWidget);
+    // CC BY 3.0 §4(a) also requires the derivative to be identified as such.
+    expect(find.textContaining('colour key'), findsOneWidget);
+  });
+
   testWidgets('renders the Piper voice model credit', (tester) async {
     await tester.pumpWidget(const MaterialApp(home: CreditsScreen()));
 

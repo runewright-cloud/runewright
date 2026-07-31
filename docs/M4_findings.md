@@ -3612,3 +3612,80 @@ defaults. They are now `maxManaFor(config)` / `manaRegenFor(config)`, so the kno
 Coverage: `test/battle/models/innate_mana_pool_test.dart` (gemless pool, gem stacking, gem-only
 regen, no inserted core gem, burn taking the last gem and shrinking the pool). Full suite: 987
 green.
+
+---
+
+## 2026-07-30 — Wizards walk instead of teleporting; sprite seam added
+
+**The change.** Movement used to be applied silently: `_resolveAvatarMovement` wrote
+`av.position` and the next repaint drew the token on its new tile. Wizards now slide along the
+tiles they actually walked, and a contested-tile collision plays as both wizards reaching for
+the tile with the loser shoved back off it. Wizard tokens are also now character sprites rather
+than coloured discs, behind a seam built for the avatar picker and the walk-cycle work that
+come later.
+
+**The one design decision worth remembering: the walk is time-normalised, not speed-normalised.**
+Every wizard's route takes the same 72% of the timeline no matter how many tiles it covers, so
+two colliding wizards arrive on the contested tile on the *same frame*. That simultaneity is
+the entire reason the collision reads as a collision. It is tempting to make a Dash cover
+ground visibly faster — don't: speed is already expressed by *who wins the tile*, and staggering
+the arrivals turns a shoulder-check into two unrelated moves. (`wizardWalkStateAt`, extracted
+top-level and public precisely so this timeline is testable on its own.)
+
+**Three non-obvious things this touched.**
+
+1. **`resolveMovement` knew who bounced but not off what.** `MovementResult.bounced` is a bare
+   set of playerIds, which is enough to *apply* a collision and useless for *showing* one — no
+   tile, no winner, so a speed win is indistinguishable from the loser choosing to stop short.
+   Added `MovementResult.contests` (tile + contestants + winner, recorded as the fixed-point
+   loop settles each one). It is strictly additive and UI-only; `bounced`/`paths` are untouched,
+   so nothing consensus-visible moved. A player pushed back repeatedly appears in several
+   contests and the UI lunges them at the **first** one — the tile they visibly reached
+   furthest for.
+
+2. **Clearing the animation is load-bearing, not tidiness.** Movement is Phase 3; knockback,
+   Zephyr and ice all displace the same wizards in Phase 4+. While `avatarMoveAnimations` is
+   non-empty the painter draws those wizards from the animation instead of from `occupancy`, so
+   a spent animation left in place would pin a knocked-back wizard to wherever the movement
+   phase left them. `_playResolvedSpellSequence` clears it the instant playback ends, before
+   any card resolves.
+
+3. **A lunge has to be dropped when the walk didn't end next to the contested tile.** The
+   arbitration preview deliberately ignores conveyors and ice, so the real walk can carry a
+   collision loser somewhere unrelated afterwards. Recoiling onto a tile they are nowhere near
+   renders as a teleport-and-snap-back, i.e. exactly the bug this feature exists to remove.
+   `_moveEventFor` drops the lunge unless `hexDistance(path.last, lunge) == 1`.
+
+**Sprite seam.** `scripts/build_avatar_pack.py` → `assets/art_pack/avatars/avatar_atlas.png` +
+a generated `lib/ui/avatars/avatar_catalog.g.dart`. Raw sheets stay gitignored under
+`assets/art/`, same convention as the painterly and terrain packs. Notes for whoever picks up
+the picker:
+
+- **Row order is RPG Maker 2000's — up, right, down, left — not RPG Maker XP's Down/Left/Right/Up.**
+  Verified against the art (row 2 is the only row with a face; rows 1 and 3 are mirrors), not
+  assumed from the format's reputation. Column order is step / **stand** / step.
+- **The teal colour key is only valid inside the 72×128 walk block.** Several sheets use the
+  same teal as a real art colour in the portrait region to the right of it, so keying the whole
+  sheet punches holes in the artwork.
+- **`AvatarAssignment` is a pure function of playerId today, and that is a feature.** Both
+  devices independently derive the same sprite for the same wizard with nothing on the wire.
+  When the picker lands, a locally-stored choice is invisible to the peer, so the chosen id has
+  to travel in the handshake and be installed via `AvatarAssignment.explicit` on **both**
+  devices. Getting this wrong doesn't fail loudly — each player just sees a different board.
+- **CC BY 3.0 requires attribution** (unlike the CC0 terrain pack, credited nowhere because it
+  needs no credit). `CREDITS.md`, the in-app credits screen, and a test asserting the screen
+  still says it. The downloaded archive shipped no licence file — `[CONFIRM — Soren]` flags in
+  `CREDITS.md` and `assets/art_pack/avatars/ATTRIBUTION.md` ask for the listing's exact terms
+  before a public build.
+
+Coverage: `test/battle/models/movement_collision_test.dart` (contest reporting),
+`test/battle/engine/avatar_move_events_test.dart` (route recording, conveyor tail, lunge and
+the adjacency guard, all through a real `runTurn`),
+`test/ui/wizard_movement_animation_test.dart` (the timeline, plus the painter pass and the
+sprite seam). `test/ui/wizard_movement_preview_test.dart` renders the collision filmstrip and a
+facing sheet to PNG under `WIZARD_PREVIEW_DIR` — same "looked at it" harness as the scenery
+previews, and how the sprite scale and lunge reach were tuned.
+
+**Not done:** no real-device pass yet. This is pure rendering over an existing turn, so the LAN
+risk is low, but per the verification hierarchy it isn't finished until it has been seen on
+hardware in a two-device duel.

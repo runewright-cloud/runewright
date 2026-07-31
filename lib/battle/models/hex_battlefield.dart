@@ -48,6 +48,38 @@ List<HexCoord> hexNeighbors(HexCoord h) =>
 
 // ── Movement result ───────────────────────────────────────────────────────────
 
+/// One contested destination arbitrated during [Battlefield.resolveMovement]:
+/// [tile] is a tile two or more players tried to end their move on
+/// simultaneously, [contestants] is everyone who tried (in a deterministic
+/// order -- see the note below), and [winnerId] is the single claimant that
+/// kept it, or null when the fastest speed tied and *everyone* gave ground.
+///
+/// **Purely descriptive.** Gameplay is fully determined by
+/// [MovementResult.paths] and [MovementResult.bounced]; this list exists so the
+/// UI can animate the lunge-and-recoil (both wizards reaching for the tile, the
+/// loser knocked back) instead of silently teleporting the losers to their
+/// consolation tile. Nothing in the engine reads it back.
+///
+/// [contestants] order is iteration order over the claim map, which is
+/// insertion-ordered from `occupancy` — identical on both devices for the same
+/// state, so this is safe to render from in lockstep even though it is not
+/// itself consensus-critical.
+class MovementContest {
+  const MovementContest({
+    required this.tile,
+    required this.contestants,
+    required this.winnerId,
+  });
+
+  final HexCoord tile;
+  final List<String> contestants;
+  final String? winnerId;
+
+  /// Everyone who reached for [tile] and was pushed back off it.
+  List<String> get losers =>
+      contestants.where((id) => id != winnerId).toList();
+}
+
 /// Return value from [Battlefield.resolveMovement]: a deterministic,
 /// no-RNG *preview* used only to decide who wins a contested destination
 /// tile. It deliberately ignores terrain (SlowTile cost aside, for budget
@@ -58,7 +90,11 @@ List<HexCoord> hexNeighbors(HexCoord h) =>
 /// see tile_entry_resolver.dart) and BattleState (occupancy/avatars/minions)
 /// this self-contained Battlefield class deliberately doesn't reference.
 class MovementResult {
-  const MovementResult({required this.bounced, required this.paths});
+  const MovementResult({
+    required this.bounced,
+    required this.paths,
+    this.contests = const [],
+  });
 
   /// playerIds who lost a contested-destination collision this turn (tied or
   /// out-sped) and so stop short of the tile they declared.
@@ -74,6 +110,11 @@ class MovementResult {
   /// arbitration re-runs, so a chain of collisions can push a player back
   /// more than one tile.
   final Map<String, List<HexCoord>> paths;
+
+  /// Every contested destination arbitrated this turn, in the order the
+  /// fixed-point loop settled them — so a player pushed back twice appears in
+  /// two entries, furthest-reached tile first. UI-only; see [MovementContest].
+  final List<MovementContest> contests;
 }
 
 // ── Battlefield ───────────────────────────────────────────────────────────────
@@ -191,6 +232,7 @@ class Battlefield {
       for (final entry in walkedPaths.entries) entry.key: entry.value.length - 1,
     };
     final bounced = <String>{};
+    final contests = <MovementContest>[];
 
     // Stepping back can land a loser on a tile someone else is claiming, so
     // arbitration runs to a fixed point. Every pass that changes anything
@@ -215,10 +257,15 @@ class Battlefield {
         // Materialised, not lazy: the loop below mutates [claim], which this
         // predicate reads.
         final List<String> losers;
+        // Whoever ends up keeping the tile, for the UI's collision animation
+        // (null = nobody did). Origins are unique, so the origin-holder branch
+        // has exactly one such player.
+        String? winnerId;
         if (contestants.any((id) => claim[id] == 0)) {
           // Someone is standing on their own origin here: they keep it and
           // everyone with room to give ground gives it.
           losers = contestants.where((id) => claim[id]! > 0).toList();
+          winnerId = contestants.firstWhere((id) => claim[id] == 0);
         } else {
           final maxSpeed = contestants
               .map((id) => speeds[id] ?? maxTilesPerTurn)
@@ -231,7 +278,16 @@ class Battlefield {
           losers = winners.length == 1
               ? contestants.where((id) => id != winners.first).toList()
               : contestants;
+          winnerId = winners.length == 1 ? winners.first : null;
         }
+
+        contests.add(
+          MovementContest(
+            tile: entry.key,
+            contestants: List.unmodifiable(contestants),
+            winnerId: winnerId,
+          ),
+        );
 
         for (final id in losers) {
           claim[id] = claim[id]! - 1;
@@ -243,6 +299,7 @@ class Battlefield {
 
     return MovementResult(
       bounced: bounced,
+      contests: List.unmodifiable(contests),
       paths: {
         // walkedPaths[id][1..] is the declared path in order (the walk breaks
         // out rather than skipping steps), so the prefix up to the claimed

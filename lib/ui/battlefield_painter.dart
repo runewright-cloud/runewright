@@ -3,13 +3,16 @@
 // battlefield_painter.dart — CustomPainter for the in-battle hex grid.
 //
 // Draws a plain radius-N battlefield (no CA elements, no border zones).
-// Player positions are shown as circular tokens: gold star for the local
-// player, rubric-red initials for opponents.
+// Wizards are shown as character sprites standing on their tile, ringed in
+// their identity colour (gold for the local player, rubric red for the first
+// opponent); if the sprite atlas hasn't decoded, they fall back to the original
+// circular tokens — gold star for the local player, initials for opponents.
 //
 // Coordinate system and hex orientation are identical to HexGridPainter
 // (flat-top axial, same q/r → pixel formula) so cells align if overlaid.
 
 import 'dart:math';
+import 'dart:ui' as ui show Image;
 
 import 'package:flutter/material.dart';
 
@@ -18,6 +21,7 @@ import '../battle/models/hex_battlefield.dart' show hexDistance;
 import '../battle/models/minion.dart';
 import '../battle/models/terrain.dart';
 import '../engine/hex_grid.dart';
+import 'avatars/avatar_sprites.dart';
 
 // ── Pixel ↔ hex coordinate conversion (flat-top axial) ───────────────────────
 
@@ -128,6 +132,148 @@ class ConveyorChainAnimation {
   final bool killed;
 }
 
+// Avatar movement timeline: wizards walk their route over the first 72% of
+// playback; the remainder is the recoil off a contested tile (and, for everyone
+// who wasn't in a collision, a beat of stillness before the spells resolve).
+const double _kMoveTravelEnd = 0.72;
+
+// How far onto a contested tile a losing wizard actually gets before being
+// shoved back. Not all the way: two tokens fully overlapping reads as a
+// rendering glitch, whereas a clear near-miss reads as a shoulder-check.
+const double _kLungeReach = 0.48;
+
+/// One wizard's walk this turn, to animate rather than teleport: the token
+/// slides along [path] tile-to-tile over one playback of
+/// [BattlefieldPainter.moveAnimation].
+///
+/// Every wizard's animation shares that one timeline, which is what makes a
+/// collision legible — both tokens arrive at the contested tile on the same
+/// frame, and whoever lost recoils off it. Purely cosmetic; built by the UI
+/// layer from [AvatarMoveEvent] (turn_loop.dart), which is the gameplay source
+/// of truth for where anyone actually ended up.
+class AvatarMoveAnimation {
+  const AvatarMoveAnimation({
+    required this.playerId,
+    required this.path,
+    this.lungeTile,
+    this.wonContestAt,
+  });
+
+  final String playerId;
+
+  /// Tiles visited in order, starting with the pre-move origin. A single-entry
+  /// path means the wizard ended where they began — worth animating only when
+  /// [lungeTile] is set, i.e. they were shoved all the way back to their own
+  /// tile, which is the ONE case that distinguishes "lost a collision" from
+  /// "chose not to move". Wizards who genuinely stood still are left out by the
+  /// caller and drawn from occupancy as usual.
+  final List<HexCoord> path;
+
+  /// A contested tile this wizard reached for and lost: the token travels
+  /// [_kLungeReach] of the way onto it, then is pushed back to [path]'s last
+  /// tile. Null when no collision touched them.
+  final HexCoord? lungeTile;
+
+  /// A contested tile this wizard reached for and *kept* by being faster.
+  /// Only drives the impact spark — they end there either way.
+  final HexCoord? wonContestAt;
+
+  /// The tile a collision visibly happened on, if any.
+  HexCoord? get contestedTile => lungeTile ?? wonContestAt;
+}
+
+/// A wizard's drawn position and facing on one frame of a walk — the resolved
+/// output of [wizardWalkStateAt].
+class WizardWalkState {
+  const WizardWalkState(this.pos, this.facing);
+  final Offset pos;
+  final AvatarFacing facing;
+}
+
+/// One wizard's position and facing at playback fraction [t] (0..1) of their
+/// [anim], on a grid whose (0,0) hex is centred at [center] with the given
+/// [hexSize].
+///
+/// Top-level and public because this is the whole movement timeline in one
+/// function: it is what the walk *looks like*, it is the thing worth testing
+/// directly, and it is where the later walk-cycle work (advancing [AvatarPose]
+/// rather than always drawing the standing frame) will hook in.
+///
+/// The route is walked at constant speed over [0, _kMoveTravelEnd] regardless
+/// of how many tiles it covers, so every wizard's step lands on the same
+/// frame — that simultaneity is the whole reason a collision reads as a
+/// collision rather than as two unrelated moves. (Speed differences are
+/// already expressed by *who wins the tile*, not by who gets there first.)
+///
+/// A wizard who lost a contest keeps walking past their final tile, partway
+/// onto the tile they wanted, and is then shoved back over the remaining
+/// `1 - _kMoveTravelEnd` of the timeline — decelerating, since a recoil that
+/// arrives at constant speed reads as a second move rather than a rebound.
+/// They stay facing the tile they lost throughout: being pushed off a tile
+/// you are still reaching for is the pose that tells the story.
+WizardWalkState wizardWalkStateAt(
+  AvatarMoveAnimation anim,
+  double t,
+  Offset center,
+  double hexSize,
+) {
+  Offset px(HexCoord hex) => hexToPixel(hex, center, hexSize);
+  final route = [for (final hex in anim.path) px(hex)];
+  final home = route.last;
+
+  final lunge = anim.lungeTile;
+  if (lunge != null) {
+    final target = px(lunge);
+    final reach = Offset.lerp(home, target, _kLungeReach)!;
+    if (t >= _kMoveTravelEnd) {
+      final back = ((t - _kMoveTravelEnd) / (1 - _kMoveTravelEnd)).clamp(
+        0.0,
+        1.0,
+      );
+      // easeOutBack overshoots slightly past home, away from the contested
+      // tile — a stagger, which is exactly what being shoved looks like.
+      final eased = Curves.easeOutBack.transform(back);
+      return WizardWalkState(
+        Offset.lerp(reach, home, eased)!,
+        facingForDelta(target - home),
+      );
+    }
+    // Reaching for it: the walked route plus the extra partial step. The
+    // per-segment facing _alongRoute derives already turns them toward the
+    // contested tile on that last leg, so no special-casing is needed.
+    return _alongRoute([...route, reach], t / _kMoveTravelEnd);
+  }
+
+  if (t >= _kMoveTravelEnd) return WizardWalkState(home, _finalFacing(route));
+  return _alongRoute(route, t / _kMoveTravelEnd);
+}
+
+/// Position and facing a fraction [f] (0..1) of the way along [route], measured
+/// in *segments* rather than distance — every tile step takes the same time,
+/// which is what a grid walk should look like.
+WizardWalkState _alongRoute(List<Offset> route, double f) {
+  if (route.length < 2) {
+    return WizardWalkState(route.first, AvatarFacing.down);
+  }
+  final segments = route.length - 1;
+  final travel = f.clamp(0.0, 1.0) * segments;
+  final idx = travel.floor().clamp(0, segments - 1);
+  final frac = (travel - idx).clamp(0.0, 1.0);
+  final from = route[idx];
+  final to = route[idx + 1];
+  return WizardWalkState(
+    Offset.lerp(from, to, frac)!,
+    facingForDelta(to - from),
+  );
+}
+
+/// Which way a wizard is left facing once they stop: the direction of their
+/// last step, so they finish looking where they were headed rather than
+/// snapping back to face the viewer.
+AvatarFacing _finalFacing(List<Offset> route) => route.length < 2
+    ? AvatarFacing.down
+    : facingForDelta(route.last - route[route.length - 2]);
+
 /// The battlefield effects one just-resolved spell created, being revealed by
 /// the resolution sequence: they scale up out of [origin] (the tile the spell
 /// hit) as [BattlefieldPainter.effectBloomAnimation] runs 0→1. Handles are
@@ -179,11 +325,16 @@ class BattlefieldPainter extends CustomPainter {
     this.effectBloom,
     this.effectBloomAnimation,
     this.terrainBeneath = false,
+    this.avatarMoveAnimations = const [],
+    this.moveAnimation,
+    this.avatarAtlas,
+    this.avatarAssignment = const AvatarAssignment(),
   }) : super(
          repaint: Listenable.merge([
            pulseAnimation,
            castAnimation,
            effectBloomAnimation,
+           moveAnimation,
          ]),
        );
 
@@ -193,8 +344,31 @@ class BattlefieldPainter extends CustomPainter {
   /// playerId → current position. Players absent from this map are off-field.
   final Map<String, HexCoord> occupancy;
 
-  /// The local player's id — their token is drawn in gold with a star glyph.
+  /// The local player's id — their token is drawn in gold with a star glyph
+  /// (or, once [avatarAtlas] has decoded, a gold ring beneath their sprite).
   final String? localPlayerId;
+
+  /// This turn's wizard walks, played back over [moveAnimation]. While this is
+  /// non-empty the listed wizards are drawn at their interpolated position
+  /// instead of their [occupancy] entry — see [_animatedTokenPositions]. The
+  /// caller clears it when playback ends, which is not optional: displacement
+  /// resolved *after* the movement phase (knockback, Zephyr) moves the same
+  /// wizards again, and a stale animation would pin their token to where the
+  /// movement phase left them.
+  final List<AvatarMoveAnimation> avatarMoveAnimations;
+
+  /// Drives [avatarMoveAnimations], 0→1 over one turn's movement. Merged into
+  /// the repaint listenable so the walk animates without a widget rebuild.
+  final Animation<double>? moveAnimation;
+
+  /// The decoded avatar sprite sheet, or null while it loads (or if it failed).
+  /// Null means every wizard falls back to the placeholder disc token, which is
+  /// exactly what the board looked like before sprites existed.
+  final ui.Image? avatarAtlas;
+
+  /// Which sprite each wizard wears. See AvatarAssignment — today a pure
+  /// function of playerId, later the player's own pick.
+  final AvatarAssignment avatarAssignment;
 
   /// Hex to highlight as a spell target (golden ring).
   final HexCoord? highlightHex;
@@ -486,10 +660,26 @@ class BattlefieldPainter extends CustomPainter {
       }, minionId: m.id);
     }
 
-    // Pass 4 — wizard tokens (on top of minions)
+    // Pass 4 — wizard tokens (on top of minions). A wizard mid-walk is drawn
+    // at their interpolated position and facing instead of their occupancy
+    // entry; everyone else stands on their tile facing the viewer.
+    final walking = _walkStates(center);
     for (final entry in occupancy.entries) {
       final isLocal = entry.key == localPlayerId;
-      _drawToken(canvas, _hexToPixel(entry.value, center), isLocal, entry.key);
+      final walk = walking[entry.key];
+      _drawToken(
+        canvas,
+        walk?.pos ?? _hexToPixel(entry.value, center),
+        isLocal,
+        entry.key,
+        facing: walk?.facing ?? AvatarFacing.down,
+      );
+    }
+
+    // Pass 4.2 — collision impact. Drawn after both tokens so the spark sits
+    // between them at the moment they meet.
+    if (walking.isNotEmpty) {
+      _drawCollisionSparks(canvas, center);
     }
 
     // Pass 4.5 — clouds (over tokens so entities read through the haze;
@@ -506,11 +696,17 @@ class BattlefieldPainter extends CustomPainter {
       );
     }
 
-    // Pass 5 — barrier rings (pulsing glow over all shielded entities)
+    // Pass 5 — barrier rings (pulsing glow over all shielded entities). Keyed
+    // by the entity's FINAL tile, so a shielded wizard mid-walk would leave
+    // their ring behind at the destination; ride along with the token instead.
+    final ringCarriers = {
+      for (final entry in occupancy.entries)
+        if (walking[entry.key] != null) entry.value: walking[entry.key]!.pos,
+    };
     for (final entry in barrierRings.entries) {
       _drawBarrierRing(
         canvas,
-        _hexToPixel(entry.key, center),
+        ringCarriers[entry.key] ?? _hexToPixel(entry.key, center),
         _blendBarrierColors(entry.value),
         pulse,
       );
@@ -663,7 +859,82 @@ class BattlefieldPainter extends CustomPainter {
     );
   }
 
-  void _drawToken(Canvas canvas, Offset pos, bool isLocal, String playerId) {
+  /// Draws one wizard standing on [pos]: their character sprite if the atlas
+  /// has decoded, otherwise the original coloured disc.
+  ///
+  /// Either way the identity colour is what answers "who is that" at a glance —
+  /// as the disc's fill, or as the ring the sprite stands in. Two wizards can
+  /// wear the same face (a player will eventually be free to pick one already
+  /// taken); nobody shares a ring colour.
+  void _drawToken(
+    Canvas canvas,
+    Offset pos,
+    bool isLocal,
+    String playerId, {
+    AvatarFacing facing = AvatarFacing.down,
+  }) {
+    final atlas = avatarAtlas;
+    if (atlas != null) {
+      _drawSpriteToken(canvas, pos, isLocal, playerId, facing, atlas);
+      return;
+    }
+    _drawDiscToken(canvas, pos, isLocal, playerId);
+  }
+
+  void _drawSpriteToken(
+    Canvas canvas,
+    Offset pos,
+    bool isLocal,
+    String playerId,
+    AvatarFacing facing,
+    ui.Image atlas,
+  ) {
+    final color = isLocal ? _kLocalToken : _kFoeToken;
+    // The sprite stands ON the tile rather than filling it: feet just below the
+    // hex centre, body rising out of it. Sized off hexSize so it scales with
+    // the board, and kept under a full tile tall so a wizard never hides the
+    // token behind them.
+    final h = hexSize * 1.65;
+    final w = h * kAvatarFrameWidth / kAvatarFrameHeight;
+    final feet = pos.dy + hexSize * 0.30;
+
+    // Ground shadow + identity ring, both at the feet. The ring reads as the
+    // wizard's own colour without tinting the artwork itself.
+    final ringRect = Rect.fromCenter(
+      center: Offset(pos.dx, feet - hexSize * 0.06),
+      width: hexSize * 0.86,
+      height: hexSize * 0.40,
+    );
+    canvas.drawOval(
+      ringRect.inflate(1.5),
+      Paint()..color = Colors.black.withValues(alpha: 0.32),
+    );
+    canvas.drawOval(
+      ringRect,
+      Paint()
+        ..color = color.withValues(alpha: 0.90)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = isLocal ? 2.6 : 2.0,
+    );
+
+    canvas.drawImageRect(
+      atlas,
+      avatarAssignment.artFor(playerId).frameRect(facing, AvatarPose.stand),
+      Rect.fromLTWH(pos.dx - w / 2, feet - h, w, h),
+      // Pixel art upscaled ~2x: nearest-neighbour keeps it crisp, where any
+      // smoothing turns 24x32 sprites into mush.
+      Paint()
+        ..filterQuality = FilterQuality.none
+        ..isAntiAlias = false,
+    );
+  }
+
+  void _drawDiscToken(
+    Canvas canvas,
+    Offset pos,
+    bool isLocal,
+    String playerId,
+  ) {
     final r = hexSize * 0.36;
     final color = isLocal ? _kLocalToken : _kFoeToken;
 
@@ -1235,6 +1506,42 @@ class BattlefieldPainter extends CustomPainter {
     );
   }
 
+  // ── Wizard movement ────────────────────────────────────────────────────────
+
+  /// Where every mid-walk wizard is right now, and which way they're facing.
+  ///
+  /// Empty when no movement is playing, which is the normal case — callers use
+  /// "absent from this map" to mean "draw at the occupancy tile as usual", so
+  /// this being empty restores the pre-animation behaviour exactly.
+  Map<String, WizardWalkState> _walkStates(Offset center) {
+    if (avatarMoveAnimations.isEmpty) return const {};
+    final t = (moveAnimation?.value ?? 1.0).clamp(0.0, 1.0);
+    return {
+      for (final anim in avatarMoveAnimations)
+        anim.playerId: wizardWalkStateAt(anim, t, center, hexSize),
+    };
+  }
+
+  /// A brief spark on every tile two wizards reached for at once, peaking as
+  /// they meet. Without it a speed win looks like the loser simply chose to
+  /// stop one tile short — the spark is what says "they were both going there."
+  void _drawCollisionSparks(Canvas canvas, Offset center) {
+    final t = (moveAnimation?.value ?? 1.0).clamp(0.0, 1.0);
+    // Starts a hair before impact and outlives it, so the flash is already
+    // there on the frame the tokens touch.
+    const start = _kMoveTravelEnd - 0.06;
+    if (t < start) return;
+    final p = ((t - start) / (1 - start)).clamp(0.0, 1.0);
+
+    final tiles = <HexCoord>{
+      for (final anim in avatarMoveAnimations)
+        if (anim.contestedTile != null) anim.contestedTile!,
+    };
+    for (final tile in tiles) {
+      _drawCastBurst(canvas, _hexToPixel(tile, center), Colors.white, p);
+    }
+  }
+
   /// Renders one [ConveyorChainAnimation] at overall playback fraction [t]
   /// (0..1): a token rides [ConveyorChainAnimation.path] tile-to-tile over
   /// the first [_kChainTravelEnd] of the timeline, with a fading trail over
@@ -1357,6 +1664,9 @@ class BattlefieldPainter extends CustomPainter {
       old.hiddenTileHexes.length != hiddenTileHexes.length ||
       old.hiddenMinionIds.length != hiddenMinionIds.length ||
       old.terrainBeneath != terrainBeneath ||
+      old.avatarMoveAnimations.length != avatarMoveAnimations.length ||
+      !identical(old.avatarAtlas, avatarAtlas) ||
+      !identical(old.avatarAssignment, avatarAssignment) ||
       !identical(old.effectBloom, effectBloom);
 
   /// Length-only comparison misses [CloudObject.position] mutating in place

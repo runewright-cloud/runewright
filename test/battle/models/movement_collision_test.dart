@@ -159,4 +159,114 @@ void main() {
       expect(result.paths['b'], [q(1)]);
     });
   });
+
+  // MovementResult.contests is UI-only — it is what lets the battlefield play
+  // "both wizards reached for that tile and one was shoved off" instead of
+  // teleporting the loser to their consolation tile. It must therefore report
+  // the tile and the winner, not just that somebody bounced.
+  group('resolveMovement — contest reporting', () {
+    test('a speed win names the tile, the winner and the loser', () {
+      final field = Battlefield(radius: 4);
+      field.occupancy['fast'] = q(-2);
+      field.occupancy['slow'] = q(2);
+
+      final result = field.resolveMovement(
+        {
+          'fast': [q(-1), q(0)],
+          'slow': [q(1), q(0)],
+        },
+        {'fast': 3, 'slow': 2},
+      );
+
+      expect(result.contests, hasLength(1));
+      final contest = result.contests.single;
+      expect(contest.tile, q(0));
+      expect(contest.contestants, unorderedEquals(['fast', 'slow']));
+      expect(contest.winnerId, 'fast');
+      expect(contest.losers, ['slow']);
+    });
+
+    test('a tie for fastest has no winner — everyone lunged and lost', () {
+      final field = Battlefield(radius: 4);
+      field.occupancy['a'] = q(-2);
+      field.occupancy['b'] = q(2);
+
+      final result = field.resolveMovement(
+        {
+          'a': [q(-1), q(0)],
+          'b': [q(1), q(0)],
+        },
+        {'a': 2, 'b': 2},
+      );
+
+      final contest = result.contests.single;
+      expect(contest.tile, q(0));
+      expect(contest.winnerId, isNull);
+      expect(contest.losers, unorderedEquals(['a', 'b']));
+    });
+
+    test('an origin holder is reported as the winner', () {
+      final field = Battlefield(radius: 4);
+      field.occupancy['sitter'] = q(0);
+      field.occupancy['charger'] = q(2);
+
+      final result = field.resolveMovement(
+        {
+          'sitter': const [],
+          'charger': [q(1), q(0)],
+        },
+        {'sitter': 2, 'charger': 4},
+      );
+
+      final contest = result.contests.single;
+      expect(contest.tile, q(0));
+      expect(contest.winnerId, 'sitter');
+      expect(contest.losers, ['charger']);
+    });
+
+    test('no collision reports no contests', () {
+      final field = Battlefield(radius: 4);
+      field.occupancy['a'] = q(-2);
+      field.occupancy['b'] = q(2);
+
+      final result = field.resolveMovement(
+        {
+          'a': [q(-1)],
+          'b': [q(1)],
+        },
+        {'a': 2, 'b': 2},
+      );
+
+      expect(result.contests, isEmpty);
+    });
+
+    test('a cascading push-back reports each contest in the order it settled', () {
+      final field = Battlefield(radius: 4);
+      field.occupancy['a'] = q(-1);
+      field.occupancy['b'] = q(3);
+      field.occupancy['c'] = q(0);
+
+      final result = field.resolveMovement(
+        {
+          'a': [q(0), q(1)],
+          'b': [q(2), q(1)],
+          'c': const [],
+        },
+        {'a': 2, 'b': 2, 'c': 2},
+      );
+
+      // a and b tie for (1,0) first; a's fallback then collides with c's
+      // origin. The UI lunges a at (1,0) — the FIRST tile they lost — which is
+      // the one they visibly reached furthest for.
+      expect(result.contests.first.tile, q(1));
+      expect(result.contests.first.winnerId, isNull);
+      expect(
+        result.contests.map((c) => c.tile),
+        containsAllInOrder([q(1), q(0)]),
+      );
+      final second = result.contests.firstWhere((c) => c.tile == q(0));
+      expect(second.winnerId, 'c');
+      expect(second.losers, ['a']);
+    });
+  });
 }
