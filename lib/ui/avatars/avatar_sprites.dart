@@ -26,7 +26,8 @@
 //
 // ── Art ──────────────────────────────────────────────────────────────────────
 //
-// Sprites are RPG Maker 2000 charsets by Svetlana Kushnariova, CC BY 3.0 —
+// Sprites are RPG Maker 2000 charsets by Svetlana Kushnariova, dual-licensed
+// CC BY 3.0 / OGA-BY 3.0 —
 // attribution is REQUIRED, see assets/art_pack/avatars/ATTRIBUTION.md. The
 // atlas and the generated catalog both come from scripts/build_avatar_pack.py.
 
