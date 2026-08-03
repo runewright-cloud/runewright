@@ -9,17 +9,14 @@ This file is the authoritative provenance record.
 **"[LPC-ish] 24x32 characters with faces (big pack)"**, by
 **Svetlana Kushnariova** (*Cabbit*), published on OpenGameArt.
 
-Licensed **CC BY 3.0** — attribution is a *requirement* of this licence, unlike the
+Dual-licensed **CC BY 3.0** (https://creativecommons.org/licenses/by/3.0/) and
+**OGA-BY 3.0** (https://opengameart.org/content/oga-by-30-faq), per the OpenGameArt
+listing — confirmed 2026-08-03. Attribution is a *requirement* of both, unlike the
 CC0 terrain pack. The credit line below must appear in the app's about/credits screen
 for any build that ships this directory:
 
-> Character sprites by Svetlana Kushnariova (lana-chan@yandex.ru), licensed CC BY 3.0.
-
-> **[CONFIRM — Soren]** The downloaded archive shipped *no* licence file, so the
-> licence above is taken from the OpenGameArt listing rather than from the bytes on
-> disk. Before the first public build, paste the listing's exact licence and
-> attribution string here and drop this note. Everything else in this file is
-> generated from the files themselves.
+> Character sprites by Svetlana Kushnariova (lana-chan@yandex.ru), licensed
+> CC BY 3.0 / OGA-BY 3.0.
 
 Raw sources live under `assets/art/` and are **gitignored** (see `.gitignore`); only
 this derived directory is tracked. Regenerate with:

@@ -22,7 +22,9 @@ importing their own image (see `docs/SPELL_ART_PACK_PLAN.md`).
 **Author:** Svetlana Kushnariova (*Cabbit*) — lana-chan@yandex.ru
 **Source:** OpenGameArt.org (see `assets/art_pack/avatars/ATTRIBUTION.md` for the
 per-sheet source hashes)
-**Licence:** CC BY 3.0 — https://creativecommons.org/licenses/by/3.0/
+**Licence:** dual-licensed **CC BY 3.0** (https://creativecommons.org/licenses/by/3.0/)
+**and OGA-BY 3.0** (https://opengameart.org/content/oga-by-30-faq). Both require
+attribution; Runewright credits the author under both.
 **Modified:** yes — the 72×128 walk block cropped out of each RPG Maker 2000 charset,
 the teal colour key replaced with a real alpha channel, edge colour bled outward, and
 all characters packed into one atlas. Full statement in
@@ -32,10 +34,6 @@ Used as the wizard tokens on the battlefield (`lib/ui/avatars/`). **Attribution 
 licence condition here, not a courtesy** — this entry and the matching section in the
 in-app credits screen must ship with any build that bundles
 `assets/art_pack/avatars/`.
-
-> **[CONFIRM — Soren]** The downloaded archive contained no licence file; the licence
-> above comes from the OpenGameArt listing. Confirm the listing's exact terms and
-> attribution string before the first public build.
 
 ## Piper text-to-speech (Practice Mode trainer audio)
 

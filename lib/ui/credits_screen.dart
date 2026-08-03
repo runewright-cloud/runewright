@@ -71,7 +71,7 @@ class CreditsScreen extends StatelessWidget {
                   value: '24x32 characters with faces (big pack)',
                 ),
                 _CreditRow(label: 'Source', value: 'opengameart.org'),
-                _CreditRow(label: 'Licence', value: 'CC BY 3.0'),
+                _CreditRow(label: 'Licence', value: 'CC BY 3.0 / OGA-BY 3.0'),
                 _CreditRow(
                   label: 'Modifications',
                   value:
