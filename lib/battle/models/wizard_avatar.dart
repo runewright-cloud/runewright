@@ -396,30 +396,6 @@ class WizardAvatar {
     return 1.0;
   }
 
-  bool get hasHighMobility => activeStatusEffects
-      .any((fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.highMobility);
-
-  bool get hasHighLiquidity => activeStatusEffects
-      .any((fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.highLiquidity);
-
-  int get highMobilityFreeTiles {
-    for (final fx in activeStatusEffects) {
-      if (!fx.isDormant && fx.effectTypeId == StatusEffectId.highMobility) {
-        return fx.modifiers['freeExtraTiles'] ?? 0;
-      }
-    }
-    return 0;
-  }
-
-  int get highLiquidityFreeTiles {
-    for (final fx in activeStatusEffects) {
-      if (!fx.isDormant && fx.effectTypeId == StatusEffectId.highLiquidity) {
-        return fx.modifiers['freeExtraTiles'] ?? 0;
-      }
-    }
-    return 0;
-  }
-
   bool get hasHaymakerDot => activeStatusEffects
       .any((fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.haymakerDot);
 
@@ -524,6 +500,38 @@ class WizardAvatar {
   /// path). Consumed and cleared once per turn by TurnLoop's post-resolution
   /// free-move phase, after every spell for the turn has fully resolved.
   bool pendingFreeMoveBurst = false;
+
+  /// Which resource a pending Boost (Air-Air Speed Manipulation, Fire or Water
+  /// flavor) will charge for extra tiles, or null if no boost is pending.
+  ///
+  /// [SpellAffinity.fire] — "high mobility", paid in HP: `n(n+1)/2` life.
+  /// [SpellAffinity.water] — "high liquidity", paid in mana: `n(n+1)/2 × 100`.
+  ///
+  /// Turn-scoped exactly like [pendingFreeMoveBurst]: set by
+  /// EffectApplicator._applySpeedManipulation when the effect resolves, offered
+  /// once in TurnLoop's post-resolution free-move window, and cleared there
+  /// whether or not it was used. It is *not* a status effect — the boost is a
+  /// single reactive move at resolution, not a lasting modifier (design v3.0
+  /// §Effect Table, Air-Air; the two dead `highMobility`/`highLiquidity`
+  /// status ids this replaced were never read by anything).
+  ///
+  /// Water wins if both flavors land on the same wizard in one turn: mana is
+  /// the softer resource, so the combined grant is the one that can't kill you.
+  SpellAffinity? pendingBoostMove;
+
+  /// Tiles of a pending [pendingBoostMove] that cost nothing — 0 on a base
+  /// cast, 1 under Potency. Meaningless when [pendingBoostMove] is null.
+  int pendingBoostFreeTiles = 0;
+
+  /// Records a Boost grant, keeping the Water flavor if both land this turn.
+  void grantBoostMove(SpellAffinity resource, int freeTiles) {
+    if (pendingBoostMove == SpellAffinity.water &&
+        resource != SpellAffinity.water) {
+      return;
+    }
+    pendingBoostMove = resource;
+    pendingBoostFreeTiles = freeTiles;
+  }
 
   /// Absorb [damage] through active barriers in element order
   /// (fire → earth → water → air), then into real [hp].

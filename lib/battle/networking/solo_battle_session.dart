@@ -357,7 +357,10 @@ class SoloBattleSession implements BattleTurnSession {
 
   // ── Post-resolution free-move commit-reveal ─────────────────────────────────
   //
-  // The dummy never holds an Air barrier, so it never earns a free move.
+  // The dummy never holds an Air barrier, so it never earns a burst step; it
+  // can be handed a Boost (cast a Watery Boost at it and the grant lands), but
+  // like melee it always declines. [0x00] is TurnLoop._encodePath's empty path
+  // — a zero-length run, i.e. "stand fast".
 
   @override
   Future<Uint8List> exchangeFreeMoveCommit(Uint8List ourCommit) async {

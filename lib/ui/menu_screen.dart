@@ -1,12 +1,15 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart' hide Element;
+import '../apprentice/apprenticeship.dart';
 import '../identity/identity.dart';
 import '../identity/key_packing.dart';
 import '../main.dart';
+import 'apprenticeship_screen.dart';
 import 'battle_lobby_screen.dart';
 import 'commune_screen.dart';
 import 'library_screen.dart';
+import 'manuscript_theme.dart' show kIlluminationGold, kRubricRed, kInkColor;
 import 'onboarding/onboarding_landing_screen.dart';
 import 'practice_screen.dart';
 import 'settings_screen.dart';
@@ -70,6 +73,7 @@ class MenuScreen extends StatelessWidget {
                     );
                   },
                 ),
+                const _ApprenticeshipNag(),
                 const SizedBox(height: 32),
                 _MenuButton(
                   label: 'Battle',
@@ -124,6 +128,94 @@ class MenuScreen extends StatelessWidget {
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const OnboardingLandingScreen()),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The apprenticeship days-remaining nag (docs/MASTER_APPRENTICE_PLAN.md §8).
+///
+/// This is the ONLY reminder that exists — no server, no push channel — so it
+/// lives on the first screen the player sees and stays silent until the term
+/// is nearly up ([kApprenticeshipNagDays]). Renders nothing at all when there
+/// is no mastership, which is the common case; the disk read is one small
+/// directory listing.
+class _ApprenticeshipNag extends StatefulWidget {
+  const _ApprenticeshipNag();
+
+  @override
+  State<_ApprenticeshipNag> createState() => _ApprenticeshipNagState();
+}
+
+class _ApprenticeshipNagState extends State<_ApprenticeshipNag> {
+  ApprenticeshipRecord? _record;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final record = await ApprenticeshipRecord.expiringMastership();
+    if (mounted) setState(() => _record = record);
+  }
+
+  Future<void> _open() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const ApprenticeshipScreen()),
+    );
+    // A renewal (or an abandonment) on that screen changes what this should
+    // say, and there is no other path back here that would refresh it.
+    await _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final record = _record;
+    if (record == null) return const SizedBox.shrink();
+
+    final lapsed = record.isLapsed();
+    final days = record.daysRemaining();
+    final accent = lapsed ? kRubricRed : kIlluminationGold;
+    final message = lapsed
+        ? 'Your apprenticeship has lapsed. Meet your master to renew it.'
+        : 'Your apprenticeship lapses in ${days == 1 ? '1 day' : '$days days'}. '
+            'Meet your master to renew it.';
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: SizedBox(
+        width: 300,
+        child: InkWell(
+          onTap: _open,
+          borderRadius: BorderRadius.circular(4),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              border: Border.all(color: accent),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.hourglass_bottom, size: 18, color: accent),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    message,
+                    style: const TextStyle(
+                      fontFamily: 'serif',
+                      fontSize: 13,
+                      height: 1.3,
+                      color: kInkColor,
+                    ),
                   ),
                 ),
               ],

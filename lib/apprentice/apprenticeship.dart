@@ -30,6 +30,12 @@ import '../spells/spell_permission.dart';
 /// changing this is a design decision, not a per-relationship setting.
 const int kApprenticeshipTermDays = 30;
 
+/// How close to lapsing an apprenticeship must be before the main menu nags
+/// about it (docs/MASTER_APPRENTICE_PLAN.md §8). This is the ONLY reminder
+/// that exists — there is no push channel and no server, so a player who
+/// never opens the app simply lapses.
+const int kApprenticeshipNagDays = 7;
+
 bool _hexEq(String a, String b) {
   BigInt parse(String s) => BigInt.parse(s.startsWith('0x') ? s.substring(2) : s, radix: 16);
   return parse(a) == parse(b);
@@ -320,6 +326,16 @@ class ApprenticeshipRecord {
     return null;
   }
 
+  /// The active mastership if it is within [kApprenticeshipNagDays] of
+  /// lapsing, or has already lapsed; null otherwise (including when there is
+  /// no mastership at all). Drives the main menu's days-remaining nag (§8).
+  static Future<ApprenticeshipRecord?> expiringMastership({DateTime? now}) async {
+    final record = await activeMastership();
+    if (record == null) return null;
+    if (record.isLapsed(now: now)) return record;
+    return record.daysRemaining(now: now) < kApprenticeshipNagDays ? record : null;
+  }
+
   /// This device's [ApprenticeSide.master] records — the apprentices it
   /// teaches, of which there may be unlimited (§2.2 decision 4).
   static Future<List<ApprenticeshipRecord>> apprentices() async {
@@ -357,5 +373,58 @@ class ApprenticeshipRecord {
       }
     }
     return bestClosed;
+  }
+}
+
+/// The apprentice-side facts the library UI needs in order to *label* what
+/// this device holds from a master, and to keep the cloned chapter read-only
+/// (docs/MASTER_APPRENTICE_PLAN.md §8).
+///
+/// Presentation support only. It grants nothing and enforces nothing at the
+/// authorization layer — the right to cast a loaned spell still comes from
+/// the signed [SpellPermission] alone (`spell_authorization.dart`), and a
+/// device with no apprenticeship record at all simply gets [none], with every
+/// predicate false and every surface unchanged.
+class MasterLoanView {
+  const MasterLoanView(this.record);
+
+  /// The "no master" case — safe to use as a synchronous default while the
+  /// real value is still loading.
+  static const MasterLoanView none = MasterLoanView(null);
+
+  /// The active [ApprenticeSide.apprentice] record, or null. There is at most
+  /// one (§2.2 decision 4), which is why this can be a single record rather
+  /// than a list.
+  final ApprenticeshipRecord? record;
+
+  static Future<MasterLoanView> load() async =>
+      MasterLoanView(await ApprenticeshipRecord.activeMastership());
+
+  bool get hasMaster => record != null;
+
+  /// True for the cloned chapter this device received from its master
+  /// (`ApprenticeshipRecord.localChapterId`). That chapter is rewritten
+  /// wholesale by the next renewal (§5.7), so anything the apprentice adds to
+  /// or removes from it is silently lost — hence read-only in the UI.
+  bool isChapterFromMaster(String? chapterId) =>
+      chapterId != null && record?.localChapterId == chapterId;
+
+  /// True for a grid-withheld [SpellAsset] saved by the apprenticeship bundle
+  /// (as opposed to an ordinary Commune/Trade loan of the same shape).
+  bool isSpellFromMaster(String spellId) =>
+      record?.receivedSpellIds.contains(spellId) ?? false;
+
+  /// True for a loan [SpellPermission] issued by this apprenticeship.
+  bool isPermissionFromMaster(String permissionId) =>
+      record?.permissionIds.contains(permissionId) ?? false;
+
+  /// "12 days remain" / "Lapsed" — the clock line shown wherever the
+  /// apprenticeship surfaces. Empty when there is no master.
+  String remainingLabel({DateTime? now}) {
+    final r = record;
+    if (r == null) return '';
+    if (r.isLapsed(now: now)) return 'Lapsed';
+    final days = r.daysRemaining(now: now);
+    return days == 1 ? '1 day remains' : '$days days remain';
   }
 }

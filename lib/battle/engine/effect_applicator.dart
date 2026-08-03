@@ -324,7 +324,7 @@ class EffectApplicator {
         for (final m in inRadius.$2) {
           _hitMinion(ctx, m, e.amount);
         }
-        for (final hex in ctx.state.illusionTerrainTiles.toList()) {
+        for (final hex in ctx.state.illusionTerrainTiles.keys.toList()) {
           if (hexDistance(hex, ctx.targetTile) <= e.splashRadius) {
             _destroyIllusionTerrainIfPresent(ctx, hex);
           }
@@ -346,7 +346,7 @@ class EffectApplicator {
   /// Water-Air Illusions (Earth flavor): terrain copies have 1 HP -- any
   /// damage that touches their tile destroys the copy (and its tileEffect).
   static void _destroyIllusionTerrainIfPresent(ApplyContext ctx, HexCoord hex) {
-    if (ctx.state.illusionTerrainTiles.remove(hex)) {
+    if (ctx.state.illusionTerrainTiles.remove(hex) != null) {
       ctx.state.tileEffects.remove(hex);
     }
   }
@@ -396,19 +396,22 @@ class EffectApplicator {
   // ── Speed Manipulation (Air-Air) ──────────────────────────────────────────
 
   static void _applySpeedManipulation(ApplyContext ctx, SpeedManipulationEffect e) {
-    if (e.highMobility) {
-      // Lands on whoever occupies the target tile -- self-target to grant
-      // yourself the ability.
+    // Boost: a one-shot reactive move, offered in TurnLoop's post-resolution
+    // free-move window (the same window an Airy Barrier burst uses) rather than
+    // a status effect that lingers. Fire charges HP for the extra tiles, Water
+    // charges mana; see WizardAvatar.pendingBoostMove for the resource rule and
+    // TurnLoop.boostMoveCost for the price.
+    //
+    // Lands on whoever occupies the target tile -- self-target to grant
+    // yourself the move; cast on a foe and *they* get the prompt.
+    if (e.highMobility || e.highLiquidity) {
+      final resource = e.highMobility ? SpellAffinity.fire : SpellAffinity.water;
       for (final av in _avatarsAt(ctx.state, ctx.targetTile)) {
         if (_prepareForHit(av, ctx) == null) continue; // redirected onto an illusion decoy
-        _addStatus(av, StatusEffectId.highMobility, {'freeExtraTiles': e.freeExtraTiles}, ctx);
-      }
-      return;
-    }
-    if (e.highLiquidity) {
-      for (final av in _avatarsAt(ctx.state, ctx.targetTile)) {
-        if (_prepareForHit(av, ctx) == null) continue;
-        _addStatus(av, StatusEffectId.highLiquidity, {'freeExtraTiles': e.freeExtraTiles}, ctx);
+        av.grantBoostMove(resource, e.freeExtraTiles);
+        if (av.playerId == ctx.caster.playerId) {
+          _mirrorBoostMove(ctx.state, av.playerId, resource, e.freeExtraTiles);
+        }
       }
       return;
     }
@@ -841,6 +844,7 @@ class EffectApplicator {
     } else if (e.convertToIllusion) {
       for (final m in _minionsAt(ctx.state, ctx.targetTile)) {
         m.hp = m.hp.clamp(0, 1);
+        m.isIllusion = true;
       }
     }
   }
@@ -864,6 +868,7 @@ class EffectApplicator {
       abilities: source.abilities,
       personality: source.personality,
       forceCloseToAttack: true,
+      isIllusion: true,
       sizeBonus: source.sizeBonus,
       // Wears the original's card art, tinted (Minion.copiedFromMinionId).
       copiedFromMinionId: source.copiedFromMinionId ?? source.id,
@@ -901,7 +906,7 @@ class EffectApplicator {
     if (source is! ConveyorTile) {
       for (final (tile, _) in eligible) {
         ctx.state.tileEffects[tile] = source;
-        ctx.state.illusionTerrainTiles.add(tile);
+        ctx.state.illusionTerrainTiles[tile] = ctx.caster.playerId;
       }
       return;
     }
@@ -922,7 +927,7 @@ class EffectApplicator {
           ? HexCoord(nextTile.q - tile.q, nextTile.r - tile.r)
           : _randomDirection(ctx.rng);
       ctx.state.tileEffects[tile] = ConveyorTile(direction: dir);
-      ctx.state.illusionTerrainTiles.add(tile);
+      ctx.state.illusionTerrainTiles[tile] = ctx.caster.playerId;
     }
   }
 
@@ -945,6 +950,68 @@ class EffectApplicator {
     ctx.state.wizardIllusions.add(
       WizardIllusionSet(ownerId: ctx.caster.playerId, decoyPositions: decoys),
     );
+  }
+
+  // ── Earthen Scrying Pool: dispel-on-sight ─────────────────────────────────
+
+  /// Dispels every ENEMY illusion adjacent to a wizard carrying
+  /// [StatusEffectId.scryingSight] — all four Illusions (Water-Air) flavors:
+  /// wizard decoys (Water), illusory creatures (Fire's 1 HP clone and Air's
+  /// converted entity), and terrain copies (Earth). Hostility is by team, so
+  /// a scryer never pops their own side's work.
+  ///
+  /// Deliberately a pure, RNG-free, idempotent function of [state]: TurnLoop
+  /// calls it after every phase that can change who stands next to what
+  /// (movement, action resolution, summons, both free-move windows, end of
+  /// turn), and both clients must land on byte-identical state every time.
+  ///
+  /// A dispelled creature is removed outright rather than dropped to 0 HP:
+  /// it is unmade, not killed, so it must not run [Minion.onDeath] (a
+  /// Morphic illusion would otherwise reform into a real, non-illusory
+  /// creature — and that reform consumes the reaper's RNG, which this must
+  /// not touch).
+  static void dispelIllusionsNearScryers(BattleState state) {
+    final scryers = state.avatars
+        .where((av) =>
+            av.isAlive &&
+            av.activeStatusEffects.any((fx) =>
+                !fx.isDormant &&
+                fx.effectTypeId == StatusEffectId.scryingSight))
+        .toList();
+    if (scryers.isEmpty) return;
+
+    for (final scryer in scryers) {
+      bool isHostile(String ownerId) {
+        final owner =
+            state.avatars.where((a) => a.playerId == ownerId).firstOrNull;
+        return owner != null && owner.teamId != scryer.teamId;
+      }
+
+      // Wizard decoys — only the adjacent ones wink out; the rest of the set
+      // survives (and the set is dropped once its last decoy is gone, the
+      // same bookkeeping the redirect path does).
+      for (final set in state.wizardIllusions.toList()) {
+        if (!isHostile(set.ownerId)) continue;
+        set.decoyPositions
+            .removeWhere((d) => hexDistance(d, scryer.position) <= 1);
+        if (set.decoyPositions.isEmpty) state.wizardIllusions.remove(set);
+      }
+
+      // Illusory creatures (footprint-aware — a Big illusion counts as
+      // adjacent if any tile it occupies is).
+      state.minions.removeWhere((m) =>
+          m.isIllusion &&
+          m.teamId != scryer.teamId &&
+          m.distanceTo(scryer.position) <= 1);
+
+      // Terrain copies — the copy goes, and with it the terrain it was faking.
+      for (final entry in state.illusionTerrainTiles.entries.toList()) {
+        if (!isHostile(entry.value)) continue;
+        if (hexDistance(entry.key, scryer.position) > 1) continue;
+        state.illusionTerrainTiles.remove(entry.key);
+        state.tileEffects.remove(entry.key);
+      }
+    }
   }
 
   // ── Multiplier Cycles (Air-Fire) ──────────────────────────────────────────
@@ -1001,6 +1068,28 @@ class EffectApplicator {
       // durationTurns=0 → rest-of-match; use 999 as "indefinite" sentinel.
       _addStatusWithDuration(ctx.caster, StatusEffectId.revealCounterCharms, {},
           e.durationTurns == 0 ? 999 : e.durationTurns, ctx);
+      return;
+    }
+    if (e.grantsScryingSight) {
+      // Earth (Earthen Scrying Pool). Lands on whoever occupies the target
+      // tile, like nearly every spell effect -- target your own tile to see
+      // through the murk yourself, an ally's tile to give it to them (and,
+      // as with every tile-targeted buff, an opponent who reaches that tile
+      // first takes it instead).
+      for (final av in _avatarsAt(ctx.state, ctx.targetTile)) {
+        _addStatusWithDuration(
+            av, StatusEffectId.scryingSight, {}, e.durationTurns, ctx);
+        // Immunity holds whichever came first: a cloud's lingering
+        // restriction already on the bearer is cleared here, and the
+        // standing-in-a-cloud form (plus any restriction a cloud tries to
+        // impose while this is up) is gated live in
+        // TurnLoop._cloudBoundToAdjacent / _endOfTurn's DustCloud tick.
+        av.activeStatusEffects.removeWhere(
+            (fx) => fx.effectTypeId == StatusEffectId.cloudBoundTargeting);
+      }
+      // An illusion the bearer is *already* standing next to pops now, on
+      // cast, rather than waiting for the next time anything moves.
+      dispelIllusionsNearScryers(ctx.state);
       return;
     }
     if (!e.requiresOpponentReveal) return;
@@ -1205,16 +1294,21 @@ class EffectApplicator {
 
   // ── Status-effect helpers ─────────────────────────────────────────────────
 
-  static void _addStatus(WizardAvatar av, String typeId, Map<String, int> mods,
-      [ApplyContext? ctx]) {
-    av.activeStatusEffects.removeWhere((fx) => fx.effectTypeId == typeId);
-    av.activeStatusEffects.add(StatusEffect(
-      effectTypeId: typeId,
-      remainingTurns: 999,
-      modifiers: mods,
-    ));
-    if (ctx != null && av.playerId == ctx.caster.playerId) {
-      _mirrorStatus(ctx.state, av.playerId, typeId, mods, 999);
+  /// statusMirror for a Boost grant. The boost stopped being a status effect
+  /// (see WizardAvatar.pendingBoostMove), so it no longer rides the generic
+  /// [_mirrorStatus] path — but a self-cast Boost is exactly the kind of
+  /// self-buff the Water Reflections trigger exists to copy, so it mirrors
+  /// explicitly here rather than silently dropping out of the trigger's scope.
+  static void _mirrorBoostMove(
+      BattleState state, String targetPlayerId, SpellAffinity resource, int freeTiles) {
+    for (final link in state.reflectionLinks) {
+      if (link.targetId != targetPlayerId) continue;
+      if (!link.activeTriggers.contains(ReflectionTrigger.statusMirror)) continue;
+      final mirror = state.avatars
+          .where((a) => a.playerId == link.casterId && a.isAlive)
+          .firstOrNull;
+      if (mirror == null) continue;
+      mirror.grantBoostMove(resource, freeTiles);
     }
   }
 

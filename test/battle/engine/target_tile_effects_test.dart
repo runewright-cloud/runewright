@@ -91,8 +91,8 @@ void main() {
     });
   });
 
-  group('Speed Manipulation (Air-Air) highMobility/highLiquidity target the tile', () {
-    test('highMobility lands on whoever is self-targeted, not an untargeted caster', () {
+  group('Speed Manipulation (Air-Air) Boost grants target the tile', () {
+    test('Firey Boost lands on whoever is self-targeted, not an untargeted caster', () {
       final caster = _avatar('caster', const HexCoord(0, 0));
       final enemy = _avatar('enemy', const HexCoord(1, 0));
       final state = _state([caster, enemy]);
@@ -108,17 +108,12 @@ void main() {
         targetTile: enemy.position,
       ));
 
-      expect(
-        enemy.activeStatusEffects.any((fx) => fx.effectTypeId == StatusEffectId.highMobility),
-        isTrue,
-      );
-      expect(
-        caster.activeStatusEffects.any((fx) => fx.effectTypeId == StatusEffectId.highMobility),
-        isFalse,
-      );
+      expect(enemy.pendingBoostMove, SpellAffinity.fire);
+      expect(enemy.pendingBoostFreeTiles, 1);
+      expect(caster.pendingBoostMove, isNull);
     });
 
-    test('highLiquidity self-targeted lands on the caster', () {
+    test('Watery Boost self-targeted lands on the caster', () {
       final caster = _avatar('caster', const HexCoord(0, 0));
       final state = _state([caster]);
 
@@ -133,10 +128,39 @@ void main() {
         targetTile: caster.position,
       ));
 
-      expect(
-        caster.activeStatusEffects.any((fx) => fx.effectTypeId == StatusEffectId.highLiquidity),
-        isTrue,
-      );
+      expect(caster.pendingBoostMove, SpellAffinity.water);
+      expect(caster.pendingBoostFreeTiles, 1);
+    });
+
+    test('Water wins when both flavors land on the same wizard in one turn', () {
+      // Mana is the resource that can't kill you, so the combined grant is the
+      // Water one regardless of which flavor resolved last.
+      final caster = _avatar('caster', const HexCoord(0, 0));
+      final state = _state([caster]);
+
+      EffectApplicator.apply(_ctx(
+        state: state,
+        caster: caster,
+        effect: const SpeedManipulationEffect(
+          affinity: SpellAffinity.water,
+          highLiquidity: true,
+          freeExtraTiles: 1,
+        ),
+        targetTile: caster.position,
+      ));
+      EffectApplicator.apply(_ctx(
+        state: state,
+        caster: caster,
+        effect: const SpeedManipulationEffect(
+          affinity: SpellAffinity.fire,
+          highMobility: true,
+        ),
+        targetTile: caster.position,
+      ));
+
+      expect(caster.pendingBoostMove, SpellAffinity.water);
+      expect(caster.pendingBoostFreeTiles, 1,
+          reason: 'the later Fire grant must not clobber the Water free tile');
     });
   });
 

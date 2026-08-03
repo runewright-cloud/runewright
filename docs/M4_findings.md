@@ -4102,3 +4102,73 @@ sites want deleting, not implementing.
 `scripts/run_vectors.sh`, which tests `test/engine/` plus the circuit corpus — nothing under
 `test/battle/` is in CI. A permanently-red local suite is the only signal that exists here, which
 is exactly why it is worth keeping green.
+
+## 2026-08-01 — Boost (Air-Air Speed Manipulation) was a status badge that did nothing
+
+**What was broken.** `Watery Boost` — the Water flavor of Air-Air Speed Manipulation, "High
+Liquidity" — resolved fine, set a `highLiquidity` status effect on the target, showed a "High
+Liq." badge in the status panel, and then *nothing*. `WizardAvatar.hasHighLiquidity` and
+`highLiquidityFreeTiles` existed and were **read by nothing in the engine**. Its Fire twin,
+`highMobility`, was dead in exactly the same way. Both were applied through
+`EffectApplicator._addStatus`, the 999-turn "permanent" variant — so they also never expired.
+
+Grep is the whole diagnosis here: a getter with no callers is a feature with no implementation.
+Worth a periodic sweep for the others (`_addStatus`'s only two call sites were these two, and
+removing them left the helper itself unreferenced — that's a smell, not a coincidence).
+
+**The fix, and the design decision behind it.** Soren's call: the boost is **not** a lasting
+modifier. It resolves, and the wizard immediately chooses how far to run, paying as they go.
+That is the same shape as the Airy Barrier burst step, so it reuses the same window — the Phase
+5.5 / 6.5 post-resolution free-move commit-reveal rounds — rather than inventing a second
+suspension point. The two **stack**: burst step free, boost tiles paid after it.
+
+- Water pays `n(n+1)/2 × 100` mana; Fire pays `n(n+1)/2` life. Both in `TurnLoop.boostMoveCost`.
+- Base cast has **0 free tiles**; Potency grants 1. The design table's `[1 free tile]` is a
+  potency bracket by that table's own convention, and `effect_resolver.dart` already agreed
+  (`freeExtraTiles: p ? 1 : 0`) — only the prose in `effect_kind.dart` promised it
+  unconditionally. Prose corrected to match the resolver.
+- Targeting unchanged: the grant lands on whoever occupies the target tile, so casting it on a
+  foe hands *them* the prompt on their device.
+- Both flavors on one wizard in one turn: **Water wins** (`WizardAvatar.grantBoostMove`). Mana
+  is the resource that can't kill you.
+
+**Three things that were load-bearing to get right.**
+
+1. **The wire carries the path, never the price.** `_runFreeMoveRound` exchanges only the
+   declared path (`_encodePath`, empty = stand fast — the old `_encodeOptionalTarget` shape
+   couldn't express a multi-tile run). Both devices re-derive the grant with
+   `freeMoveGrantFor` and re-price with `boostMoveCost` on their own state. A peer that declares
+   a path longer than it can pay for gets **truncated and billed for what it actually walked**,
+   not rejected — truncation is deterministic on both sides, rejection would need a new error
+   path. Same rule as `_certifiedManaCost` (B-1/B-8): never accept a peer's claim about what it
+   may do or what that costs.
+2. **Bill off budget spent, not tiles drawn.** `_walkAvatar` now returns
+   `({path, spent})`. A slow tile is 1 tile but 2 budget points; a conveyor push or ice slide is
+   free tiles and 0 points. Pricing off `spent` is what makes both of those come out right, and
+   it's the number BattleScreen's preview derives too (from `predictAvatarMove`'s
+   `budgetRemaining`). Those are two separately-maintained mirrors of the same walk — the seam
+   most likely to drift — so there's a slow-tile vector pinning them together in
+   `airy_barrier_free_move_test.dart`.
+3. **A Fire boost's life cost is NOT `absorbDamage`.** Routing it through barriers would let an
+   Earth barrier soak the price and make the tiles free. It's a direct `hp` deduction, floored
+   at 1, and `freeMoveGrantFor` caps the grant at `hp - 1` so the floor is never reached by
+   surprise. (Note this differs from Earth Fuel Transmutation's "burn 4 life", which *does* go
+   through `absorbDamage` — that one is framed as self-inflicted damage, this one as a price.
+   If that distinction ever needs unifying, unify it deliberately.)
+
+**UI.** The prompt builds a path with the same gesture as the movement phase (tap to extend,
+tap the tip to undo, tap origin to clear), tinted by the paying element rather than air. The
+MP/HP bar shows the projected level in full colour behind a desaturated fill of what the run
+will eat, reading `500 → 200`. A bare burst step still commits on the tap — one free tile has
+nothing to weigh; only a Boost gets the MOVE button, because there the player is choosing how
+much to spend.
+
+**Still open, and adjacent.** `TurnLoop._endOfTurn` has a live
+`TODO(ui): signal free move grant to the UI` — an Airy Barrier that **expires from old age**
+(`tickBarriers`) grants nothing at all, unlike one that bursts from damage. That is the other
+half of "when an air barrier collapses" and is untouched by this change.
+
+**Not yet hardware-verified.** 1076 tests green and `flutter build linux` clean, but nobody has
+cast this in a running app or across two devices. Per the verification hierarchy that means it
+is not done: the Spell Test Lab is the intended path (build a `[TEST]` Watery / Boost spell,
+Test Battle, cast it on yourself).

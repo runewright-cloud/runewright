@@ -23,14 +23,14 @@ abstract final class StatusEffectId {
   // modifiers: {'speedDelta': +int}
   static const rodMobility = 'rodMobility';
 
-  // High-mobility: caster may spend HP for extra tiles during move selection.
-  // modifiers: {'freeExtraTiles': int}   (0 or 1 under potency)
+  // Boost (Air-Air Speed Manipulation, Fire "high mobility" / Water "high
+  // liquidity") deliberately has NO status id. It is a one-shot reactive move
+  // taken in TurnLoop's post-resolution free-move window, not a lasting
+  // modifier — see WizardAvatar.pendingBoostMove. The `highMobility` and
+  // `highLiquidity` ids that used to live here were set by the applicator and
+  // read by nothing; they are gone rather than left as decorative badges.
+  //
   // Sorcerer seam: pedometer rate scales with extra-tile count.
-  static const highMobility = 'highMobility';
-
-  // High-liquidity: same as highMobility but spends mana instead of HP.
-  // modifiers: {'freeExtraTiles': int}
-  static const highLiquidity = 'highLiquidity';
 
   // Flying (wild magic, Updraft — row 2 Air): the bearer ignores terrain
   // entirely while moving — ChasmTile, ImpassableTile, FloorIsLava, SlowTile's
@@ -111,4 +111,16 @@ abstract final class StatusEffectId {
   static const revealSpells = 'revealSpells';
   // Air: see opponent's committed spell target tile (requires protocol message).
   static const revealTargetTile = 'revealTargetTile';
+
+  // Earth (Earthen Scrying Pool): the bearer sees through the murk. Two
+  // effects, both engine-side:
+  //   1. Immunity to the clouds' adjacent-only targeting restriction — both
+  //      the standing-in-a-cloud form and the lingering
+  //      [cloudBoundTargeting] status (see TurnLoop._cloudBoundToAdjacent).
+  //      Applying it also strips any cloudBoundTargeting already on the
+  //      bearer, so it doesn't matter whether the cloud came first.
+  //   2. An enemy illusion adjacent to the bearer is dispelled immediately
+  //      (see EffectApplicator.dispelIllusionsNearScryers).
+  // No modifiers.
+  static const scryingSight = 'scryingSight';
 }

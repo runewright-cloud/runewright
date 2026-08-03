@@ -13,6 +13,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../apprentice/apprenticeship.dart' show MasterLoanView;
 import '../../spells/chapter_asset.dart';
 import '../manuscript_theme.dart';
 
@@ -28,6 +29,7 @@ class ChapterPicker extends StatefulWidget {
 
 class _ChapterPickerState extends State<ChapterPicker> {
   List<ChapterAsset> _chapters = [];
+  MasterLoanView _masterLoan = MasterLoanView.none;
   bool _loading = true;
 
   @override
@@ -39,6 +41,7 @@ class _ChapterPickerState extends State<ChapterPicker> {
   Future<void> _load() async {
     final chapters = await ChapterAsset.loadAll();
     final activeId = await ChapterAsset.loadActiveChapterId();
+    final masterLoan = await MasterLoanView.load();
     if (!mounted) return;
     ChapterAsset? active;
     if (activeId != null) {
@@ -48,6 +51,7 @@ class _ChapterPickerState extends State<ChapterPicker> {
     active ??= chapters.length == 1 ? chapters[0] : null;
     setState(() {
       _chapters = chapters;
+      _masterLoan = masterLoan;
       _loading = false;
     });
     if (widget.selected == null && active != null) {
@@ -120,6 +124,21 @@ class _ChapterPickerState extends State<ChapterPicker> {
                   ),
                 ),
         ),
+        // A chapter lent by a master is playable but time-limited
+        // (MASTER_APPRENTICE_PLAN.md §8) — and once it lapses its spells stop
+        // passing localIdentityMayUse, so carrying it into a duel unwarned
+        // would look like the game losing the player's spells mid-match.
+        if (_masterLoan.isChapterFromMaster(widget.selected?.id)) ...[
+          const SizedBox(height: 6),
+          Text(
+            _masterLoan.record!.isLapsed()
+                ? "Lent by your master · lapsed — these spells will no longer cast"
+                : 'Lent by your master · ${_masterLoan.remainingLabel()}',
+            style: manuscriptCaptionStyle(
+              color: _masterLoan.record!.isLapsed() ? kRubricRed : kIlluminationGold,
+            ),
+          ),
+        ],
       ],
     );
   }

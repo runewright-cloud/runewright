@@ -79,7 +79,7 @@ class BattleState {
     List<ReflectionLink>? reflectionLinks,
     List<DivinationLink>? divinationLinks,
     List<WizardIllusionSet>? wizardIllusions,
-    Set<HexCoord>? illusionTerrainTiles,
+    Map<HexCoord, String>? illusionTerrainTiles,
     Map<HexCoord, int>? expiringTiles,
     WildMagicState? wildMagic,
   })  : minions = minions ?? [],
@@ -131,8 +131,11 @@ class BattleState {
 
   /// Hexes whose tileEffects entry is an Illusions (Water-Air, Earth flavor)
   /// terrain copy with 1 HP -- destroyed by any damage that touches the tile
-  /// (see EffectApplicator._applyDamage).
-  final Set<HexCoord> illusionTerrainTiles;
+  /// (see EffectApplicator._applyDamage), mapped to the playerId of the
+  /// wizard who conjured the copy. The owner is what lets an Earthen Scrying
+  /// Pool bearer tell an *enemy* illusion from their own team's
+  /// (EffectApplicator.dispelIllusionsNearScryers).
+  final Map<HexCoord, String> illusionTerrainTiles;
 
   /// Temporary tile effects: coord → the LAST turn number the effect is active
   /// (swept at the end of that turn, in Phase 6). The mechanism for the
@@ -334,6 +337,10 @@ class BattleState {
       buf.writeUint16(abilityMask);
       buf.writeUint8(m.personality.index);
       buf.writeUint8(m.sizeBonus);
+      // Illusory creatures die on sight to an Earthen Scrying Pool bearer,
+      // so this is gameplay state both clients must agree on (unlike the
+      // purely presentational copiedFromMinionId, which stays out).
+      buf.writeUint8(m.isIllusion ? 1 : 0);
     }
 
     // Tile effects
@@ -408,8 +415,9 @@ class BattleState {
       buf.writeBytes(bytes);
     }
 
-    // Illusion terrain-copy tiles (destructible, 1 HP)
-    final sortedIllusionTiles = illusionTerrainTiles.toList()
+    // Illusion terrain-copy tiles (destructible, 1 HP) + the conjurer's id
+    // (read by the Earthen Scrying Pool dispel, so it is consensus state).
+    final sortedIllusionTiles = illusionTerrainTiles.keys.toList()
       ..sort((a, b) {
         final qc = a.q.compareTo(b.q);
         return qc != 0 ? qc : a.r.compareTo(b.r);
@@ -418,6 +426,7 @@ class BattleState {
     for (final hex in sortedIllusionTiles) {
       buf.writeInt16(hex.q);
       buf.writeInt16(hex.r);
+      buf.writeUtf8(illusionTerrainTiles[hex]!);
     }
 
     // ── Wild magic (docs/WILD_MAGIC_PLAN.md §7.4) ────────────────────────

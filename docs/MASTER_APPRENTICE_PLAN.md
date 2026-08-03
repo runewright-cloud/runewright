@@ -782,6 +782,60 @@ the UI (a caption, not silence) rather than pretending otherwise.
   chapter picker when < 7 days remain. This is the only reminder that exists; there is no
   push channel.
 
+### Phase D status — **DONE 2026-08-03**
+
+All three surfaces built, plus one more the third bullet's "or the chapter picker" made
+worth doing on its own merits (below).
+
+**The seam: `MasterLoanView` (`lib/apprentice/apprenticeship.dart`).** Every Phase D
+surface needs the same three answers — is *this* chapter / *this* spell / *this* grant
+from my master, and how long is left — so they come from one small value object over
+`ApprenticeshipRecord.activeMastership()` rather than three screens each rediscovering the
+relationship. It is presentation support and nothing else: it grants nothing, blocks
+nothing at the authorization layer, and its `none` constant makes "no apprenticeship" a
+total no-op on every surface. Also new: `ApprenticeshipRecord.expiringMastership()` and
+`kApprenticeshipNagDays = 7`.
+
+**Note the distinction it exists to draw.** An apprenticeship loan and a Commune/Trade
+loan are *identical* on the wire and at the authorization layer — same
+`SpellPermission(kind: loan)`, same `gridWithheld` asset. The only local record of the
+difference is the `ApprenticeshipRecord`'s `permissionIds`/`receivedSpellIds`/
+`localChapterId` bookkeeping. That is why this is a labelling layer and not a property of
+the spell: there is nothing on the spell to read.
+
+1. **Library / Loans tab** (`library_screen.dart`) — a master's loans sort first, take a
+   `school` icon and a gold border, and read "Lent by your master" where a trade loan
+   reads "Loaned by 0xabcd…". The match is `permissionIds` OR `receivedSpellIds`: a
+   renewal that re-grants an already-held spell issues a new permission id while the asset
+   id survives, so either list alone has a gap.
+2. **Chapter read-only** — the cloned chapter is marked in the Chapters list and opens
+   with a banner giving the *reason* (renewal re-snapshots it wholesale, §5.7, so an added
+   or removed entry is lost), with every mutation control dropped rather than greyed:
+   entry removal, artifact +/−, add-artifact, and bound-counter-charm removal. Setting it
+   **active is still allowed** — the apprentice is meant to duel with it; only its
+   contents are frozen. The add-side counterpart is `_blockedAsMastersChapter`, called by
+   all three "add to chapter" paths (Craftings, Loans, Tests) and by the counter-charm
+   binder, since those write to the selected chapter from screens that never open it. Two
+   layers on purpose: the callbacks are null *and* each mutation re-checks, because a
+   single forgotten guard here would silently edit a chapter that a renewal is about to
+   overwrite, and the loss would be invisible for a month.
+3. **Days-remaining nag** (`menu_screen.dart`) — `_ApprenticeshipNag` renders nothing
+   until the term is inside `kApprenticeshipNagDays` (or lapsed), then shows a tappable
+   line into `ApprenticeshipScreen` and reloads on return, since a renewal there is
+   exactly what should silence it.
+4. **Chapter picker** (`lib/ui/widgets/chapter_picker.dart`) — *not in the bullet list, but
+   the same clock and a real hazard:* the picker feeds both the solo settings screen and
+   the LAN duel lobby, and a **lapsed** master chapter is still selectable while its spells
+   no longer pass `localIdentityMayUse`. Unwarned, that reads as the game losing the
+   player's spells mid-duel. Now captioned, in `kRubricRed` when lapsed.
+
+Tests: `test/apprentice/apprentice_loan_view_test.dart` (13). Data-layer, not widget —
+every screen here loads through real `dart:io`, the pattern Phase B established this
+harness cannot settle. Two cases are the ones worth keeping: a **master-side** record marks
+nothing (a master owns their chapter; only the apprentice's clone is frozen), and a
+**lapsed-but-open** record still marks its chapter (the grants are dead but the chapter is
+still on disk, and renewal revives it in place).
+
 ---
 
 ## 9. Invariant checklist (must hold at PR time)

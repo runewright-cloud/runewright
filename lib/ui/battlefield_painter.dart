@@ -345,6 +345,7 @@ class BattlefieldPainter extends CustomPainter {
     this.scryRevealHex,
     this.meleePickHexes = const [],
     this.freeMovePickHexes = const [],
+    this.freeMovePickColor,
     this.hiddenCloudIds = const {},
     this.hiddenTileHexes = const {},
     this.hiddenMinionIds = const {},
@@ -508,6 +509,12 @@ class BattlefieldPainter extends CustomPainter {
   /// confused with the rubric-red melee prompt.
   final List<HexCoord> freeMovePickHexes;
 
+  /// Tint for [freeMovePickHexes]. Null falls back to air — the Airy Barrier
+  /// burst that free move started as. A Boost run passes its own element
+  /// (water or fire) so the highlight says which resource the tiles are being
+  /// bought with, not just that they're steppable.
+  final Color? freeMovePickColor;
+
   static const _kScryReveal = Color(0xFF9B5FC0); // violet — third-eye glimpse
   static const _kMeleePick = Color(0xFF7A1F1F); // rubric red — melee prompt
 
@@ -668,9 +675,15 @@ class BattlefieldPainter extends CustomPainter {
     for (final hex in meleePickHexes) {
       _drawHighlight(canvas, hex, center, _kMeleePick);
     }
-    // Post-resolution Airy Barrier burst free-move candidates.
+    // Post-resolution free-move prompt — burst-step candidates, or the Boost
+    // run built so far.
     for (final hex in freeMovePickHexes) {
-      _drawHighlight(canvas, hex, center, _kElementColor[SpellAffinity.air]!);
+      _drawHighlight(
+        canvas,
+        hex,
+        center,
+        freeMovePickColor ?? _kElementColor[SpellAffinity.air]!,
+      );
     }
 
     // Pass 3 — minion tokens (Big/EEEE creatures draw one token per
@@ -1719,6 +1732,7 @@ class BattlefieldPainter extends CustomPainter {
       old.directionPickHexes.length != directionPickHexes.length ||
       old.meleePickHexes.length != meleePickHexes.length ||
       old.freeMovePickHexes.length != freeMovePickHexes.length ||
+      old.freeMovePickColor != freeMovePickColor ||
       old.conveyorChainAnimations.length != conveyorChainAnimations.length ||
       old.hiddenCloudIds.length != hiddenCloudIds.length ||
       old.hiddenTileHexes.length != hiddenTileHexes.length ||

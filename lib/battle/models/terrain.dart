@@ -162,7 +162,7 @@ class ToxicCloud extends CloudKind {
 /// [restrictionTurnsAfterLeaving] more turns, applied as a status effect
 /// (StatusEffectId.cloudBoundTargeting).
 class DustCloud extends CloudKind {
-  const DustCloud({this.restrictionTurnsAfterLeaving = 2});
+  const DustCloud({this.restrictionTurnsAfterLeaving = 3});
 
   final int restrictionTurnsAfterLeaving;
 }

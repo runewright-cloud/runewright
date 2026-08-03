@@ -58,18 +58,18 @@ class EffectResolver {
 
       // ── Barrier (Earth-Earth) 2[3] turns ──────────────────────────────────
       (SpellAffinity.fire, EffectKind.barrier) =>
-        BarrierEffect(hp: 2, durationTurns: p ? 3 : 2, fireAura: true),
+        BarrierEffect(hp: 2, durationTurns: p ? 4 : 3, fireAura: true),
       (SpellAffinity.earth, EffectKind.barrier) =>
-        BarrierEffect(hp: 4, durationTurns: p ? 3 : 2),
+        BarrierEffect(hp: 4, durationTurns: p ? 4 : 3),
       (SpellAffinity.water, EffectKind.barrier) =>
-        BarrierEffect(hp: 2, durationTurns: p ? 3 : 2, manaRegenBonusPct: 10),
+        BarrierEffect(hp: 2, durationTurns: p ? 4 : 3, manaRegenBonusPct: 10),
       (SpellAffinity.air, EffectKind.barrier) =>
-        BarrierEffect(hp: 2, durationTurns: p ? 3 : 2, freeMoveOnCollapse: true),
+        BarrierEffect(hp: 2, durationTurns: p ? 4 : 3, freeMoveOnCollapse: true),
 
       // ── Reflections (Water-Water) 2[3] triggers ───────────────────────────
       // All affinities produce the same pool of 4 triggers; potency grants 3
       // random triggers instead of 2. Affinity has no effect on trigger type.
-      (_, EffectKind.reflections) => ReflectionEffect(triggerCount: p ? 3 : 2, durationTurns: p ? 3 : 2),
+      (_, EffectKind.reflections) => ReflectionEffect(triggerCount: p ? 3 : 2, durationTurns: p ? 4 : 3),
 
       // ── Speed Manipulation (Air-Air) ──────────────────────────────────────
       (SpellAffinity.fire, EffectKind.speedManipulation) =>
@@ -82,7 +82,7 @@ class EffectResolver {
         SpeedManipulationEffect(
           affinity: SpellAffinity.earth,
           speedDelta: -1,
-          durationTurns: p ? 4 : 3,
+          durationTurns: p ? 5 : 4,
           affectsTarget: true,
         ),
       (SpellAffinity.water, EffectKind.speedManipulation) =>
@@ -95,7 +95,7 @@ class EffectResolver {
         SpeedManipulationEffect(
           affinity: SpellAffinity.air,
           speedDelta: 1,
-          durationTurns: p ? 3 : 2,
+          durationTurns: p ? 4 : 3,
           affectsTarget: true,
         ),
 
@@ -109,7 +109,7 @@ class EffectResolver {
         StatusEffectInteractionEffect(
           affinity: SpellAffinity.earth,
           isDormant: true,
-          durationTurns: p ? 3 : 2,
+          durationTurns: p ? 4 : 3,
         ),
       (SpellAffinity.water, EffectKind.statusEffectInteraction) =>
         StatusEffectInteractionEffect(
@@ -127,13 +127,13 @@ class EffectResolver {
         ChainInteractionEffect(
           affinity: SpellAffinity.fire,
           chainAccumulationMultiplier: 2.0,
-          durationTurns: p ? 3 : 2,
+          durationTurns: p ? 4 : 3,
         ),
       (SpellAffinity.earth, EffectKind.chainInteraction) =>
         ChainInteractionEffect(
           affinity: SpellAffinity.earth,
           chainAccumulationMultiplier: 0.5,
-          durationTurns: p ? 4 : 3,
+          durationTurns: p ? 5 : 4,
         ),
       (SpellAffinity.water, EffectKind.chainInteraction) =>
         ChainInteractionEffect(
@@ -164,7 +164,7 @@ class EffectResolver {
       (SpellAffinity.earth, EffectKind.spellInteraction) =>
         SpellInteractionEffect(
           affinity: SpellAffinity.earth,
-          durationTurns: p ? 4 : 3,
+          durationTurns: p ? 5 : 4,
           affectsTarget: true,
           isSlugEffect: true,
         ),
@@ -177,7 +177,7 @@ class EffectResolver {
       (SpellAffinity.air, EffectKind.spellInteraction) =>
         SpellInteractionEffect(
           affinity: SpellAffinity.air,
-          durationTurns: p ? 3 : 2,
+          durationTurns: p ? 4 : 3,
           affectsTarget: false,
           isQuickEffect: true,
         ),
@@ -242,27 +242,27 @@ class EffectResolver {
           affinity: SpellAffinity.fire,
           penetrating: true,
           penetrationDamage: p ? 2 : 1,
-          durationTurns: p ? 3 : 2,
+          durationTurns: p ? 4 : 3,
         ),
       (SpellAffinity.earth, EffectKind.rangeModification) =>
         RangeModificationEffect(
           affinity: SpellAffinity.earth,
           rangeDelta: -1,
-          durationTurns: p ? 4 : 3,
+          durationTurns: p ? 5 : 4,
           affectsTarget: true,
         ),
       (SpellAffinity.water, EffectKind.rangeModification) =>
         RangeModificationEffect(
           affinity: SpellAffinity.water,
           turbulent: true,
-          durationTurns: p ? 4 : 3,
+          durationTurns: p ? 5 : 4,
           affectsTarget: true,
         ),
       (SpellAffinity.air, EffectKind.rangeModification) =>
         RangeModificationEffect(
           affinity: SpellAffinity.air,
           rangeDelta: 1,
-          durationTurns: p ? 3 : 2,
+          durationTurns: p ? 4 : 3,
         ),
 
       // ── Clouds (Water-Fire) radius 1 (2 for Water), 2 turns ───────────────
@@ -270,7 +270,7 @@ class EffectResolver {
       (SpellAffinity.fire, EffectKind.clouds) =>
         const CloudEffect(affinity: SpellAffinity.fire, kind: ToxicCloud(damagePerTurn: 1)),
       (SpellAffinity.earth, EffectKind.clouds) =>
-        const CloudEffect(affinity: SpellAffinity.earth, kind: DustCloud(restrictionTurnsAfterLeaving: 2)),
+        const CloudEffect(affinity: SpellAffinity.earth, kind: DustCloud(restrictionTurnsAfterLeaving: 3)),
       (SpellAffinity.water, EffectKind.clouds) =>
         const CloudEffect(affinity: SpellAffinity.water, kind: WaterCloud(), radius: 2),
       (SpellAffinity.air, EffectKind.clouds) =>
@@ -306,25 +306,25 @@ class EffectResolver {
       (SpellAffinity.fire, EffectKind.haymakerInteraction) =>
         HaymakerInteractionEffect(
           affinity: SpellAffinity.fire,
-          durationTurns: p ? 3 : 2,
+          durationTurns: p ? 4 : 3,
           doTStackIncrement: 2,
         ),
       (SpellAffinity.earth, EffectKind.haymakerInteraction) =>
         HaymakerInteractionEffect(
           affinity: SpellAffinity.earth,
-          durationTurns: p ? 3 : 2,
+          durationTurns: p ? 4 : 3,
           slowsTarget: true,
         ),
       (SpellAffinity.water, EffectKind.haymakerInteraction) =>
         HaymakerInteractionEffect(
           affinity: SpellAffinity.water,
-          durationTurns: p ? 3 : 2,
+          durationTurns: p ? 4 : 3,
           drainTargetStatus: true,
         ),
       (SpellAffinity.air, EffectKind.haymakerInteraction) =>
         HaymakerInteractionEffect(
           affinity: SpellAffinity.air,
-          durationTurns: p ? 3 : 2,
+          durationTurns: p ? 4 : 3,
           distanceBonusDamage: true,
         ),
 
@@ -339,18 +339,19 @@ class EffectResolver {
       (SpellAffinity.earth, EffectKind.divination) =>
         DivinationEffect(
           affinity: SpellAffinity.earth,
-          durationTurns: p ? 2 : 1,
+          durationTurns: p ? 3 : 2,
+          grantsScryingSight: true,
         ),
       (SpellAffinity.water, EffectKind.divination) =>
         DivinationEffect(
           affinity: SpellAffinity.water,
-          durationTurns: p ? 3 : 2,
+          durationTurns: p ? 4 : 3,
           requiresOpponentReveal: true,
         ),
       (SpellAffinity.air, EffectKind.divination) =>
         DivinationEffect(
           affinity: SpellAffinity.air,
-          durationTurns: p ? 3 : 2,
+          durationTurns: p ? 4 : 3,
           requiresOpponentReveal: true,
         ),
     };

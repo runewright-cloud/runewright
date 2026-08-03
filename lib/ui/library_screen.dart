@@ -11,6 +11,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 
+import '../apprentice/apprenticeship.dart' show MasterLoanView;
 import '../identity/identity.dart';
 import '../identity/key_packing.dart';
 import '../battle/models/creature_spec.dart' show summonSummaryFromFormula;
@@ -187,6 +188,7 @@ Future<void> _bindCounterCharmOnSpell(
     );
     return;
   }
+  if (await _blockedAsMastersChapter(context, chapterId)) return;
 
   final chapter = await ChapterAsset.loadById(chapterId);
   if (chapter == null || !context.mounted) return;
@@ -220,6 +222,37 @@ Future<void> _bindCounterCharmOnSpell(
       SnackBar(content: Text('Counter charm attuned to "$spellName".')),
     );
   }
+}
+
+// ── The master's chapter is read-only (MASTER_APPRENTICE_PLAN.md §8) ────────
+//
+// The chapter a master lends is a snapshot the next renewal rewrites
+// wholesale (§5.7), so an entry the apprentice removes is gone until that
+// renewal, and one they add is dropped by it. Rather than let the player
+// discover that a month later, every mutation path into that one chapter is
+// closed with an explanation. Their OWN chapters are untouched: a loaned
+// spell may still be added to those freely (that is what the Loans tab's
+// "Add" is for), which is why this gates on the chapter, not on the spell.
+
+/// True if [chapterId] is the cloned chapter this device holds from its
+/// master. Shows the explanation as a side effect; callers must abort.
+Future<bool> _blockedAsMastersChapter(
+  BuildContext context,
+  String chapterId,
+) async {
+  final view = await MasterLoanView.load();
+  if (!view.isChapterFromMaster(chapterId)) return false;
+  if (context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          "Your master's chapter cannot be changed. "
+          'Add these spells to a chapter of your own instead.',
+        ),
+      ),
+    );
+  }
+  return true;
 }
 
 const _kArtifactLabel = {
@@ -466,6 +499,7 @@ class _CraftingsTabState extends State<_CraftingsTab>
       }
       return;
     }
+    if (await _blockedAsMastersChapter(context, chapterId)) return;
 
     // Spells inscribed before supremeTags tracking was added have an empty
     // list. Derive and persist the tags now so subsequent adds are free.
@@ -672,6 +706,7 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
       );
       return;
     }
+    if (await _blockedAsMastersChapter(context, chapterId)) return;
     var chapter = await ChapterAsset.loadById(chapterId);
     if (chapter == null || !mounted) return;
 
@@ -1100,6 +1135,19 @@ class _ChaptersTabState extends State<_ChaptersTab>
   @override
   bool get wantKeepAlive => true;
 
+  /// Loaded once, after the first frame; [MasterLoanView.none] until then, so
+  /// the worst case of a slow disk read is a chapter that is briefly not yet
+  /// marked as the master's — never a wrong mark.
+  MasterLoanView _masterLoan = MasterLoanView.none;
+
+  @override
+  void initState() {
+    super.initState();
+    MasterLoanView.load().then((view) {
+      if (mounted) setState(() => _masterLoan = view);
+    });
+  }
+
   void _openChapter(ChapterAsset chapter) {
     Navigator.push(
       context,
@@ -1107,6 +1155,8 @@ class _ChaptersTabState extends State<_ChaptersTab>
         builder: (_) => _ChapterDetailScreen(
           chapter: chapter,
           initiallyActive: chapter.id == widget.selectedChapterId,
+          fromMaster: _masterLoan.isChapterFromMaster(chapter.id),
+          masterLoanRemaining: _masterLoan.remainingLabel(),
           onSetActive: () => widget.onChapterSelected(chapter.id),
           onChapterChanged: widget.onChaptersChanged,
         ),
@@ -1154,6 +1204,7 @@ class _ChaptersTabState extends State<_ChaptersTab>
                     return _ChapterTile(
                       chapter: c,
                       isSelected: c.id == widget.selectedChapterId,
+                      fromMaster: _masterLoan.isChapterFromMaster(c.id),
                       onTap: () => _openChapter(c),
                     );
                   },
@@ -1189,11 +1240,15 @@ class _ChapterTile extends StatelessWidget {
   const _ChapterTile({
     required this.chapter,
     required this.isSelected,
+    required this.fromMaster,
     required this.onTap,
   });
 
   final ChapterAsset chapter;
   final bool isSelected;
+
+  /// The read-only clone of a master's chapter (MASTER_APPRENTICE_PLAN.md §8).
+  final bool fromMaster;
   final VoidCallback onTap;
 
   @override
@@ -1227,15 +1282,22 @@ class _ChapterTile extends StatelessWidget {
                   ),
                 ),
               Expanded(
-                child: Text(
-                  chapter.name,
-                  style: TextStyle(
-                    fontFamily: 'serif',
-                    fontSize: 16,
-                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
-                    color: kInkColor,
-                    letterSpacing: 0.3,
-                  ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      chapter.name,
+                      style: TextStyle(
+                        fontFamily: 'serif',
+                        fontSize: 16,
+                        fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
+                        color: kInkColor,
+                        letterSpacing: 0.3,
+                      ),
+                    ),
+                    if (fromMaster)
+                      Text('Lent by your master', style: manuscriptCaptionStyle()),
+                  ],
                 ),
               ),
               Column(
@@ -1286,12 +1348,25 @@ class _ChapterDetailScreen extends StatefulWidget {
   const _ChapterDetailScreen({
     required this.chapter,
     required this.initiallyActive,
+    required this.fromMaster,
+    required this.masterLoanRemaining,
     required this.onSetActive,
     required this.onChapterChanged,
   });
 
   final ChapterAsset chapter;
   final bool initiallyActive;
+
+  /// The clone of a master's chapter: read-only, because the next renewal
+  /// re-snapshots it wholesale (MASTER_APPRENTICE_PLAN.md §5.7/§8). Setting it
+  /// as the active chapter is still allowed — the apprentice is meant to
+  /// battle with it; only its contents are frozen.
+  final bool fromMaster;
+
+  /// "12 days remain" / "Lapsed", shown in the read-only banner. Ignored
+  /// unless [fromMaster].
+  final String masterLoanRemaining;
+
   final VoidCallback onSetActive;
   final VoidCallback onChapterChanged;
 
@@ -1327,7 +1402,15 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
     setState(() => _isActive = true);
   }
 
+  /// Every mutation below is already unreachable in a master's chapter (the
+  /// UI passes null callbacks), but each re-checks: this screen is one
+  /// forgotten `readOnly ?` away from silently editing a chapter that a
+  /// renewal is about to overwrite, and the failure would be invisible for a
+  /// month. See _blockedAsMastersChapter for the add-side counterpart.
+  bool get _readOnly => widget.fromMaster;
+
   Future<void> _removeEntry(int index) async {
+    if (_readOnly) return;
     final spellName = _spells?[index]?.name;
     final label = spellName != null ? '"$spellName"' : 'this spell';
     final ok = await showDialog<bool>(
@@ -1356,6 +1439,7 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
   }
 
   Future<void> _addArtifact() async {
+    if (_readOnly) return;
     final kind = await showDialog<ArtifactKind>(
       context: context,
       builder: (_) => const _AddArtifactDialog(),
@@ -1370,6 +1454,7 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
   }
 
   Future<void> _incrementArtifact(ArtifactKind kind) async {
+    if (_readOnly) return;
     final updated = _chapter.withArtifact(ArtifactEntry(kind: kind));
     await updated.save();
     setState(() => _chapter = updated);
@@ -1380,6 +1465,7 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
   // is removed exclusively via _removeCounterCharm (with its own confirm
   // dialog naming the attuned spell), never by this generic +/- control.
   Future<void> _decrementArtifact(ArtifactKind kind) async {
+    if (_readOnly) return;
     final idx = kind == ArtifactKind.counterCharm
         ? _chapter.artifacts.lastIndexWhere((a) => a.isUnboundCounterCharm)
         : _chapter.artifacts.lastIndexWhere((a) => a.kind == kind);
@@ -1391,6 +1477,7 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
   }
 
   Future<void> _removeCounterCharm(int index) async {
+    if (_readOnly) return;
     final charm = _chapter.artifacts[index];
     final targetName = charm.targetSpellName ?? 'this spell';
     final ok = await showDialog<bool>(
@@ -1440,12 +1527,18 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
     ];
     final slotsRemaining = _chapter.artifactSlotsRemaining;
 
+    final readOnly = widget.fromMaster;
+
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       children: [
+        if (readOnly) ...[
+          _MastersChapterBanner(remaining: widget.masterLoanRemaining),
+          const SizedBox(height: 12),
+        ],
         _ArtifactSectionHeader(
           remaining: slotsRemaining,
-          onAdd: slotsRemaining > 0 ? _addArtifact : null,
+          onAdd: readOnly || slotsRemaining == 0 ? null : _addArtifact,
         ),
         const SizedBox(height: 6),
         for (final kind in groupedKinds)
@@ -1454,21 +1547,23 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
               kind: kind,
               count: kindCounts[kind]!,
               canIncrement: slotsRemaining > 0,
-              onDecrement: () => _decrementArtifact(kind),
-              onIncrement: () => _incrementArtifact(kind),
+              onDecrement: readOnly ? null : () => _decrementArtifact(kind),
+              onIncrement: readOnly ? null : () => _incrementArtifact(kind),
             ),
         if (unboundCharmCount > 0)
           _ArtifactGroupTile(
             kind: ArtifactKind.counterCharm,
             count: unboundCharmCount,
             canIncrement: slotsRemaining > 0,
-            onDecrement: () => _decrementArtifact(ArtifactKind.counterCharm),
-            onIncrement: () => _incrementArtifact(ArtifactKind.counterCharm),
+            onDecrement:
+                readOnly ? null : () => _decrementArtifact(ArtifactKind.counterCharm),
+            onIncrement:
+                readOnly ? null : () => _incrementArtifact(ArtifactKind.counterCharm),
           ),
         for (final idx in boundCharmIndices)
           _CounterCharmTile(
             artifact: _chapter.artifacts[idx],
-            onRemove: () => _removeCounterCharm(idx),
+            onRemove: readOnly ? null : () => _removeCounterCharm(idx),
           ),
         if (_chapter.artifacts.isEmpty)
           Padding(
@@ -1482,7 +1577,9 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 6),
             child: Text(
-              'No spells in this chapter yet.\nAdd spells from your Craftings.',
+              readOnly
+                  ? 'Your master lent no spells in this chapter.'
+                  : 'No spells in this chapter yet.\nAdd spells from your Craftings.',
               style: manuscriptBodyStyle(fontSize: 14, color: kInkMutedColor),
               textAlign: TextAlign.center,
             ),
@@ -1492,7 +1589,7 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
             _ChapterSpellTile(
               entry: _chapter.entries[i],
               spell: spells[i],
-              onRemove: () => _removeEntry(i),
+              onRemove: readOnly ? null : () => _removeEntry(i),
             ),
       ],
     );
@@ -1557,7 +1654,11 @@ class _ChapterSpellTile extends StatelessWidget {
 
   final ChapterEntry entry;
   final SpellAsset? spell;
-  final VoidCallback onRemove;
+
+  /// Null in a read-only chapter (a master's loan, §8) — the overflow menu is
+  /// then omitted entirely rather than shown greyed, since "Remove from
+  /// Chapter" is the only thing it offers.
+  final VoidCallback? onRemove;
 
   @override
   Widget build(BuildContext context) {
@@ -1615,24 +1716,83 @@ class _ChapterSpellTile extends StatelessWidget {
                     ],
                   ),
                 ),
-                PopupMenuButton<String>(
-                  icon: Icon(
-                    Icons.more_vert,
-                    size: 18,
-                    color: kInkColor.withValues(alpha: 0.45),
-                  ),
-                  onSelected: (_) => onRemove(),
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(
-                      value: 'remove',
-                      child: Text('Remove from Chapter'),
+                if (onRemove != null)
+                  PopupMenuButton<String>(
+                    icon: Icon(
+                      Icons.more_vert,
+                      size: 18,
+                      color: kInkColor.withValues(alpha: 0.45),
                     ),
-                  ],
-                ),
+                    onSelected: (_) => onRemove!(),
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(
+                        value: 'remove',
+                        child: Text('Remove from Chapter'),
+                      ),
+                    ],
+                  )
+                else
+                  const SizedBox(width: 10),
               ],
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// The read-only explanation at the top of a master's lent chapter
+/// (MASTER_APPRENTICE_PLAN.md §8). It says *why* rather than just disabling
+/// the controls: the renewal re-snapshot is the whole reason, and a player
+/// who doesn't know that would read a frozen chapter as a bug.
+class _MastersChapterBanner extends StatelessWidget {
+  const _MastersChapterBanner({required this.remaining});
+
+  /// "12 days remain" / "Lapsed"; omitted if empty.
+  final String remaining;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: kParchmentPanelColor,
+        border: Border.all(color: kIlluminationGold.withValues(alpha: 0.55)),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.school_outlined, size: 20, color: kIlluminationGold),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  remaining.isEmpty
+                      ? "Your master's chapter"
+                      : "Your master's chapter  ·  $remaining",
+                  style: const TextStyle(
+                    fontFamily: 'serif',
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: kInkColor,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'You may carry this chapter into battle, but not change it. '
+                  'Each renewal replaces it with your master\'s chapter as it '
+                  'stands that day, so anything added or removed here would be '
+                  'lost. Build your own chapter to make it yours.',
+                  style: manuscriptBodyStyle(fontSize: 13, color: kInkMutedColor),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1765,8 +1925,11 @@ class _ArtifactGroupTile extends StatelessWidget {
   final ArtifactKind kind;
   final int count;
   final bool canIncrement;
-  final VoidCallback onDecrement;
-  final VoidCallback onIncrement;
+
+  /// Both null in a read-only chapter (a master's loan, §8): the +/- controls
+  /// are dropped and the count is shown as plain text.
+  final VoidCallback? onDecrement;
+  final VoidCallback? onIncrement;
 
   @override
   Widget build(BuildContext context) {
@@ -1798,17 +1961,18 @@ class _ArtifactGroupTile extends StatelessWidget {
                   ),
                 ),
               ),
-              IconButton(
-                icon: const Icon(Icons.remove, size: 16),
-                onPressed: onDecrement,
-                visualDensity: VisualDensity.compact,
-                color: kInkColor.withValues(alpha: 0.7),
-                tooltip: 'Remove one',
-              ),
+              if (onDecrement != null)
+                IconButton(
+                  icon: const Icon(Icons.remove, size: 16),
+                  onPressed: onDecrement,
+                  visualDensity: VisualDensity.compact,
+                  color: kInkColor.withValues(alpha: 0.7),
+                  tooltip: 'Remove one',
+                ),
               SizedBox(
                 width: 26,
                 child: Text(
-                  '$count',
+                  onDecrement == null && onIncrement == null ? '×$count' : '$count',
                   textAlign: TextAlign.center,
                   style: const TextStyle(
                     fontFamily: 'serif',
@@ -1818,15 +1982,18 @@ class _ArtifactGroupTile extends StatelessWidget {
                   ),
                 ),
               ),
-              IconButton(
-                icon: const Icon(Icons.add, size: 16),
-                onPressed: canIncrement ? onIncrement : null,
-                visualDensity: VisualDensity.compact,
-                color: canIncrement
-                    ? kInkColor.withValues(alpha: 0.7)
-                    : kInkMutedColor.withValues(alpha: 0.3),
-                tooltip: canIncrement ? 'Add one' : 'No slots remaining',
-              ),
+              if (onIncrement != null)
+                IconButton(
+                  icon: const Icon(Icons.add, size: 16),
+                  onPressed: canIncrement ? onIncrement : null,
+                  visualDensity: VisualDensity.compact,
+                  color: canIncrement
+                      ? kInkColor.withValues(alpha: 0.7)
+                      : kInkMutedColor.withValues(alpha: 0.3),
+                  tooltip: canIncrement ? 'Add one' : 'No slots remaining',
+                )
+              else
+                const SizedBox(width: 10),
             ],
           ),
         ),
@@ -1839,7 +2006,9 @@ class _CounterCharmTile extends StatelessWidget {
   const _CounterCharmTile({required this.artifact, required this.onRemove});
 
   final ArtifactEntry artifact;
-  final VoidCallback onRemove;
+
+  /// Null in a read-only chapter (a master's loan, §8).
+  final VoidCallback? onRemove;
 
   @override
   Widget build(BuildContext context) {
@@ -1883,16 +2052,19 @@ class _CounterCharmTile extends StatelessWidget {
                   ],
                 ),
               ),
-              IconButton(
-                icon: Icon(
-                  Icons.close,
-                  size: 16,
-                  color: kInkColor.withValues(alpha: 0.45),
-                ),
-                visualDensity: VisualDensity.compact,
-                tooltip: 'Remove charm',
-                onPressed: onRemove,
-              ),
+              if (onRemove != null)
+                IconButton(
+                  icon: Icon(
+                    Icons.close,
+                    size: 16,
+                    color: kInkColor.withValues(alpha: 0.45),
+                  ),
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Remove charm',
+                  onPressed: onRemove,
+                )
+              else
+                const SizedBox(width: 10),
             ],
           ),
         ),
@@ -2154,9 +2326,20 @@ class _SummonPersonalityDialogState extends State<_SummonPersonalityDialog> {
 // none of which applies to a loan.
 
 class _LoanEntry {
-  const _LoanEntry({required this.spell, required this.permission});
+  const _LoanEntry({
+    required this.spell,
+    required this.permission,
+    required this.fromMaster,
+  });
   final SpellAsset spell;
   final SpellPermission permission;
+
+  /// True when this loan arrived as part of an apprenticeship bundle rather
+  /// than an ordinary Commune/Trade loan (MASTER_APPRENTICE_PLAN.md §8). The
+  /// two are the same shape on the wire and at the authorization layer — the
+  /// only local record of the difference is the ApprenticeshipRecord, so this
+  /// is presentation only.
+  final bool fromMaster;
 }
 
 bool _loanHexEq(String a, String b) {
@@ -2189,6 +2372,7 @@ class _LoansTabState extends State<_LoansTab> with AutomaticKeepAliveClientMixin
   Future<List<_LoanEntry>> _loadUsableLoans() async {
     final identity = await Identity.loadOrCreate();
     final myPubkeyHex = await identity.ownerPubkeyHex();
+    final masterLoan = await MasterLoanView.load();
     final all = await SpellAsset.loadAll();
     final entries = <_LoanEntry>[];
     for (final spell in all.where((s) => s.gridWithheld)) {
@@ -2197,10 +2381,21 @@ class _LoansTabState extends State<_LoansTab> with AutomaticKeepAliveClientMixin
         if (perm.kind != SpellGrantKind.loan) continue;
         if (!_loanHexEq(perm.granteePubkeyHex, myPubkeyHex)) continue;
         if (!await perm.isCurrentlyUsable()) continue;
-        entries.add(_LoanEntry(spell: spell, permission: perm));
+        entries.add(_LoanEntry(
+          spell: spell,
+          permission: perm,
+          // Either bookkeeping list identifies the bundle: the permission id
+          // is the direct match, but a renewal that re-granted an already-held
+          // spell can leave the asset id as the surviving link.
+          fromMaster: masterLoan.isPermissionFromMaster(perm.id) ||
+              masterLoan.isSpellFromMaster(spell.id),
+        ));
         break;
       }
     }
+    // The master's loans first: they are the ones on a shared clock, and the
+    // ones a player is most likely to be checking the days on.
+    entries.sort((a, b) => (b.fromMaster ? 1 : 0) - (a.fromMaster ? 1 : 0));
     return entries;
   }
 
@@ -2218,6 +2413,7 @@ class _LoansTabState extends State<_LoansTab> with AutomaticKeepAliveClientMixin
       }
       return;
     }
+    if (await _blockedAsMastersChapter(context, chapterId)) return;
     final chapter = await ChapterAsset.loadById(chapterId);
     if (chapter == null || !mounted) return;
     if (chapter.entries.any((e) => e.spellId == spell.id)) {
@@ -2297,17 +2493,26 @@ class _LoanTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final name = entry.spell.name.isNotEmpty ? entry.spell.name : 'Unnamed Spell';
+    final fromMaster = entry.fromMaster;
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
         color: kParchmentPanelColor,
-        border: Border.all(color: kInkColor.withValues(alpha: 0.2)),
+        border: Border.all(
+          color: fromMaster
+              ? kIlluminationGold.withValues(alpha: 0.55)
+              : kInkColor.withValues(alpha: 0.2),
+        ),
         borderRadius: BorderRadius.circular(4),
       ),
       child: Row(
         children: [
-          const Icon(Icons.handshake_outlined, size: 22, color: kIlluminationGold),
+          Icon(
+            fromMaster ? Icons.school_outlined : Icons.handshake_outlined,
+            size: 22,
+            color: kIlluminationGold,
+          ),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
@@ -2316,7 +2521,8 @@ class _LoanTile extends StatelessWidget {
                 Text(name, style: const TextStyle(fontFamily: 'serif', fontSize: 15, color: kInkColor)),
                 const SizedBox(height: 2),
                 Text(
-                  'Loaned by $_lenderLabel  ·  ♦ ${entry.spell.manaCost}  ·  $_daysRemaining',
+                  '${fromMaster ? 'Lent by your master' : 'Loaned by $_lenderLabel'}'
+                  '  ·  ♦ ${entry.spell.manaCost}  ·  $_daysRemaining',
                   style: manuscriptCaptionStyle(),
                 ),
               ],

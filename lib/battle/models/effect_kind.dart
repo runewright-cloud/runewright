@@ -68,22 +68,29 @@ const Map<EffectKind, Map<SpellAffinity, String>> kEffectDescription = {
     SpellAffinity.air:
         'Whenever the target gains a status effect it cast on itself, the caster gains the same status effect.',
   },
+  // The "1 free tile" the design table shows in brackets is the *potency*
+  // value, not the base one (see this map's header comment) -- base flavors
+  // pay for every tile. effect_resolver.dart's `freeExtraTiles: p ? 1 : 0`
+  // is the authority; the prose used to promise a free tile unconditionally.
   EffectKind.speedManipulation: {
-    SpellAffinity.fire: 'Move n extra tiles at a cost of n(n+1)/2 health (1 tile free).',
-    SpellAffinity.earth: 'Reduce target move speed by 1 for 3 turns.',
+    SpellAffinity.fire:
+        'High Mobility: after this spell resolves, run n extra tiles at a cost of '
+            'n(n+1)/2 health.',
+    SpellAffinity.earth: 'Reduce target move speed by 1 for 4 turns.',
     SpellAffinity.water:
-        'High Liquidity: move n extra tiles at a cost of n(n+1)/2 × 100 mana (1 tile free).',
-    SpellAffinity.air: 'Increase target move speed by 1 for 2 turns.',
+        'High Liquidity: after this spell resolves, run n extra tiles at a cost of '
+            'n(n+1)/2 × 100 mana.',
+    SpellAffinity.air: 'Increase target move speed by 1 for 3 turns.',
   },
   EffectKind.statusEffectInteraction: {
     SpellAffinity.fire: '1 damage per active status effect.',
-    SpellAffinity.earth: 'All status effects go dormant for 2 turns.',
+    SpellAffinity.earth: 'All status effects go dormant for 3 turns.',
     SpellAffinity.water: 'Status effects lose 1 turn.',
     SpellAffinity.air: 'All status effects gain 1 turn.',
   },
   EffectKind.chainInteraction: {
-    SpellAffinity.fire: 'Chain bonuses accumulate twice as fast for the next 2 turns.',
-    SpellAffinity.earth: 'Chain bonuses grow at half speed for the next 3 turns.',
+    SpellAffinity.fire: 'Chain bonuses accumulate twice as fast for the next 3 turns.',
+    SpellAffinity.earth: 'Chain bonuses grow at half speed for the next 4 turns.',
     SpellAffinity.water:
         'Gain all chain status of the affected target, overwriting your existing chains.',
     SpellAffinity.air: 'All chain bonuses removed.',
@@ -92,10 +99,10 @@ const Map<EffectKind, Map<SpellAffinity, String>> kEffectDescription = {
     SpellAffinity.fire:
         'Next spell\'s cost is paid twice; any mana shortfall converts to health damage at 1 HP per 10 mana.',
     SpellAffinity.earth:
-        '"Sluggish" — always resolves last unless others are also sluggish, for 3 turns.',
+        '"Sluggish" — always resolves last unless others are also sluggish, for 4 turns.',
     SpellAffinity.water: 'Copy the enemy\'s spell.',
     SpellAffinity.air:
-        '"Quick" — always resolves first unless others are also quick, for 2 turns.',
+        '"Quick" — always resolves first unless others are also quick, for 3 turns.',
   },
   EffectKind.fuelTransmutation: {
     SpellAffinity.fire:
@@ -115,7 +122,7 @@ const Map<EffectKind, Map<SpellAffinity, String>> kEffectDescription = {
   EffectKind.rangeModification: {
     SpellAffinity.fire:
         'Penetrating: spells can\'t be blocked by walls; 1 damage to anything in hexes en route.',
-    SpellAffinity.earth: 'Reduce spell range by 1 for 3 turns.',
+    SpellAffinity.earth: 'Reduce spell range by 1 for 4 turns.',
     SpellAffinity.water:
         'Turbulent: next spell fires in the intended direction but its range is randomized 1–max.',
     SpellAffinity.air: 'Increase spell range by 1.',
@@ -123,7 +130,7 @@ const Map<EffectKind, Map<SpellAffinity, String>> kEffectDescription = {
   EffectKind.clouds: {
     SpellAffinity.fire: 'Entities entering or ending their turn in the cloud take 1 damage.',
     SpellAffinity.earth:
-        'The adjacent-only targeting restriction lingers 2 turns after leaving the cloud.',
+        'The adjacent-only targeting restriction lingers 3 turns after leaving the cloud.',
     SpellAffinity.water: 'The cloud is radius 2 instead of 1.',
     SpellAffinity.air:
         'The cloud moves 1 tile each turn, trying to center on the closest enemy (players before summons).',
@@ -154,7 +161,7 @@ const Map<EffectKind, Map<SpellAffinity, String>> kEffectDescription = {
   },
   EffectKind.haymakerInteraction: {
     SpellAffinity.fire:
-        'Stacking fire damage-over-time; damage equals turns remaining, 2 turns at a time.',
+        'Stacking fire damage-over-time; damage equals turns remaining, 3 turns at a time.',
     SpellAffinity.earth: 'Target move speed reduced by 1.',
     SpellAffinity.water: 'Target\'s status effects lose a turn.',
     SpellAffinity.air: 'Bonus damage equal to spaces moved toward the target.',
@@ -162,33 +169,38 @@ const Map<EffectKind, Map<SpellAffinity, String>> kEffectDescription = {
   EffectKind.divination: {
     SpellAffinity.fire:
         'See the target\'s counter-charm alignment; turns bookmarks marking those spells red for the rest of the match.',
-    SpellAffinity.earth: 'Identify illusions and see through clouds, 1 turn.',
-    SpellAffinity.water: 'See the target\'s available spells, 2 turns.',
-    SpellAffinity.air: 'See the target\'s spell target tile, 2 turns.',
+    SpellAffinity.earth:
+        'See through clouds -- ignore their adjacent-only targeting -- and '
+        'dispel any enemy illusion that comes within a tile of the target, '
+        '2 turns.',
+    SpellAffinity.water: 'See the target\'s available spells, 3 turns.',
+    SpellAffinity.air: 'See the target\'s spell target tile, 3 turns.',
   },
 };
 
 const Map<EffectKind, String> kEffectNote = {
   EffectKind.damage: 'Instant.',
-  EffectKind.barrier: 'Barrier lasts 2 turns.',
+  EffectKind.barrier: 'Barrier lasts 3 turns.',
   EffectKind.reflections: '2 triggers. Only valid if the spell resolves on an enemy.',
   EffectKind.speedManipulation:
-      'Self-targeted flavors are instant; targeted flavors have a duration.',
+      'Fire/Water are a one-shot run taken as the spell resolves, in the same '
+          'window an airy barrier\'s collapse grants a step; Potency makes the '
+          'first tile free. Earth/Air are timed modifiers on the target.',
   EffectKind.statusEffectInteraction: 'Acts on active status effects.',
   EffectKind.chainInteraction: 'Acts on the caster\'s elemental chain bonuses.',
   EffectKind.spellInteraction: 'Acts on the target\'s next spell cast.',
   EffectKind.fuelTransmutation: 'Trades one resource for another.',
   EffectKind.tileModification: '',
-  EffectKind.rangeModification: 'Acts on spell range, for 2 turns unless noted.',
+  EffectKind.rangeModification: 'Acts on spell range, for 3 turns unless noted.',
   EffectKind.clouds:
-      'Radius 1 (2 for Water), 2 turns. Entities in the cloud may only '
+      'Radius 1 (2 for Water), 3 turns. Entities in the cloud may only '
           'target/be targeted by adjacent entities.',
   EffectKind.artifactsInteraction: '',
   EffectKind.illusions: 'Illusory copies.',
   EffectKind.multiplierCycles: 'Self-applied immediately. Doubles the power of the caster\'s next '
       'effect of the named element -- right away if one follows later in this spell, otherwise on '
       'the caster\'s next turn. Lasts 2 turns; unused, it expires.',
-  EffectKind.haymakerInteraction: 'Lasts 2 turns.',
+  EffectKind.haymakerInteraction: 'Lasts 3 turns.',
   EffectKind.divination: 'Information effects.',
 };
 

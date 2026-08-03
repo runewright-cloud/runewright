@@ -29,7 +29,8 @@ import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
-import '../battle/engine/tile_entry_resolver.dart' show predictAvatarMove;
+import '../battle/engine/tile_entry_resolver.dart'
+    show MovePathPrediction, predictAvatarMove;
 import '../battle/engine/turn_loop.dart';
 import '../battle/engine/wild_magic_applicator.dart' show WildMagicEvent;
 import '../battle/models/battle_state.dart';
@@ -194,8 +195,6 @@ const _kBookmarkDisplay = (Icons.bookmark_outlined, Color(0xFF5588BB), 'Marks');
 const Map<String, String> _kStatusLabel = {
   StatusEffectId.speedUp: 'Speed+',
   StatusEffectId.speedDown: 'Speed−',
-  StatusEffectId.highMobility: 'High Mob.',
-  StatusEffectId.highLiquidity: 'High Liq.',
   StatusEffectId.rangeUp: 'Range+',
   StatusEffectId.rangeDown: 'Range−',
   StatusEffectId.penetrating: 'Piercing',
@@ -215,13 +214,12 @@ const Map<String, String> _kStatusLabel = {
   StatusEffectId.revealCounterCharms: 'See Charms',
   StatusEffectId.revealSpells: 'See Spells',
   StatusEffectId.revealTargetTile: 'See Target',
+  StatusEffectId.scryingSight: 'Scrying Sight',
 };
 
 // Buff IDs render in green; everything else renders in red.
 const _kBuffIds = {
   StatusEffectId.speedUp,
-  StatusEffectId.highMobility,
-  StatusEffectId.highLiquidity,
   StatusEffectId.rangeUp,
   StatusEffectId.penetrating,
   StatusEffectId.quick,
@@ -230,6 +228,7 @@ const _kBuffIds = {
   StatusEffectId.revealCounterCharms,
   StatusEffectId.revealSpells,
   StatusEffectId.revealTargetTile,
+  StatusEffectId.scryingSight,
 };
 
 // ── BattleScreen ──────────────────────────────────────────────────────────────
@@ -422,13 +421,16 @@ class _BattleScreenState extends State<BattleScreen>
   List<HexCoord> _meleeCandidates = const [];
   Completer<HexCoord?>? _meleePickCompleter;
 
-  // Post-resolution Airy Barrier burst prompt: set by _pickFreeMoveDirection
-  // (TurnLoop's freeMoveDirectionPicker callback, invoked after every spell
-  // for the turn has resolved). Same shape and the same _isBusy caveat as the
-  // melee prompt above.
+  // Post-resolution free-move prompt — an Airy Barrier burst, a Boost run, or
+  // both: set by _pickFreeMoveDirection (TurnLoop's freeMoveDirectionPicker
+  // callback, invoked after every spell for the turn has resolved). Same shape
+  // and the same _isBusy caveat as the melee prompt above, except the player
+  // builds a *path* here (a Boost can run several tiles) and commits it with
+  // the MOVE button, so _freeMovePath accumulates taps until then.
   bool _pickingFreeMove = false;
-  List<HexCoord> _freeMoveCandidates = const [];
-  Completer<HexCoord?>? _freeMovePickCompleter;
+  FreeMoveGrant _freeMoveGrant = FreeMoveGrant.none;
+  List<HexCoord> _freeMovePath = const [];
+  Completer<List<HexCoord>?>? _freeMovePickCompleter;
 
   // UI-facing phase label for the phase banner, driven by TurnLoop.onPhase
   // for the two internal phases (Summons, Resolution) the pre-submission
@@ -1196,11 +1198,12 @@ class _BattleScreenState extends State<BattleScreen>
     return result;
   }
 
-  /// TurnLoop's [FreeMoveDirectionPicker]: an Airy Barrier burst this turn
-  /// earned the local wizard one reactive step. Highlights the legal adjacent
-  /// tiles and waits for the player to tap one (see _onTapBattlefield's
-  /// _pickingFreeMove branch) or to pass (_ActionBar's onDeclineFreeMove).
-  /// Only ever called when [candidates] is non-empty.
+  /// TurnLoop's [FreeMovePathPicker]: the local wizard earned a reactive move
+  /// this turn — an Airy Barrier's free burst step, a Boost's paid run, or
+  /// both. Lets the player build a path tile by tap (see _onTapBattlefield's
+  /// _pickingFreeMove branch), shows what each extra tile will cost them, and
+  /// waits for MOVE (_ActionBar's onConfirmFreeMove) or STAND
+  /// (onDeclineFreeMove). Only ever called with a non-empty [grant].
   ///
   /// Lifts the resolution hold-back for the duration of the prompt and puts it
   /// back afterwards. This is the one moment in the turn where the player makes
@@ -1210,13 +1213,14 @@ class _BattleScreenState extends State<BattleScreen>
   /// worse bug than the pop-in the hold-back exists to prevent. Restoring the
   /// snapshot re-hides them, so they still bloom out of their cast tiles with
   /// their cards. See [ResolutionBaseline].
-  Future<HexCoord?> _pickFreeMoveDirection(List<HexCoord> candidates) async {
+  Future<List<HexCoord>?> _pickFreeMoveDirection(FreeMoveGrant grant) async {
     if (!mounted) return null;
-    final completer = Completer<HexCoord?>();
+    final completer = Completer<List<HexCoord>?>();
     final heldBack = _resolutionBaseline;
     setState(() {
       _pickingFreeMove = true;
-      _freeMoveCandidates = candidates;
+      _freeMoveGrant = grant;
+      _freeMovePath = const [];
       _freeMovePickCompleter = completer;
       _resolutionBaseline = null;
     });
@@ -1224,12 +1228,41 @@ class _BattleScreenState extends State<BattleScreen>
     if (mounted) {
       setState(() {
         _pickingFreeMove = false;
-        _freeMoveCandidates = const [];
+        _freeMoveGrant = FreeMoveGrant.none;
+        _freeMovePath = const [];
         _freeMovePickCompleter = null;
         _resolutionBaseline = heldBack;
       });
     }
     return result;
+  }
+
+  /// The simulated free-move walk for the path tapped so far — the same
+  /// [predictAvatarMove] the movement phase uses, so conveyor push-throughs
+  /// and slow tiles read identically in both places.
+  MovePathPrediction get _freeMovePrediction => predictAvatarMove(
+    state: widget.state,
+    origin: _local!.position,
+    declaredPath: _freeMovePath,
+    budget: _freeMoveGrant.maxTiles,
+  );
+
+  /// What the free-move run tapped so far will cost, in the Boost's resource.
+  /// 0 while the player is still inside their free tiles (the burst step and
+  /// any Potency freebie), and 0 always when no Boost is in the grant.
+  ///
+  /// Prices off budget *spent*, not tiles drawn, and calls the engine's own
+  /// [TurnLoop.boostMoveCost] rather than re-deriving the formula — the
+  /// preview and the charge must be the same arithmetic or the player gets
+  /// billed something they never agreed to.
+  int get _freeMoveCost {
+    final resource = _freeMoveGrant.boostResource;
+    if (resource == null || _local == null) return 0;
+    final spent = _freeMoveGrant.maxTiles - _freeMovePrediction.budgetRemaining;
+    return TurnLoop.boostMoveCost(
+      resource,
+      max(0, spent - _freeMoveGrant.freeTiles),
+    );
   }
 
   /// Phase banner text — "Summons" / "Main" / "Move" / "Resolution".
@@ -1673,7 +1706,17 @@ class _BattleScreenState extends State<BattleScreen>
   /// target/be targeted by adjacent entities. Returns 1 if [caster] is inside
   /// any cloud (or carries the lingering Earth-flavor restriction status), or
   /// if [hex] is inside any cloud; otherwise [caster]'s normal spell range.
+  ///
+  /// Mirrors TurnLoop._cloudBoundToAdjacent, including its Earthen Scrying
+  /// Pool exemption — this only gates what the UI lets the local player tap,
+  /// so letting it disagree would either hide legal casts or offer casts the
+  /// engine then fizzles.
   int _maxCastRange(WizardAvatar caster, HexCoord hex) {
+    if (caster.activeStatusEffects.any(
+      (fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.scryingSight,
+    )) {
+      return caster.effectiveSpellRange;
+    }
     final casterBound =
         caster.activeStatusEffects.any(
           (fx) => fx.effectTypeId == StatusEffectId.cloudBoundTargeting,
@@ -1702,13 +1745,55 @@ class _BattleScreenState extends State<BattleScreen>
       return;
     }
 
-    // Same reasoning as the melee branch: the Airy Barrier burst prompt also
-    // fires from inside the in-flight runTurn() call — see
-    // _pickFreeMoveDirection.
+    // Same reasoning as the melee branch: the free-move prompt also fires from
+    // inside the in-flight runTurn() call — see _pickFreeMoveDirection.
+    //
+    // Path building mirrors the movement phase's rules exactly (tap the tip to
+    // undo, tap the origin to clear, adjacency and terrain against the
+    // *simulated* position) — this is the same gesture the player already
+    // knows, just with a mana/life price attached and a smaller budget.
     if (_pickingFreeMove) {
-      if (_freeMoveCandidates.contains(hex)) {
-        _freeMovePickCompleter?.complete(hex);
+      final local = _local;
+      if (local == null) return;
+      // A bare Airy Barrier burst is one free step with nothing to weigh, so
+      // it still commits on the tap — no MOVE button, no path building. Only a
+      // Boost (which is spending the player's HP or mana) needs confirmation.
+      if (_freeMoveGrant.boostResource == null) {
+        if (_loop.freeMoveCandidatesFor(local.playerId).contains(hex)) {
+          _freeMovePickCompleter?.complete([hex]);
+        }
+        return;
       }
+      final origin = local.position;
+      final prediction = _freeMovePrediction;
+      final tip = prediction.path.last;
+
+      if (_freeMovePath.isNotEmpty &&
+          (hex == _freeMovePath.last || hex == tip)) {
+        setState(() =>
+            _freeMovePath = _freeMovePath.sublist(0, _freeMovePath.length - 1));
+        return;
+      }
+      if (hex == origin && _freeMovePath.isNotEmpty) {
+        setState(() => _freeMovePath = const []);
+        return;
+      }
+      if (prediction.indeterminate) return;
+      if (hexDistance(tip, hex) != 1) return;
+      if (!widget.state.battlefield.isInBounds(hex)) return;
+      final tileEffect = widget.state.tileEffects[hex];
+      if (tileBlocksMovement(tileEffect)) return;
+      // Occupied tiles are unenterable — the engine's walk stops there too,
+      // and a step the player pays for and doesn't get is the worst outcome.
+      if (widget.state.avatars.any((av) => av.isAlive && av.position == hex))
+        return;
+      if (widget.state.minions.any((m) => m.isAlive && m.position == hex))
+        return;
+      final stepCost =
+          1 + (tileEffect is SlowTile ? tileEffect.extraMoveCost : 0);
+      if (stepCost > prediction.budgetRemaining) return;
+
+      setState(() => _freeMovePath = [..._freeMovePath, hex]);
       return;
     }
 
@@ -2601,9 +2686,27 @@ class _BattleScreenState extends State<BattleScreen>
                                   meleePickHexes: _pickingMelee
                                       ? _meleeCandidates
                                       : const [],
+                                  // While the free-move prompt is up, the
+                                  // highlight shows the run built so far (or
+                                  // the legal first steps when nothing is
+                                  // tapped yet), tinted by whichever resource
+                                  // is paying: air for a free burst step,
+                                  // water/fire for a Boost.
                                   freeMovePickHexes: _pickingFreeMove
-                                      ? _freeMoveCandidates
+                                      ? (_freeMovePath.isEmpty
+                                            ? _loop.freeMoveCandidatesFor(
+                                                _local!.playerId,
+                                              )
+                                            : _freeMovePrediction.path
+                                                  .skip(1)
+                                                  .toList())
                                       : const [],
+                                  freeMovePickColor:
+                                      _freeMoveGrant.boostResource == null
+                                      ? null
+                                      : BattlefieldPainter.colorForAffinity(
+                                          _freeMoveGrant.boostResource!,
+                                        ),
                                   hiddenCloudIds: _hiddenCloudIds,
                                   hiddenTileHexes: _hiddenTileHexes,
                                   hiddenMinionIds: _hiddenMinionIds,
@@ -2770,6 +2873,11 @@ class _BattleScreenState extends State<BattleScreen>
             isBusy: _isBusy || _isCapturingVoice,
             pickingMelee: _pickingMelee,
             pickingFreeMove: _pickingFreeMove,
+            freeMoveGrant: _freeMoveGrant,
+            freeMovePathLength: _freeMovePath.isEmpty
+                ? 0
+                : _freeMovePrediction.path.length - 1,
+            freeMoveCost: _freeMoveCost,
             onDash: _onDash,
             onMeditateMain: _onMeditateMain,
             onCast: _onCast,
@@ -2785,6 +2893,8 @@ class _BattleScreenState extends State<BattleScreen>
             onCancelDirectionPick: () => _conveyorPickCompleter?.complete(null),
             onDeclineMelee: () => _meleePickCompleter?.complete(null),
             onDeclineFreeMove: () => _freeMovePickCompleter?.complete(null),
+            onConfirmFreeMove: () =>
+                _freeMovePickCompleter?.complete(_freeMovePath),
           ),
 
           // Incantation thumbnail tray — neutral space outside the grid for
@@ -2795,8 +2905,21 @@ class _BattleScreenState extends State<BattleScreen>
               thumbnails: _incantationTray,
             ),
 
-          // Player HP / MP bars
-          if (local != null) _PlayerHud(avatar: local, maxHp: config.playerHp),
+          // Player HP / MP bars. During a Boost prompt the bar also shows,
+          // in a paler shade behind the real level, where the run tapped so
+          // far would leave the wizard — the decision is "how much of this bar
+          // am I willing to burn", so it has to be visible while deciding.
+          if (local != null)
+            _PlayerHud(
+              avatar: local,
+              maxHp: config.playerHp,
+              pendingManaSpend: _freeMoveGrant.boostResource == SpellAffinity.water
+                  ? _freeMoveCost
+                  : 0,
+              pendingHpSpend: _freeMoveGrant.boostResource == SpellAffinity.fire
+                  ? _freeMoveCost
+                  : 0,
+            ),
 
           // Status effects — local player by default; opponent when inspecting
           _StatusEffectPanel(
@@ -3161,6 +3284,9 @@ class _ActionBar extends StatelessWidget {
     required this.isBusy,
     required this.pickingMelee,
     required this.pickingFreeMove,
+    required this.freeMoveGrant,
+    required this.freeMovePathLength,
+    required this.freeMoveCost,
     required this.onDash,
     required this.onMeditateMain,
     required this.onCast,
@@ -3171,6 +3297,7 @@ class _ActionBar extends StatelessWidget {
     required this.onCancelDirectionPick,
     required this.onDeclineMelee,
     required this.onDeclineFreeMove,
+    required this.onConfirmFreeMove,
   });
 
   final _InputPhase phase;
@@ -3195,10 +3322,21 @@ class _ActionBar extends StatelessWidget {
   /// -submission by the time this fires.
   final bool pickingMelee;
 
-  /// Post-resolution Airy Barrier burst prompt (see
+  /// Post-resolution free-move prompt (see
   /// _BattleScreenState._pickFreeMoveDirection) — same override as
   /// [pickingMelee]; the two are never true at once (different phases).
   final bool pickingFreeMove;
+
+  /// What that prompt is offering — a burst step, a Boost run, or both.
+  /// [FreeMoveGrant.none] whenever [pickingFreeMove] is false.
+  final FreeMoveGrant freeMoveGrant;
+
+  /// Tiles in the run tapped so far, counting conveyor push-throughs.
+  final int freeMovePathLength;
+
+  /// What that run costs in [FreeMoveGrant.boostResource]'s units — 0 while
+  /// still inside the free tiles, or whenever there's no Boost to pay for.
+  final int freeMoveCost;
 
   final VoidCallback onDash;
   final VoidCallback onMeditateMain;
@@ -3210,6 +3348,32 @@ class _ActionBar extends StatelessWidget {
   final VoidCallback onCancelDirectionPick;
   final VoidCallback onDeclineMelee;
   final VoidCallback onDeclineFreeMove;
+  final VoidCallback onConfirmFreeMove;
+
+  /// Prompt copy for the free-move window, named for whatever earned it.
+  /// A Boost leads with its price because that's the decision being made;
+  /// a bare burst step is free and just needs a direction.
+  String get _freeMovePrompt {
+    final resource = freeMoveGrant.boostResource;
+    if (resource == null) {
+      return 'Your airy barrier bursts — step free? '
+          'Tap a highlighted tile, or stand fast';
+    }
+    final unit = resource == SpellAffinity.water ? 'mana' : 'life';
+    final name = resource == SpellAffinity.water
+        ? 'High Liquidity'
+        : 'High Mobility';
+    if (freeMovePathLength == 0) {
+      return freeMoveGrant.burstStep
+          ? '$name, and your airy barrier bursts — tap tiles to run '
+                '(first step free)'
+          : '$name — tap tiles to run, then MOVE';
+    }
+    final steps = '$freeMovePathLength step${freeMovePathLength == 1 ? '' : 's'}';
+    return freeMoveCost == 0
+        ? '$steps, free — tap the last to undo'
+        : '$steps for $freeMoveCost $unit — tap the last to undo';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -3228,8 +3392,7 @@ class _ActionBar extends StatelessWidget {
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                'Your airy barrier bursts — step free? '
-                'Tap a highlighted tile, or stand fast',
+                _freeMovePrompt,
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontFamily: 'serif',
@@ -3238,6 +3401,18 @@ class _ActionBar extends StatelessWidget {
                 ),
               ),
             ),
+            // A bare burst step commits on tap (one tile, nothing to weigh).
+            // A Boost run is built up and locked in here instead, because the
+            // player is choosing how much to spend, not just which way to go.
+            if (freeMoveGrant.boostResource != null) ...[
+              const SizedBox(width: 8),
+              _ActionButton(
+                label: 'MOVE',
+                color: const Color(0xFF3A7FCC),
+                enabled: freeMovePathLength > 0,
+                onTap: onConfirmFreeMove,
+              ),
+            ],
           ],
         ),
       );
@@ -3978,10 +4153,22 @@ class _ThinBar extends StatelessWidget {
 // ── Player HP / MP bars ───────────────────────────────────────────────────────
 
 class _PlayerHud extends StatelessWidget {
-  const _PlayerHud({required this.avatar, required this.maxHp});
+  const _PlayerHud({
+    required this.avatar,
+    required this.maxHp,
+    this.pendingManaSpend = 0,
+    this.pendingHpSpend = 0,
+  });
 
   final WizardAvatar avatar;
   final int maxHp;
+
+  /// Mana a Boost run being planned right now would cost — previewed on the MP
+  /// bar before the player commits (see _BattleScreenState._freeMoveCost).
+  final int pendingManaSpend;
+
+  /// Same, for a Fire Boost's life cost, on the HP bar.
+  final int pendingHpSpend;
 
   @override
   Widget build(BuildContext context) {
@@ -3989,6 +4176,11 @@ class _PlayerHud extends StatelessWidget {
     final manaFrac = avatar.maxMana > 0
         ? (avatar.mana / avatar.maxMana).clamp(0.0, 1.0)
         : 0.0;
+    // A Fire Boost can never take the wizard below 1 HP — TurnLoop's grant
+    // caps it there — so the preview stops there too rather than showing an
+    // empty bar the engine would never produce.
+    final hpAfter = max(1, avatar.hp - pendingHpSpend);
+    final manaAfter = max(0, avatar.mana - pendingManaSpend);
 
     return Container(
       color: kInkColor,
@@ -4003,6 +4195,8 @@ class _PlayerHud extends StatelessWidget {
             fraction: hpFrac,
             barColor: const Color(0xFF8B1E1E),
             labelColor: const Color(0xFFD48A8A),
+            previewValue: pendingHpSpend > 0 ? hpAfter : null,
+            previewFraction: maxHp > 0 ? (hpAfter / maxHp).clamp(0.0, 1.0) : 0.0,
           ),
           const SizedBox(height: 6),
           _StatBar(
@@ -4012,6 +4206,10 @@ class _PlayerHud extends StatelessWidget {
             fraction: manaFrac,
             barColor: const Color(0xFF2B4D8C),
             labelColor: const Color(0xFF8AACED),
+            previewValue: pendingManaSpend > 0 ? manaAfter : null,
+            previewFraction: avatar.maxMana > 0
+                ? (manaAfter / avatar.maxMana).clamp(0.0, 1.0)
+                : 0.0,
           ),
           if (avatar.activeChainElement != null) ...[
             const SizedBox(height: 4),
@@ -4074,6 +4272,8 @@ class _StatBar extends StatelessWidget {
     required this.fraction,
     required this.barColor,
     required this.labelColor,
+    this.previewValue,
+    this.previewFraction = 0.0,
   });
 
   final String label;
@@ -4083,8 +4283,17 @@ class _StatBar extends StatelessWidget {
   final Color barColor;
   final Color labelColor;
 
+  /// Where this stat would land if the choice being made right now were
+  /// committed (currently: a Boost run's price — see _PlayerHud). Null draws
+  /// the ordinary bar. Non-null overlays the projected level in a desaturated
+  /// shade of [barColor] and reads out "now → after", so the spend is legible
+  /// before it's spent.
+  final int? previewValue;
+  final double previewFraction;
+
   @override
   Widget build(BuildContext context) {
+    final preview = previewValue;
     return Row(
       children: [
         SizedBox(
@@ -4103,17 +4312,39 @@ class _StatBar extends StatelessWidget {
         Expanded(
           child: ClipRRect(
             borderRadius: BorderRadius.circular(3),
-            child: LinearProgressIndicator(
-              value: fraction,
-              backgroundColor: const Color(0xFF3A2210),
-              valueColor: AlwaysStoppedAnimation<Color>(barColor),
-              minHeight: 14,
-            ),
+            child: preview == null
+                ? LinearProgressIndicator(
+                    value: fraction,
+                    backgroundColor: const Color(0xFF3A2210),
+                    valueColor: AlwaysStoppedAnimation<Color>(barColor),
+                    minHeight: 14,
+                  )
+                // Two stacked bars, not one: the full-strength fill is what
+                // the wizard would be left with, the washed-out fill behind it
+                // is what the run is about to eat.
+                : Stack(
+                    children: [
+                      LinearProgressIndicator(
+                        value: fraction,
+                        backgroundColor: const Color(0xFF3A2210),
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          Color.lerp(barColor, kInkMutedColor, 0.55)!,
+                        ),
+                        minHeight: 14,
+                      ),
+                      LinearProgressIndicator(
+                        value: previewFraction,
+                        backgroundColor: Colors.transparent,
+                        valueColor: AlwaysStoppedAnimation<Color>(barColor),
+                        minHeight: 14,
+                      ),
+                    ],
+                  ),
           ),
         ),
         const SizedBox(width: 7),
         Text(
-          '$value / $max',
+          preview == null ? '$value / $max' : '$value → $preview',
           style: TextStyle(
             fontFamily: 'serif',
             fontSize: 10,

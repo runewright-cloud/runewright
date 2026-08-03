@@ -388,19 +388,20 @@ class RangeModificationEffect extends SpellEffect {
 /// cloud's radius may only target/be targeted by adjacent entities.
 ///
 ///   Fire affinity:  ToxicCloud(damagePerTurn: 1)
-///   Earth affinity: DustCloud(restrictionTurnsAfterLeaving: 2) -- the
+///   Earth affinity: DustCloud(restrictionTurnsAfterLeaving: 3) -- the
 ///                   targeting restriction lingers after leaving
 ///   Water affinity: WaterCloud(), [radius] = 2 instead of 1
 ///   Air affinity:   MobileCloud() -- auto-seeks the nearest enemy
 ///
 /// No potency brackets are given for Clouds in the design doc -- [radius] and
-/// [durationTurns] are flat regardless of potency.
+/// [durationTurns] are flat regardless of potency. [durationTurns] defaults to
+/// 3 (base 2, +1 to account for effects being granted at end-of-turn).
 class CloudEffect extends SpellEffect {
   const CloudEffect({
     required this.affinity,
     required this.kind,
     this.radius = 1,
-    this.durationTurns = 2,
+    this.durationTurns = 3,
   });
 
   final SpellAffinity affinity;
@@ -530,6 +531,12 @@ class HaymakerInteractionEffect extends SpellEffect {
 ///                   commitment needed since "available spells" is the
 ///                   target's whole chapter today (SpellDraw is unwired; see
 ///                   docs/OUTSTANDING_ITEMS.md)
+///   Earth affinity: [grantsScryingSight]=true for [durationTurns] (1/2 potent)
+///                   — the Earthen Scrying Pool. Sees through the murk: the
+///                   bearer ignores the clouds' adjacent-only targeting
+///                   restriction, and an enemy illusion that ends up adjacent
+///                   to them is dispelled on sight. Purely local — no reveal
+///                   protocol, no link. See StatusEffectId.scryingSight.
 ///   Air affinity:   see target's committed spell target tile for [durationTurns]
 ///                   (2/3 potent) — [requiresOpponentReveal]=true; driven by
 ///                   `TurnLoop._exchangeScryOpenings` (scryKey/scryOpen)
@@ -539,6 +546,7 @@ class DivinationEffect extends SpellEffect {
     required this.affinity,
     required this.durationTurns,
     this.revealsCounterCharms = false,
+    this.grantsScryingSight = false,
     this.requiresOpponentReveal = false,
   });
 
@@ -548,6 +556,11 @@ class DivinationEffect extends SpellEffect {
   final int durationTurns;
 
   final bool revealsCounterCharms;
+
+  /// True for Earth: cloud-blindness immunity + dispel-adjacent-illusions,
+  /// carried as [StatusEffectId.scryingSight] on whoever occupies the target
+  /// tile.
+  final bool grantsScryingSight;
 
   /// True for Water and Air: opponent's client must send hidden information.
   final bool requiresOpponentReveal;

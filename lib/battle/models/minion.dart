@@ -118,6 +118,7 @@ class Minion {
     Map<SpellAffinity, BarrierState>? barriers,
     this.actedThisTurn = false,
     this.forceCloseToAttack = false,
+    this.isIllusion = false,
     this.sizeBonus = 0,
     this.copiedFromMinionId,
   })  : abilities = abilities ?? const {},
@@ -154,6 +155,15 @@ class Minion {
   /// to attack rather than following its personality's normal positioning
   /// (e.g. an Evasive original's kiting is skipped for its clone).
   final bool forceCloseToAttack;
+
+  /// This creature is an illusion — either conjured as one (Illusions'
+  /// Fire-flavor 1 HP clone) or turned into one (the Air flavor's
+  /// convertToIllusion, hence non-final). Gameplay-relevant, unlike the
+  /// presentational [copiedFromMinionId]: an Earthen Scrying Pool bearer
+  /// dispels an adjacent enemy illusion on sight (EffectApplicator
+  /// .dispelIllusionsNearScryers), so this is consensus state and is hashed
+  /// in [BattleState.toCanonicalBytes].
+  bool isIllusion;
 
   final List<StatusEffect> activeStatusEffects;
   final Map<SpellAffinity, BarrierState> barriers;
