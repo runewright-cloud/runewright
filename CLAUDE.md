@@ -88,9 +88,13 @@ should the circuit constraint work begin. **Do not invent these encodings — re
 - **Flutter / Dart** — primary client. Ubuntu Linux + VS Code dev environment.
 - **Noir** (`nargo`) + **Barretenberg** (`bb`, UltraHonk). Versions validated in
   Phase 0/1 were `nargo 1.0.0-beta.20` and `bb 5.0.0-nightly.20260324`. **Confirmed in use
-  on the Linux dev machine as of M3.2:** `nargo` (beta.20, binary at `/tmp/nargo`, not on
-  `$PATH`) and `bb 5.0.0-nightly.20260324` (installed via the official `bbup` installer to
-  `~/.bb`, added to `$PATH`). **Version pinning matters:** the circuit's `nargo`/`bb`
+  on the Linux dev machine as of 2026-08-03:** `nargo` beta.20 installed via `noirup` to
+  `~/.nargo/bin` and **on `$PATH`** (it used to be an unpacked binary at `/tmp/nargo`; that
+  path is dead — scripts now resolve `nargo` from `$PATH`, overridable with `NARGO_BIN`),
+  and `bb 5.0.0-nightly.20260324` (installed via the official `bbup` installer to
+  `~/.bb`, added to `$PATH`). CI installs the same pinned nargo via `noirup -v` — if you
+  bump the version, bump `NARGO_VERSION` in `.github/workflows/ci.yml` too.
+  **Version pinning matters:** the circuit's `nargo`/`bb`
   versions must match what the proving bridge expects (e.g. `zkpassport/noir_rs` is tagged
   to `v1.0.0-beta.19-1`; beta-channel skew breaks). Pin the whole toolchain together.
 - **Mobile proving is a supported path, not an open question.** `zkpassport/noir_rs` (Rust
@@ -270,9 +274,10 @@ design doc lineage is now `runewright_design_v3_0.md` > `v2_4`; the circuit cont
   24/48. The next boundary is now **2^19→2^20** — crossing it doubles proving cost on the
   tier that most needs to be cheap, so treat that as the go/no-go, not a benchmark. (For
   reference, same re-measure: tier-24 ≈ 810k → 2^20, tier-48 ≈ 1.65M → 2^21.)
-- **Toolchain quirks on this machine:** `nargo` lives at `/tmp/nargo` (not on `$PATH` —
-  and being in `/tmp`, it can vanish on reboot; re-fetch beta.20 if missing); `bb` is on
-  `$PATH` via `~/.bb`. `flutter pub add`/`get` can exit 255 under the snap environment —
+- **Toolchain quirks on this machine:** `nargo` (beta.20) is at `~/.nargo/bin/nargo` and on
+  `$PATH`, installed by `noirup`; `bb` is on `$PATH` via `~/.bb`. The old `/tmp/nargo`
+  location is gone — `/tmp` did not survive reboots, which is exactly why it moved.
+  `flutter pub add`/`get` can exit 255 under the snap environment —
   see M4_findings toolchain notes for the workaround.
 - **`RULESET_VERSION` (now 3) must bump on any consensus-visible CA rule change.** It's a
   deliberate VK-breaking mechanism. Nothing has shipped, so bumps are cheap — be

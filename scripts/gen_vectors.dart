@@ -75,7 +75,9 @@ NargoResult _runNargoExecute(String circuitDir, String proverToml) {
   final backup = File(proverPath).existsSync() ? File(proverPath).readAsStringSync() : null;
   File(proverPath).writeAsStringSync(proverToml);
   try {
-    final nargoBin = Platform.environment['NARGO_BIN'] ?? '/tmp/nargo';
+    // Default to $PATH lookup (noirup installs to ~/.nargo/bin); run_vectors.sh
+    // passes NARGO_BIN through explicitly.
+    final nargoBin = Platform.environment['NARGO_BIN'] ?? 'nargo';
     final result = Process.runSync(
       nargoBin,
       ['execute', '--silence-warnings'],

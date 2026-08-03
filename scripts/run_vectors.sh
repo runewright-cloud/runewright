@@ -32,7 +32,21 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TIER12_DIR="${REPO_ROOT}/circuits/ca_v2_4_tier12"
-NARGO_BIN="${NARGO_BIN:-/tmp/nargo}"
+# Resolve nargo from $PATH by default (noirup installs to ~/.nargo/bin). Older
+# dev setups kept an unpacked binary at /tmp/nargo, which does not exist in CI
+# and evaporates on reboot; override with NARGO_BIN=... if yours lives elsewhere.
+NARGO_BIN="${NARGO_BIN:-nargo}"
+
+if ! command -v "${NARGO_BIN}" >/dev/null 2>&1; then
+  echo "error: nargo not found (looked for '${NARGO_BIN}')." >&2
+  echo "  Install the pinned version with:" >&2
+  echo "    mkdir -p \"\$HOME/.nargo/bin\"" >&2
+  echo "    curl -fsSL -o /tmp/noirup https://raw.githubusercontent.com/noir-lang/noirup/main/noirup" >&2
+  echo "    bash /tmp/noirup -v 1.0.0-beta.20" >&2
+  echo "    export PATH=\"\$HOME/.nargo/bin:\$PATH\"" >&2
+  echo "  Or point NARGO_BIN at an existing binary." >&2
+  exit 1
+fi
 
 # ── Step 1: Dart stepper regression ─────────────────────────────────────────
 

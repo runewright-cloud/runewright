@@ -23,5 +23,26 @@ jobs:
       - name: Install Dart dependencies
         run: flutter pub get
 
+      # The vector corpus compiles and executes the tier-12 Noir circuit, so CI
+      # needs nargo. Pin the version: the corpus is a byte-exact cross-language
+      # contract, and a beta-channel bump can change witness/commitment output.
+      # Keep NARGO_VERSION in sync with CLAUDE.md's toolchain section.
+      - name: Install Noir (nargo)
+        env:
+          NARGO_VERSION: 1.0.0-beta.20
+        run: |
+          set -euo pipefail
+          # noirup unpacks straight into $HOME/.nargo/bin and does NOT create it,
+          # so make it first or the tar extraction fails on a clean runner.
+          mkdir -p "$HOME/.nargo/bin"
+          curl -fsSL -o /tmp/noirup \
+            https://raw.githubusercontent.com/noir-lang/noirup/main/noirup
+          chmod +x /tmp/noirup
+          /tmp/noirup -v "$NARGO_VERSION"
+          echo "$HOME/.nargo/bin" >> "$GITHUB_PATH"
+
+      - name: Verify nargo version
+        run: nargo --version
+
       - name: Run vector corpus script
         run: bash scripts/run_vectors.sh
