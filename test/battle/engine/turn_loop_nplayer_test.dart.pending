@@ -1,0 +1,276 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// turn_loop_nplayer_test.dart — Verifies the N-player generalization
+// (BATTLE_PROTOCOL.md §10): N-party entropy fold, N-way stateHash
+// comparison, canonical position assignment, the certifiedPeerFormulas
+// composite key, and per-player forfeit elimination.
+//
+// Unlike turn_loop_determinism_test.dart's hand-rolled _PairedSession (which
+// coordinates two BattleTurnSessions via bare Completers, bypassing the wire
+// entirely), this file wires real BattleSession + MeshBattleSession +
+// InMemoryTransport together -- the same production types
+// battle_lobby_screen.dart's handshake now uses, generalized to three
+// simulated devices in a mesh. This is also what caught a real,
+// previously-unexercised bug: BattleFrameReader silently dropped any frame
+// that arrived before something called .first to wait for it (the same race
+// MatchSession's _bufferedFrame was built to fix, just never ported to the
+// battle-session reader because nothing used two real BattleSessions
+// together until this test and battle_lobby_screen.dart's handshake existed).
+// See docs/M5_findings.md.
+
+import 'dart:typed_data';
+
+import 'package:cryptography/cryptography.dart';
+import 'package:test/test.dart';
+import 'package:rune_duel/battle/engine/commit_reveal.dart';
+import 'package:rune_duel/battle/engine/trajectory_parser.dart';
+import 'package:rune_duel/battle/engine/turn_loop.dart';
+import 'package:rune_duel/battle/models/match_config.dart';
+import 'package:rune_duel/battle/models/network_battle_setup.dart';
+import 'package:rune_duel/battle/models/wizard_avatar.dart';
+import 'package:rune_duel/battle/networking/battle_session.dart';
+import 'package:rune_duel/engine/border_zone.dart';
+import 'package:rune_duel/protocol/in_memory_transport.dart';
+
+void main() {
+  group('N-player TurnLoop (BATTLE_PROTOCOL.md §10)', () {
+    test(
+        '3 real TurnLoops over a real InMemoryTransport mesh reach identical canonical state',
+        () async {
+      final mesh = _ThreeWayMesh();
+      final entropy = Uint8List(32)..fillRange(0, 32, 0x5A);
+      final roster = _threePlayerRoster();
+
+      final stateA = buildNetworkBattleState(roster: roster, config: const MatchConfig(), jointEntropy: entropy);
+      final stateB = buildNetworkBattleState(roster: roster, config: const MatchConfig(), jointEntropy: entropy);
+      final stateC = buildNetworkBattleState(roster: roster, config: const MatchConfig(), jointEntropy: entropy);
+
+      // Sanity: the three independently-built states already agree before
+      // any turn runs -- this is what §10d's canonical assignment buys us.
+      expect(stateA.toCanonicalBytes(), equals(stateB.toCanonicalBytes()));
+      expect(stateB.toCanonicalBytes(), equals(stateC.toCanonicalBytes()));
+
+      final loopA = TurnLoop(state: stateA, session: mesh.meshFor('player_a'), localPlayerId: 'player_a');
+      final loopB = TurnLoop(state: stateB, session: mesh.meshFor('player_b'), localPlayerId: 'player_b');
+      final loopC = TurnLoop(state: stateC, session: mesh.meshFor('player_c'), localPlayerId: 'player_c');
+
+      await Future.wait([
+        loopA.runTurn(TurnInput(action: PassAction())),
+        loopB.runTurn(TurnInput(action: PassAction())),
+        loopC.runTurn(TurnInput(action: PassAction())),
+      ]);
+
+      expect(stateA.toCanonicalBytes(), equals(stateB.toCanonicalBytes()),
+          reason: 'A and B diverged after a 3-player turn -- check N-party entropy fold / stateHash comparison');
+      expect(stateB.toCanonicalBytes(), equals(stateC.toCanonicalBytes()),
+          reason: 'B and C diverged after a 3-player turn');
+
+      // Nobody should have been eliminated -- all three behaved honestly.
+      for (final av in stateA.avatars) {
+        expect(av.isAlive, isTrue, reason: '${av.playerId} was wrongly eliminated during an honest turn');
+      }
+    });
+
+    test('a peer that sends a mismatched reveal is eliminated individually; the match continues for the rest',
+        () async {
+      final mesh = _ThreeWayMesh();
+      final entropy = Uint8List(32)..fillRange(0, 32, 0x11);
+      final roster = _threePlayerRoster();
+
+      final stateA = buildNetworkBattleState(roster: roster, config: const MatchConfig(), jointEntropy: entropy);
+      final stateB = buildNetworkBattleState(roster: roster, config: const MatchConfig(), jointEntropy: entropy);
+
+      final loopA = TurnLoop(state: stateA, session: mesh.meshFor('player_a'), localPlayerId: 'player_a');
+      final loopB = TurnLoop(state: stateB, session: mesh.meshFor('player_b'), localPlayerId: 'player_b');
+
+      // player_c is not a real device here -- a scripted peer that answers
+      // honestly through the entropy exchange, then sends a mismatched
+      // action reveal (see _honestThenMismatchedActionReveal's doc comment
+      // for why a mismatch, not silence).
+      final badPeer = _honestThenMismatchedActionReveal(toA: mesh.sessionCtoA, toB: mesh.sessionCtoB);
+
+      final results = await Future.wait([
+        loopA.runTurn(TurnInput(action: PassAction())),
+        loopB.runTurn(TurnInput(action: PassAction())),
+      ]);
+      await badPeer;
+
+      final cInA = stateA.avatars.firstWhere((av) => av.playerId == 'player_c');
+      final cInB = stateB.avatars.firstWhere((av) => av.playerId == 'player_c');
+      expect(cInA.isAlive, isFalse, reason: 'player_c should be eliminated after a mismatched reveal (§10c)');
+      expect(cInB.isAlive, isFalse);
+
+      final aInA = stateA.avatars.firstWhere((av) => av.playerId == 'player_a');
+      final bInA = stateA.avatars.firstWhere((av) => av.playerId == 'player_b');
+      expect(aInA.isAlive, isTrue, reason: 'player_a must not be collaterally eliminated');
+      expect(bInA.isAlive, isTrue, reason: 'player_b must not be collaterally eliminated');
+
+      // Two of three teams (each player is their own team here) still stand
+      // -- the match must not have ended just because a 3rd player dropped.
+      expect(results[0], isNull, reason: 'match ended early -- one peer forfeiting must not abort it for the rest');
+      expect(results[1], isNull);
+
+      expect(stateA.toCanonicalBytes(), equals(stateB.toCanonicalBytes()),
+          reason: 'A and B must still agree on canonical state after independently eliminating the same peer');
+    });
+  });
+
+  group('buildNetworkBattleState canonical position assignment (§10d)', () {
+    test('position assignment is identical regardless of the roster\'s input order', () {
+      final entropy = Uint8List(32)..fillRange(0, 32, 0x42);
+      final roster = _threePlayerRoster();
+      final shuffled = [roster[2], roster[0], roster[1]]; // same players, different order
+
+      final stateInOrder = buildNetworkBattleState(roster: roster, config: const MatchConfig(), jointEntropy: entropy);
+      final stateShuffled = buildNetworkBattleState(roster: shuffled, config: const MatchConfig(), jointEntropy: entropy);
+
+      for (final playerId in ['player_a', 'player_b', 'player_c']) {
+        final posInOrder = stateInOrder.avatars.firstWhere((a) => a.playerId == playerId).position;
+        final posShuffled = stateShuffled.avatars.firstWhere((a) => a.playerId == playerId).position;
+        expect(posShuffled, equals(posInOrder),
+            reason: '$playerId spawned at a different position depending on roster input order -- '
+                'this would be a guaranteed stateHash mismatch between two real devices');
+      }
+    });
+
+    test('5-player spawn vertex skip is deterministic given the same joint entropy', () {
+      final roster = [
+        for (final id in ['p1', 'p2', 'p3', 'p4', 'p5'])
+          NetworkPlayerSlot(
+            playerId: id,
+            ownerPubkeyHex: '0x${id.hashCode.toRadixString(16).padLeft(64, '0')}',
+            teamId: 'team_$id',
+            accoutrements: const [Accoutrement(id: 'gem', kind: AccoutrementKind.manaGem, isCoreGem: true)],
+          ),
+      ];
+      final entropy = Uint8List(32)..fillRange(0, 32, 0x77);
+
+      final stateOne = buildNetworkBattleState(roster: roster, config: const MatchConfig(), jointEntropy: entropy);
+      final stateTwo = buildNetworkBattleState(roster: roster, config: const MatchConfig(), jointEntropy: entropy);
+
+      for (final av in stateOne.avatars) {
+        final other = stateTwo.avatars.firstWhere((a) => a.playerId == av.playerId);
+        expect(other.position, equals(av.position),
+            reason: '5-player vertex skip must be seeded from joint entropy, not a platform RNG, '
+                'or two devices would disagree on which vertex was left empty');
+      }
+    });
+  });
+
+  group('certifiedPeerFormulas composite key (§10)', () {
+    test('(peerId, commitmentHex) keys never collide between different peers casting the same grid', () {
+      final map = <(String, String), List<ParsedFormula>>{};
+      const formulaA = [ParsedFormula(affinity: BorderZone.fire, effectType1: BorderZone.fire, effectType2: BorderZone.fire)];
+      const formulaB = [ParsedFormula(affinity: BorderZone.water, effectType1: BorderZone.water, effectType2: BorderZone.water)];
+
+      const sharedCommitmentHex = '0xabc123';
+      map[('player_a', sharedCommitmentHex)] = formulaA;
+      map[('player_b', sharedCommitmentHex)] = formulaB;
+
+      expect(map.length, 2,
+          reason: 'two peers casting the same starting grid must not collide under a single-string key '
+              '(the pre-fix bug this composite key closes)');
+      expect(map[('player_a', sharedCommitmentHex)], equals(formulaA));
+      expect(map[('player_b', sharedCommitmentHex)], equals(formulaB));
+    });
+  });
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+List<NetworkPlayerSlot> _threePlayerRoster() => [
+      for (final id in ['player_a', 'player_b', 'player_c'])
+        NetworkPlayerSlot(
+          playerId: id,
+          ownerPubkeyHex: '0x${id.hashCode.toRadixString(16).padLeft(64, '0')}',
+          teamId: 'team_$id',
+          accoutrements: const [Accoutrement(id: 'gem', kind: AccoutrementKind.manaGem, isCoreGem: true)],
+        ),
+    ];
+
+/// Three simulated devices' worth of pairwise [BattleSession]s over real
+/// [InMemoryTransport]s, wired as a full mesh (BATTLE_PROTOCOL.md §10e:
+/// every device holds a direct connection to every other). [meshFor] gives
+/// the [MeshBattleSession] a real [TurnLoop] would use; [sessionCtoA] /
+/// [sessionCtoB] expose player_c's raw edges directly, for tests that drive
+/// player_c as a scripted peer instead of a full TurnLoop.
+class _ThreeWayMesh {
+  _ThreeWayMesh() {
+    final matchId = Uint8List(16);
+    final (transportAtoB, transportBtoA) = InMemoryTransport.pair();
+    final (transportAtoC, transportCtoA) = InMemoryTransport.pair();
+    final (transportBtoC, transportCtoB) = InMemoryTransport.pair();
+
+    final sessionAtoB = BattleSession(transportAtoB, matchId);
+    final sessionBtoA = BattleSession(transportBtoA, matchId);
+    final sessionAtoC = BattleSession(transportAtoC, matchId);
+    sessionCtoA = BattleSession(transportCtoA, matchId);
+    final sessionBtoC = BattleSession(transportBtoC, matchId);
+    sessionCtoB = BattleSession(transportCtoB, matchId);
+
+    _meshes = {
+      'player_a': MeshBattleSession({'player_b': sessionAtoB, 'player_c': sessionAtoC}),
+      'player_b': MeshBattleSession({'player_a': sessionBtoA, 'player_c': sessionBtoC}),
+      'player_c': MeshBattleSession({'player_a': sessionCtoA, 'player_b': sessionCtoB}),
+    };
+  }
+
+  late final Map<String, MeshBattleSession> _meshes;
+  late final BattleSession sessionCtoA;
+  late final BattleSession sessionCtoB;
+
+  MeshBattleSession meshFor(String playerId) => _meshes[playerId]!;
+}
+
+/// Scripted peer: answers the action-commit, move-commit/reveal, and
+/// entropy-nonce exchanges honestly (as a passive "always pass, stay put"
+/// player, matching SoloBattleSession's fiction) on both [toA] and [toB],
+/// then sends an action-reveal that doesn't hash to match its earlier
+/// commit -- a withheld/tampered reveal, BATTLE_PROTOCOL.md §3's
+/// "withheld_reveal" case. Deliberately *not* a "goes silent and never
+/// responds" scenario: neither `InMemoryTransport` nor `BattleFrameReader`
+/// have any timeout/heartbeat mechanism (closing one's own read side
+/// doesn't propagate a close/error to the peer's stream, so a truly silent
+/// peer just hangs the exchange forever) -- this is a pre-existing,
+/// documented gap inherited unchanged from the 2-player protocol
+/// (BATTLE_PROTOCOL.md §3: "timeout policy is TODO(battle)"), not something
+/// this test suite can exercise. A mismatched reveal, by contrast, is
+/// detected immediately and deterministically by `_verifyReveal`'s hash
+/// check -- no timeout needed -- which is what actually exercises the
+/// "eliminate this one misbehaving peer" path (§10c).
+Future<void> _honestThenMismatchedActionReveal({required BattleSession toA, required BattleSession toB}) async {
+  const passBytes = [0x00];
+  final nonce = Uint8List(16);
+  final commit = Uint8List.fromList(
+    (await Sha256().hash(Uint8List.fromList([...passBytes, ...nonce]))).bytes,
+  );
+
+  Future<void> both(Future<Object?> Function(BattleSession) call) async {
+    await Future.wait([call(toA), call(toB)]);
+  }
+
+  // Phase 1: action commit ("pass").
+  await both((s) => s.exchangeActionCommit(commit));
+
+  // Phase 2: move commit + reveal (empty path: stay put).
+  await both((s) => s.exchangeMoveCommit(commit)); // same encoding: [0x00] payload, zero nonce
+  final reveal = Uint8List.fromList([...nonce, ...passBytes]);
+  await both((s) => s.exchangeMoveReveal(reveal));
+
+  // Phase 3: entropy nonce exchange -- must respond or A/B's own entropy
+  // fold would eliminate player_c here instead of at the intended step.
+  final ourNonce = CommitRevealEntropy.generateNonce();
+  final ourCommit = await CommitRevealEntropy.commit(ourNonce);
+  await both((s) => s.exchangeNonce(ourCommit: ourCommit, ourNonce: ourNonce));
+
+  // Phase 5a: delayed-spell-reveal declaration (none pending).
+  await both((s) => s.exchangeDelayedSpellReveals(Uint8List.fromList([0x00])));
+
+  // Phase 5b: action reveal -- send a nonce that does NOT hash to the
+  // earlier commit (the commit above was built from the all-zero `nonce`;
+  // this reveal claims a different one). _verifyReveal detects this
+  // immediately and eliminates player_c on both A's and B's devices.
+  final wrongNonce = Uint8List(16)..fillRange(0, 16, 0xFF);
+  final badReveal = Uint8List.fromList([...wrongNonce, ...passBytes]);
+  await both((s) => s.exchangeActionReveal(badReveal));
+}

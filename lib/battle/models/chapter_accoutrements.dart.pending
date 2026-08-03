@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// chapter_accoutrements.dart — converts a ChapterAsset's artifact loadout
+// into WizardAvatar accoutrements. Shared by solo_battle_setup.dart and
+// network_battle_setup.dart so the core-gem-assignment rule lives in one
+// place.
+
+import '../../spells/chapter_asset.dart';
+import 'wizard_avatar.dart';
+
+/// Converts [chapter]'s artifacts into [Accoutrement]s. The first mana gem
+/// becomes the indestructible core gem; if the chapter has none, an
+/// indestructible core gem is added so every wizard has at least one.
+List<Accoutrement> accoutrementsFromChapter(ChapterAsset chapter) {
+  final accoutrements = <Accoutrement>[];
+  bool coreGemAdded = false;
+  for (int i = 0; i < chapter.artifacts.length; i++) {
+    final a = chapter.artifacts[i];
+    final kind = _toAccoutrementKind(a.kind);
+    final isCore = kind == AccoutrementKind.manaGem && !coreGemAdded;
+    if (isCore) coreGemAdded = true;
+    accoutrements.add(Accoutrement(
+      id: 'acc_$i',
+      kind: kind,
+      isCoreGem: isCore,
+      targetCommitmentHex: a.targetCommitmentHex,
+    ));
+  }
+  if (!coreGemAdded) {
+    accoutrements.insert(
+      0,
+      const Accoutrement(id: 'acc_core', kind: AccoutrementKind.manaGem, isCoreGem: true),
+    );
+  }
+  return accoutrements;
+}
+
+AccoutrementKind _toAccoutrementKind(ArtifactKind kind) => switch (kind) {
+      ArtifactKind.manaGem => AccoutrementKind.manaGem,
+      ArtifactKind.bookmark => AccoutrementKind.bookmark,
+      ArtifactKind.deflectionRod => AccoutrementKind.absorptionRod,
+      ArtifactKind.counterCharm => AccoutrementKind.counterCharm,
+    };

@@ -48,7 +48,7 @@ fn known_good_witness(tier: u32) -> Vec<String> {
     witness.push("0x0".to_string()); // key_lo
     witness.push("0x1".to_string()); // T = 1 (valid for every tier, 1 <= T <= tier_max)
     witness.push(OWNER_PUBKEY_HEX.to_string()); // owner_pubkey = poseidon2_hash2(0,0)
-    witness.push("0x1".to_string()); // ruleset_version = 1
+    witness.push("0x3".to_string()); // ruleset_version = 3 (RULESET_VERSION, locked by circuit assertion)
     let _ = tier; // T=1 is tier-independent; kept as a parameter for clarity at call sites
     witness
 }

@@ -1,0 +1,207 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// vocal_enrollment.dart — VocalEnrollment: persistence and audio
+// processing for per-user voice templates (Practice Mode).
+//
+// Why this exists (2026-07-16): the MFCC+DTW metric's absolute costs are
+// uncalibratable across speakers, but its *ranking* across the closed
+// 5-word vocabulary is reliable when the reference templates are the same
+// voice as the query — measured 5/5 correct argmin with >= 1.0 margins
+// same-voice vs 2/5 cross-voice (see docs/M4_findings.md, 2026-07-16
+// entry). So the player records each word once, and those recordings
+// replace the Piper renders as the scoring references. The Piper renders
+// remain the *pronunciation model* the player hears and imitates.
+//
+// Storage: <app documents>/practice_enrollment/<word>.json, same schema as
+// the bundled assets/practice_templates/*.json ({"frames": [[13 doubles]]})
+// so PerUserEnrolledTemplateSource can treat both identically. Local-only,
+// never leaves the device, consensus-invisible.
+
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math' as math;
+import 'dart:typed_data';
+
+import 'package:path_provider/path_provider.dart';
+
+import '../sorcerer/mfcc.dart';
+import '../sorcerer/vocal_score.dart';
+
+/// Thrown when an enrollment recording can't yield a usable template
+/// (too quiet, too short). The message is user-presentable.
+class EnrollmentException implements Exception {
+  const EnrollmentException(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
+/// Persistence + processing for per-user vocal templates. [baseDir] is
+/// injectable for tests; production callers use [VocalEnrollment.open],
+/// which anchors it under the app documents directory (same pattern as
+/// lib/spells/*).
+class VocalEnrollment {
+  VocalEnrollment(this.baseDir);
+
+  final Directory baseDir;
+
+  static Future<VocalEnrollment> open() async {
+    final docs = await getApplicationDocumentsDirectory();
+    return VocalEnrollment(Directory('${docs.path}/practice_enrollment'));
+  }
+
+  /// A recording must keep at least this many voiced MFCC frames (~10ms
+  /// each) after trimming to count as a real utterance.
+  static const int minVoicedFrames = 20;
+
+  /// Upper guard on a single take's voiced length (~2 s). A take longer than
+  /// this is almost never one briskly-spoken word — it's a held button that
+  /// caught breath/hesitation/a second rep (the 230-frame `finitus` that
+  /// poisoned scoring on 2026-07-22). Rejected with actionable feedback
+  /// rather than silently stored as a bad reference. See docs/M4_findings.md.
+  static const int maxVoicedFrames = 200;
+
+  /// Frames kept as padding on each side of the detected voiced span.
+  static const int trimPaddingFrames = 3;
+
+  /// Maximum exemplar takes kept per word. Scoring is min-distance over this
+  /// set (StreamingPhonemeScorer); more takes capture more of the speaker's
+  /// natural variation, but past a handful the returns flatten and the
+  /// per-frame DTW cost grows linearly. Appending past the cap drops the
+  /// oldest take (FIFO), so "record another" always refreshes the set.
+  static const int maxTakes = 5;
+
+  File _fileFor(VocalWord word) => File('${baseDir.path}/${word.name}.json');
+
+  bool hasEnrollment(VocalWord word) => _fileFor(word).existsSync();
+
+  Set<VocalWord> enrolledWords() =>
+      VocalWord.values.where(hasEnrollment).toSet();
+
+  int takeCount(VocalWord word) => _readTakes(word).length;
+
+  /// All enrolled exemplar takes for [word] (each a sequence of MFCC frames),
+  /// or an empty list if none. Reads the multi-take format and transparently
+  /// migrates the legacy single-`frames` format as a one-element set.
+  Future<List<List<List<double>>>?> loadTakes(VocalWord word) async {
+    final takes = _readTakes(word);
+    return takes.isEmpty ? null : takes;
+  }
+
+  /// Back-compat: the FIRST enrolled take's frames (or null). Retained for
+  /// callers/tests that predate multi-take; new code uses [loadTakes].
+  Future<List<List<double>>?> loadFrames(VocalWord word) async {
+    final takes = _readTakes(word);
+    return takes.isEmpty ? null : takes.first;
+  }
+
+  List<List<List<double>>> _readTakes(VocalWord word) {
+    final file = _fileFor(word);
+    if (!file.existsSync()) return const [];
+    final json = jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
+    List<List<double>> frames(List raw) => raw
+        .map((row) => (row as List).map((v) => (v as num).toDouble()).toList())
+        .toList();
+    if (json['takes'] is List) {
+      return [for (final t in json['takes'] as List) frames(t as List)];
+    }
+    // Legacy single-take format {"frames": [...]}.
+    if (json['frames'] is List) return [frames(json['frames'] as List)];
+    return const [];
+  }
+
+  Future<void> _writeTakes(
+      VocalWord word, List<List<List<double>>> takes) async {
+    await baseDir.create(recursive: true);
+    await _fileFor(word).writeAsString(jsonEncode({'takes': takes}));
+  }
+
+  /// Trims leading/trailing silence from [pcm] (PCM-16 LE mono, 16 kHz),
+  /// extracts MFCC frames, validates the result, and APPENDS it as a new
+  /// exemplar take for [word] (FIFO past [maxTakes]). Returns the saved
+  /// take's frame count and the new total take count.
+  ///
+  /// Throws [EnrollmentException] when the recording is too quiet/short or
+  /// too long to be a usable single-word reference.
+  Future<({int frameCount, int takeCount})> saveFromRecording(
+      VocalWord word, Uint8List pcm) async {
+    final trimmed = trimSilence(pcm);
+    final frames = MfccExtractor.extract(trimmed);
+    if (frames.length < minVoicedFrames) {
+      throw const EnrollmentException(
+          'Recording was too quiet or too short — say the word clearly, '
+          'a little louder, and try again.');
+    }
+    if (frames.length > maxVoicedFrames) {
+      throw const EnrollmentException(
+          'That was too long for one word — hold, say the word once briskly, '
+          'then release. Try again.');
+    }
+    final takes = _readTakes(word).toList()..add(frames);
+    while (takes.length > maxTakes) {
+      takes.removeAt(0); // FIFO: drop the oldest take
+    }
+    await _writeTakes(word, takes);
+    return (frameCount: frames.length, takeCount: takes.length);
+  }
+
+  /// Removes the take at [index] for [word]; deletes the word's file when no
+  /// takes remain. No-op if the index is out of range.
+  Future<void> removeTake(VocalWord word, int index) async {
+    final takes = _readTakes(word).toList();
+    if (index < 0 || index >= takes.length) return;
+    takes.removeAt(index);
+    if (takes.isEmpty) {
+      final file = _fileFor(word);
+      if (file.existsSync()) await file.delete();
+    } else {
+      await _writeTakes(word, takes);
+    }
+  }
+
+  /// Removes ALL takes for [word] (deletes its file). No-op if unenrolled.
+  Future<void> clearWord(VocalWord word) async {
+    final file = _fileFor(word);
+    if (file.existsSync()) await file.delete();
+  }
+
+  Future<void> clearAll() async {
+    if (baseDir.existsSync()) await baseDir.delete(recursive: true);
+  }
+
+  /// Cuts [pcm] down to its voiced span: per-10ms-hop RMS, voiced =
+  /// above max(absolute epsilon, 10% of peak RMS), first-to-last voiced
+  /// hop plus [trimPaddingFrames] padding. Returns an empty buffer when
+  /// nothing voiced was found.
+  static Uint8List trimSilence(Uint8List pcm) {
+    const hop = 160; // 10ms at 16 kHz, matches MfccExtractor's stride
+    final bd = ByteData.sublistView(pcm);
+    final totalSamples = pcm.length ~/ 2;
+    final hopCount = totalSamples ~/ hop;
+    if (hopCount == 0) return Uint8List(0);
+
+    final rms = List<double>.generate(hopCount, (i) {
+      var sum = 0.0;
+      for (int s = i * hop; s < (i + 1) * hop; s++) {
+        final v = bd.getInt16(s * 2, Endian.little) / 32768.0;
+        sum += v * v;
+      }
+      return math.sqrt(sum / hop);
+    });
+
+    final peak = rms.reduce(math.max);
+    final threshold = math.max(0.004, peak * 0.1);
+    int first = -1, last = -1;
+    for (int i = 0; i < hopCount; i++) {
+      if (rms[i] >= threshold) {
+        if (first < 0) first = i;
+        last = i;
+      }
+    }
+    if (first < 0) return Uint8List(0);
+
+    final startHop = math.max(0, first - trimPaddingFrames);
+    final endHop = math.min(hopCount, last + 1 + trimPaddingFrames);
+    return Uint8List.sublistView(pcm, startHop * hop * 2, endHop * hop * 2);
+  }
+}

@@ -52,7 +52,7 @@ expands a sparse grid to the full `[0/1; 469]` array.
     "active_cells": [/* inscribable cell indices; must satisfy max(|q|,|r|,|q+r|) ≤ 8 (rings 0–8). With q×r flat ordering these are NOT all ≤216; valid indices range 62–406 non-contiguously. Center (0,0)=234. */],
     "T": 6,                       // active generation count, 1 ≤ T ≤ tier_max
     "owner_pubkey_hex": "…",      // 32-byte Ed25519 pubkey, hex; a fixed test key is fine
-    "ruleset_version": 1
+    "ruleset_version": 3          // must match the circuit's RULESET_VERSION constant
   },
   "expected": {
     "commitment": "IMPL",         // "IMPL" in the hand-authored seed; the generator fills it
@@ -60,6 +60,10 @@ expands a sparse grid to the full `[0/1; 469]` array.
     "border_activations": [0,0,0,0],            // [fire=0, air=1, water=2, earth=3]
     "dominance_trajectory":   [/* length tier_max; entries 0=neutral,1=fire,2=air,3=water,4=earth */],
     "supreme_dominance_flags":[/* length tier_max; 0/1 */],
+    "segment_count": 0,           // RULESET_VERSION 3+: T=0 geometry — maximal runs of ≥2
+                                  //   contiguous active inscribable cells, summed over 3 axes
+    "dot_count": 0,               // RULESET_VERSION 3+: T=0 geometry — isolated active
+                                  //   inscribable cells with zero active inscribable neighbours
     "verifies": true
   }
 }
@@ -75,10 +79,10 @@ blocks do this:
   "kind": "negative",
   "description": "…",
   "tier_max": 12,
-  "input": { "active_cells": [/*…*/], "T": 6, "owner_pubkey_hex": "…", "ruleset_version": 1 },
+  "input": { "active_cells": [/*…*/], "T": 6, "owner_pubkey_hex": "…", "ruleset_version": 3 },
 
-  "raw_overrides":   { "0": 2, "300": 1 },   // cell index → arbitrary value (non-boolean,
-                                             //   or active cell in buffer/border ≥217)
+  "raw_overrides":   { "228": 2, "243": 1 }, // cell index → arbitrary value (non-boolean,
+                                             //   or active cell in buffer/border region)
   "declared_override": {                     // force public outputs that disagree with the
     "dominance_trajectory": [1,1,1,1,1,1,1,1,1,1,1,1],   //   witness's true evolution
     "border_activations": [9,9,9,9],
@@ -100,21 +104,39 @@ The runner applies `raw_overrides` after expanding `active_cells`, and substitut
 
 ### 2.1 Hand-verified anchors (ground-truth floor)
 
-Two cases whose evolution is hand-derivable under the baseline hex 2/2 rule, so the corpus
-has a floor that doesn't depend solely on the stepper being correct. (Their `commitment`
-is still IMPL — only the *CA outputs* are hand-derived.)
+Two cases whose CA outputs are hand-derivable under the **neutral ink rules** (monotone
+union — cells never die; Rules A/B/E require at least one active neighbour to trigger a
+birth), so the corpus has a floor that doesn't depend solely on the stepper being correct.
+Their `commitment` is still `IMPL` — only the CA outputs and T=0 geometry are hand-verified.
 
-- **`anchor_empty`** — `active_cells: []`. Nothing is active; nothing is ever born (a birth
-  needs exactly 2 active neighbours, and there are none). Every generation stays empty.
+- **`anchor_empty`** — `active_cells: []`. Nothing is active at T=0. Under ink rules, all
+  three activation rules (A: gap-fill, B: tip-extension, E: serif-flare) require at least
+  one active neighbour somewhere to trigger; with zero active cells there are no active
+  neighbours anywhere, so nothing is ever born. Every generation stays empty.
+  → `border_activations [0,0,0,0]`, `dominance_trajectory` all `0`, `supreme_flags` all `0`,
+  `segment_count 0`, `dot_count 0`.
+
+- **`anchor_single_center`** — `active_cells: [234]` (center cell (0,0); index 234 in
+  q-major order — see `circuits/GRID_ORDERING_v2.md`). Stepper-traced (T=6, tier=12):
+  - **Gens 1–3:** the centre has 0 active neighbours, so Rules A, B, and E all remain
+    silent. The centre itself stays alive (ink is monotone). Still 1 active cell.
+  - **Gen 4 (pulse — 4 % 4 = 0):** Rule E fires on each of the 6 ring-1 neighbours of
+    the centre. Each is inactive and has exactly 1 active neighbour (the centre), meeting
+    Rule E's trigger condition on a pulse generation. The pattern expands to 7 cells
+    (centre + ring-1 perimeter).
+  - **Gens 5–6:** the centre now has 6 active neighbours (Rule B needs exactly 1; silent);
+    each ring-1 cell has 3 active neighbours (centre + 2 ring-1 peers; Rule B silent). Gens
+    5 and 6 are not pulse generations (5 % 4 ≠ 0, 6 % 4 ≠ 0). No ring-2 cell has a
+    complete antipodal axis of active cells, so Rule A is also silent. Still 7 cells.
+  - All 7 active cells are at hex distance 0–1 from the centre — nowhere near ring 12.
+    No border cell is ever activated, so dominance stays neutral throughout.
   → `border_activations [0,0,0,0]`, `dominance_trajectory` all `0`, `supreme_flags` all `0`.
-- **`anchor_single_center`** — `active_cells: [0]` (center). The lone cell has 0 active
-  neighbours, so it dies next generation (survival needs exactly 2); no empty cell has 2
-  active neighbours, so nothing is born. Gen 1 onward is empty.
-  → same all-zero outputs as `anchor_empty`.
+  → T=0 geometry: `segment_count 0` (1 cell; no run of ≥2 contiguous cells on any axis),
+  `dot_count 1` (1 lone active inscribable cell with zero active inscribable neighbours).
 
 > Deliberately **do not** hand-author multi-generation evolutions of non-trivial patterns.
-> Hex neighbour counting by hand is error-prone, and the exact adjacency/orientation is a
-> `[CONFIRM vs stepper]` detail anyway. Anything past the two anchors is stepper-generated.
+> Hex neighbour counting by hand is error-prone. Anything past the two anchors is
+> stepper-generated (the stepper is canonical — CLAUDE.md §"Canonical sources").
 
 ### 2.2 Stepper-generated bulk (the oracle does the work)
 
@@ -126,7 +148,10 @@ outputs. Curate to cover the behaviours that matter, not random grids:
   mapping — §1 of CIRCUIT_IO);
 - a **multi-formula** trajectory (≥2 completed triplets);
 - a **supreme-dominance** run (sets supreme flags);
-- a pattern that **first reaches the border around gen 4** (pins the T−4 free threshold);
+- a pattern that **first activates border cells at a known T** (`first_border_activation`:
+  full ring-8 perimeter, border contact at T=8), paired with a T=3 sibling
+  (`mask_boundary_zero`, same grid, quiet through T=3) — pins the trajectory-masking
+  behaviour at the boundary between empty and non-empty output windows;
 - **boundary T**: `T=1`, `T=tier_max`, and one spell per tier (12/24/48);
 - a **near-border / buffer-interaction** case (growth crossing rings 9–11 into 12).
 
@@ -142,13 +167,15 @@ are noted as needing care.
 
 | id | malformed how | should be caught by |
 |---|---|---|
-| `neg_nonboolean_cell` | `raw_overrides {"0": 2}` | §10.1 cells ∈ {0,1} |
-| `neg_seeded_buffer` | `raw_overrides {"300": 1}` (active cell at index ≥217) | §10.2 buffer/border empty at T=0 |
-| `neg_seeded_border` | `raw_overrides {"400": 1}` (active border cell) | §10.2 |
+| `neg_nonboolean_cell` | `raw_overrides {"228": 2}` (cell (0,−6), index 228, forced to value 2) | §10.1 cells ∈ {0,1} |
+| `neg_seeded_buffer` | `raw_overrides {"243": 1}` (cell (0,9), index 243, hex distance 9 — buffer) | §10.2 buffer/border empty at T=0 |
+| `neg_seeded_border` | `raw_overrides {"0": 1}` (cell (−12,0), index 0, hex distance 12 — border) | §10.2 |
 | `neg_commitment_mismatch` | valid grid + `declared_override.commitment` = wrong value | §10.4 commitment binds grid |
 | `neg_forged_trajectory` | valid grid + `declared_override.dominance_trajectory` = a lie | §10.5 trajectory = true evolution |
 | `neg_forged_activations` | valid grid + `declared_override.border_activations` = wrong totals | §10.6 activations = true masked sum |
-| `neg_out_of_range_T` | `T: 0`, and a sibling with `T: tier_max+1` | §10.7 / §11.7 range |
+| `neg_out_of_range_T_zero` | `T: 0` | §10.7/§10.8 range 1..tier_max |
+| `neg_out_of_range_T_too_large` | `T: tier_max+1` (T=13 for tier12; skipped for tier24/48 where T=13 is in-range) | §10.7/§10.8 range 1..tier_max |
+| `neg_noncanonical_T` | `T: 4294967301` (= 2³²+5; low 32 bits = 5, in-range for all tiers) — applies to all tiers | §10.8a T must equal its u32 low limb |
 
 **The subtle one — author with the generator's help:**
 - `neg_mask_abuse` — a grid that is **quiet before generation T but produces border
@@ -189,8 +216,9 @@ are noted as needing care.
 
 ## 4. The generator (Dart → frozen corpus)
 
-Skeleton. The `// [CONFIRM: stepper API]` and `// [CONFIRM: noir]` lines are integration
-points CC fills against the real stepper and circuit — do not assume these signatures.
+**The real implementation is `scripts/gen_vectors.dart`** (invoked by `scripts/run_vectors.sh`).
+The skeleton below shows the conceptual structure; the live file handles tier selection
+(`--tier=12|24|48`), the two-oracle discipline, and the declared-override skip logic.
 
 ```dart
 // scripts/gen_vectors.dart  — produces test_vectors/corpus.json from seed inputs

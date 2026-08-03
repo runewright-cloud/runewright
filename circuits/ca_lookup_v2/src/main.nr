@@ -17,9 +17,9 @@ global T: u32 = 20;
 // Rule 2 (air/wind): survive {0,1,2}, born {2}
 //   dead:  0 0 1 0 0 0 0
 //   alive: 1 1 1 0 0 0 0
-// Rule 3 (water): survive {3..6}, born {2..6}
-//   dead:  0 0 1 1 1 1 1
-//   alive: 0 0 0 1 1 1 1
+// Rule 3 (water): survive {2,3}, born {1}
+//   dead:  0 1 0 0 0 0 0
+//   alive: 0 0 1 1 0 0 0
 // Rule 4 (earth): survive {2..6}, born {2..6}
 //   dead:  0 0 1 1 1 1 1
 //   alive: 0 0 1 1 1 1 1
@@ -34,8 +34,8 @@ global FLAT_TRANSITION: [Field; 70] = [
     0, 0, 1, 0, 0, 0, 0,   // dead
     1, 1, 1, 0, 0, 0, 0,   // alive
     // rule 3 - water
-    0, 0, 1, 1, 1, 1, 1,   // dead
-    0, 0, 0, 1, 1, 1, 1,   // alive
+    0, 1, 0, 0, 0, 0, 0,   // dead
+    0, 0, 1, 1, 0, 0, 0,   // alive
     // rule 4 - earth
     0, 0, 1, 1, 1, 1, 1,   // dead
     0, 0, 1, 1, 1, 1, 1,   // alive

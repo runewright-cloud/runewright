@@ -3,10 +3,18 @@
 //
 // Two-oracle discipline (GOLDEN_VECTORS.md §0.1):
 //   - CA outputs (border_activations, dominance_trajectory,
-//     supreme_dominance_flags) come from the Dart stepper (runStepper).
+//     supreme_dominance_flags, segment_count, dot_count) come from the Dart
+//     stepper (runStepper / gridGeometry), never from the circuit's own output.
 //   - commitment comes from the Noir circuit (nargo execute), never Dart.
+//   - The circuit's segment_count/dot_count outputs are cross-checked against
+//     the Dart oracle; a mismatch is a release blocker (same as CA outputs).
 //
-// Run with: dart run scripts/gen_vectors.dart [--tier12-dir=circuits/ca_v2_4_tier12]
+// Run with: dart run scripts/gen_vectors.dart [--tier=12|24|48]
+//           --tier=12 (default) writes test_vectors/corpus.json
+//           --tier=24            writes test_vectors/corpus_tier24.json
+//           --tier=48            writes test_vectors/corpus_tier48.json
+//
+// For backward compat, --tier12-dir=<path> still overrides the tier-12 circuit path.
 //
 // owner_pubkey / key_hi / key_lo: no identity module exists yet (CLAUDE.md
 // scope fence). Every vector's witness uses the interim zero keys; the
@@ -67,7 +75,9 @@ NargoResult _runNargoExecute(String circuitDir, String proverToml) {
   final backup = File(proverPath).existsSync() ? File(proverPath).readAsStringSync() : null;
   File(proverPath).writeAsStringSync(proverToml);
   try {
-    final nargoBin = Platform.environment['NARGO_BIN'] ?? '/tmp/nargo';
+    // Default to $PATH lookup (noirup installs to ~/.nargo/bin); run_vectors.sh
+    // passes NARGO_BIN through explicitly.
+    final nargoBin = Platform.environment['NARGO_BIN'] ?? 'nargo';
     final result = Process.runSync(
       nargoBin,
       ['execute', '--silence-warnings'],
@@ -80,10 +90,18 @@ NargoResult _runNargoExecute(String circuitDir, String proverToml) {
   }
 }
 
-// Parses nargo execute's "Circuit output: (0x.., [..], [..], [..])" line into
-// (commitment, border_activations, dominance_trajectory, supreme_flags).
-({String commitment, List<int> borderActivations, List<int> trajectory, List<int> supreme})
-    _parseCircuitOutput(String stdout) {
+// Parses nargo execute's
+// "Circuit output: (0x.., [..], [..], [..], 0x.., 0x..)" line into
+// (commitment, border_activations, dominance_trajectory, supreme_flags,
+//  segmentCount, dotCount).
+({
+  String commitment,
+  List<int> borderActivations,
+  List<int> trajectory,
+  List<int> supreme,
+  int segmentCount,
+  int dotCount,
+}) _parseCircuitOutput(String stdout) {
   final line = stdout.split('\n').firstWhere(
         (l) => l.contains('Circuit output:'),
         orElse: () => '',
@@ -107,6 +125,10 @@ NargoResult _runNargoExecute(String circuitDir, String proverToml) {
     }
   }
   parts.add(cur.toString());
+  if (parts.length != 6) {
+    throw FormatException(
+        'Expected 6-element circuit output tuple, got ${parts.length}: $parts');
+  }
 
   List<int> parseArr(String s) {
     final inner = s.trim().substring(1, s.trim().length - 1);
@@ -119,14 +141,26 @@ NargoResult _runNargoExecute(String circuitDir, String proverToml) {
     borderActivations: parseArr(parts[1]),
     trajectory: parseArr(parts[2]),
     supreme: parseArr(parts[3]),
+    // nargo outputs scalar Fields as hex (e.g. 0x04); int.parse handles 0x.
+    segmentCount: int.parse(parts[4].trim()),
+    dotCount: int.parse(parts[5].trim()),
   );
 }
 
 void main(List<String> args) {
-  var tierDir = 'circuits/ca_v2_4_tier12';
+  var selectedTier = 12;
+  var tier12DirOverride = '';
   for (final a in args) {
-    if (a.startsWith('--tier12-dir=')) tierDir = a.substring('--tier12-dir='.length);
+    if (a.startsWith('--tier=')) selectedTier = int.parse(a.substring('--tier='.length));
+    if (a.startsWith('--tier12-dir=')) tier12DirOverride = a.substring('--tier12-dir='.length);
   }
+
+  final tierDir = tier12DirOverride.isNotEmpty
+      ? tier12DirOverride
+      : 'circuits/ca_v2_4_tier$selectedTier';
+  final corpusPath = selectedTier == 12
+      ? 'test_vectors/corpus.json'
+      : 'test_vectors/corpus_tier$selectedTier.json';
 
   final seedsJson = jsonDecode(File('test_vectors/seeds.json').readAsStringSync())
       as Map<String, dynamic>;
@@ -140,17 +174,27 @@ void main(List<String> args) {
     final id = v['id'] as String;
     final kind = v['kind'] as String;
     final input = v['input'] as Map<String, dynamic>;
-    final tierMax = v['tier_max'] as int;
     final activeCells = input['active_cells'] as List<dynamic>;
     final t = input['T'] as int;
     final rulesetVersion = input['ruleset_version'] as int;
     final rawOverrides = v['raw_overrides'] as Map<String, dynamic>?;
     final declaredOverride = v['declared_override'] as Map<String, dynamic>?;
 
-    if (tierMax != 12) {
-      stdout.writeln('SKIP $id: tier_max=$tierMax (only tier12 circuit is wired)');
+    // Seeds declare tier_max=12 (the minimum tier they're meaningful for).
+    // For higher tiers, all these seeds are valid since T <= 12 <= selectedTier.
+    // Negative T-range vectors are tier-specific: neg_out_of_range_T_too_large
+    // uses T=13 which is only invalid at tier-12; skip it for higher tiers.
+    if (id == 'neg_out_of_range_T_too_large' && selectedTier > 12) {
+      stdout.writeln('SKIP $id: T=$t is in-range for tier-$selectedTier (tier-specific negative)');
       continue;
     }
+    // For any seed with T > selectedTier (shouldn't happen with current seeds), skip.
+    if (t > selectedTier && kind == 'positive') {
+      stdout.writeln('SKIP $id: T=$t exceeds tier_max=$selectedTier');
+      continue;
+    }
+    // Use selectedTier as the effective tierMax for stepper and corpus output.
+    final tierMax = selectedTier;
 
     final grid = _expandGrid(activeCells, rawOverrides);
 
@@ -184,13 +228,19 @@ void main(List<String> args) {
       if (!_listEq(parsed.supreme, stepperResult.supremeFlags)) {
         mismatches.add('supreme_dominance_flags: circuit=${parsed.supreme} stepper=${stepperResult.supremeFlags}');
       }
+      if (parsed.segmentCount != stepperResult.segmentCount) {
+        mismatches.add('segment_count: circuit=${parsed.segmentCount} stepper=${stepperResult.segmentCount}');
+      }
+      if (parsed.dotCount != stepperResult.dotCount) {
+        mismatches.add('dot_count: circuit=${parsed.dotCount} stepper=${stepperResult.dotCount}');
+      }
       if (mismatches.isNotEmpty) {
         stdout.writeln('FAIL $id: circuit/stepper mismatch:\n  ${mismatches.join('\n  ')}');
         failures++;
         continue;
       }
 
-      stdout.writeln('OK   $id (positive): commitment=${parsed.commitment}');
+      stdout.writeln('OK   $id (positive): commitment=${parsed.commitment} seg=${stepperResult.segmentCount} dot=${stepperResult.dotCount}');
       out.add({
         'id': id,
         'kind': kind,
@@ -201,6 +251,8 @@ void main(List<String> args) {
           'border_activations': stepperResult.borderActivations,
           'dominance_trajectory': stepperResult.dominanceTrajectory,
           'supreme_dominance_flags': stepperResult.supremeFlags,
+          'segment_count': stepperResult.segmentCount,
+          'dot_count': stepperResult.dotCount,
           'verifies': true,
         },
       });
@@ -253,10 +305,10 @@ void main(List<String> args) {
     }
   }
 
-  File('test_vectors/corpus.json')
+  File(corpusPath)
       .writeAsStringSync(const JsonEncoder.withIndent('  ').convert(out));
 
-  stdout.writeln('\n${out.length} vectors written to test_vectors/corpus.json, $failures failure(s).');
+  stdout.writeln('\n${out.length} vectors written to $corpusPath, $failures failure(s).');
   if (failures > 0) exit(1);
 }
 

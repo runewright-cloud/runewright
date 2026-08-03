@@ -143,12 +143,8 @@ void main() {
   group('dart vs circuit rule diff', () {
     final flatTransition = _parseFlatTransitionFromMainNr();
 
-    test('parsed table has the expected length (5 rules * 2 states * 7 counts)', () {
-      expect(flatTransition.length, equals(70));
-    });
-
-    test('neutral rule (0): Dart == circuit FLAT_TRANSITION', () {
-      _expectRuleMatch(CARules.neutral, 0, flatTransition);
+    test('parsed table has the expected length (4 rules * 2 states * 7 counts)', () {
+      expect(flatTransition.length, equals(56));
     });
 
     test('fire rule (1): Dart == circuit FLAT_TRANSITION', () {
@@ -240,7 +236,7 @@ void _expectRuleMatch(CARules dartRule, int circuitIdx, List<int> flatTransition
       final dartOut  = alive
           ? (dartRule.surviveOn.contains(nb) ? 1 : 0)
           : (dartRule.bornOn.contains(nb)    ? 1 : 0);
-      final circOut  = flatTransition[circuitIdx * 14 + state * 7 + nb];
+      final circOut  = flatTransition[(circuitIdx - 1) * 14 + state * 7 + nb];
       if (dartOut != circOut) {
         final stateStr = alive ? 'alive' : 'dead ';
         mismatches.add('  $stateStr nb=$nb: Dart→$dartOut, Circuit→$circOut');

@@ -72,8 +72,43 @@ Future<(int, Uint8List)> initSrsAndComputeVk(
 /// Does NOT cache SRS bytes in Rust, so subsequent [computeVk] and
 /// [proveAndTime] calls may fail with "Backend error: vector" on a different
 /// thread.  Prefer [initSrsAndComputeVk] for new code.
+///
+/// [srsPath] is intentionally **not** forwarded to the Rust layer (always
+/// `null` -- always network) even though it's accepted here. Forwarding it
+/// was tried and reverted: a dev-machine-local pre-fetched `.dat` file
+/// (sized correctly for *one* circuit's unmultiplied point count -- see
+/// `init_srs`'s doc comment for why no `* 12` margin) silently breaks if
+/// reused for a different tier or a multiplied-margin code path, surfacing
+/// as "Backend error: range end index ... out of range" -- a confusing
+/// failure with no connection to its actual cause. That fixture file has
+/// been deleted (it was a `~/.bb-crs/` dev-machine artifact, never part of
+/// the repo) specifically so it can't trap a future session the same way;
+/// see docs/M4_findings.md M4.7. Real on-disk SRS caching now lives in
+/// [initSrsCached], which downloads-and-saves itself sized to whatever
+/// circuit is actually being proven, rather than depending on a
+/// pre-fetched file of unverified size. Don't restore this forwarding
+/// without addressing that root cause (e.g. keying the cache by circuit
+/// size, or validating the file's size against the requested circuit
+/// before reading it).
 Future<int> initSrs(String circuitBytecode, {String? srsPath}) async {
   return ffi.initSrs(circuitBytecode: circuitBytecode, srsPath: null);
+}
+
+/// Initialize SRS with a persistent on-disk cache at [cachePath]: reads
+/// from the cache if it already exists there (no network -- this is what
+/// makes the second and subsequent inscription on a device work offline);
+/// otherwise downloads from crs.aztec.network and writes the cache file for
+/// next time. [cachePath] should be a device-local, app-owned file path
+/// (e.g. under `path_provider`'s `getApplicationSupportDirectory()`), never
+/// the bundled-VK asset path.
+///
+/// Unlike [initSrs], a download/disk failure here is reported as a normal
+/// thrown exception with a clear message (no connection, corrupt cache
+/// file) rather than ever crashing the process -- see
+/// `ffi/src/api/prover.rs`'s `get_srs_cached` for why that distinction
+/// needed an explicit fix on the Rust side.
+Future<int> initSrsCached(String circuitBytecode, {required String cachePath}) async {
+  return ffi.initSrsCached(circuitBytecode: circuitBytecode, cachePath: cachePath);
 }
 
 // ── VK ───────────────────────────────────────────────────────────────────────

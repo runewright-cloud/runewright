@@ -7,7 +7,7 @@
       "active_cells": [],
       "T": 6,
       "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-      "ruleset_version": 1
+      "ruleset_version": 3
     },
     "expected": {
       "commitment": "0x0b63a53787021a4a962a452c2921b3663aff1ffd8d5510540f8e659e782956f1",
@@ -45,6 +45,8 @@
         0,
         0
       ],
+      "segment_count": 0,
+      "dot_count": 0,
       "verifies": true
     }
   },
@@ -58,7 +60,7 @@
       ],
       "T": 6,
       "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-      "ruleset_version": 1
+      "ruleset_version": 3
     },
     "expected": {
       "commitment": "0x09edfacf22c7e1205de8ece4c70009f88ad405c4fac4fb85aa41c0d233649553",
@@ -96,6 +98,8 @@
         0,
         0
       ],
+      "segment_count": 0,
+      "dot_count": 1,
       "verifies": true
     }
   },
@@ -156,15 +160,15 @@
       ],
       "T": 8,
       "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-      "ruleset_version": 1
+      "ruleset_version": 3
     },
     "expected": {
       "commitment": "0x0c1a1bcbcd6e3afb9f712f9009d10f07acf206d952f6c1bc03e16ec365ea4d0d",
       "border_activations": [
         7,
-        8,
+        5,
         7,
-        8
+        5
       ],
       "dominance_trajectory": [
         0,
@@ -194,6 +198,8 @@
         0,
         0
       ],
+      "segment_count": 6,
+      "dot_count": 0,
       "verifies": true
     }
   },
@@ -254,7 +260,7 @@
       ],
       "T": 3,
       "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-      "ruleset_version": 1
+      "ruleset_version": 3
     },
     "expected": {
       "commitment": "0x0c1a1bcbcd6e3afb9f712f9009d10f07acf206d952f6c1bc03e16ec365ea4d0d",
@@ -292,6 +298,286 @@
         0,
         0
       ],
+      "segment_count": 6,
+      "dot_count": 0,
+      "verifies": true
+    }
+  },
+  {
+    "id": "neutral_monotonicity_chain",
+    "kind": "positive",
+    "tier_max": 12,
+    "input": {
+      "active_cells": [
+        388,
+        406
+      ],
+      "T": 6,
+      "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ruleset_version": 3
+    },
+    "expected": {
+      "commitment": "0x0f2ab965a85ffed8185f7b489c00920265d13d4543ae011bb472562c8b837aad",
+      "border_activations": [
+        0,
+        0,
+        6,
+        0
+      ],
+      "dominance_trajectory": [
+        0,
+        0,
+        0,
+        3,
+        3,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "supreme_dominance_flags": [
+        0,
+        0,
+        0,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "segment_count": 1,
+      "dot_count": 0,
+      "verifies": true
+    }
+  },
+  {
+    "id": "pulse_boundary",
+    "kind": "positive",
+    "tier_max": 12,
+    "input": {
+      "active_cells": [
+        227,
+        226
+      ],
+      "T": 5,
+      "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ruleset_version": 3
+    },
+    "expected": {
+      "commitment": "0x04345b4928d69e62aaed31a83c96307fa04ecc79aa1a75aa79cd70d565abf53b",
+      "border_activations": [
+        2,
+        1,
+        0,
+        0
+      ],
+      "dominance_trajectory": [
+        0,
+        0,
+        0,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "supreme_dominance_flags": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "segment_count": 1,
+      "dot_count": 0,
+      "verifies": true
+    }
+  },
+  {
+    "id": "neutral_evolution_composite",
+    "kind": "positive",
+    "tier_max": 12,
+    "input": {
+      "active_cells": [
+        228,
+        226
+      ],
+      "T": 8,
+      "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ruleset_version": 3
+    },
+    "expected": {
+      "commitment": "0x1cdb6760aa9eeb72466425ed9eefe4df2b92c5eb2599d6c412632d5a6a06c748",
+      "border_activations": [
+        2,
+        1,
+        0,
+        0
+      ],
+      "dominance_trajectory": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2,
+        0,
+        0,
+        0,
+        0
+      ],
+      "supreme_dominance_flags": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "segment_count": 0,
+      "dot_count": 2,
+      "verifies": true
+    }
+  },
+  {
+    "id": "supreme_reaching",
+    "kind": "positive",
+    "tier_max": 12,
+    "input": {
+      "active_cells": [
+        227,
+        226,
+        158,
+        136,
+        117,
+        97
+      ],
+      "T": 7,
+      "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ruleset_version": 3
+    },
+    "expected": {
+      "commitment": "0x20db725e120cee1181def70889c249fd7a2b4bd058541b4b03c806f9665014c4",
+      "border_activations": [
+        21,
+        5,
+        0,
+        0
+      ],
+      "dominance_trajectory": [
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "supreme_dominance_flags": [
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "segment_count": 3,
+      "dot_count": 0,
+      "verifies": true
+    }
+  },
+  {
+    "id": "sustained_tie",
+    "kind": "positive",
+    "tier_max": 12,
+    "input": {
+      "active_cells": [
+        227,
+        226,
+        382,
+        400,
+        241,
+        242
+      ],
+      "T": 6,
+      "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ruleset_version": 3
+    },
+    "expected": {
+      "commitment": "0x0cd5ee84015fd97a23af59e08785aaaab92814f2698dfc3ac09190bf9329e2a3",
+      "border_activations": [
+        4,
+        3,
+        4,
+        1
+      ],
+      "dominance_trajectory": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "supreme_dominance_flags": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "segment_count": 3,
+      "dot_count": 0,
       "verifies": true
     }
   },
@@ -303,7 +589,7 @@
       "active_cells": [],
       "T": 6,
       "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-      "ruleset_version": 1
+      "ruleset_version": 3
     },
     "raw_overrides": {
       "228": 2
@@ -321,7 +607,7 @@
       "active_cells": [],
       "T": 6,
       "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-      "ruleset_version": 1
+      "ruleset_version": 3
     },
     "raw_overrides": {
       "243": 1
@@ -339,7 +625,7 @@
       "active_cells": [],
       "T": 6,
       "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-      "ruleset_version": 1
+      "ruleset_version": 3
     },
     "raw_overrides": {
       "0": 1
@@ -359,7 +645,7 @@
       ],
       "T": 6,
       "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-      "ruleset_version": 1
+      "ruleset_version": 3
     },
     "declared_override": {
       "commitment": "0x00000000000000000000000000000000000000000000000000000000000bad"
@@ -427,7 +713,7 @@
       ],
       "T": 8,
       "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-      "ruleset_version": 1
+      "ruleset_version": 3
     },
     "declared_override": {
       "border_activations": [
@@ -458,7 +744,7 @@
       ],
       "T": 8,
       "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-      "ruleset_version": 1
+      "ruleset_version": 3
     },
     "declared_override": {
       "dominance_trajectory": [
@@ -492,7 +778,7 @@
       ],
       "T": 0,
       "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-      "ruleset_version": 1
+      "ruleset_version": 3
     },
     "raw_overrides": null,
     "violates_constraint": "§10.7 / §11.7 range 1..tier_max",
@@ -510,7 +796,7 @@
       ],
       "T": 13,
       "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-      "ruleset_version": 1
+      "ruleset_version": 3
     },
     "raw_overrides": null,
     "violates_constraint": "§10.7 / §11.7 range 1..tier_max",
@@ -575,7 +861,7 @@
       ],
       "T": 3,
       "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-      "ruleset_version": 1
+      "ruleset_version": 3
     },
     "declared_override": {
       "border_activations": [
@@ -590,5 +876,23 @@
       "verifies": false
     },
     "status": "SNARK_BINDING_CHECK_DEFERRED_TO_M3.4_TAMPER_SMOKE_TEST"
+  },
+  {
+    "id": "neg_noncanonical_T",
+    "kind": "negative",
+    "tier_max": 12,
+    "input": {
+      "active_cells": [
+        234
+      ],
+      "T": 4294967301,
+      "owner_pubkey_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+      "ruleset_version": 3
+    },
+    "raw_overrides": null,
+    "violates_constraint": "§10.8a / non-canonical T: high bits set, low limb in-range",
+    "expected": {
+      "verifies": false
+    }
   }
 ]

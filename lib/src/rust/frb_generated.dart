@@ -3,6 +3,7 @@
 
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
+import 'api/identity.dart';
 import 'api/prover.dart';
 import 'dart:async';
 import 'dart:convert';
@@ -66,7 +67,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 215746290;
+  int get rustContentHash => 1171434655;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -101,6 +102,16 @@ abstract class RustLibApi extends BaseApi {
     required String circuitBytecode,
     String? srsPath,
     required bool lowMemory,
+  });
+
+  Future<int> crateApiProverInitSrsCached({
+    required String circuitBytecode,
+    required String cachePath,
+  });
+
+  Future<String> crateApiIdentityPoseidon2Hash2({
+    required String aHex,
+    required String bHex,
   });
 
   Future<TimedProofResult> crateApiProverProveAndTime({
@@ -328,6 +339,76 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<int> crateApiProverInitSrsCached({
+    required String circuitBytecode,
+    required String cachePath,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(circuitBytecode, serializer);
+          sse_encode_String(cachePath, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 7,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_u_32,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiProverInitSrsCachedConstMeta,
+        argValues: [circuitBytecode, cachePath],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiProverInitSrsCachedConstMeta =>
+      const TaskConstMeta(
+        debugName: "init_srs_cached",
+        argNames: ["circuitBytecode", "cachePath"],
+      );
+
+  @override
+  Future<String> crateApiIdentityPoseidon2Hash2({
+    required String aHex,
+    required String bHex,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(aHex, serializer);
+          sse_encode_String(bHex, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 8,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiIdentityPoseidon2Hash2ConstMeta,
+        argValues: [aHex, bHex],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiIdentityPoseidon2Hash2ConstMeta =>
+      const TaskConstMeta(
+        debugName: "poseidon2_hash2",
+        argNames: ["aHex", "bHex"],
+      );
+
+  @override
   Future<TimedProofResult> crateApiProverProveAndTime({
     required String circuitBytecode,
     required List<int> gridState,
@@ -355,7 +436,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 7,
+            funcId: 9,
             port: port_,
           );
         },
@@ -409,7 +490,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 10,
             port: port_,
           );
         },

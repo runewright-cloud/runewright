@@ -88,9 +88,13 @@ should the circuit constraint work begin. **Do not invent these encodings — re
 - **Flutter / Dart** — primary client. Ubuntu Linux + VS Code dev environment.
 - **Noir** (`nargo`) + **Barretenberg** (`bb`, UltraHonk). Versions validated in
   Phase 0/1 were `nargo 1.0.0-beta.20` and `bb 5.0.0-nightly.20260324`. **Confirmed in use
-  on the Linux dev machine as of M3.2:** `nargo` (beta.20, binary at `/tmp/nargo`, not on
-  `$PATH`) and `bb 5.0.0-nightly.20260324` (installed via the official `bbup` installer to
-  `~/.bb`, added to `$PATH`). **Version pinning matters:** the circuit's `nargo`/`bb`
+  on the Linux dev machine as of 2026-08-03:** `nargo` beta.20 installed via `noirup` to
+  `~/.nargo/bin` and **on `$PATH`** (it used to be an unpacked binary at `/tmp/nargo`; that
+  path is dead — scripts now resolve `nargo` from `$PATH`, overridable with `NARGO_BIN`),
+  and `bb 5.0.0-nightly.20260324` (installed via the official `bbup` installer to
+  `~/.bb`, added to `$PATH`). CI installs the same pinned nargo via `noirup -v` — if you
+  bump the version, bump `NARGO_VERSION` in `.github/workflows/ci.yml` too.
+  **Version pinning matters:** the circuit's `nargo`/`bb`
   versions must match what the proving bridge expects (e.g. `zkpassport/noir_rs` is tagged
   to `v1.0.0-beta.19-1`; beta-channel skew breaks). Pin the whole toolchain together.
 - **Mobile proving is a supported path, not an open question.** `zkpassport/noir_rs` (Rust
@@ -173,3 +177,128 @@ expand it.
 ## Bug Avoidance Reminders
 1. Thread-pool sizing requires HARDWARE_CONCURRENCY env set at ctor time — see M3_findings
 2. bundled-VK path must not oversize SRS — see M3_findings
+3. After touching anything under `ffi/src/`, run `bash scripts/check_ffi_fresh.sh`
+   before `flutter run`/`flutter build apk` on Android. A stale jniLibs `.so` installs
+   fine and crashes on launch with a cryptic "Content hash on Dart side is different
+   from Rust side" error instead of failing the build — see M4_findings M4.6. The fix
+   (`bash scripts/build_android_ffi.sh`) is one command; the check just remembers it
+   needs to run.
+4. A real verifier must call `initSrsCached` (or otherwise init the SRS/CRS) before its
+   first `verify_ultra_honk`, even if it never proves in that session — the global CRS
+   isn't initialized by anything else on a pure-verify path. See M4_findings M4.6.
+
+---
+
+## Handoff notes — from the outgoing engineer
+
+*Written 2026-07-03, on `feature/ink-substrate`, for whoever picks this up next. Everything
+above this section is the contract; this section is the judgment that made the contract
+work. Read it once per session until it's instinct.*
+
+### Where the project actually is (the scope section above is historical)
+
+The "Explicitly OUT of scope" list above describes the crypto-core milestone era. Since
+then, with Soren's direction, the project has grown battle mode (`lib/battle/`), LAN
+networking + mDNS discovery (M4), identity onboarding, library/spellbook UI, sorcerer
+mode scaffolding, and the ink-substrate CA rework (`RULESET_VERSION 3`, current branch).
+The scope guard's *spirit* still holds — **don't expand feature scope without asking** —
+but don't refuse work on those systems because this file says they don't exist. The
+design doc lineage is now `runewright_design_v3_0.md` > `v2_4`; the circuit contract is
+`CIRCUIT_IO.md` as amended by `CIRCUIT_IO_inkdiff.md`.
+
+### How to orient in a fresh session (10 minutes, in this order)
+
+1. This file, top to bottom. The invariants section is non-negotiable.
+2. `git log --oneline -10` + `git status` — the branch tells you the current milestone.
+3. The **findings log for the current milestone** (`docs/M4_findings.md` is the live one;
+   `M3_findings.md` before it). These are the institutional memory. Every trap in the Bug
+   Avoidance list above was paid for once and written down there; assume anything *not*
+   written down has not been solved.
+4. If touching the circuit: `CIRCUIT_IO_inkdiff.md` §Milestone-sequencing, then
+   `GOLDEN_VECTORS.md`.
+
+### Guiding principles that repeatedly saved us
+
+- **The change order is contract → Dart oracle → circuit → regenerate vectors. Always.**
+  Every time we were tempted to "just fix the circuit," the bug turned out to be a
+  disagreement between oracles that a vector would have caught. The stepper is canonical;
+  the corpus is the enforcement; the circuit is the *last* thing to change.
+- **A constraint you can't write a negative vector for is a constraint you don't
+  understand yet.** Write the attack first (§10/§11 pairing). The two ink-specific ones —
+  forged death (§11.8) and tampered `b_ext` (§11.9) — exist because the intermediate
+  witness array is attack surface. Any new intermediate witness gets the same treatment.
+- **When behavior surprises you, suspect the boundary, not the math.** Nearly every
+  "impossible" bug lived at a seam: Dart↔Rust (FRB content hash, stale `.so`),
+  Rust↔barretenberg (SRS sizing, `unwrap()` panics inside noir_rs — keep the
+  `catch_unwind` wrappers), Dart↔circuit (element order, cell ordering, the pulse
+  off-by-one). The math was almost never wrong; the transcription was.
+- **Verification hierarchy: hardware run > golden corpus > integration test > unit test >
+  "it compiles."** M4.6's two-device gate found a real bug no automated test had caught.
+  Anything device-facing (FFI, networking, proving perf) needs at least one real-device
+  pass before you call it done. `flutter run -d linux` works and is the cheap UI target.
+- **Write findings down as you go, in the milestone findings doc, not just in chat.**
+  Include what you tried that *didn't* work and why. The memory system decays and
+  sessions end mid-thought; `docs/Mx_findings.md` is what actually survives.
+
+### Traps not yet in the Bug Avoidance list
+
+- **Index 234 is the center cell; index 0 is a border cell** (q-major/r-minor order).
+  Early seed vectors were wrong because of this exact confusion. When hand-writing any
+  cell index, check it against `circuits/GRID_ORDERING_v2.md`.
+- **Element order is [0=neutral, 1=fire, 2=air, 3=water, 4=earth]** and
+  `border_activations` is [Fire, Air, Water, Earth]. Old docs proposed other orders;
+  some prose may still say so. The stepper wins.
+- **Generation indexing:** circuit loop is 0-indexed `g`, stepper is 1-indexed
+  (`stepCount = g + 1`). Decay is `floor((g+1)/2)`; the ink pulse is
+  `(g+1) % cadence == 0`. Pin any new generation-indexed rule with a golden vector that
+  spans the boundary — this is the single easiest silent off-by-one in the codebase.
+- **`packGridState()`'s ordering invariant rests on Dart `Map` key-set immutability** —
+  `CAStep.step`/`copy()` mutate values, never keys. If you ever touch `HexGrid`'s
+  construction or the stepper's mutation pattern, re-run
+  `test/engine/hex_grid_codec_test.dart` before trusting serialization.
+- **After any `ffi/src/**.rs` change:** run `flutter_rust_bridge_codegen generate
+  --rust-input crate::api --rust-root ffi --dart-output lib/src/rust` (needs
+  `/home/soren/flutter/bin` on PATH) *and* `cargo build` in `ffi/` before `flutter test`
+  sees the new Rust. For Android, `scripts/build_android_ffi.sh` +
+  `scripts/check_ffi_fresh.sh` (Bug Avoidance #3).
+- **`_certifiedManaCost` in `lib/battle/engine/turn_loop.dart` is the single source of
+  truth for peer spell cost** and must stay operation-order-identical to
+  `_spellManaCost`. The B-1/B-8 audit closed a real trust-boundary hole here; don't
+  reintroduce a second cost path.
+- **tier-12 now sits ~75% into its 2^19 UltraHonk padding bucket** (~391k of 524k rows on
+  the count circuit, re-measured 2026-07-23; `circuit_size` 390,726). It **already crossed
+  the 2^18→2^19 line** at some point during circuit growth — the exact change isn't pinned
+  down (likely un-remeasured after the ink-substrate rules pass), but on-device inscribe
+  time remains acceptable, so the crossing is treated as accepted, not a regression to
+  chase. Any circuit growth: still run `bb gates` at tier-12 *first*, before touching tiers
+  24/48. The next boundary is now **2^19→2^20** — crossing it doubles proving cost on the
+  tier that most needs to be cheap, so treat that as the go/no-go, not a benchmark. (For
+  reference, same re-measure: tier-24 ≈ 810k → 2^20, tier-48 ≈ 1.65M → 2^21.)
+- **Toolchain quirks on this machine:** `nargo` (beta.20) is at `~/.nargo/bin/nargo` and on
+  `$PATH`, installed by `noirup`; `bb` is on `$PATH` via `~/.bb`. The old `/tmp/nargo`
+  location is gone — `/tmp` did not survive reboots, which is exactly why it moved.
+  `flutter pub add`/`get` can exit 255 under the snap environment —
+  see M4_findings toolchain notes for the workaround.
+- **`RULESET_VERSION` (now 3) must bump on any consensus-visible CA rule change.** It's a
+  deliberate VK-breaking mechanism. Nothing has shipped, so bumps are cheap — be
+  disciplined now so the habit exists when they aren't.
+
+### Working with Soren
+
+- This is a learning project as much as a build. Explain the *why* in summaries — tooling
+  choices, Git operations, crypto reasoning. Legible beats clever.
+- Surface blockers early and crisply, **with a recommendation**. Every `[DECISION —
+  needs Soren]` we escalated with a clear framing got resolved within a day (border
+  zones, CA rules, the 24-roll rite). Every one we might have guessed at would have cost
+  a week to unwind. Ask; don't confabulate structure.
+- Settled decisions stay settled: 24 d20 rolls (not 40), Dart border-zone layout, ink
+  rules A/B/D/E with C removed, decay-splits-on-ties. Don't re-litigate without new
+  evidence.
+
+### The quality bar, stated once
+
+A failing negative vector is a release blocker, full stop. A circuit change without a
+full positive+negative corpus run is not done. A "faster" circuit that accepts one bad
+witness is strictly worse than the slow one. When in doubt between shipping speed and
+constraint soundness, soundness wins — this game's entire trust model is that the proofs
+mean what they claim.

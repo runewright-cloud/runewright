@@ -29,10 +29,10 @@ fn apply_rule(state: Field, nb: u8, rule: u32) -> Field {
         let born = (1 - s) * ((nb == 2) as Field);
         survives + born
     } else if rule == 3 {
-        // water: survive {3,4,5,6}, born {2,3,4,5,6}
+        // water: survive {2,3}, born {1}
         let s: Field = (state == 1) as Field;
-        let survives = s * ((nb >= 3) as Field);
-        let born = (1 - s) * ((nb >= 2) as Field);
+        let survives = s * ((nb >= 2) & (nb <= 3)) as Field;
+        let born = (1 - s) * ((nb == 1) as Field);
         survives + born
     } else {
         // earth: survive {2,3,4,5,6}, born {2,3,4,5,6}
@@ -49,7 +49,7 @@ fn check_born(nb: u8, rule: u32) -> Field {
     } else if rule == 2 {
         (nb == 2) as Field
     } else if rule == 3 {
-        (nb >= 2) as Field
+        (nb == 1) as Field
     } else {
         (nb >= 2) as Field
     }

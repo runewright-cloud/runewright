@@ -6,7 +6,7 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `read_peak_rss_kb`, `reinit_srs_on_thread`, `set_hardware_concurrency_workaround`
+// These functions are ignored because they are not marked as `pub`: `get_srs_cached`, `read_peak_rss_kb`, `reinit_srs_on_thread`, `set_hardware_concurrency_workaround`
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `CachedSrs`
 
 /// Download (or read) the SRS and compute the UltraHonk VK in one blocking call.
@@ -41,12 +41,47 @@ Future<(int, Uint8List)> initSrsAndComputeVk({
 /// Caches SRS bytes in `SRS_CACHE` so `prove_and_time` can re-push them on its
 /// thread without re-downloading.
 ///
+/// No oversizing multiplier here (unlike `init_srs_and_compute_vk`'s `* 12`):
+/// that margin exists only to give on-device `circuit_compute_vk` extra room,
+/// which this bundled-VK path skips entirely. Confirmed empirically (M3.4) —
+/// `setup_srs_from_bytecode`'s raw (unmultiplied) sizing is sufficient for
+/// `prove_ultra_honk` on the real v2.4 bytecode; applying the `* 8` margin
+/// here was inflating peak on-device RSS by up to 8x for no benefit (it
+/// pushed v2.4 into a dyadic SRS bucket several sizes above what `bb gates`
+/// says the circuit actually needs — see docs/M3_findings.md).
+///
 /// Returns `num_srs_points`.
 Future<int> initSrs({required String circuitBytecode, String? srsPath}) =>
     RustLib.instance.api.crateApiProverInitSrs(
       circuitBytecode: circuitBytecode,
       srsPath: srsPath,
     );
+
+/// Like `init_srs`, but with a persistent on-disk cache at `cache_path`: if
+/// a valid cache file already exists there, read it (no network -- this is
+/// what makes the second and subsequent inscription on a device work
+/// offline); otherwise download from crs.aztec.network and write the cache
+/// file for next time. `cache_path` should be a device-local, app-owned
+/// file path (Dart side: `path_provider`'s `getApplicationSupportDirectory()`
+/// joined with a fixed filename) -- not the bundled-VK asset path, and not
+/// the bare directory.
+///
+/// Network/disk failures (no connection, corrupt cache file) are reported
+/// as `Err(message)`, never as an unrecovered panic: noir_rs's
+/// `NetSrs`/`LocalSrs` call `.unwrap()` internally on the HTTP response and
+/// the file read, which would otherwise abort the whole process rather than
+/// letting the caller (and ultimately the player, via a normal error
+/// dialog) see what went wrong.
+///
+/// Uses the same unmultiplied sizing as `init_srs` (bundled-VK flow -- see
+/// that function's doc comment for why no `* 12` margin here).
+Future<int> initSrsCached({
+  required String circuitBytecode,
+  required String cachePath,
+}) => RustLib.instance.api.crateApiProverInitSrsCached(
+  circuitBytecode: circuitBytecode,
+  cachePath: cachePath,
+);
 
 /// Compute the UltraHonk VK (poseidon2 oracle).
 ///
