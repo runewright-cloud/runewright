@@ -9,7 +9,9 @@ zero-knowledge proof that the simulation ran exactly as you claim, and then duel
 players face-to-face over local wireless.
 
 There is no server, no account, and no central authority. Your opponent never sees your
-spell — only a proof that it does what you say it does.
+spell — only a proof that it does what you say it does. The phone microphone and accelerator
+may optionally be used to cast the magic using vocal and somatic components to maximize the
+experience of using magic like an actual wizard.
 
 > **Status: pre-release, in active development.** Nothing has shipped yet; the circuits,
 > wire protocol, and CA ruleset are still allowed to break. See [Project status](#project-status).
