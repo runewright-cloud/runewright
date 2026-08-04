@@ -217,28 +217,38 @@ void main() {
 
     test('a Potent summon moves further than a non-Potent one on its cast turn', () async {
       final formula = ['fire', 'air', 'air', 'air', 'air', 'earth', 'earth'];
-      final emptyTarget = HexCoord(3, -3);
+      // Distance travelled is the proxy for "acted twice", so the creature
+      // needs open road: a melee (range 0) creature stops the moment it is
+      // adjacent to its target -- it cannot walk onto a body -- and both the
+      // Potent and non-Potent runs would saturate at the same tile if the
+      // enemy were close. 9 tiles apart, 2 move speed: 4 tiles vs 2.
+      const spawnTile = HexCoord(0, -3);
+      final ctx = () => _setup(
+            localPos: const HexCoord(4, 0),
+            dummyPos: const HexCoord(0, 6),
+            radius: 8,
+          );
 
-      final potentCtx = _setup();
+      final potentCtx = ctx();
       await potentCtx.loop.runTurn(TurnInput(
         action: SpellCastAction(
           spell: _summonSpell(formula: formula, supremeTags: const ['fire']),
-          targetHex: emptyTarget,
+          targetHex: spawnTile,
           isPotent: true,
         ),
       ));
       final potentDist =
-          hexDistance(emptyTarget, potentCtx.state.minions.single.position);
+          hexDistance(spawnTile, potentCtx.state.minions.single.position);
 
-      final normalCtx = _setup();
+      final normalCtx = ctx();
       await normalCtx.loop.runTurn(TurnInput(
         action: SpellCastAction(
           spell: _summonSpell(formula: formula),
-          targetHex: emptyTarget,
+          targetHex: spawnTile,
         ),
       ));
       final normalDist =
-          hexDistance(emptyTarget, normalCtx.state.minions.single.position);
+          hexDistance(spawnTile, normalCtx.state.minions.single.position);
 
       expect(normalDist, greaterThan(0),
           reason: 'non-Potent summon still gets its one Phase 5b action this turn');

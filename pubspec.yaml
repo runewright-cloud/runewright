@@ -109,6 +109,10 @@ flutter:
   #   - images/a_dot_burr.jpeg
   #   - images/a_dot_ham.jpeg
   assets:
+    # About screen's README tab (lib/ui/about_screen.dart) reads this
+    # straight out of the bundle so it can't drift from the repo's own
+    # README.
+    - README.md
     - assets/circuits/ca_spike_t12.json
     - assets/circuits/ca_spike_t24.json
     - assets/circuits/ca_spike_t48.json

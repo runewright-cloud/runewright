@@ -30,7 +30,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
 import '../battle/engine/tile_entry_resolver.dart'
-    show MovePathPrediction, predictAvatarMove;
+    show MovePathPrediction, predictAvatarMove, tileOccupied;
 import '../battle/engine/turn_loop.dart';
 import '../battle/engine/wild_magic_applicator.dart' show WildMagicEvent;
 import '../battle/models/battle_state.dart';
@@ -162,6 +162,25 @@ List<SightingCapture> sightingsFromResolved(
   return captures;
 }
 
+/// Whether casting [spell] will resolve to an Air-flavor tileModification
+/// effect (always a ConveyorTile for that pairing) -- pure/cheap, needs only
+/// the spell's own formula (see effect_kind.dart formulaEffects) plus its
+/// mode.
+///
+/// Summon-mode spells never qualify: TurnLoop._applySpell reads their element
+/// sequence as a creature and returns before EffectResolver/EffectApplicator
+/// run (design doc "Summons"), so no ConveyorTile is created and any picked
+/// direction is discarded. Without the isSummon guard, a summon whose formula
+/// happens to contain an Air tileModification triplet — e.g. the bundled
+/// Basic Windhound — prompts the caster for a push direction it never uses.
+bool spellNeedsConveyorDirection(SpellAsset spell) =>
+    !spell.isSummon &&
+    formulaEffects(spell.formula).any(
+      (e) =>
+          e.kind == EffectKind.tileModification &&
+          e.affinity == SpellAffinity.air,
+    );
+
 /// 0x-prefixed lowercase hex — matches duel_setup.dart's `_bytesToRootHex`
 /// convention, needed here for MatchOutcome's hex-string fields.
 String _bytesToHex(Uint8List bytes) =>
@@ -247,6 +266,7 @@ class BattleScreen extends StatefulWidget {
     this.peerRawPubkey,
     this.peerPermissions,
     this.pactIdHex,
+    this.peerAvatarId,
   });
 
   final BattleState state;
@@ -285,6 +305,13 @@ class BattleScreen extends StatefulWidget {
   /// an ordinary duel, matching [MatchOutcome.pactIdHex]'s own
   /// [kNoGraduationPact] default.
   final String? pactIdHex;
+
+  /// The peer's chosen avatar id (docs/AVATAR_PICKER_PLAN.md §5.2/§5.5), from
+  /// `DuelSetupResult.peerAvatarId`. Null for solo/test play — matching every
+  /// other peer-* field's convention — in which case the dummy keeps its
+  /// deterministic default sprite. Presentation only: installed into
+  /// [_BattleScreenState._avatarAssignment], never read by engine code.
+  final String? peerAvatarId;
 
   @override
   State<BattleScreen> createState() => _BattleScreenState();
@@ -347,15 +374,36 @@ class _BattleScreenState extends State<BattleScreen>
   late AnimationController _moveAnimController;
   List<AvatarMoveAnimation> _avatarMoveAnimations = const [];
 
+  // The Summons phase's equivalent, driven by the same controller (the two
+  // playbacks never overlap — avatars walk in Phase 3, creatures in Phase 5b).
+  // Same clear-the-moment-playback-ends rule, and load-bearing for the same
+  // reason.
+  List<MinionMoveAnimation> _minionMoveAnimations = const [];
+
+  // Attacks — wizard haymakers (Phase 4b) and creature strikes (Phase 5b),
+  // played back the moment the engine resolves them, exactly like the walks.
+  // Its own controller rather than _moveAnimController's, because a creature's
+  // strike plays *concurrently* with the lunge that delivers it: one timeline
+  // could not hold both without the blow being early or the lunge being late.
+  // Cleared the instant playback ends — see BattlefieldPainter.attackAnimations.
+  late AnimationController _attackAnimController;
+  List<AttackAnimation> _attackAnimations = const [];
+
+  /// How long one attack takes to play once it starts. Short: a swipe is a
+  /// beat, not a scene, and every turn with a melee creature on the board pays
+  /// this cost.
+  static const _kAttackPlayback = Duration(milliseconds: 620);
+
   /// Decoded wizard sprite sheet, or null until it lands (or if it failed) —
   /// the painter falls back to the placeholder disc tokens either way.
   ui.Image? _avatarAtlas;
 
-  /// Which sprite each wizard wears. Const-default today: every wizard gets a
-  /// deterministic Hero from their playerId, identically on both devices. The
-  /// avatar picker fills this in later — see AvatarAssignment.explicit for the
-  /// one constraint that work has to respect.
-  final AvatarAssignment _avatarAssignment = const AvatarAssignment();
+  /// Which sprite each wizard wears. Starts at the deterministic default
+  /// (every wizard gets a Hero from their playerId) and gains explicit
+  /// entries as the local and peer avatar choices load in — see
+  /// [_loadLocalAvatarChoice] and AvatarAssignment.explicit's doc comment for
+  /// the property both entries together exist to keep.
+  AvatarAssignment _avatarAssignment = const AvatarAssignment();
 
   // Phase A of the local player's own in-flight cast this turn: the held,
   // pulsing orb at the cast tile, set the instant the cast is confirmed and
@@ -732,8 +780,17 @@ class _BattleScreenState extends State<BattleScreen>
       vsync: this,
       duration: const Duration(milliseconds: 900),
     );
+    // Duration is set per playback (see _playAttacks): an attack riding a walk
+    // has to wait out the lunge before it lands, and the wait is part of the
+    // controller's own timeline.
+    _attackAnimController = AnimationController(
+      vsync: this,
+      duration: _kAttackPlayback,
+    );
     _initScenery();
     unawaited(_loadAvatarAtlas());
+    _seedPeerAvatarChoice();
+    unawaited(_loadLocalAvatarChoice());
     _loadSpells();
     if (widget.state.config.sorcererMode) {
       _initSorcererMode();
@@ -767,6 +824,42 @@ class _BattleScreenState extends State<BattleScreen>
       if (mounted) setState(() => _avatarAtlas = image);
     } catch (e) {
       debugPrint('avatars: atlas load failed — $e');
+    }
+  }
+
+  /// Installs [BattleScreen.peerAvatarId] into [_avatarAssignment] under the
+  /// peer's playerId. Synchronous (the id already arrived with the widget,
+  /// no storage read needed) and safe to call even when it's null — a
+  /// solo/test dummy simply contributes no entry. In a LAN duel
+  /// `playerId == ownerPubkeyHex` (duel_battle_setup.dart: "Player ids are
+  /// the two owner hex strings themselves"), so [widget.peerOwnerPubkeyHex]
+  /// is the correct key here.
+  void _seedPeerAvatarChoice() {
+    final peerId = widget.peerOwnerPubkeyHex;
+    final peerAvatarId = widget.peerAvatarId;
+    if (peerId == null || peerAvatarId == null || peerAvatarId.isEmpty) return;
+    _avatarAssignment = AvatarAssignment(
+      explicit: {..._avatarAssignment.explicit, peerId: peerAvatarId},
+    );
+  }
+
+  /// Loads the local player's saved avatar choice and installs it into
+  /// [_avatarAssignment] under [BattleScreen.localPlayerId]. Wrapped in
+  /// try/catch for the same reason settings_screen.dart's `_loadSeed` is:
+  /// secure storage has no platform channel under `flutter test`, and a
+  /// failure here should just leave the deterministic default in place, not
+  /// take the battle down.
+  Future<void> _loadLocalAvatarChoice() async {
+    try {
+      final avatarId = await Identity.loadAvatarId();
+      if (avatarId == null || avatarId.isEmpty || !mounted) return;
+      setState(() {
+        _avatarAssignment = AvatarAssignment(
+          explicit: {..._avatarAssignment.explicit, widget.localPlayerId: avatarId},
+        );
+      });
+    } catch (e) {
+      debugPrint('avatars: local avatar choice load failed — $e');
     }
   }
 
@@ -879,6 +972,8 @@ class _BattleScreenState extends State<BattleScreen>
       freeMoveDirectionPicker: _pickFreeMoveDirection,
       artifactActivationPicker: _pickArtifactActivation,
       onMovementResolved: _playAvatarWalks,
+      onSummonMovementResolved: _playSummonWalks,
+      onMeleeResolved: _playMeleeStrikes,
       onPhase: _onEnginePhase,
       // DEV FLAG (lib/dev_flags.dart) — the only site that turns proofless
       // peer casts on. Delete this argument with the flag.
@@ -947,6 +1042,7 @@ class _BattleScreenState extends State<BattleScreen>
     _castAnimController.dispose();
     _effectBloomController.dispose();
     _moveAnimController.dispose();
+    _attackAnimController.dispose();
     _vocalScorer?.dispose();
     super.dispose();
   }
@@ -1174,6 +1270,99 @@ class _BattleScreenState extends State<BattleScreen>
     setState(() => _avatarMoveAnimations = const []);
   }
 
+  /// TurnLoop.onSummonMovementResolved: the Summons-phase twin of
+  /// [_playAvatarWalks], with the same contract — installed synchronously with
+  /// the engine's position update, cleared as soon as playback ends.
+  ///
+  /// A melee creature's whole attack is the lunge-and-recoil, so an event with
+  /// a lunge tile is kept even when its path never left home: that IS the blow
+  /// landing, and dropping it would make a melee summon look inert.
+  Future<void> _playSummonWalks(
+    List<MinionMoveEvent> events,
+    List<AttackEvent> attacks,
+  ) async {
+    if (!mounted) return;
+    final moves = events
+        .where((e) => e.path.length > 1 || e.lungeTile != null)
+        .map(
+          (e) => MinionMoveAnimation(
+            minionId: e.minionId,
+            path: e.path,
+            lungeTile: e.lungeTile,
+          ),
+        )
+        .toList();
+    if (moves.isEmpty && attacks.isEmpty) return;
+    if (moves.isEmpty) {
+      // Nothing walked — a creature with reach striking from where it stood.
+      // No lunge to wait for, so the blow lands immediately.
+      await _playAttacks(attacks, lead: Duration.zero);
+      return;
+    }
+    setState(() => _minionMoveAnimations = moves);
+    // Both playbacks run on one wall clock: the walk plays out while the
+    // attacks wait out their lead-in, so a melee creature's blade crosses its
+    // target on the frame its lunging token gets there.
+    await Future.wait([
+      _moveAnimController.forward(from: 0).orCancel.catchError((_) {}),
+      _playAttacks(attacks, lead: _walkStrikeLead),
+    ]);
+    if (!mounted) return;
+    setState(() => _minionMoveAnimations = const []);
+  }
+
+  /// How long into a walk playback the walkers arrive — the moment an attack
+  /// riding that walk should land. Derived from the movement timeline itself so
+  /// the two can't drift apart if either duration changes.
+  Duration get _walkStrikeLead =>
+      _moveAnimController.duration! * kAttackStrikeStart;
+
+  /// TurnLoop.onMeleeResolved: the wizards' Phase 4b haymakers. Nobody is
+  /// walking during the melee round, so these land straight away.
+  Future<void> _playMeleeStrikes(List<AttackEvent> attacks) =>
+      _playAttacks(attacks, lead: Duration.zero);
+
+  /// Plays [attacks] — a red swipe across the target for a blow struck at arm's
+  /// length, an elementally coloured orb thrown across the tiles for one with
+  /// reach — and blocks the turn until they finish, exactly like the walks.
+  ///
+  /// [lead] is dead time at the head of the playback, for attacks that ride a
+  /// concurrent walk and must not land before the attacker arrives. It is added
+  /// to the controller's duration rather than awaited beforehand, so the whole
+  /// thing stays one cancellable playback: the turn is blocked on this, and a
+  /// bare `Future.delayed` on a screen that has since been disposed would
+  /// strand it.
+  Future<void> _playAttacks(
+    List<AttackEvent> attacks, {
+    required Duration lead,
+  }) async {
+    if (!mounted || attacks.isEmpty) return;
+    final total = lead + _kAttackPlayback;
+    final startFraction = total.inMicroseconds == 0
+        ? 0.0
+        : lead.inMicroseconds / total.inMicroseconds;
+    final anims = [
+      for (final a in attacks)
+        AttackAnimation(
+          fromHex: a.from,
+          toHex: a.to,
+          melee: a.isMelee,
+          // A punch has no element to express (AttackEvent.affinity is null for
+          // wizards); a creature's shot is coloured by its own affinity, which
+          // is the same colour its token's label already wears.
+          color: a.isMelee || a.affinity == null
+              ? BattlefieldPainter.meleeStrikeColor
+              : BattlefieldPainter.colorForAffinity(a.affinity!),
+          startFraction: startFraction,
+        ),
+    ];
+    _attackAnimController.duration = total;
+    setState(() => _attackAnimations = anims);
+    await _attackAnimController.forward(from: 0).orCancel.catchError((_) {});
+    if (!mounted) return;
+    setState(() => _attackAnimations = const []);
+  }
+
   /// TurnLoop.meleeTargetPicker: invoked once per turn, after movement has
   /// resolved, only when the local avatar actually has an adjacent hostile
   /// target. Highlights [candidates] on the battlefield and waits for the
@@ -1245,6 +1434,7 @@ class _BattleScreenState extends State<BattleScreen>
     origin: _local!.position,
     declaredPath: _freeMovePath,
     budget: _freeMoveGrant.maxTiles,
+    moverId: widget.localPlayerId,
   );
 
   /// What the free-move run tapped so far will cost, in the Boost's resource.
@@ -1447,7 +1637,7 @@ class _BattleScreenState extends State<BattleScreen>
     // targeting. Mystery/delayed casts don't get this prompt (handled above,
     // before this point) and fall back to a random direction in the engine.
     HexCoord? conveyorDirection;
-    if (_spellNeedsConveyorDirection(spell)) {
+    if (spellNeedsConveyorDirection(spell)) {
       conveyorDirection = await _pickConveyorDirection(target);
       if (conveyorDirection == null) return; // player cancelled
       if (!mounted) return;
@@ -1553,16 +1743,6 @@ class _BattleScreenState extends State<BattleScreen>
       ),
     );
   }
-
-  /// Whether casting [spell] will resolve to an Air-flavor tileModification
-  /// effect (always a ConveyorTile for that pairing) -- pure/cheap, needs
-  /// only the spell's own formula (see effect_kind.dart formulaEffects).
-  bool _spellNeedsConveyorDirection(SpellAsset spell) =>
-      formulaEffects(spell.formula).any(
-        (e) =>
-            e.kind == EffectKind.tileModification &&
-            e.affinity == SpellAffinity.air,
-      );
 
   /// Prompts the caster to choose a push direction for the ConveyorTile
   /// about to be created at [origin], by tapping one of its 6 highlighted
@@ -1785,10 +1965,13 @@ class _BattleScreenState extends State<BattleScreen>
       if (tileBlocksMovement(tileEffect)) return;
       // Occupied tiles are unenterable — the engine's walk stops there too,
       // and a step the player pays for and doesn't get is the worst outcome.
-      if (widget.state.avatars.any((av) => av.isAlive && av.position == hex))
+      if (tileOccupied(
+        widget.state,
+        hex,
+        ignoreAvatarId: widget.localPlayerId,
+      )) {
         return;
-      if (widget.state.minions.any((m) => m.isAlive && m.position == hex))
-        return;
+      }
       final stepCost =
           1 + (tileEffect is SlowTile ? tileEffect.extraMoveCost : 0);
       if (stepCost > prediction.budgetRemaining) return;
@@ -1835,6 +2018,7 @@ class _BattleScreenState extends State<BattleScreen>
         origin: origin,
         declaredPath: _movePath,
         budget: _localMoveBudget,
+        moverId: widget.localPlayerId,
       );
       final tip = prediction.path.last;
 
@@ -2646,6 +2830,7 @@ class _BattleScreenState extends State<BattleScreen>
                                           origin: _local!.position,
                                           declaredPath: _movePath,
                                           budget: _localMoveBudget,
+                                          moverId: widget.localPlayerId,
                                         ).path.skip(1).toList()
                                       : _movePath,
                                   spellRangeRadius:
@@ -2662,7 +2847,10 @@ class _BattleScreenState extends State<BattleScreen>
                                   castAnimations: _castAnimations,
                                   castAnimation: _castAnimController,
                                   avatarMoveAnimations: _avatarMoveAnimations,
+                                  minionMoveAnimations: _minionMoveAnimations,
                                   moveAnimation: _moveAnimController,
+                                  attackAnimations: _attackAnimations,
+                                  attackAnimation: _attackAnimController,
                                   avatarAtlas: _avatarAtlas,
                                   avatarAssignment: _avatarAssignment,
                                   tileEffects: widget.state.tileEffects,
@@ -2731,6 +2919,8 @@ class _BattleScreenState extends State<BattleScreen>
                               localTeamId: _local?.teamId,
                               center: center,
                               hexSize: hSize,
+                              moveAnimations: _minionMoveAnimations,
+                              moveAnimation: _moveAnimController,
                             ),
                           ),
                         ],
@@ -2995,14 +3185,23 @@ Widget _phantasmal(bool on, Widget child) =>
   return null;
 }
 
-/// Renders each live summon's card art as a tiny thumbnail on its battlefield
-/// tile, in place of the plain affinity-letter token painted underneath by
+/// Renders each live summon's card art as a thumbnail on its battlefield tile,
+/// in place of the plain affinity-letter token painted underneath by
 /// [BattlefieldPainter]. Purely decorative — sits under an [IgnorePointer] so
 /// the existing long-press hit-testing (`_onLongPressBattlefield`, which
 /// already opens the full card via [showSpellCardFullscreen]) is unaffected.
 ///
 /// Only minions [_cardForMinion] resolves a card for get a thumbnail;
 /// everything else falls back to the painter's plain token.
+///
+/// Sized to [kHexInscribedSquare], the largest square the tile can hold: the
+/// art is how a player tells one creature from another at a glance, and at the
+/// old 0.62 it was a stamp rather than a portrait. Adjacent tiles still clear
+/// each other, so a full board doesn't turn into overlapping cards.
+///
+/// Follows [moveAnimations] while the Summons phase plays back, so the
+/// thumbnail rides its token instead of sitting at the destination watching the
+/// token walk out from under it.
 class _MinionArtOverlay extends StatelessWidget {
   const _MinionArtOverlay({
     required this.minions,
@@ -3010,6 +3209,8 @@ class _MinionArtOverlay extends StatelessWidget {
     required this.localTeamId,
     required this.center,
     required this.hexSize,
+    this.moveAnimations = const [],
+    this.moveAnimation,
   });
 
   final List<Minion> minions;
@@ -3017,48 +3218,73 @@ class _MinionArtOverlay extends StatelessWidget {
   final String? localTeamId;
   final Offset center;
   final double hexSize;
+  final List<MinionMoveAnimation> moveAnimations;
+  final Animation<double>? moveAnimation;
 
   @override
   Widget build(BuildContext context) {
-    final size = hexSize * 0.62;
+    final controller = moveAnimation;
+    if (moveAnimations.isEmpty || controller == null) return _board(1.0);
+    // Rebuilds this subtree per frame of the walk. The painter underneath
+    // repaints off the same controller via its repaint listenable, so token
+    // and thumbnail step together.
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (_, _) => _board(controller.value),
+    );
+  }
+
+  Widget _board(double t) {
+    final size = hexSize * kHexInscribedSquare;
+    final walking = {for (final a in moveAnimations) a.minionId: a};
     return Stack(
       clipBehavior: Clip.none,
       children: [
         for (final m in minions)
           if (_cardForMinion(m, spellByMinionId) case final card?)
-            Positioned(
-              left: hexToPixel(m.position, center, hexSize).dx - size / 2,
-              top: hexToPixel(m.position, center, hexSize).dy - size / 2,
-              width: size,
-              height: size,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  border: Border.all(
-                    color: m.teamId == localTeamId
-                        ? kIlluminationGold
-                        : kRubricRed,
-                    width: 1.5,
+            () {
+              final pos = BattlefieldPainter.minionTokenPos(
+                walking[m.id],
+                m.position,
+                t,
+                center,
+                hexSize,
+              );
+              return Positioned(
+                left: pos.dx - size / 2,
+                top: pos.dy - size / 2,
+                width: size,
+                height: size,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    border: Border.all(
+                      color: m.teamId == localTeamId
+                          ? kIlluminationGold
+                          : kRubricRed,
+                      width: 1.5,
+                    ),
+                    borderRadius: BorderRadius.circular(size * 0.16),
+                    boxShadow: const [
+                      BoxShadow(color: Colors.black45, blurRadius: 2),
+                    ],
                   ),
-                  borderRadius: BorderRadius.circular(size * 0.16),
-                  boxShadow: const [
-                    BoxShadow(color: Colors.black45, blurRadius: 2),
-                  ],
-                ),
-                // The tint stops at the art: the gold/red border stays true so
-                // a phantasmal creature's side is still readable at a glance.
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(size * 0.12),
-                  child: _phantasmal(
-                    card.phantasmal,
-                    SpellCardWidget(
-                      spell: card.spell,
-                      size: size,
-                      interactive: false,
+                  // The tint stops at the art: the gold/red border stays true
+                  // so a phantasmal creature's side is still readable at a
+                  // glance.
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(size * 0.12),
+                    child: _phantasmal(
+                      card.phantasmal,
+                      SpellCardWidget(
+                        spell: card.spell,
+                        size: size,
+                        interactive: false,
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ),
+              );
+            }(),
       ],
     );
   }

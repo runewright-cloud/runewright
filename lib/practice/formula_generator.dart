@@ -18,6 +18,38 @@ class PracticeFormula {
   const PracticeFormula(this.words);
 
   final List<VocalWord> words;
+
+  /// Builds the incantation for a spell already in the library, from
+  /// `SpellAsset.formula` (BorderZone enum names — 'fire'/'air'/'water'/
+  /// 'earth'), so a player can drill the words that specific spell will
+  /// actually need at cast time.
+  ///
+  /// Two things this must get right, both easy to get wrong:
+  ///
+  /// 1. **Truncate to complete triplets.** `SpellAsset.formula` stores
+  ///    `FormulaTracker.committed` (see main.dart's inscribe call), which is
+  ///    *every* activation including the 1–2 residuals that never filled a
+  ///    group of three. Residuals form no formula and resolve to no effect
+  ///    (`FormulaTracker.formulas` drops them), so reciting them would drill
+  ///    words the cast never asks for.
+  /// 2. **One trailing [VocalWord.finitus] for the whole spell**, not one per
+  ///    triplet — matching battle_screen.dart's `_onCast` and
+  ///    [PracticeFormulaGenerator.generate].
+  ///
+  /// Returns null if the spell has fewer than three activations (nothing
+  /// castable to recite) or if any entry is not a recognised zone name.
+  static PracticeFormula? fromSpellFormula(List<String> spellFormula) {
+    final complete = (spellFormula.length ~/ 3) * 3;
+    if (complete == 0) return null;
+    final words = <VocalWord>[];
+    for (int i = 0; i < complete; i++) {
+      final word = VocalWord.fromAffinityZone(spellFormula[i]);
+      if (word == null) return null;
+      words.add(word);
+    }
+    words.add(VocalWord.finitus);
+    return PracticeFormula(List.unmodifiable(words));
+  }
 }
 
 class PracticeFormulaGenerator {

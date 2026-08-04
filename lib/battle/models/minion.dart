@@ -221,6 +221,16 @@ class Minion {
     return speed.clamp(0, 999);
   }
 
+  /// Reach, in tiles, from any tile of this creature's footprint.
+  ///
+  /// **Zero is a real value, not a floor to be clamped away.** `attackRange`
+  /// is `waterCount ~/ 3` (creature_spec.dart), so most creatures have none at
+  /// all: they are melee, and melee means standing on what you are hitting.
+  /// TurnLoop._creatureTurn spends a movement point to step such a creature
+  /// into its target's tile and shoves it straight back out again — bodies are
+  /// exclusive, so the blow and the recoil are the same beat. Clamping this to
+  /// 1 (as it used to be) quietly turned every melee creature into a
+  /// reach-1 skirmisher that could strike for free from an adjacent tile.
   int get effectiveAttackRange {
     var range = stats.attackRange;
     for (final fx in activeStatusEffects) {
@@ -230,7 +240,7 @@ class Minion {
         range += fx.modifiers['rangeDelta'] ?? 0;
       }
     }
-    return range.clamp(1, 999);
+    return range.clamp(0, 999);
   }
 
   /// Morphic (WWWW): on death, reforms into a new creature derived from half

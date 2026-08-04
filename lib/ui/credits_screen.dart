@@ -4,10 +4,12 @@
 // plus every third-party work bundled into the app (CREDITS.md, kept in
 // sync by hand -- see that file's header). Static, offline, no network,
 // consistent with the project's no-phone-home stance (CLAUDE.md hard
-// invariant 7). Reachable from Settings and from the art pack picker's
-// attribution footer (spell_art_pack_screen.dart) -- the latter is the
-// "resource that includes the required information" CC BY-SA 4.0 §3(a)(2)
-// contemplates for the art pack specifically.
+// invariant 7). Lives as the "Credits" tab of about_screen.dart, reached
+// from Settings and from the art pack picker's attribution footer
+// (spell_art_pack_screen.dart) -- the latter is the "resource that includes
+// the required information" CC BY-SA 4.0 §3(a)(2) contemplates for the art
+// pack specifically. Body-only (no Scaffold/AppBar of its own) so it can sit
+// inside AboutScreen's TabBarView without a nested app bar.
 
 import 'package:flutter/material.dart';
 
@@ -19,20 +21,14 @@ class CreditsScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: kParchmentColor,
-      appBar: AppBar(
-        backgroundColor: kParchmentColor,
-        foregroundColor: kInkColor,
-        elevation: 0,
-        title: Text('Credits & Licences', style: manuscriptHeaderStyle(fontSize: 20)),
-      ),
-      // A short, fixed set of children -- SingleChildScrollView+Column (not
-      // ListView) so every section lays out eagerly rather than only what's
-      // near the viewport, which matters both for widget-test finders and
-      // for a licence-attribution screen that must never silently omit
-      // content depending on scroll position.
-      body: SingleChildScrollView(
+    // A short, fixed set of children -- SingleChildScrollView+Column (not
+    // ListView) so every section lays out eagerly rather than only what's
+    // near the viewport, which matters both for widget-test finders and
+    // for a licence-attribution screen that must never silently omit
+    // content depending on scroll position.
+    return Container(
+      color: kParchmentColor,
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,

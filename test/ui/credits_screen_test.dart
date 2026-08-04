@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rune_duel/spells/spell_art_pack.dart';
+import 'package:rune_duel/ui/about_screen.dart';
 import 'package:rune_duel/ui/credits_screen.dart';
 import 'package:rune_duel/ui/settings_screen.dart';
 
@@ -56,14 +57,26 @@ void main() {
     expect(find.textContaining('it_IT-paola-medium'), findsOneWidget);
   });
 
-  testWidgets('Settings screen has a Credits & Licences entry that opens CreditsScreen',
-      (tester) async {
+  testWidgets(
+      'Settings screen has a Credits & Licences entry that opens the About '
+      'screen on its Credits tab', (tester) async {
     await tester.pumpWidget(const MaterialApp(home: SettingsScreen()));
+    await tester.pumpAndSettle();
+
+    // The Avatar section (docs/AVATAR_PICKER_PLAN.md §5.4) now leads the
+    // list, pushing this entry below the fold — scroll it into view first.
+    await tester.dragUntilVisible(
+      find.text('Credits & Licences'),
+      find.byType(ListView),
+      const Offset(0, -200),
+    );
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('Credits & Licences'));
     await tester.pumpAndSettle();
 
+    final about = tester.widget<AboutScreen>(find.byType(AboutScreen));
+    expect(about.initialTab, 1);
     expect(find.byType(CreditsScreen), findsOneWidget);
   });
 }

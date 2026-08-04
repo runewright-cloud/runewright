@@ -47,4 +47,73 @@ void main() {
       expect(a.words, equals(b.words));
     });
   });
+
+  group('fromSpellFormula', () {
+    test('maps zone names in order and appends one finitus', () {
+      final formula =
+          PracticeFormula.fromSpellFormula(['fire', 'earth', 'water']);
+      expect(formula!.words, [
+        VocalWord.ignis,
+        VocalWord.terra,
+        VocalWord.aqua,
+        VocalWord.finitus,
+      ]);
+    });
+
+    test('a three-formula spell yields 9 element words + one finitus', () {
+      final formula = PracticeFormula.fromSpellFormula([
+        'fire', 'earth', 'water',
+        'air', 'fire', 'earth',
+        'water', 'air', 'fire',
+      ]);
+      expect(formula!.words.length, 10);
+      expect(formula.words.last, VocalWord.finitus);
+      expect(
+        formula.words.sublist(0, 9).contains(VocalWord.finitus),
+        isFalse,
+        reason: 'finitus is spoken once for the whole spell, not per triplet',
+      );
+    });
+
+    // SpellAsset.formula stores FormulaTracker.committed, which includes the
+    // 1-2 trailing activations that never completed a group of 3. Those form
+    // no formula and resolve to no effect, so the drill must not ask for them.
+    test('drops residual activations that complete no triplet', () {
+      final formula = PracticeFormula.fromSpellFormula(
+          ['fire', 'earth', 'water', 'air', 'fire']);
+      expect(formula!.words, [
+        VocalWord.ignis,
+        VocalWord.terra,
+        VocalWord.aqua,
+        VocalWord.finitus,
+      ]);
+    });
+
+    test('returns null when no complete triplet exists', () {
+      expect(PracticeFormula.fromSpellFormula([]), isNull);
+      expect(PracticeFormula.fromSpellFormula(['fire']), isNull);
+      expect(PracticeFormula.fromSpellFormula(['fire', 'earth']), isNull);
+    });
+
+    test('returns null on an unrecognised zone name', () {
+      expect(
+        PracticeFormula.fromSpellFormula(['fire', 'neutral', 'water']),
+        isNull,
+      );
+    });
+
+    test('accepts all four zone names', () {
+      final formula = PracticeFormula.fromSpellFormula(
+          ['fire', 'air', 'water', 'earth', 'fire', 'air']);
+      expect(formula!.words, [
+        VocalWord.ignis,
+        VocalWord.ventus,
+        VocalWord.aqua,
+        VocalWord.terra,
+        VocalWord.ignis,
+        VocalWord.ventus,
+        VocalWord.finitus,
+      ]);
+    });
+  });
 }

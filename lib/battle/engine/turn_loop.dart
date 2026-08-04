@@ -350,6 +350,71 @@ class AvatarMoveEvent {
   final HexCoord? wonContestAt;
 }
 
+/// One summon's movement this turn — the [AvatarMoveEvent] of the Summons
+/// phase, and UI-only in exactly the same way: a creature that crossed three
+/// tiles should be seen crossing them, not blink to its destination. Carries
+/// no gameplay effect; [TurnLoop] never reads these back. See
+/// [TurnLoop.lastMinionMoveEvents].
+class MinionMoveEvent {
+  const MinionMoveEvent({
+    required this.minionId,
+    required this.path,
+    this.lungeTile,
+  });
+
+  final String minionId;
+
+  /// Every tile actually visited, in order, starting with the pre-move tile —
+  /// including free displacement picked up along the way (conveyor pushes), so
+  /// the token follows the real route. Length 1 means "did not move", which is
+  /// still worth emitting when [lungeTile] is set.
+  final List<HexCoord> path;
+
+  /// The enemy tile a melee (range 0) creature stepped onto to land its blow.
+  /// It cannot stay there — bodies are exclusive — so the UI reaches the token
+  /// onto that tile and shoves it back to [path]'s last tile, which is the
+  /// whole visible form the attack takes. Null for a creature with reach, and
+  /// for one that had no movement left to strike with.
+  final HexCoord? lungeTile;
+}
+
+/// One ordinary attack that landed this turn — a wizard's haymaker or a
+/// creature's strike — so the UI can show the blow itself rather than only its
+/// consequences. UI-only bookkeeping, exactly like [MinionMoveEvent]: the
+/// damage has already been applied by the time this is emitted and [TurnLoop]
+/// never reads these back.
+///
+/// [range] is the attacker's *effective* attack range at the moment it struck
+/// (a wizard haymaker is always 1), which is what decides the form the attack
+/// takes on screen: reach 0/1 is a blow at arm's length, reach 2+ is something
+/// thrown across the intervening tiles. [affinity] is the attacker's element,
+/// null for a wizard — wizards punch, they don't have an elemental flavour.
+class AttackEvent {
+  const AttackEvent({
+    required this.from,
+    required this.to,
+    required this.range,
+    this.affinity,
+  });
+
+  /// The attacker's tile at the moment of the blow (post-movement).
+  final HexCoord from;
+
+  /// The tile struck. For a melee creature this is the tile it lunges onto —
+  /// the same tile as [MinionMoveEvent.lungeTile] — so the two animations line
+  /// up on the same target.
+  final HexCoord to;
+
+  final int range;
+
+  final SpellAffinity? affinity;
+
+  /// Whether this blow was struck within arm's reach. Reach 1 counts: the
+  /// attacker is standing next to its target either way, and only a creature
+  /// that can strike from 2+ tiles away has anything to throw.
+  bool get isMelee => range <= 1;
+}
+
 /// One spell resolved this turn, in resolution order — drives the UI's
 /// MtG-style card reveal sequence (battle_screen.dart): each entry is shown
 /// full-card for 2s, then becomes a thumbnail (neutral tray for incantations,
@@ -623,6 +688,28 @@ Future<AccoutrementKind?> _defaultNoActivation(
 /// null — headless callers (tests, solo mode) animate nothing.
 typedef MovementPlayback = Future<void> Function(List<AvatarMoveEvent> moves);
 
+/// The Summons-phase counterpart of [MovementPlayback]: awaited once, after
+/// every creature has acted, so their walks *and* their attacks play out before
+/// the turn moves on. Same contract, same reason it is awaited rather than
+/// fired and forgotten.
+///
+/// Both lists arrive together because the two are one event on screen: a melee
+/// creature's lunge and the blow it lunged to land have to be seen happening at
+/// the same moment, not one after the other. Either list may be empty — a
+/// creature with reach attacks without moving, and a creature that closed the
+/// distance may arrive with nothing left to strike with.
+typedef SummonMovementPlayback =
+    Future<void> Function(
+      List<MinionMoveEvent> moves,
+      List<AttackEvent> attacks,
+    );
+
+/// Awaited once at Phase 4b, after every wizard's haymaker has been applied, so
+/// the punches are seen landing before the turn moves on to spell resolution.
+/// Same cosmetic-and-blocking contract as [MovementPlayback]; defaults to null,
+/// so headless callers animate nothing.
+typedef AttackPlayback = Future<void> Function(List<AttackEvent> attacks);
+
 /// The loadout artifacts a player may declare at Phase 0.
 ///
 /// [AccoutrementKind.counterCharm] is deliberately absent — charms self-trigger
@@ -696,6 +783,8 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     this.freeMoveDirectionPicker = _defaultNoFreeMove,
     this.artifactActivationPicker = _defaultNoActivation,
     this.onMovementResolved,
+    this.onSummonMovementResolved,
+    this.onMeleeResolved,
     this.onPhase,
     this.signMessage,
     this.peerRawPubkey,
@@ -743,6 +832,17 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// See [MovementPlayback] for why this is awaited rather than fired and
   /// forgotten. Null (the default) skips it entirely.
   final MovementPlayback? onMovementResolved;
+
+  /// Optional UI playback hook: awaited once per turn, after every summon has
+  /// taken its Phase 5b action and before the dead are reaped, so a creature
+  /// is seen making the move (or the melee lunge) that killed it. See
+  /// [SummonMovementPlayback]. Null (the default) skips it entirely.
+  final SummonMovementPlayback? onSummonMovementResolved;
+
+  /// Optional UI playback hook: awaited once per turn, at Phase 4b, after every
+  /// wizard's melee has been applied and before spell resolution begins. See
+  /// [AttackPlayback]. Null (the default) skips it entirely.
+  final AttackPlayback? onMeleeResolved;
 
   /// Optional UI notification hook: fired at the two phase boundaries a
   /// caller can't otherwise observe from outside [runTurn] — [TurnPhase
@@ -1212,6 +1312,25 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// what makes a collision legible: the wizards converge on the contested tile
   /// at the same instant, and the loser recoils off it. See [AvatarMoveEvent].
   List<AvatarMoveEvent> lastAvatarMoveEvents = [];
+
+  /// Every summon's walk during the most recent Summons phase — one entry per
+  /// creature that actually went somewhere or lunged, for the UI's movement
+  /// animation. Cleared at the start of the Summons phase rather than at the
+  /// start of the turn: a Potent summon's bonus action happens back in Phase 5
+  /// and is already shown by that spell's own card reveal, so replaying it here
+  /// would walk the creature a second time. See [MinionMoveEvent].
+  List<MinionMoveEvent> lastMinionMoveEvents = [];
+
+  /// Every blow a summon landed during the most recent Summons phase, for the
+  /// UI's attack animation. Cleared alongside [lastMinionMoveEvents] and for
+  /// the same reason (a Potent summon's Phase 5 bonus action is already shown
+  /// by its spell's card reveal). See [AttackEvent].
+  List<AttackEvent> lastMinionAttackEvents = [];
+
+  /// Every wizard haymaker that landed during the most recent Phase 4b melee
+  /// round — the local player's and the peer's — for the UI's attack animation.
+  /// Cleared and repopulated each turn at the melee round. See [AttackEvent].
+  List<AttackEvent> lastMeleeAttackEvents = [];
 
   /// Wild-magic effects that fired during the most recent [runTurn] call, in
   /// resolution order. Cleared and repopulated at the start of every turn.
@@ -1991,9 +2110,27 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         if (_avatarById(peerId) case final peerAvatarForMelee?)
           (peerAvatarForMelee, peerMeleeTarget),
     ]..sort((a, b) => a.$1.playerId.compareTo(b.$1.playerId));
+    lastMeleeAttackEvents = [];
     for (final (actor, target) in meleeApplications) {
+      // Emitted on the same adjacency test _applyHaymaker itself gates on, so
+      // a punch thrown at a tile the actor is no longer next to (it lost a
+      // contest, it was pushed) is neither applied nor animated. A haymaker
+      // that lands on an illusion decoy still animates: the swing happened,
+      // and the reveal that it hit a decoy is the decoy's job to tell.
+      if (_isAdjacent(actor.position, target)) {
+        lastMeleeAttackEvents.add(
+          AttackEvent(from: actor.position, to: target, range: 1),
+        );
+      }
       final hit = _applyHaymaker(actor, target, walked, meleeRng);
       _applyCounterCharmProc(actor, hit, meleeRng);
+    }
+    // Played back after both haymakers have been applied, so simultaneous
+    // punches are seen as simultaneous — the same "one shared timeline" rule
+    // the movement playback follows.
+    final playMelee = onMeleeResolved;
+    if (playMelee != null && lastMeleeAttackEvents.isNotEmpty) {
+      await playMelee(List<AttackEvent>.unmodifiable(lastMeleeAttackEvents));
     }
 
     onPhase?.call(TurnPhase.actionResolve);
@@ -2120,7 +2257,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     final summonsRng = HashRng(
       _phaseSeed(entropy, matchId, state.turnNumber, 0x01),
     );
-    _resolveSummons(summonsRng);
+    await _resolveSummons(summonsRng);
 
     // ── Phase 5.5: Post-resolution free-move (barrier burst) ──────────────
     // A barrier destroyed by damage this turn (a "burst" — not one that
@@ -2283,13 +2420,15 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
   // ── Phase 5b: Summons act ─────────────────────────────────────────────────
 
-  void _resolveSummons(HashRng rng) {
+  Future<void> _resolveSummons(HashRng rng) async {
     // Both clients run the same deterministic AI for all minions (creation
     // order maintained by state.minions list). A summon cast this very turn
     // (Potent or not) starts with actedThisTurn=false, so it's included in
     // this sweep — its first action is always this same turn, here. A
     // Potent summon additionally got an immediate bonus action during Phase
     // 5 (see _castSummon), so it acts a second time right here.
+    lastMinionMoveEvents = [];
+    lastMinionAttackEvents = [];
     final living = state.minions
         .where((m) => m.isAlive && !m.actedThisTurn)
         .toList();
@@ -2298,6 +2437,17 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       creature.actedThisTurn = true;
     }
     state.resetMinionActions();
+    // Walk the tokens before anything reaps or dispels: a creature that lunged
+    // in and died to a Molten Carapace should be seen making the lunge, not
+    // vanish from the tile it never visibly left. Same await-the-UI contract
+    // as the avatar walk in Phase 3 — see [SummonMovementPlayback].
+    final playSummonMovement = onSummonMovementResolved;
+    if (playSummonMovement != null) {
+      await playSummonMovement(
+        List<MinionMoveEvent>.unmodifiable(lastMinionMoveEvents),
+        List<AttackEvent>.unmodifiable(lastMinionAttackEvents),
+      );
+    }
     _reapDead(rng);
     _applyPhoenixSaves();
     // Creature AI moves illusory clones too — one that closes on a scryer
@@ -2367,9 +2517,13 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     if (target == null) return;
 
     final before = creature.position;
+    // Tiles actually visited, for the UI to walk the token rather than
+    // teleport it. See [MinionMoveEvent].
+    final route = <HexCoord>[before];
+    final int unspent;
     switch (personality) {
       case SummonPersonality.evasive:
-        _evasiveMove(creature, target.position, rng);
+        unspent = _evasiveMove(creature, target.position, rng, route);
       case SummonPersonality.protective:
         final owner = _avatarById(creature.ownerId);
         if (owner != null && owner.isAlive) {
@@ -2378,19 +2532,47 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           final interpose = dir == null
               ? owner.position
               : HexCoord(owner.position.q + dir.q, owner.position.r + dir.r);
-          _aggressiveMove(creature, interpose, rng);
+          unspent = _aggressiveMove(creature, interpose, rng, route);
         } else {
-          _aggressiveMove(creature, target.position, rng);
+          unspent = _aggressiveMove(creature, target.position, rng, route);
         }
       case SummonPersonality.aggressive:
       case SummonPersonality.tactical:
       case SummonPersonality.obedient: // unreachable — see above
-        _aggressiveMove(creature, target.position, rng);
+        unspent = _aggressiveMove(creature, target.position, rng, route);
     }
     final movedTiles = hexDistance(before, creature.position);
 
-    if (creature.distanceTo(target.position) <= creature.effectiveAttackRange) {
+    final range = creature.effectiveAttackRange;
+    HexCoord? lunge;
+    if (range == 0) {
+      // A melee creature has no reach at all: to land a blow it has to stand
+      // on its target, which costs it a movement point and which it cannot
+      // keep (bodies are exclusive — see [tileOccupied]), so it is shoved
+      // straight back out onto the tile it came from. Spent its whole budget
+      // closing the distance? Then it arrives with nothing left to strike
+      // with, and waits for next turn.
+      if (creature.isAlive &&
+          unspent > 0 &&
+          creature.distanceTo(target.position) == 1) {
+        lunge = target.position;
+        _recordAttack(creature, target.position, range);
+        // The lunge step is real movement, so Charger (FAFA) counts it.
+        _creatureAttack(creature, target, rng, movedTiles: movedTiles + 1);
+      }
+    } else if (creature.distanceTo(target.position) <= range) {
+      _recordAttack(creature, target.position, range);
       _creatureAttack(creature, target, rng, movedTiles: movedTiles);
+    }
+
+    if (route.length > 1 || lunge != null) {
+      lastMinionMoveEvents.add(
+        MinionMoveEvent(
+          minionId: creature.id,
+          path: List.unmodifiable(route),
+          lungeTile: lunge,
+        ),
+      );
     }
   }
 
@@ -2476,22 +2658,40 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// directly toward [target], one tile at a time, up to move speed. Entering
   /// a conveyor tile pushes immediately (see _resolveMinionConveyorPush) and
   /// the creature keeps walking with whatever budget remains.
-  void _aggressiveMove(Minion creature, HexCoord target, HashRng rng) {
+  ///
+  /// Appends every tile entered to [route] (which starts with the creature's
+  /// pre-move tile) and returns the movement budget left unspent — a melee
+  /// creature needs one more point to lunge onto its target, so "did it arrive
+  /// with anything left?" is part of the answer, not just where it stopped.
+  int _aggressiveMove(
+    Minion creature,
+    HexCoord target,
+    HashRng rng,
+    List<HexCoord> route,
+  ) {
     final flying = creature.abilities.contains(SummonAbility.flying);
     var steps = creature.effectiveMoveSpeed;
     while (steps > 0 && creature.isAlive && creature.distanceTo(target) > 0) {
       final step = _creatureGreedyStep(creature, target);
       if (step == null) break;
       creature.position = step;
+      route.add(step);
       steps -= _terrainMoveCost(creature, step, flying);
-      _resolveMinionConveyorPush(creature, flying, rng);
+      _resolveMinionConveyorPush(creature, flying, rng, route);
     }
+    return max(0, steps);
   }
 
   /// Evasive: back away while closer than attack range, approach while
   /// farther, stop once at ideal range — using the full move-speed budget.
-  /// Same immediate-push-then-continue conveyor behavior as [_aggressiveMove].
-  void _evasiveMove(Minion creature, HexCoord target, HashRng rng) {
+  /// Same immediate-push-then-continue conveyor behavior, [route] recording
+  /// and unspent-budget return as [_aggressiveMove].
+  int _evasiveMove(
+    Minion creature,
+    HexCoord target,
+    HashRng rng,
+    List<HexCoord> route,
+  ) {
     final flying = creature.abilities.contains(SummonAbility.flying);
     final range = creature.effectiveAttackRange;
     var steps = creature.effectiveMoveSpeed;
@@ -2507,9 +2707,11 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       }
       if (step == null) break;
       creature.position = step;
+      route.add(step);
       steps -= _terrainMoveCost(creature, step, flying);
-      _resolveMinionConveyorPush(creature, flying, rng);
+      _resolveMinionConveyorPush(creature, flying, rng, route);
     }
+    return max(0, steps);
   }
 
   /// Applies FloorIsLava damage (unless flying) for [step] just entered, and
@@ -2527,8 +2729,15 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
   /// Called immediately after the creature enters a new tile mid-walk: if
   /// that tile is a conveyor, resolves the cascading/looping push
-  /// (tile_entry_resolver.dart) right away. No-op if flying.
-  void _resolveMinionConveyorPush(Minion creature, bool flying, HashRng rng) {
+  /// (tile_entry_resolver.dart) right away. No-op if flying. Every tile the
+  /// push carried the creature through is appended to [route], so the walk
+  /// animation follows the real journey rather than the declared one.
+  void _resolveMinionConveyorPush(
+    Minion creature,
+    bool flying,
+    HashRng rng,
+    List<HexCoord> route,
+  ) {
     if (flying) return;
     if (state.tileEffects[creature.position] is! ConveyorTile) return;
     final outcome = resolveTileEntry(
@@ -2541,6 +2750,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       footprintValid: (t) => _footprintValid(t, creature),
     );
     creature.position = outcome.finalPosition;
+    route.addAll(outcome.animationPath.skip(1));
     if (outcome.totalDamage > 0) creature.takeDamage(outcome.totalDamage);
     if (outcome.animationPath.length > 1) {
       lastConveyorChainEvents.add(
@@ -2584,6 +2794,11 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     for (final t in footprintFor(center, creature.abilities)) {
       if (!state.battlefield.isInBounds(t)) return false;
       if (!flying && tileBlocksMovement(state.tileEffects[t])) return false;
+      // Bodies are exclusive (see [tileOccupied]). Flying gets no exemption
+      // here the way a wizard's walk does: a creature's AI moves one tile at a
+      // time and each of those tiles is somewhere it comes to rest, so there
+      // is no "passing through" to distinguish from landing.
+      if (tileOccupied(state, t, ignoreMinionId: creature.id)) return false;
     }
     return true;
   }
@@ -2615,6 +2830,21 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   }
 
   // ── Attack resolution + abilities ─────────────────────────────────────────
+
+  /// Notes one creature strike for the UI. Recorded *before* the damage is
+  /// applied, from the attacker's pre-lunge tile: a melee creature ends the
+  /// turn back where it started, and an attacker that dies to the blow it just
+  /// landed (Molten Carapace) should still be seen throwing it.
+  void _recordAttack(Minion attacker, HexCoord target, int range) {
+    lastMinionAttackEvents.add(
+      AttackEvent(
+        from: attacker.position,
+        to: target,
+        range: range,
+        affinity: attacker.affinity,
+      ),
+    );
+  }
 
   void _creatureAttack(
     Minion attacker,
@@ -2720,6 +2950,13 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     Map<String, int> speeds,
     HashRng rng,
   ) {
+    // Snapshot of every body on the board before anyone moves. Movement is
+    // simultaneous, so both the arbitration preview and each avatar's real
+    // walk resolve against this one fixed set rather than against positions
+    // that mutate as the loop below walks each avatar in turn -- otherwise the
+    // first player in iteration order could walk through a tile the second
+    // player is about to vacate, and the second could not. See [tileOccupied].
+    final bodies = _occupiedTiles();
     final preview = state.battlefield.resolveMovement(
       movePaths,
       speeds,
@@ -2728,10 +2965,13 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         for (final av in state.avatars)
           if (av.isFlying) av.playerId,
       },
+      blockedTiles: bodies,
     );
     final walked = <String, List<HexCoord>>{};
     for (final av in state.avatars) {
       final origin = av.position;
+      // Everyone else's body. Rebuilt per avatar so nobody blocks themselves.
+      final blockers = bodies.difference({origin});
       final budget = max(0, speeds[av.playerId] ?? av.effectiveMoveSpeed);
       // Fall back to the declared path only for an avatar the battlefield
       // didn't know about (absent from occupancy, so absent from the preview).
@@ -2744,6 +2984,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         clearedPath,
         budget,
         rng,
+        blocked: blockers.contains,
       ).path;
       // Statuesque (wild magic, row 3 Earth) breaks on a VOLUNTARY move. A
       // path longer than [origin] means at least one declared step was taken;
@@ -2809,16 +3050,27 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// of [budget] the walk consumed -- the free-move window prices a Boost run
   /// off `spent`, so tiles a conveyor or ice slide handed over for free
   /// correctly cost nothing.
+  ///
+  /// [blocked] reports tiles held by another body (see [tileOccupied]); a step
+  /// into one stops the walk, because bodies are exclusive. A flying wizard
+  /// (Updraft) is the design's one exception: it walks *through* other
+  /// entities and is only pulled back if it would come to rest on one, which
+  /// is the truncation after the loop. The caller supplies the predicate
+  /// rather than this reading live positions, so the simultaneous movement
+  /// phase can resolve every avatar against one pre-move snapshot.
   ({List<HexCoord> path, int spent}) _walkAvatar(
     WizardAvatar av,
     HexCoord origin,
     List<HexCoord> declaredPath,
     int budget,
-    HashRng rng,
-  ) {
+    HashRng rng, {
+    bool Function(HexCoord)? blocked,
+  }) {
     var current = origin;
     var remaining = budget;
     final path = <HexCoord>[origin];
+    bool isBlocked(HexCoord hex) =>
+        hex != origin && (blocked?.call(hex) ?? false);
 
     // Updraft (wild magic, row 2 Air): a flying wizard ignores terrain
     // entirely — chasms, walls, lava, slow tiles, ice sliding, and conveyor
@@ -2834,6 +3086,8 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       // ChasmTile blocks movement exactly like a wall — but NOT targeting;
       // that distinction is the entire reason it is its own class (A9).
       if (tileBlocksMovement(effect)) break;
+      // So does another body, unless this wizard is flying over it.
+      if (!flying && isBlocked(step)) break;
       final cost = 1 + (effect is SlowTile ? effect.extraMoveCost : 0);
       if (cost > remaining) break;
       remaining -= cost;
@@ -2863,6 +3117,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           flying: false,
           currentHp: av.hp,
           applyEntryLava: false, // already charged just above
+          moverAvatarId: av.playerId,
         );
         current = outcome.finalPosition;
         path.addAll(outcome.animationPath.skip(1));
@@ -2878,6 +3133,15 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           );
         }
       }
+    }
+
+    // A flying wizard walked through whatever was in the way; it may not
+    // *land* on it, though, so back it off along its own route to the last
+    // tile nobody is standing on. The origin is always such a tile, so this
+    // terminates. Budget already spent stays spent — bumping into a crowd
+    // mid-flight costs you the move, which is the point of the restriction.
+    while (path.length > 1 && isBlocked(path.last)) {
+      path.removeLast();
     }
     return (path: path, spent: budget - remaining);
   }
@@ -6265,13 +6529,21 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     for (final tile in hexNeighbors(actor.position)) {
       if (!state.battlefield.isInBounds(tile)) continue;
       if (tileBlocksMovement(state.tileEffects[tile])) continue;
-      if (state.avatars.any((av) => av.isAlive && av.position == tile))
-        continue;
-      if (state.minions.any((m) => m.isAlive && m.position == tile)) continue;
+      if (tileOccupied(state, tile, ignoreAvatarId: actor.playerId)) continue;
       candidates.add(tile);
     }
     return candidates;
   }
+
+  /// Every tile a living body stands on right now — each avatar's tile and
+  /// each minion's whole footprint. The blocker set for movement; see
+  /// [tileOccupied], which is the same rule stated one tile at a time.
+  Set<HexCoord> _occupiedTiles() => {
+    for (final av in state.avatars)
+      if (av.isAlive) av.position,
+    for (final m in state.minions)
+      if (m.isAlive) ...m.occupiedTiles,
+  };
 
   /// Price of a Boost run that spends [paidTiles] chargeable tiles (i.e. tiles
   /// beyond [FreeMoveGrant.freeTiles]), in the units of [resource]:
@@ -6348,7 +6620,17 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     if (grant.isEmpty) return;
 
     final origin = av.position;
-    final walk = _walkAvatar(av, origin, declaredPath, grant.maxTiles, rng);
+    // Unlike the movement phase, this window is sequential — one avatar walks
+    // at a time, with everyone else standing still — so live positions are the
+    // right blocker set and no snapshot is needed.
+    final walk = _walkAvatar(
+      av,
+      origin,
+      declaredPath,
+      grant.maxTiles,
+      rng,
+      blocked: (hex) => tileOccupied(state, hex, ignoreAvatarId: av.playerId),
+    );
     if (walk.path.length <= 1) return; // blocked before the first step landed
 
     av.position = walk.path.last;

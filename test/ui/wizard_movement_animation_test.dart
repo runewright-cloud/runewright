@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// wizard_movement_animation_test.dart — the wizard walk timeline
-// (wizardWalkStateAt) and the painter pass that draws it.
+// wizard_movement_animation_test.dart — the walk timeline
+// (entityWalkStateAt) and the painter passes that draw it, for both wizards
+// and summons.
 //
 // This is cosmetic code, so "correct" means "reads as the thing that happened":
 //   - a wizard starts on the tile they left and ends on the tile they reached;
@@ -14,9 +15,14 @@
 // The last one is the point of the whole feature: without the lunge, a lost
 // speed contest is indistinguishable from choosing not to move.
 
+import 'dart:math' show sqrt;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rune_duel/battle/models/effect_kind.dart' show SpellAffinity;
+import 'package:rune_duel/battle/models/minion.dart'
+    show Minion, MinionStats, SummonAbility;
+import 'package:rune_duel/engine/border_zone.dart' show BorderZone;
 import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/ui/avatars/avatar_sprites.dart';
 import 'package:rune_duel/ui/battlefield_painter.dart';
@@ -30,10 +36,10 @@ void main() {
   // tests use.
   HexCoord q(int i) => HexCoord(i, 0);
 
-  WizardWalkState at(AvatarMoveAnimation anim, double t) =>
-      wizardWalkStateAt(anim, t, center, hexSize);
+  WizardWalkState at(EntityMoveAnimation anim, double t) =>
+      entityWalkStateAt(anim, t, center, hexSize);
 
-  group('wizardWalkStateAt — plain walk', () {
+  group('entityWalkStateAt — plain walk', () {
     const walk = AvatarMoveAnimation(
       playerId: 'a',
       path: [HexCoord(-2, 0), HexCoord(-1, 0), HexCoord(0, 0)],
@@ -89,7 +95,7 @@ void main() {
     });
   });
 
-  group('wizardWalkStateAt — contested tile', () {
+  group('entityWalkStateAt — contested tile', () {
     // Lost the tile at (0,0); consolation tile is (-1,0).
     const loser = AvatarMoveAnimation(
       playerId: 'loser',
@@ -161,6 +167,77 @@ void main() {
     });
   });
 
+  group('entityWalkStateAt — summon walks', () {
+    // The timeline is shared with wizards on purpose: a creature crossing the
+    // board should read exactly like a wizard crossing it. These cover the one
+    // thing that is summon-specific — the melee lunge, which is not a lost
+    // collision but an attack, and must still reach on and be shoved back.
+    test('a walking creature travels its route and holds at the end', () {
+      const walk = MinionMoveAnimation(
+        minionId: 'm1',
+        path: [HexCoord(-2, 0), HexCoord(-1, 0), HexCoord(0, 0)],
+      );
+      expect(at(walk, 0).pos, px(q(-2)));
+      expect((at(walk, 0.36).pos - px(q(-1))).distance, lessThan(0.001));
+      expect(at(walk, 0.72).pos, px(q(0)));
+      expect(at(walk, 1.0).pos, px(q(0)));
+    });
+
+    test('a melee lunge reaches onto the target tile and recoils home', () {
+      // Stood still all turn and struck the neighbour: a one-tile path with a
+      // lunge, which is the ONLY thing distinguishing "attacked" from "idle".
+      const strike = MinionMoveAnimation(
+        minionId: 'm1',
+        path: [HexCoord(-1, 0)],
+        lungeTile: HexCoord(0, 0),
+      );
+      final reach = at(strike, 0.72).pos;
+      expect(reach.dx, greaterThan(px(q(-1)).dx));
+      expect(reach.dx, lessThan(px(q(0)).dx));
+      expect((at(strike, 1.0).pos - px(q(-1))).distance, lessThan(0.001));
+      // Facing the thing it hit, throughout the blow and the recoil.
+      expect(at(strike, 0.7).facing, AvatarFacing.right);
+      expect(at(strike, 1.0).facing, AvatarFacing.right);
+      // And the spark the painter flashes is on the tile it struck.
+      expect(strike.contestedTile, q(0));
+    });
+
+    test('minionTokenPos falls back to the board tile when not walking', () {
+      expect(
+        BattlefieldPainter.minionTokenPos(null, q(1), 0.5, center, hexSize),
+        px(q(1)),
+      );
+      const walk = MinionMoveAnimation(
+        minionId: 'm1',
+        path: [HexCoord(0, 0), HexCoord(1, 0)],
+      );
+      expect(
+        BattlefieldPainter.minionTokenPos(walk, q(1), 1.0, center, hexSize),
+        px(q(1)),
+      );
+      // Mid-walk it tracks the animation, not the (already-final) board tile.
+      expect(
+        BattlefieldPainter.minionTokenPos(walk, q(1), 0.0, center, hexSize),
+        px(q(0)),
+      );
+    });
+  });
+
+  group('summon thumbnail geometry', () {
+    test('the largest square that fits, and it fits', () {
+      // Flat-top hex of circumradius 1: half-height √3/2 ≈ 0.866, and the
+      // slanted edge √3·x + y = √3 is what actually binds.
+      final half = kHexInscribedSquare / 2;
+      expect(half, lessThan(sqrt(3) / 2));
+      expect(sqrt(3) * half + half, closeTo(sqrt(3), 1e-12));
+      // Adjacent tile centres are √3 apart, so neighbouring thumbnails still
+      // clear each other rather than overlapping into mush.
+      expect(kHexInscribedSquare, lessThan(sqrt(3)));
+      // And it is genuinely bigger than the old stamp-sized 0.62.
+      expect(kHexInscribedSquare, greaterThan(1.0));
+    });
+  });
+
   group('BattlefieldPainter — movement pass', () {
     // Same contract as battlefield_painter_test.dart: no pixel baseline, this
     // catches the paint()-time crash class.
@@ -213,6 +290,78 @@ void main() {
       }
 
       // Sample the whole timeline: travel, impact, recoil, rest.
+      for (final t in [0.0, 0.4, 0.72, 0.9, 1.0]) {
+        await tester.pumpWidget(board(t));
+        await tester.pump();
+        expect(tester.takeException(), isNull, reason: 'threw at t=$t');
+      }
+    });
+
+    testWidgets('paints a walking creature and a lunging one without throwing',
+        (tester) async {
+      final controller = AnimationController(
+        vsync: const TestVSync(),
+        duration: const Duration(milliseconds: 900),
+      );
+      addTearDown(controller.dispose);
+
+      Minion creature(String id, HexCoord at, {bool big = false}) => Minion(
+        id: id,
+        ownerId: 'me',
+        teamId: 'solo',
+        position: at,
+        affinity: SpellAffinity.fire,
+        stats: const MinionStats(
+          maxHp: 2,
+          damage: 1,
+          moveSpeed: 1,
+          attackRange: 0,
+        ),
+        elementSequence: const [BorderZone.fire],
+        abilities: big ? const {SummonAbility.big} : const {},
+      );
+
+      Widget board(double t) {
+        controller.value = t;
+        return MaterialApp(
+          home: Scaffold(
+            body: CustomPaint(
+              size: const Size(400, 400),
+              painter: BattlefieldPainter(
+                radius: 4,
+                hexSize: hexSize,
+                localPlayerId: 'me',
+                localTeamId: 'solo',
+                occupancy: const {'me': HexCoord(0, 3)},
+                minions: [
+                  creature('walker', const HexCoord(0, 0)),
+                  creature('striker', const HexCoord(-1, 0)),
+                  // A Big creature moves as one body; its outlying footprint
+                  // tiles must ride along with the anchor.
+                  creature('bulk', const HexCoord(2, 0), big: true),
+                ],
+                minionMoveAnimations: const [
+                  MinionMoveAnimation(
+                    minionId: 'walker',
+                    path: [HexCoord(-2, 0), HexCoord(-1, 0), HexCoord(0, 0)],
+                  ),
+                  MinionMoveAnimation(
+                    minionId: 'striker',
+                    path: [HexCoord(-1, 0)],
+                    lungeTile: HexCoord(0, 0),
+                  ),
+                  MinionMoveAnimation(
+                    minionId: 'bulk',
+                    path: [HexCoord(3, 0), HexCoord(2, 0)],
+                  ),
+                ],
+                moveAnimation: controller,
+              ),
+            ),
+          ),
+        );
+      }
+
       for (final t in [0.0, 0.4, 0.72, 0.9, 1.0]) {
         await tester.pumpWidget(board(t));
         await tester.pump();

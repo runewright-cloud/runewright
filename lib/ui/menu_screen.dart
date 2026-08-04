@@ -5,6 +5,7 @@ import '../apprentice/apprenticeship.dart';
 import '../identity/identity.dart';
 import '../identity/key_packing.dart';
 import '../main.dart';
+import 'about_screen.dart';
 import 'apprenticeship_screen.dart';
 import 'battle_lobby_screen.dart';
 import 'commune_screen.dart';
@@ -112,7 +113,10 @@ class MenuScreen extends StatelessWidget {
                 ),
                 _MenuButton(
                   label: 'About',
-                  onTap: null,
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const AboutScreen()),
+                  ),
                 ),
                 _MenuButton(
                   label: 'Settings',
