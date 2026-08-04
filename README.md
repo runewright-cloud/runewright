@@ -1,17 +1,41 @@
 # Runewright
 
-**A decentralized, in-person wizard-dueling game where your spells are rune flavored 
-cellular automata rules and your proofs are the only referee.**
+Runewright is a game that aims to take the parts of being a Wizard in games like D&D and 
+Pathfinder that are character skills, and turn them into player skills. Researching and creating 
+efficient and effective magical spells is a genuinely difficult exercise. Players who truly wish 
+to dedicate themselves to wizardly arts may enable rules to require actual vocal and somatic 
+components for their casting, as read by the phone’s microphone and accelerometer.
 
-Runewright is a mobile game about being a D&D-style wizard in real life. You *inscribe*
-spells by designing the initial state of a hexagonal cellular automaton, generate a
-zero-knowledge proof that the simulation ran exactly as you claim, and then duel other
-players face-to-face over local wireless.
+Runewright is entirely peer-to-peer — no servers, no accounts, nothing to sign up for. Duels 
+happen device-to-device with whoever’s standing across from you, the old-fashioned way. The game 
+is free, full stop; no fees, no ads, no data harvesting. If you’d like to support development,
+donations are welcome, but nothing is ever gated behind them.
 
-There is no server, no account, and no central authority. Your opponent never sees your
-spell — only a proof that it does what you say it does. The phone microphone and accelerator
-may optionally be used to cast the magic using vocal and somatic components to maximize the
-experience of using magic like an actual wizard.
+MAGICAL RESEARCH – Players must draw patterns in their spellbook using magical ink that grows 
+according to a custom set of cellular automaton rules. As the ink grows beyond any of the four 
+elemental gates, the energy is harvested and bound together to form spell effects. But be careful — 
+if you harvest too much energy of a single element, while powerful, this infuses the ink, changing 
+the rules that govern it to shift and embody the nature of that element and making it much harder 
+to predict.
+
+Once you have created a spell you are pleased with, you must perform the ritual to permanently
+inscribe it. This computationally expensive act performs a bit of cryptographic wizardry,
+proving to all other players that the spell you’ve made is genuine, but keeps its secrets 
+entirely in your own library. If your friends want to fight fireballs with fireballs, they’ll
+have to figure out how to cast something like a fireball for themselves.
+
+DECK BUILDING – Once you’ve got a collection of spells you like, strategically mix them 
+together into spellbooks to take on your opponents. Wizards with no appetite for this level 
+of self-study may apprentice themselves to another wizard, and be granted access to their 
+master’s spellbook so long as they maintain their apprenticeship. You may gain permanent 
+access to your master’s spellbook if they deem you worthy — and if not, you can always 
+challenge your master to a graduation battle.
+
+MAGICAL DUEL – Gather a friend — or a whole table of them — and settle it in person on a 
+hex grid. Magic, once cast, takes a few seconds to gather energy before launching to its 
+destination, creating a dynamic duel where wizards dodge and weave out of the way of each 
+other’s spells. Predicting your opponent, or using magic and summons to pin them in place, 
+is the key to victory.
 
 > **Status: pre-release, in active development.** Nothing has shipped yet; the circuits,
 > wire protocol, and CA ruleset are still allowed to break. See [Project status](#project-status).
