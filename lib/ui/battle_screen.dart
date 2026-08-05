@@ -25,7 +25,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui show Image;
 
 import 'package:cryptography/cryptography.dart' show Sha256;
-import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
@@ -72,7 +72,14 @@ import 'scenery/scenery_painter.dart';
 import 'battlefield_painter.dart';
 import 'manuscript_theme.dart';
 import 'spell_card_painter.dart';
-import '../sorcerer/vocal_slot.dart';
+import 'dart:async';
+import 'package:record/record.dart';
+import '../sorcerer/mfcc.dart';
+import 'widgets/hold_to_record_control.dart';
+import '../sorcerer/incantation_recall.dart';
+import '../sorcerer/incantation_recall_scorer.dart';
+import '../sorcerer/vocal_enrollment.dart';
+import '../sorcerer/vocal_template_source.dart';
 
 // ── Sightings capture (docs/SIGHTINGS_PLAN.md) ──────────────────────────────
 //
@@ -749,7 +756,20 @@ class _BattleScreenState extends State<BattleScreen>
   // ── Sorcerer mode ──────────────────────────────────────────────────────────
   VocalScorer? _vocalScorer;
   bool _isCapturingVoice = false;
-  VocalSlot? _capturingWord;
+
+  /// Decides which slot was spoken at each position of a held incantation.
+  IncantationRecallScorer? _recallScorer;
+
+  /// Mic capture for one held cast. The window is press-delimited, matching
+  /// enrollment exactly — hold_to_record_control.dart's header requires it:
+  /// if enrollment is press-delimited but live capture is not, templates are
+  /// cut differently from live queries and every DTW distance is skewed.
+  AudioRecorder? _castRecorder;
+  StreamSubscription<Uint8List>? _castSub;
+  BytesBuilder? _castPcm;
+
+  /// What the caster just recited, waiting to be attached to the cast.
+  IncantationRecall? _pendingRecall;
 
   @override
   void initState() {
@@ -1026,6 +1046,94 @@ class _BattleScreenState extends State<BattleScreen>
   /// venues that are loud by design. Recall asks WHICH word, not how loudly.
   Future<void> _initSorcererMode() async {
     _vocalScorer = VocalScorerFactory.create();
+    final enrollment = await VocalEnrollment.open();
+    final scorer = IncantationRecallScorer(
+      templateSource: PerUserEnrolledTemplateSource(enrollment: enrollment),
+    );
+    await scorer.load();
+    if (!mounted) return;
+    setState(() => _recallScorer = scorer);
+  }
+
+  /// How many element words this spell's incantation asks for — its complete
+  /// triplets, matching PracticeFormula.fromSpellFormula and the engine's
+  /// expected recital. Residual activations resolve to no effect, so they are
+  /// neither drilled nor recited nor priced.
+  int _expectedElementCount(SpellAsset spell) =>
+      (spell.formula.length ~/ 3) * 3;
+
+  /// Opens the mic when the caster presses and holds CAST.
+  Future<void> _onCastHoldStart() async {
+    if (!widget.state.config.sorcererMode) return;
+    if (_castRecorder != null) return;
+    final recorder = AudioRecorder();
+    try {
+      if (!await recorder.hasPermission()) {
+        recorder.dispose();
+        return;
+      }
+      final pcm = BytesBuilder();
+      final stream = await recorder.startStream(const RecordConfig(
+        encoder: AudioEncoder.pcm16bits,
+        numChannels: 1,
+        sampleRate: MfccExtractor.sampleRate,
+      ));
+      if (!mounted) {
+        await recorder.stop();
+        recorder.dispose();
+        return;
+      }
+      setState(() {
+        _castRecorder = recorder;
+        _castPcm = pcm;
+        _castSub = stream.listen(pcm.add, onError: (_) {});
+        _isCapturingVoice = true;
+      });
+    } catch (_) {
+      recorder.dispose();
+    }
+  }
+
+  /// Closes the capture window on release and decides what was said.
+  ///
+  /// [cancelled] discards the audio instead of scoring it — a press dragged
+  /// off the button was not a performed incantation, and scoring it would
+  /// charge mana for a recital the player never made.
+  Future<IncantationRecall?> _endCastCapture({bool cancelled = false}) async {
+    final recorder = _castRecorder;
+    final pcm = _castPcm;
+    if (recorder == null) return null;
+    await _castSub?.cancel();
+    try {
+      await recorder.stop();
+    } catch (_) {
+      // Already stopped; the buffered audio is still good.
+    }
+    recorder.dispose();
+    if (mounted) {
+      setState(() {
+        _castRecorder = null;
+        _castSub = null;
+        _castPcm = null;
+        _isCapturingVoice = false;
+      });
+    }
+    final spell = _selectedSpell;
+    final scorer = _recallScorer;
+    if (cancelled || pcm == null || spell == null || scorer == null) return null;
+    return scorer.score(
+      pcm.toBytes(),
+      expectedElements: _expectedElementCount(spell),
+    );
+  }
+
+  Future<void> _onCastHoldEnd() async {
+    _pendingRecall = await _endCastCapture();
+    await _onCast();
+  }
+
+  Future<void> _onCastHoldCancel() async {
+    await _endCastCapture(cancelled: true);
   }
 
   @override
@@ -1639,11 +1747,11 @@ class _BattleScreenState extends State<BattleScreen>
     final isVelocity = _selectedEnhancement == 'air';
     final isEfficiency = _selectedEnhancement == 'water';
 
-    // TODO(recall): sequential hold-to-cast capture lands here — the caster
-    // holds the CAST button, chants OPENER + the trajectory, and release ends
-    // the window (VOCAL_RECALL_PLAN.md §8.1, hold_to_record_control.dart).
-    // Until then a sorcerer cast carries no recall, which prices it at the
-    // honest base cost: no discount earned, no penalty charged.
+    // The recall was captured while the player held CAST (_onCastHoldEnd).
+    // Consumed here so it can never leak into a later cast: a stale recall
+    // would price one incantation against a different spell's trajectory.
+    final recall = _pendingRecall;
+    _pendingRecall = null;
     _commitAction(
       SpellCastAction(
         spell: spell,
@@ -1651,6 +1759,7 @@ class _BattleScreenState extends State<BattleScreen>
         isPotent: isPotent,
         isVelocity: isVelocity,
         isEfficiency: isEfficiency,
+        recall: recall,
         conveyorDirection: conveyorDirection,
         handIndex: _selectedHandIndex,
       ),
@@ -1705,13 +1814,15 @@ class _BattleScreenState extends State<BattleScreen>
       );
     }
 
-    // TODO(recall): see _onCast — the hold-to-cast capture lands here too.
+    final recall = _pendingRecall;
+    _pendingRecall = null;
     _commitAction(
       MysterySpellCastAction(
         spell: spell,
         mysteryCommitment: commitment,
         immediateTarget: isImmediate ? target : null,
         immediateNonce: isImmediate ? nonce : null,
+        recall: recall,
         handIndex: _selectedHandIndex,
       ),
     );
@@ -2910,13 +3021,15 @@ class _BattleScreenState extends State<BattleScreen>
           // than a banner that lingers for the rest of the turn.
 
           // Sorcerer mode: vocal capture indicator
-          if (_isCapturingVoice && _capturingWord != null)
+          if (_isCapturingVoice)
             Container(
               width: double.infinity,
               color: const Color(0xFF6B1F1F),
               padding: const EdgeInsets.symmetric(vertical: 8),
               child: Text(
-                'SPEAK NOW: ${_capturingWord!.name.toUpperCase()}',
+                // Deliberately no words: recalling them IS the exercise, and
+                // a sight-reading mode (at a mana premium) is a later pass.
+                'SPEAK THE INCANTATION',
                 textAlign: TextAlign.center,
                 style: manuscriptHeaderStyle(
                   fontSize: 16,
@@ -2952,6 +3065,10 @@ class _BattleScreenState extends State<BattleScreen>
             onDash: _onDash,
             onMeditateMain: _onMeditateMain,
             onCast: _onCast,
+            sorcererMode: widget.state.config.sorcererMode,
+            onCastHoldStart: _onCastHoldStart,
+            onCastHoldEnd: _onCastHoldEnd,
+            onCastHoldCancel: _onCastHoldCancel,
             onCancel: () => setState(() {
               _selectedSpell = null;
               _targetHex = null;
@@ -3397,6 +3514,10 @@ class _ActionBar extends StatelessWidget {
     required this.onDash,
     required this.onMeditateMain,
     required this.onCast,
+    this.sorcererMode = false,
+    this.onCastHoldStart,
+    this.onCastHoldEnd,
+    this.onCastHoldCancel,
     required this.onCancel,
     required this.onMeditateMove,
     required this.onConfirmMove,
@@ -3448,6 +3569,13 @@ class _ActionBar extends StatelessWidget {
   final VoidCallback onDash;
   final VoidCallback onMeditateMain;
   final VoidCallback onCast;
+
+  /// Sorcerer mode replaces the CAST tap with a press-and-hold that doubles as
+  /// the incantation's capture window (VOCAL_RECALL_PLAN.md §9.4).
+  final bool sorcererMode;
+  final VoidCallback? onCastHoldStart;
+  final VoidCallback? onCastHoldEnd;
+  final VoidCallback? onCastHoldCancel;
   final VoidCallback onCancel;
   final VoidCallback onMeditateMove;
   final VoidCallback onConfirmMove;
@@ -3731,12 +3859,27 @@ class _ActionBar extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          _ActionButton(
-            label: 'CAST',
-            color: kIlluminationGold,
-            enabled: selecting && hasTarget && !isBusy && affordable,
-            onTap: onCast,
-          ),
+          // Sorcerer mode casts by PRESS AND HOLD: the window opens on press,
+          // the caster chants OPENER + the trajectory, and release both ends
+          // the capture and commits the cast. Same control enrollment uses —
+          // hold_to_record_control.dart's header requires exactly one
+          // capture-window mechanism, because enrollment and live capture must
+          // segment identically or every DTW distance is skewed.
+          if (sorcererMode)
+            HoldToRecordButton(
+              label: 'CAST',
+              enabled: selecting && hasTarget && !isBusy && affordable,
+              onHoldStart: onCastHoldStart ?? () {},
+              onHoldEnd: onCastHoldEnd ?? () {},
+              onHoldCancel: onCastHoldCancel,
+            )
+          else
+            _ActionButton(
+              label: 'CAST',
+              color: kIlluminationGold,
+              enabled: selecting && hasTarget && !isBusy && affordable,
+              onTap: onCast,
+            ),
         ],
       ),
     );
