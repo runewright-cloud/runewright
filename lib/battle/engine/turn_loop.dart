@@ -1792,9 +1792,23 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
     final av = _localAvatar();
     final castingEnhancements = _castingEnhancementsFor(action);
+    // A missing recall is a BLANK, not an exemption — but only once the cast
+    // is actually being charged for. Two reasons it cannot stay null here:
+    //
+    //  1. The wire cannot represent "no vocal component" separately from
+    //     "nothing was heard" (_appendSorcererBytes encodes null as silent),
+    //     so the peer will score it as a blank. Pricing it as unscored on this
+    //     side is a state-hash divergence — which is exactly what
+    //     vocal_recall_parity_test caught.
+    //  2. It would be a self-reported opt-out: a player weak at recall could
+    //     suppress the capture and pay base price forever. That is the shape
+    //     §8.6 refuses when it rejects an ambiguity flag.
+    //
+    // previewSpellCost deliberately does NOT coalesce, because before the
+    // incantation is spoken the honest quote is the base price (§4).
     final recall = switch (action) {
-      SpellCastAction(:final recall) => recall,
-      MysterySpellCastAction(:final recall) => recall,
+      SpellCastAction(:final recall) => recall ?? IncantationRecall.silent,
+      MysterySpellCastAction(:final recall) => recall ?? IncantationRecall.silent,
       _ => null,
     };
 
@@ -6214,6 +6228,12 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     //
     // Exact integer arithmetic, rounded once — see incantation_recall.dart on
     // why no double may appear anywhere on this path.
+    //
+    // [recall] is never null here in sorcerer mode: the peer decodes it from
+    // the wire (silent at worst), and the caster's own commit path coalesces
+    // it — see _deductManaForCommittedSpell. Null reaches this only from
+    // previewSpellCost, which must quote the honest base price because no
+    // incantation has been spoken yet.
     if (isSorcererMode && recall != null) {
       cost = recall
           .tallyAgainst(
@@ -6359,6 +6379,10 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     // certified one. That is the same trust split every step here already
     // uses: this path prices the caster's own cast, and the certified path is
     // what the peer charges them.
+    //
+    // Null means "not spoken yet" here, and prices at base — that is
+    // previewSpellCost's path. The charging path never passes null; see
+    // _deductManaForCommittedSpell.
     if (isSorcererMode && recall != null) {
       cost = recall
           .tallyAgainst(

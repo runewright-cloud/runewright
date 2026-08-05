@@ -130,10 +130,12 @@ void main() {
 
     test('a perfect recital lands on the ratified -26.3%', () async {
       final a = setup();
+      // The honest base is the QUOTE, not a null-recall cast: at commit time a
+      // missing recall is coalesced to a blank (see
+      // TurnLoop._deductManaForCommittedSpell), so casting with null would
+      // measure the penalty, not the baseline.
+      final base = a.loop.previewSpellCost(spell());
       final clean = await manaSpent(a.loop, a.local, spell(), perfect);
-
-      final b = setup();
-      final base = await manaSpent(b.loop, b.local, spell(), null);
 
       expect(clean / base, closeTo(0.737, 0.02));
     });
@@ -175,6 +177,21 @@ void main() {
       expect(matched, lessThan(mismatched));
     });
 
+    // Pinned because it is a state-hash invariant, not a preference: the wire
+    // encodes a null recall as silent, so the caster must price it as a blank
+    // too or the two devices disagree (vocal_recall_parity_test).
+    test('a missing recall is charged as a blank, not waved through', () async {
+      final a = setup();
+      final quoted = a.loop.previewSpellCost(spell());
+      final spent = await manaSpent(a.loop, a.local, spell(), null);
+      expect(spent, greaterThan(quoted));
+
+      final b = setup();
+      final blank =
+          await manaSpent(b.loop, b.local, spell(), IncantationRecall.silent);
+      expect(spent, blank);
+    });
+
     test('wizard mode ignores the recall entirely', () async {
       final a = setup(sorcererMode: false);
       final withRecall = await manaSpent(a.loop, a.local, spell(), perfect);
@@ -191,10 +208,8 @@ void main() {
       // 5 activations = one complete triplet + 2 residuals.
       final s = spell(formula: const ['fire', 'air', 'water', 'earth', 'fire']);
       final a = setup();
+      final base = a.loop.previewSpellCost(s);
       final spent = await manaSpent(a.loop, a.local, s, perfect);
-
-      final b = setup();
-      final base = await manaSpent(b.loop, b.local, s, null);
 
       // Reciting only the 3 complete-triplet words still scores as perfect.
       expect(spent / base, closeTo(0.737, 0.02));
