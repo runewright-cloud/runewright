@@ -6,6 +6,7 @@
 // and spells fabricated by the Spell Test Lab (Tests). All five tabs hold
 // real, persisted data (docs/SIGHTINGS_PLAN.md).
 
+import 'dart:async' show unawaited;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -25,6 +26,8 @@ import '../spells/spell_art_import.dart';
 import '../spells/spell_art_io.dart';
 import '../spells/spell_art_store.dart';
 import '../spells/spell_asset.dart';
+import '../spells/spell_authorization.dart'
+    show localIdentityMayUse, usableGrantFor;
 import '../spells/spell_permission.dart';
 import '../spells/supreme_tags.dart' show deriveSupremeTags;
 import '../dev_flags.dart' show kShowDevSurfaces;
@@ -268,6 +271,45 @@ Future<bool> _blockedAsMastersChapter(
   return true;
 }
 
+// ── Uncastable spells stay out of chapters ──────────────────────────────────
+//
+// spell_authorization.dart documents localIdentityMayUse as "call this before
+// ChapterAsset.withEntry" — but nothing ever did, so a spell bound to another
+// wizard's Runekey could be added to a chapter, carried into a duel, and cast.
+// The peer then verifies the cast against the proof's owner_pubkey, finds no
+// grant, and forfeits the match (turn_loop.dart's cast-authorization step).
+// The player's only symptom was a dead duel and an accusation of casting a
+// spell they "didn't own" — for a spell sitting in their own library.
+//
+// Gating here makes the failure legible at the moment it is cheap to fix, and
+// keeps the doctrine the same as _blockedAsMastersChapter's: refuse with an
+// explanation rather than silently dropping the entry.
+
+/// True if [spell] may not be added to a chapter because this device's
+/// Runekey neither owns it nor holds a current grant for it. Shows the
+/// explanation as a side effect; callers must abort.
+Future<bool> _blockedAsUnownedSpell(
+  BuildContext context,
+  SpellAsset spell,
+) async {
+  final identity = await Identity.loadOrCreate();
+  if (await localIdentityMayUse(spell, identity)) return false;
+  if (context.mounted) {
+    final name = spell.name.isNotEmpty ? spell.name : 'That spell';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '"$name" is bound to another wizard\'s Runekey. Casting it in a '
+          'duel would end the match, so it cannot be added to a chapter '
+          'without a current loan or transfer grant.',
+        ),
+        duration: const Duration(seconds: 6),
+      ),
+    );
+  }
+  return true;
+}
+
 const _kArtifactLabel = {
   ArtifactKind.manaGem: 'Mana Gem',
   ArtifactKind.bookmark: 'Bookmark',
@@ -446,6 +488,68 @@ List<SpellAsset> _visible(List<SpellAsset> spells) => kShowDevSurfaces
     ? spells
     : spells.where((s) => !s.name.startsWith(kTestSpellNamePrefix)).toList();
 
+/// Craftings excludes loaned-in spells, which have their own tab.
+///
+/// [SpellAsset.gridWithheld] is set by exactly the loan paths (Trade's
+/// `perm.kind == loan` branch and the apprentice bundle) and by nothing else,
+/// so it identifies a loan without consulting the permission store. A
+/// TRANSFER is deliberately NOT filtered: it arrives with its grid intact and
+/// never appears in the Loans tab, so Craftings is the only place it exists —
+/// hiding it here would remove it from the app entirely. It carries the
+/// foreign-owner marker instead (see _SpellCard).
+List<SpellAsset> _craftingsOnly(List<SpellAsset> spells) =>
+    spells.where((s) => !s.gridWithheld).toList();
+
+/// How a spell in the Library relates to this device's Runekey — the three
+/// states a card has to tell apart, since only the first two can be cast.
+///
+///   own     — inscribed by this Runekey (or a shipped Basic). Castable.
+///   granted — inscribed by someone else, but a current loan/transfer grant
+///             covers it. Castable, and the peer will authorize it because
+///             the grant is transmitted at duel setup.
+///   foreign — inscribed by someone else with no current grant. Casting it
+///             ends the match: the peer verifies the proof's owner_pubkey,
+///             finds no grant, and forfeits. Reached by a library import, a
+///             lapsed loan, or a spell inscribed under a Runekey this device
+///             no longer holds.
+enum _SpellStanding { own, granted, foreign }
+
+/// [_SpellStanding] plus the grant backing it, for the expiry line.
+class _SpellOwnershipInfo {
+  const _SpellOwnershipInfo(this.standing, {this.grant});
+  final _SpellStanding standing;
+  final SpellPermission? grant;
+}
+
+/// Classifies every spell in [spells] for [myOwnerPubkeyHex].
+///
+/// Reads the same predicate the cast-time gate does (spell_authorization's
+/// [usableGrantFor]) rather than re-deriving "may I use this" in the UI —
+/// a Library that disagrees with the duel about what is castable is worse
+/// than one that says nothing.
+Future<Map<String, _SpellOwnershipInfo>> _classifyOwnership(
+  List<SpellAsset> spells,
+  String myOwnerPubkeyHex,
+) async {
+  final out = <String, _SpellOwnershipInfo>{};
+  for (final spell in spells) {
+    if (isBasicSpell(spell) ||
+        spell.ownerPubkeyHex.isEmpty ||
+        _fieldHexEqOrFalse(spell.ownerPubkeyHex, myOwnerPubkeyHex)) {
+      out[spell.id] = const _SpellOwnershipInfo(_SpellStanding.own);
+      continue;
+    }
+    final grant = await usableGrantFor(
+      spell: spell,
+      granteePubkeyHex: myOwnerPubkeyHex,
+    );
+    out[spell.id] = grant == null
+        ? const _SpellOwnershipInfo(_SpellStanding.foreign)
+        : _SpellOwnershipInfo(_SpellStanding.granted, grant: grant);
+  }
+  return out;
+}
+
 class _CraftingsTab extends StatefulWidget {
   const _CraftingsTab({
     super.key,
@@ -469,6 +573,15 @@ class _CraftingsTabState extends State<_CraftingsTab>
   String? _wizardName;
   Uint8List? _creatorKeyBytes;
 
+  /// This device's own owner_pubkey — passed to every card so it can tell a
+  /// spell this Runekey inscribed from one it merely holds a copy of.
+  String? _myOwnerPubkeyHex;
+
+  /// spell.id -> how that spell relates to this Runekey. Empty until both the
+  /// spell list and the identity have loaded; a card with no entry makes no
+  /// ownership claim at all rather than guessing.
+  Map<String, _SpellOwnershipInfo> _ownership = const {};
+
   @override
   void initState() {
     super.initState();
@@ -485,7 +598,7 @@ class _CraftingsTabState extends State<_CraftingsTab>
     for (final s in all) {
       if (s.segmentCount < 0) await s.delete();
     }
-    return _visible(await SpellAsset.loadAll());
+    return _craftingsOnly(_visible(await SpellAsset.loadAll()));
   }
 
   Future<void> _loadIdentity() async {
@@ -496,12 +609,31 @@ class _CraftingsTabState extends State<_CraftingsTab>
     setState(() {
       _wizardName = name;
       _creatorKeyBytes = fieldHexToLeBytes(pubkeyHex, 32);
+      _myOwnerPubkeyHex = pubkeyHex;
     });
+    await _refreshOwnership();
   }
 
-  void _reload() => setState(() {
-    _spellsFuture = SpellAsset.loadAll().then(_visible);
-  });
+  /// Recomputes [_ownership] for the currently listed spells. Called after the
+  /// identity resolves and after every reload — a grant can lapse between two
+  /// openings of this screen, and an expired loan must stop reading as
+  /// castable the moment it lapses, not at next app launch.
+  Future<void> _refreshOwnership() async {
+    final myOwnerHex = _myOwnerPubkeyHex;
+    if (myOwnerHex == null) return;
+    final spells = await _spellsFuture;
+    final ownership = await _classifyOwnership(spells, myOwnerHex);
+    if (!mounted) return;
+    setState(() => _ownership = ownership);
+  }
+
+  void _reload() {
+    setState(() {
+      _spellsFuture =
+          SpellAsset.loadAll().then(_visible).then(_craftingsOnly);
+    });
+    unawaited(_refreshOwnership());
+  }
 
   void _viewSpell(SpellAsset spell) {
     Navigator.push(
@@ -532,6 +664,9 @@ class _CraftingsTabState extends State<_CraftingsTab>
       return;
     }
     if (await _blockedAsMastersChapter(context, chapterId)) return;
+    if (!mounted) return;
+    if (await _blockedAsUnownedSpell(context, spell)) return;
+    if (!mounted) return;
 
     // Spells inscribed before supremeTags tracking was added have an empty
     // list. Derive and persist the tags now so subsequent adds are free.
@@ -647,6 +782,7 @@ class _CraftingsTabState extends State<_CraftingsTab>
                 kinSiblings: siblings,
                 wizardName: _wizardName,
                 creatorKeyBytes: _creatorKeyBytes,
+                ownership: _ownership[spell.id],
                 onView: () => _viewSpell(spell),
                 onDelete: () => _deleteSpell(spell),
                 onAddToChapter: () => _addToChapter(spell),
@@ -733,6 +869,14 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
   /// one chapter load, one save, skipping any whose grid commitment is
   /// already present (matching Craftings' per-spell dedup rule). Passing a
   /// one-element list is how the per-card "add" button reuses this.
+  ///
+  /// Deliberately NOT gated by [_blockedAsUnownedSpell], unlike the Craftings
+  /// and Loans adds: lab spells carry a zero owner_pubkey and no proof by
+  /// construction, so the gate would reject all of them and there would be no
+  /// way to get one into a chapter for solo testing — which is the entire
+  /// purpose of this dev-flag surface. They are already unusable in a real
+  /// duel (see this tab's header comment), and kShowDevSurfaces keeps them
+  /// away from players.
   Future<void> _addAllToChapter(List<SpellAsset> spells) async {
     final chapterId = widget.selectedChapterId;
     if (chapterId == null) {
@@ -880,6 +1024,7 @@ class _SpellCard extends StatelessWidget {
     required this.onPractice,
     this.wizardName,
     this.creatorKeyBytes,
+    this.ownership,
   });
 
   final SpellAsset spell;
@@ -894,6 +1039,11 @@ class _SpellCard extends StatelessWidget {
   final String? wizardName;
   final Uint8List? creatorKeyBytes;
 
+  /// How this spell relates to the local Runekey, or null while the identity
+  /// and grants are still loading — in which case the card makes no ownership
+  /// claim at all rather than guessing at one.
+  final _SpellOwnershipInfo? ownership;
+
   bool get _isKin => kinSiblings > 1;
 
   /// Whether this spell has an incantation worth drilling. A trajectory that
@@ -907,6 +1057,49 @@ class _SpellCard extends StatelessWidget {
   /// player's — the creator sigil (below) would otherwise falsely imply the
   /// player inscribed it, so it's suppressed and replaced with a plain label.
   bool get _isBasic => isBasicSpell(spell);
+
+  /// True when this spell's proof is bound to somebody ELSE's Runekey.
+  ///
+  /// Craftings lists every persisted spell, and several paths put a foreign
+  /// one there: a library-backup import, a Commune/Trade transfer (grid
+  /// included, so it never shows in the Loans tab either), a loan, or a spell
+  /// inscribed under a Runekey this device no longer holds. `owner_pubkey` is
+  /// a proof public input and cannot be re-bound afterwards, so in a duel the
+  /// peer rejects the cast and forfeits the match — which is exactly the
+  /// desync this marker exists to pre-empt. They are marked rather than
+  /// hidden: a loan or a transfer is a spell the player legitimately has and
+  /// may still be able to cast under a grant; what they must not do is
+  /// mistake it for their own work.
+  /// True when this spell was inscribed by another Runekey — whether or not a
+  /// grant makes it castable. Both cases hide the local wizard's sigil, which
+  /// is the lie that made an unusable spell indistinguishable from an owned
+  /// one right up until it forfeited a LAN match.
+  bool get _isAnotherWizards =>
+      ownership != null && ownership!.standing != _SpellStanding.own;
+
+  /// Castable-but-not-yours: a current loan or transfer grant covers it, and
+  /// that grant is transmitted at duel setup, so the peer authorizes the cast.
+  bool get _isGranted => ownership?.standing == _SpellStanding.granted;
+
+  /// The expiry line for a granted spell. Null for a transfer, which is
+  /// perpetual by construction (SpellPermission asserts expiresAt == null).
+  String? get _grantExpiryLabel {
+    final expiresAt = ownership?.grant?.expiresAt;
+    if (expiresAt == null) return null;
+    final remaining = expiresAt.difference(DateTime.now().toUtc());
+    if (remaining.inDays <= 0) return 'expires today';
+    return '${remaining.inDays}d remaining';
+  }
+
+  /// The inscriber's sigil bytes, or null if this spell's owner hex is
+  /// unparseable — a corrupt asset must not throw out of [build].
+  Uint8List? get _ownerSigilBytes {
+    try {
+      return fieldHexToLeBytes(spell.ownerPubkeyHex, 32);
+    } on FormatException {
+      return null;
+    }
+  }
 
   String get _displayName =>
       spell.name.isNotEmpty ? spell.name : 'Unnamed Spell';
@@ -1084,6 +1277,47 @@ class _SpellCard extends StatelessWidget {
                             style: manuscriptCaptionStyle(
                               color: kInkColor.withValues(alpha: 0.6),
                             ).copyWith(fontStyle: FontStyle.normal),
+                          ),
+                        ],
+                      ),
+                    ] else if (_isAnotherWizards) ...[
+                      // The inscriber's OWN sigil, derived from the spell's
+                      // owner_pubkey — not this device's. Passing the local
+                      // key here (as every card used to) drew the player's
+                      // coat of arms on somebody else's spell, which is what
+                      // made an unusable spell indistinguishable from an
+                      // owned one right up until it forfeited a LAN match.
+                      //
+                      // Granted and ungranted are deliberately different
+                      // colours as well as different words: gold reads as
+                      // "provenance", rubric red as "this will end a duel".
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          if (_ownerSigilBytes != null) ...[
+                            SigilWidget(
+                              keyBytes: _ownerSigilBytes!,
+                              size: 36,
+                              saturation: 2.5,
+                            ),
+                            const SizedBox(width: 6),
+                          ],
+                          Expanded(
+                            child: Text(
+                              _isGranted
+                                  ? [
+                                      'Another wizard’s spell — yours to cast',
+                                      ?_grantExpiryLabel,
+                                    ].join(' · ')
+                                  : 'Another wizard’s spell — not bound to '
+                                      'your Runekey. Casting it would end the '
+                                      'duel.',
+                              style: manuscriptCaptionStyle(
+                                color: _isGranted
+                                    ? kIlluminationGold.withValues(alpha: 0.85)
+                                    : kRubricRed.withValues(alpha: 0.85),
+                              ).copyWith(fontStyle: FontStyle.normal),
+                            ),
                           ),
                         ],
                       ),
@@ -2393,7 +2627,22 @@ class _LoanEntry {
   final bool fromMaster;
 }
 
-bool _loanHexEq(String a, String b) {
+/// Field-hex equality (parse-then-compare, so "0x0a" == "0A" == "10" in
+/// decimal terms never bites). Used for every owner/grantee pubkey comparison
+/// in this file — spell ownership on the cards, loan grantees below.
+/// [_fieldHexEq], but a malformed hex answers "not equal" instead of throwing.
+/// Spell assets arrive by import and backup, so an unparseable owner field is
+/// a real possibility, and it must never crash a list build — nor be treated
+/// as a match, which would stamp the player's arms on an unreadable spell.
+bool _fieldHexEqOrFalse(String a, String b) {
+  try {
+    return _fieldHexEq(a, b);
+  } on FormatException {
+    return false;
+  }
+}
+
+bool _fieldHexEq(String a, String b) {
   BigInt parse(String s) => BigInt.parse(s.startsWith('0x') ? s.substring(2) : s, radix: 16);
   return parse(a) == parse(b);
 }
@@ -2430,7 +2679,7 @@ class _LoansTabState extends State<_LoansTab> with AutomaticKeepAliveClientMixin
       final perms = await SpellPermission.loadForCommitment(spell.commitmentHex);
       for (final perm in perms) {
         if (perm.kind != SpellGrantKind.loan) continue;
-        if (!_loanHexEq(perm.granteePubkeyHex, myPubkeyHex)) continue;
+        if (!_fieldHexEq(perm.granteePubkeyHex, myPubkeyHex)) continue;
         if (!await perm.isCurrentlyUsable()) continue;
         entries.add(_LoanEntry(
           spell: spell,
@@ -2465,6 +2714,11 @@ class _LoansTabState extends State<_LoansTab> with AutomaticKeepAliveClientMixin
       return;
     }
     if (await _blockedAsMastersChapter(context, chapterId)) return;
+    if (!mounted) return;
+    // A loan is the case this gate is *meant* to let through — but only while
+    // the grant is current. An expired one stops here rather than in a duel.
+    if (await _blockedAsUnownedSpell(context, spell)) return;
+    if (!mounted) return;
     final chapter = await ChapterAsset.loadById(chapterId);
     if (chapter == null || !mounted) return;
     if (chapter.entries.any((e) => e.spellId == spell.id)) {

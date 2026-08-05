@@ -51,13 +51,41 @@ Future<bool> localIdentityMayUse(SpellAsset spell, Identity identity, {DateTime?
   if (isBasicSpell(spell)) return true;
   final myPubkeyHex = await identity.ownerPubkeyHex();
   if (_hexEq(spell.ownerPubkeyHex, myPubkeyHex)) return true;
+  return await usableGrantFor(
+        spell: spell,
+        granteePubkeyHex: myPubkeyHex,
+        now: now,
+      ) !=
+      null;
+}
+
+/// The locally stored grant that lets [granteePubkeyHex] use [spell], or null
+/// if there isn't one. The permission branch of [localIdentityMayUse],
+/// factored out so callers that need to *explain* the authorization — the
+/// Library's per-spell marker, which distinguishes "loaned to you, 4 days
+/// left" from "you cannot cast this" — read the same predicate the gate does
+/// instead of reimplementing it and drifting.
+///
+/// Takes the grantee's `owner_pubkey` hex rather than an [Identity] so a
+/// caller checking a whole library pays for the Poseidon2 derivation once, not
+/// once per spell.
+///
+/// Same trust model as [localIdentityMayUse]: signatures were verified when
+/// the grant was received and saved, expiry is re-checked live against [now].
+Future<SpellPermission?> usableGrantFor({
+  required SpellAsset spell,
+  required String granteePubkeyHex,
+  DateTime? now,
+}) async {
   final perms = await SpellPermission.loadForCommitment(spell.commitmentHex);
-  return perms.any(
-    (p) =>
-        _hexEq(p.granteePubkeyHex, myPubkeyHex) &&
+  for (final p in perms) {
+    if (_hexEq(p.granteePubkeyHex, granteePubkeyHex) &&
         _hexEq(p.ownerPubkeyHex, spell.ownerPubkeyHex) &&
-        !p.isExpired(now: now),
-  );
+        !p.isExpired(now: now)) {
+      return p;
+    }
+  }
+  return null;
 }
 
 /// Returns true if the player identified by [castingPlayerPubkeyHex] (their

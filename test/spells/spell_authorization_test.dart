@@ -175,6 +175,139 @@ void main() {
     expect(await localIdentityMayUse(spell, stranger), isTrue);
   });
 
+  // ── usableGrantFor — the same predicate, with the grant it matched ─────────
+  //
+  // The Library's per-spell marker needs to distinguish "loaned to you, 4 days
+  // left" from "you cannot cast this", which the boolean gate can't express.
+  // These pin that it stays the SAME predicate: a Library that disagrees with
+  // the duel about what is castable is worse than one that says nothing.
+
+  group('usableGrantFor', () {
+    test('returns null for a stranger with no grant', () async {
+      final owner = await Identity.ephemeral();
+      final stranger = await Identity.ephemeral();
+      final spell = await ownedSpell(owner);
+      expect(
+        await usableGrantFor(
+          spell: spell,
+          granteePubkeyHex: await stranger.ownerPubkeyHex(),
+        ),
+        isNull,
+      );
+    });
+
+    test('returns the loan grant, with its expiry, while it is current',
+        () async {
+      final owner = await Identity.ephemeral();
+      final grantee = await Identity.ephemeral();
+      final spell = await ownedSpell(owner);
+      final granteePubkeyHex = await grantee.ownerPubkeyHex();
+      final expiresAt = DateTime.utc(2026, 7, 20);
+
+      final perm = await SpellPermission.createAndSign(
+        spell: spell,
+        ownerIdentity: owner,
+        granteePubkeyHex: granteePubkeyHex,
+        kind: SpellGrantKind.loan,
+        expiresAt: expiresAt,
+      );
+      await perm.save();
+
+      final found = await usableGrantFor(
+        spell: spell,
+        granteePubkeyHex: granteePubkeyHex,
+        now: expiresAt.subtract(const Duration(days: 4)),
+      );
+      expect(found, isNotNull);
+      expect(found!.kind, SpellGrantKind.loan);
+      expect(found.expiresAt, expiresAt);
+    });
+
+    test('returns null once the loan lapses — the marker must flip to '
+        'uncastable the moment it expires, not at next launch', () async {
+      final owner = await Identity.ephemeral();
+      final grantee = await Identity.ephemeral();
+      final spell = await ownedSpell(owner);
+      final granteePubkeyHex = await grantee.ownerPubkeyHex();
+      final expiresAt = DateTime.utc(2026, 7, 20);
+
+      final perm = await SpellPermission.createAndSign(
+        spell: spell,
+        ownerIdentity: owner,
+        granteePubkeyHex: granteePubkeyHex,
+        kind: SpellGrantKind.loan,
+        expiresAt: expiresAt,
+      );
+      await perm.save();
+
+      expect(
+        await usableGrantFor(
+          spell: spell,
+          granteePubkeyHex: granteePubkeyHex,
+          now: expiresAt,
+        ),
+        isNull,
+      );
+    });
+
+    test('a transfer grant is perpetual and carries no expiry label', () async {
+      final owner = await Identity.ephemeral();
+      final grantee = await Identity.ephemeral();
+      final spell = await ownedSpell(owner);
+      final granteePubkeyHex = await grantee.ownerPubkeyHex();
+
+      final perm = await SpellPermission.createAndSign(
+        spell: spell,
+        ownerIdentity: owner,
+        granteePubkeyHex: granteePubkeyHex,
+        kind: SpellGrantKind.transfer,
+      );
+      await perm.save();
+
+      final found = await usableGrantFor(
+        spell: spell,
+        granteePubkeyHex: granteePubkeyHex,
+        now: DateTime.utc(2099),
+      );
+      expect(found, isNotNull);
+      expect(found!.kind, SpellGrantKind.transfer);
+      expect(found.expiresAt, isNull);
+    });
+
+    test('agrees with localIdentityMayUse on every case above', () async {
+      final owner = await Identity.ephemeral();
+      final grantee = await Identity.ephemeral();
+      final spell = await ownedSpell(owner);
+      final granteePubkeyHex = await grantee.ownerPubkeyHex();
+      final expiresAt = DateTime.utc(2026, 7, 20);
+
+      final perm = await SpellPermission.createAndSign(
+        spell: spell,
+        ownerIdentity: owner,
+        granteePubkeyHex: granteePubkeyHex,
+        kind: SpellGrantKind.loan,
+        expiresAt: expiresAt,
+      );
+      await perm.save();
+
+      for (final now in [
+        expiresAt.subtract(const Duration(days: 1)),
+        expiresAt,
+      ]) {
+        expect(
+          await usableGrantFor(
+                spell: spell,
+                granteePubkeyHex: granteePubkeyHex,
+                now: now,
+              ) !=
+              null,
+          await localIdentityMayUse(spell, grantee, now: now),
+          reason: 'the marker and the gate must never disagree (now=$now)',
+        );
+      }
+    });
+  });
+
   // ── castingPlayerMayUse — the battle cast-authorization gate ────────────────
   //
   // Same authorization rule as localIdentityMayUse, but driven by proof-derived

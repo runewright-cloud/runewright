@@ -182,6 +182,21 @@ abstract class BattleTurnSession {
   Future<Uint8List> refreshEntropy(String reason);
 
   void sendForfeit(String reason);
+
+  /// Completes with the peer's forfeit reason the moment they send a
+  /// [BattleMsgType.forfeit] frame — the receive side of [sendForfeit].
+  ///
+  /// Every forfeit condition in the engine is one-sided by construction: the
+  /// device that detects it throws out of `runTurn` and stops, while the peer
+  /// (which sees nothing wrong) sits waiting for the next frame of whatever
+  /// exchange came next. Until this existed the forfeit frame was written and
+  /// never read by anything, so that peer simply hung — the "desync" a real
+  /// LAN test shows as one dead device and one live one.
+  ///
+  /// Default: a future that never completes, for the implementations with no
+  /// peer to hear from (solo/practice, test doubles). Only [BattleSession]
+  /// overrides it.
+  Future<String> get peerForfeit => Completer<String>().future;
 }
 
 // ── Network session ───────────────────────────────────────────────────────────
@@ -196,6 +211,18 @@ class BattleSession implements BattleTurnSession {
   final Uint8List matchId;
   late final BattleFrameReader _reader;
   late final StreamSubscription<List<int>> _sub;
+
+  /// See [BattleTurnSession.peerForfeit]. Safe to register lazily (on first
+  /// read) even though a forfeit can arrive at any moment — including during
+  /// the handshake, long before the battle screen subscribes:
+  /// [BattleFrameReader.framesOfType] is queue-backed, so a frame that
+  /// arrives with no listener yet is held in `_pendingByType` and handed to
+  /// this listener when it registers, rather than dropped the way a bare
+  /// broadcast `.where()` would.
+  @override
+  late final Future<String> peerForfeit = framesOfType(BattleMsgType.forfeit)
+      .first
+      .then((frame) => utf8.decode(frame.payload));
 
   /// All incoming battle frames, broadcast. Only used directly by
   /// [exchangeMatchConfig]'s ack/reject dual-type wait — everything else

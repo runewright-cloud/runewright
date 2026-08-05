@@ -278,4 +278,7 @@ class _TamperingSession implements BattleTurnSession {
 
   @override
   void sendForfeit(String reason) => _inner.sendForfeit(reason);
+
+  @override
+  Future<String> get peerForfeit => _inner.peerForfeit;
 }

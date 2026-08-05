@@ -4290,3 +4290,87 @@ covers both rules end-to-end through the real commit-reveal pipeline; the painte
 is in `test/ui/wizard_movement_animation_test.dart`), `flutter build linux` clean. **Not yet
 hardware-verified** — per the verification hierarchy that means it is not done. The Spell Test
 Lab is the path: summon a melee creature next to something and watch it lunge.
+
+## 2026-08-05 — "A spell they neither own nor hold a grant for", for a spell in your own library
+
+A LAN test died mid-duel on the Linux side with:
+
+```
+peer cast a spell they neither own nor hold a grant for
+(owner=0x2bc53f13…eba22, caster=0x2c8503…49a8) — match forfeit
+```
+
+The spell ("Airblast") was sitting in the Pixel's **Craftings** tab wearing the player's own
+coat of arms, which is why the message read as impossible.
+
+### The diagnosis
+
+`owner=0x2bc53f13…` is byte-identical to the `ownerPubkeyHex` in `assets/basic_spells/*.json`
+— i.e. the Runekey of the machine that ran `scripts/export_basic_spells.dart`, the Linux dev
+box, which was also the device *rejecting* the cast. Airblast was inscribed on Linux and
+reached the Pixel by library import. `owner_pubkey` is a proof public input, so it cannot be
+re-bound; the rejection was correct.
+
+**Craftings is `SpellAsset.loadAll()` with one filter, for the `[TEST]` prefix.** It has no
+owner filter, so imports, Commune/Trade transfers (grid included → they never appear under
+Loans either), loans, and the five shipped Basics all list there. Worse, `_CraftingsTabState`
+loaded the *local* wizard name and sigil once and handed them to every card: a foreign spell
+was drawn with your arms on it. Nothing in the UI could tell you the spell was unusable until
+a peer forfeited a match over it.
+
+### Four fixes (all in this change)
+
+1. **`BattleMsgType.forfeit` (0x40) was send-only** — `sendForfeit` wrote it and *nothing in
+   the tree ever read it*. Every forfeit condition is one-sided by construction, so the peer
+   sat waiting on an exchange the other device had abandoned: one dead device, one live one.
+   That is the "desync". Added `BattleTurnSession.peerForfeit`, a future completed by the
+   incoming frame, subscribed once in `BattleScreen.initState`, rendering the existing
+   `_blockingError` with a plain-English gloss per forfeit tag. Safe to subscribe late —
+   `BattleFrameReader.framesOfType` is queue-backed. Covered by
+   `test/battle/networking/peer_forfeit_test.dart`, including the arrives-before-anyone-listens
+   ordering. `TurnSessionPair` now routes forfeits between its two sides too.
+2. **Craftings tells the truth about ownership** — three states, not two, because "not yours"
+   and "not castable" are different facts:
+   - *own* — inscribed by this Runekey, or a shipped Basic. Keeps the local sigil.
+   - *granted* — another wizard's inscription, covered by a current loan/transfer grant that
+     duel setup transmits. Shows **the inscriber's** sigil in gold, plus the expiry
+     (`"Another wizard's spell — yours to cast · 4d remaining"`).
+   - *foreign* — another wizard's inscription with no current grant. Same sigil in rubric red,
+     `"Casting it would end the duel."` This is the state Airblast was in.
+
+   The classifier (`_classifyOwnership`) calls `usableGrantFor`, a new function factored out of
+   `localIdentityMayUse`'s permission branch, so **the marker and the cast-time gate are the
+   same predicate** — a Library that disagrees with the duel about what is castable would be
+   worse than one that says nothing. It takes the grantee hex rather than an `Identity` so
+   classifying a whole library costs one Poseidon2 derivation, not one per spell.
+
+   Loans are additionally **filtered out** of Craftings (`_craftingsOnly` drops
+   `gridWithheld`, which exactly identifies the loan paths) — they have their own tab.
+   Transfers and imports are NOT filtered: a transfer arrives with its grid intact and never
+   appears under Loans, so Craftings is the only place it exists. It carries the marker.
+3. **`localIdentityMayUse` had zero production callers** — documented as "call this before
+   `ChapterAsset.withEntry`" and never called, so an uncastable spell could reach a duel. Now
+   gates the Craftings and Loans adds (`_blockedAsUnownedSpell`). Deliberately *not* gating the
+   Spell Test Lab's batch add: lab spells carry a zero `owner_pubkey` by construction and the
+   gate would reject all of them.
+4. **`DEBUG: Reset Identity` fired on one tap with no confirmation** — it clears the Runekey
+   but not `<app documents>/spells/`, silently orphaning every spell inscribed under the old
+   key. Now confirms, and counts how many spells are about to be orphaned.
+
+### Coverage
+
+1262 tests green, including five new `usableGrantFor` cases in
+`test/spells/spell_authorization_test.dart` — one of which asserts directly that the marker's
+predicate and `localIdentityMayUse` never disagree, across the loan-expiry boundary.
+`test/ui/about_screen_test.dart` fails on an assertion that the real
+README.md contains "zero-knowledge proof" — the phrase is no longer in the README. Pre-existing,
+unrelated, not fixed here.
+
+### Still open
+
+- Two-device re-run to confirm the forfeit now ends both sides cleanly. Per the verification
+  hierarchy this is not done until that happens.
+- `duel_setup.dart`'s grant filter mixes comparison styles on one line:
+  `_hexEq(p.granteePubkeyHex, myOwnerHex) && localCommitments.contains(p.commitmentHex)`. The
+  second is an exact string match; any case/padding difference silently drops a legitimate
+  grant and produces this same forfeit. Not the cause here, not changed, worth normalising.

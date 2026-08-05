@@ -358,6 +358,14 @@ class _BattleScreenState extends State<BattleScreen>
   // recoverable and stays a snackbar.
   String? _turnError;
 
+  // Set when the PEER forfeits (BattleSession.peerForfeit). The mirror image
+  // of [_turnError]: there, this device caught the violation and stopped; here
+  // the other device caught one and stopped, and without this we would keep
+  // waiting for frames that are never coming. Kept separate from [_turnError]
+  // so the message can say whose device ended the match — "you cheated" and
+  // "they think you cheated" are very different things to read at 2am.
+  String? _peerForfeitReason;
+
   // Cast animation — glowing orb(s) for the spell(s) resolved on the most
   // recent turn. Fixed for one playback of _castAnimController; replaced
   // (and the controller restarted) each time a new turn resolves with casts.
@@ -809,6 +817,24 @@ class _BattleScreenState extends State<BattleScreen>
       _initSorcererMode();
     }
     _initTurnLoop();
+    _listenForPeerForfeit();
+  }
+
+  /// Ends the match on THIS device when the peer's device forfeits.
+  ///
+  /// Subscribed once, for the whole match, and never awaited by the turn
+  /// sequence — a forfeit arrives asynchronously, typically while we are
+  /// blocked on an exchange the peer has already abandoned. Solo/practice
+  /// sessions expose a future that never completes, so this is a no-op there.
+  void _listenForPeerForfeit() {
+    final session = widget.session;
+    if (session == null) return;
+    unawaited(
+      session.peerForfeit.then((reason) {
+        if (!mounted) return;
+        setState(() => _peerForfeitReason = reason);
+      }),
+    );
   }
 
   /// Picks this battle's backdrop seed and kicks off the atlas decode.
@@ -2652,6 +2678,63 @@ class _BattleScreenState extends State<BattleScreen>
 
   // ── Build ───────────────────────────────────────────────────────────────────
 
+  /// Plain-English gloss for a peer forfeit tag (the strings passed to
+  /// `BattleTurnSession.sendForfeit`). The raw tag is always shown alongside
+  /// this — it is what makes a bug report actionable — but the tags read as
+  /// accusations of cheating, and during development the overwhelmingly more
+  /// likely cause is a mismatch between two builds or two libraries.
+  String _forfeitExplanation(String reason) {
+    final tag = reason.split(':').first;
+    switch (tag) {
+      case 'unauthorized_spell':
+        return 'They saw a spell cast from this device that is not bound to '
+            'your Runekey — most often a spell that reached your library by '
+            'import or trade, which stays bound to the wizard who inscribed '
+            'it. Check the Library: spells not bound to your key are marked.';
+      case 'invalid_spell_proof':
+      case 'missing_spell_proof':
+        return "A spell cast from this device carried no valid proof for their "
+            'device to verify.';
+      case 'duplicate_spell_cast':
+        return 'They saw the same spell cast twice in one match.';
+      case 'book_membership_failed':
+      case 'cast_out_of_hand':
+        return 'They saw a spell cast that was not in this device’s committed '
+            'chapter, or not in the hand dealt from it.';
+      case 'unbacked_enhancement_claim':
+        return 'They saw a cast-time enhancement claimed that this spell’s '
+            'certified dominance data does not support.';
+      case 'state_hash_mismatch':
+        return 'The two devices computed different battlefields for the same '
+            'turn. Usually a version mismatch — check both are running the '
+            'same build.';
+      case 'battle_protocol_mismatch':
+        return 'The two devices are running incompatible battle protocol '
+            'versions. Update both to the same build.';
+      case 'bad_state_signature':
+      case 'missing_state_signature':
+      case 'auth_failed':
+      case 'auth_self':
+      case 'auth_malformed_response':
+        return 'Identity authentication between the two devices failed.';
+      case 'withheld_reveal':
+      case 'withheld_forced_reveal':
+      case 'withheld_refresh_reveal':
+        return 'Their device stopped waiting for a commit-reveal step from '
+            'this one. Usually a dropped connection rather than foul play.';
+      case 'malformed_reveal':
+      case 'malformed_forced_reveal':
+      case 'bad_spell_reveal':
+      case 'bad_scry_opening':
+      case 'forced_reveal_slot_mismatch':
+      case 'commitment_mismatch':
+        return 'A commit-reveal step from this device did not match what was '
+            'committed to earlier in the turn.';
+      default:
+        return 'Their device found something it could not verify and stopped.';
+    }
+  }
+
   /// Full-screen, non-dismissable failure state — the only thing this screen
   /// renders once a duel is unsafe to play (verifier init failed, or lockstep
   /// broke mid-turn). Deliberately a dead end with one way out: there is no
@@ -2700,6 +2783,17 @@ class _BattleScreenState extends State<BattleScreen>
       return _blockingError(
         'This duel broke lockstep and cannot continue — the two devices no '
         'longer agree on the battlefield:\n\n$turnError',
+      );
+    }
+    // The peer's device stopped and told us why. Nothing is wrong with THIS
+    // device's state, but the match is over either way: they are no longer
+    // answering any exchange. Ranked below _turnError because when both fire,
+    // the local diagnosis is the more specific one.
+    final forfeit = _peerForfeitReason;
+    if (forfeit != null) {
+      return _blockingError(
+        "The other wizard's device ended this duel:\n\n"
+        '${_forfeitExplanation(forfeit)}\n\n($forfeit)',
       );
     }
     if (!_loopReady) {

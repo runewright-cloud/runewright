@@ -108,6 +108,12 @@ class TurnSessionPair {
   var _aForcedReveal = Completer<Uint8List>();
   var _bForcedReveal = Completer<Uint8List>();
 
+  /// Forfeit reasons, routed to the OTHER session's [PairedSession.peerForfeit].
+  /// Deliberately not cleared by [reset]: a forfeit ends the match, so unlike
+  /// every other slot here it is once per pair, not once per turn.
+  final _aForfeit = Completer<String>();
+  final _bForfeit = Completer<String>();
+
   void reset() {
     _aActionCommit = Completer();
     _bActionCommit = Completer();
@@ -407,6 +413,16 @@ class PairedSession implements BattleTurnSession {
 
   // ── Control ───────────────────────────────────────────────────────────────
 
+  /// Routed to the peer, unlike [SoloBattleSession]'s no-op: this fixture
+  /// stands in for two real clients, and the whole point of the forfeit frame
+  /// is that the OTHER device hears it.
   @override
-  void sendForfeit(String reason) {}
+  void sendForfeit(String reason) {
+    final target = isA ? _pair._bForfeit : _pair._aForfeit;
+    if (!target.isCompleted) target.complete(reason);
+  }
+
+  @override
+  Future<String> get peerForfeit =>
+      (isA ? _pair._aForfeit : _pair._bForfeit).future;
 }

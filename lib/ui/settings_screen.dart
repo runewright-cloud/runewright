@@ -28,6 +28,7 @@ import '../battle/models/wild_magic_effect.dart'
     show kDefaultCommunitySeed, normalizeCommunitySeed;
 import '../identity/identity.dart';
 import '../spells/library_backup_io.dart';
+import '../spells/spell_asset.dart';
 import 'avatars/avatar_picker_screen.dart';
 import 'avatars/avatar_sprites.dart';
 import 'about_screen.dart';
@@ -176,6 +177,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } finally {
       if (mounted) setState(() => _exportingLibrary = false);
     }
+  }
+
+  /// Confirms the identity reset, spelling out what it costs.
+  ///
+  /// This used to fire on a single tap with no confirmation, which made it a
+  /// live footgun on a real device: `Identity.deleteOnDevice` clears the
+  /// Runekey but not `<app documents>/spells/`, and a spell's `owner_pubkey`
+  /// is a proof public input that cannot be re-bound afterwards. Every spell
+  /// inscribed under the old key therefore survives the reset as an
+  /// uncastable orphan — it still lists in the Library, still shows a coat of
+  /// arms, and is only revealed as foreign when a duel peer rejects the cast
+  /// and forfeits the match. Counting the spells at risk here turns that from
+  /// a surprise into a decision.
+  Future<bool> _confirmResetIdentity() async {
+    final spells = await SpellAsset.loadAll();
+    final identity = await Identity.loadOrCreate();
+    final myOwnerHex = await identity.ownerPubkeyHex();
+    final orphaned =
+        spells.where((s) => _fieldHexEq(s.ownerPubkeyHex, myOwnerHex)).length;
+    if (!mounted) return false;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Reset this device\'s Runekey?'),
+        content: Text(
+          'This generates a brand new identity. It cannot be undone, and '
+          'without a Runekey backup the current one is gone for good.\n\n'
+          '${orphaned == 0 ? 'No spells' : orphaned == 1 ? '1 spell' : '$orphaned spells'} '
+          'in your library ${orphaned == 1 ? 'is' : 'are'} bound to the '
+          'current Runekey. ${orphaned == 1 ? 'It' : 'They'} will stay in '
+          'your library after the reset but can never be cast again, because '
+          "a spell's owner is sealed inside its proof.\n\n"
+          'Export your Runekey first if you might want it back.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Reset anyway'),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
   }
 
   /// Picks a library backup file and additively merges it in -- nothing
@@ -378,6 +427,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     leading: const Icon(Icons.warning_amber_outlined),
                     title: const Text('DEBUG: Reset Identity'),
                     onTap: () async {
+                      if (!await _confirmResetIdentity()) return;
                       await Identity.deleteOnDevice();
                       if (!context.mounted) return;
                       Navigator.of(context).pushAndRemoveUntil(
@@ -441,4 +491,12 @@ class _ThumbnailPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _ThumbnailPainter oldDelegate) =>
       oldDelegate.atlas != atlas || oldDelegate.rect != rect;
+}
+
+/// Field-hex equality — "0x0a" and "0A" are the same key. Only used by the
+/// reset-identity confirmation's orphan count.
+bool _fieldHexEq(String a, String b) {
+  BigInt parse(String s) =>
+      BigInt.parse(s.startsWith('0x') ? s.substring(2) : s, radix: 16);
+  return parse(a) == parse(b);
 }

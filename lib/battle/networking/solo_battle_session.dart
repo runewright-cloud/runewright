@@ -24,6 +24,7 @@
 // exchangeScryKey — see exchangeScryOpen below. Everything else about the
 // dummy (it never scries the local player) stays a constant [0x00].
 
+import 'dart:async' show Completer;
 import 'dart:convert' show utf8;
 import 'dart:typed_data';
 
@@ -412,4 +413,9 @@ class SoloBattleSession implements BattleTurnSession {
   void sendForfeit(String reason) {
     // no-op — no peer to forfeit to
   }
+
+  /// Never completes — the mirror of [sendForfeit]'s no-op. There is no peer
+  /// here, so no forfeit can ever arrive.
+  @override
+  final Future<String> peerForfeit = Completer<String>().future;
 }

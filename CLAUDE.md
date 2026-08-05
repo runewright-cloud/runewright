@@ -34,7 +34,7 @@ wireless. No server, no accounts, no central authority.
    (serialization, packing, commitment, public/private inputs, the reject-list). Some of
    it is marked `[CONFIRM vs stepper]`; reconciling those against the stepper is the
    first task (see below).
-4. **`runewright_design_v2_4.md`** — game design intent. Authoritative for *what the game
+4. **`runewright_design_v4_0.md`** — game design intent. Authoritative for *what the game
    is*, NOT for implementation specifics. Its `[DECISION — needs Soren]` and
    `[TODO — playtest]` flags are **open questions, not specs** — do not implement them;
    if one blocks you, stop and ask.
@@ -203,8 +203,8 @@ networking + mDNS discovery (M4), identity onboarding, library/spellbook UI, sor
 mode scaffolding, and the ink-substrate CA rework (`RULESET_VERSION 3`, current branch).
 The scope guard's *spirit* still holds — **don't expand feature scope without asking** —
 but don't refuse work on those systems because this file says they don't exist. The
-design doc lineage is now `runewright_design_v3_0.md` > `v2_4`; the circuit contract is
-`CIRCUIT_IO.md` as amended by `CIRCUIT_IO_inkdiff.md`.
+design doc lineage is now `runewright_design_v4_0.md` > `v3_0` > `v2_4`; the circuit
+contract is `CIRCUIT_IO.md` as amended by `CIRCUIT_IO_inkdiff.md`.
 
 ### How to orient in a fresh session (10 minutes, in this order)
 
