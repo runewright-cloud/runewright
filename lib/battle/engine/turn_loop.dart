@@ -176,7 +176,8 @@ import 'trajectory_parser.dart';
 import 'wild_magic.dart';
 import 'wild_magic_applicator.dart';
 import 'forced_cast.dart';
-import '../../sorcerer/vocal_score.dart';
+import '../../sorcerer/incantation_recall.dart';
+import '../../sorcerer/vocal_slot.dart';
 
 // ── Turn input / action types ─────────────────────────────────────────────────
 
@@ -239,7 +240,7 @@ class SpellCastAction extends TurnAction {
     this.isPotent = false,
     this.isVelocity = false,
     this.isEfficiency = false,
-    this.vocalScore,
+    this.recall,
     this.conveyorDirection,
     this.delayedOriginHex,
     this.handIndex,
@@ -262,12 +263,20 @@ class SpellCastAction extends TurnAction {
   /// set this.
   final int? handIndex;
 
-  /// Sorcerer-mode vocal quality score for this cast. Null in Wizard mode.
+  /// What the caster's device heard them recite. Null in Wizard mode.
   ///
-  /// Set by the caster's device from the VocalScorer output and committed
-  /// inside the action hash. Populated on the receiving side by decoding the
-  /// transmitted bytes — never recomputed from local audio (see _decodeAction).
-  final VocalScore? vocalScore;
+  /// Slot indices only, never words (VOCAL_RECALL_PLAN.md §8.10.1). Set by the
+  /// caster's device and committed inside the action hash; populated on the
+  /// receiving side by decoding the transmitted bytes. The peer scores it by
+  /// recomputing the EXPECTED sequence from the certified trajectory, which is
+  /// what makes recall verifiable where pronunciation quality never was.
+  final IncantationRecall? recall;
+
+  /// Set at commit time when the recall-inflated cost exceeded the caster's
+  /// mana: the cast fizzles and the mana is refunded, but the turn is spent
+  /// (§4). NOT transmitted — each device computes it from the same certified
+  /// cost and the same avatar mana, so both arrive at the same answer.
+  bool fizzledForMana = false;
 
   /// The caster's chosen push direction, if this cast will create a
   /// ConveyorTile (Air-flavor tileModification) and the caster picked one
@@ -475,7 +484,7 @@ class MysterySpellCastAction extends TurnAction {
     this.immediateNonce,
     this.isPotent = false,
     this.isVelocity = false,
-    this.vocalScore,
+    this.recall,
     this.handIndex,
   });
 
@@ -491,9 +500,11 @@ class MysterySpellCastAction extends TurnAction {
   final bool isPotent;
   final bool isVelocity;
 
-  /// Sorcerer-mode vocal quality score. Null in Wizard mode.
-  /// Transmitted and decoded identically to SpellCastAction.vocalScore.
-  final VocalScore? vocalScore;
+  /// See [SpellCastAction.recall].
+  final IncantationRecall? recall;
+
+  /// See [SpellCastAction.fizzledForMana].
+  bool fizzledForMana = false;
 
   /// See [SpellCastAction.handIndex].
   final int? handIndex;
@@ -1781,14 +1792,60 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
     final av = _localAvatar();
     final castingEnhancements = _castingEnhancementsFor(action);
-    av.mana =
-        (av.mana -
-                _spellManaCost(
-                  committedSpell,
-                  av,
-                  enhancements: castingEnhancements,
-                ))
-            .clamp(0, _kMaxMana);
+    final recall = switch (action) {
+      SpellCastAction(:final recall) => recall,
+      MysterySpellCastAction(:final recall) => recall,
+      _ => null,
+    };
+
+    // Price it WITHOUT charging first, so a shortfall can fizzle-and-refund
+    // rather than silently clamping to zero (VOCAL_RECALL_PLAN.md §4).
+    final preview = _spellCostBreakdown(
+      committedSpell,
+      av,
+      enhancements: castingEnhancements,
+      recall: recall,
+    );
+    if (_fizzlesForMana(av, preview.cost)) {
+      _markFizzledForMana(action);
+      return; // mana refunded (never deducted); the turn is still spent
+    }
+
+    av.mana = (av.mana -
+            _spellManaCost(
+              committedSpell,
+              av,
+              enhancements: castingEnhancements,
+              recall: recall,
+            ))
+        .clamp(0, _kMaxMana);
+  }
+
+  /// Whether a cast priced at [cost] fizzles for want of mana.
+  ///
+  /// Sorcerer mode only, and it exists because recall can INFLATE a cost after
+  /// the player has already committed (VOCAL_RECALL_PLAN.md §4). Wizard mode
+  /// prices exactly at the gate, so a shortfall there is not a legal outcome —
+  /// it is evidence of a desync or a cheating peer, and must stay a forfeit.
+  ///
+  /// Known narrow edge, accepted in §4: refund-on-shortfall is a take-back.
+  /// Deliberately blanking a cast you regret returns the mana at the cost of
+  /// the turn. Only reachable when a spell already costs most of the pool.
+  bool _fizzlesForMana(WizardAvatar caster, int cost) =>
+      isSorcererMode && cost > caster.mana;
+
+  /// Records that [action] fizzled for want of mana, so resolution skips its
+  /// effects. Both devices compute this from the same certified cost and the
+  /// same avatar mana, so they always agree without transmitting anything.
+  static void _markFizzledForMana(TurnAction action) {
+    switch (action) {
+      case SpellCastAction():
+        action.fizzledForMana = true;
+      case MysterySpellCastAction():
+        action.fizzledForMana = true;
+      default:
+        break;
+    }
   }
 
   /// DEV FLAG (kAllowProoflessSpells — lib/dev_flags.dart). Delete with it.
@@ -1840,36 +1897,25 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   CastingEnhancements? _castingEnhancementsFor(TurnAction action) =>
       switch (action) {
         SpellCastAction(
-          :final vocalScore,
           :final isPotent,
           :final isVelocity,
           :final isEfficiency,
         ) =>
-          isSorcererMode && vocalScore != null
-              ? CastingEnhancements.fromSorcererQuality(
-                  vocalScore: vocalScore,
-                  hasPotentLoadout: isPotent,
-                  hasVelocityLoadout: isVelocity,
-                  hasEfficiencyLoadout: isEfficiency,
-                )
-              : CastingEnhancements(
-                  isPotent: isPotent,
-                  isVelocity: isVelocity,
-                  isEfficiency: isEfficiency,
-                ),
+          CastingEnhancements(
+            isPotent: isPotent,
+            isVelocity: isVelocity,
+            isEfficiency: isEfficiency,
+            gameMode: isSorcererMode ? GameMode.sorcerer : GameMode.wizard,
+          ),
         MysterySpellCastAction(
-          :final vocalScore,
           :final isPotent,
           :final isVelocity,
         ) =>
-          isSorcererMode && vocalScore != null
-              ? CastingEnhancements.fromSorcererQuality(
-                  vocalScore: vocalScore,
-                  hasPotentLoadout: isPotent,
-                  hasVelocityLoadout: isVelocity,
-                  hasEfficiencyLoadout: false,
-                )
-              : CastingEnhancements(isPotent: isPotent, isVelocity: isVelocity),
+          CastingEnhancements(
+            isPotent: isPotent,
+            isVelocity: isVelocity,
+            gameMode: isSorcererMode ? GameMode.sorcerer : GameMode.wizard,
+          ),
         _ => null,
       };
 
@@ -3315,7 +3361,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           :final isPotent,
           :final isVelocity,
           :final isEfficiency,
-          :final vocalScore,
           :final conveyorDirection,
         ):
           // Statuesque (wild magic, row 3 Earth) breaks on a cast — a choice,
@@ -3323,22 +3368,18 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           // Broken here, before resolution, so it covers a fizzled or
           // countered cast too: the wizard still chose to cast.
           _breakStatuesque(actor.playerId);
-          // isSorcererMode + non-null vocalScore is checked at both ends of
-          // the wire (commit-time mana deduction above, here at resolution),
-          // so the two are always in lockstep — see CastingEnhancements
-          // .fromSorcererQuality for why this agrees with the peer's copy.
-          final enhancements = isSorcererMode && vocalScore != null
-              ? CastingEnhancements.fromSorcererQuality(
-                  vocalScore: vocalScore,
-                  hasPotentLoadout: isPotent,
-                  hasVelocityLoadout: isVelocity,
-                  hasEfficiencyLoadout: isEfficiency,
-                )
-              : CastingEnhancements(
-                  isPotent: isPotent,
-                  isVelocity: isVelocity,
-                  isEfficiency: isEfficiency,
-                );
+          // Recall NEVER gates the loadout enhancement and never fizzles a
+          // cast (VOCAL_RECALL_PLAN.md §4: getting words wrong costs mana,
+          // full stop). The only fizzle left is a cast whose recall-inflated
+          // cost outran the caster's pool, and that is decided at commit time
+          // on both devices — see [SpellCastAction.fizzledForMana].
+          final enhancements = CastingEnhancements(
+            isPotent: isPotent,
+            isVelocity: isVelocity,
+            isEfficiency: isEfficiency,
+            gameMode: isSorcererMode ? GameMode.sorcerer : GameMode.wizard,
+            fizzle: action.fizzledForMana,
+          );
           // Clouds (Water-Fire) base effect: an entity standing in a cloud's
           // radius (or carrying the lingering Earth-flavor restriction) may
           // only target adjacent tiles, and a target tile inside a cloud's
@@ -3534,7 +3575,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       targetHex: action.immediateTarget!,
       isPotent: action.isPotent,
       isVelocity: action.isVelocity,
-      vocalScore: action.vocalScore,
+      recall: action.recall,
     );
   }
 
@@ -5433,7 +5474,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         :final isPotent,
         :final isVelocity,
         :final isEfficiency,
-        :final vocalScore,
+        :final recall,
         :final conveyorDirection,
         :final handIndex,
       ):
@@ -5454,7 +5495,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         buf.addByte(conveyorDirection != null ? 1 : 0);
         if (conveyorDirection != null) buf.add(_encodeCoord(conveyorDirection));
         _appendSpellProofTail(buf, spell, handIndex);
-        if (isSorcererMode) _appendSorcererBytes(buf, vocalScore);
+        if (isSorcererMode) _appendSorcererBytes(buf, recall);
 
       case DashAction():
         buf.addByte(0x04);
@@ -5469,7 +5510,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         :final immediateNonce,
         :final isPotent,
         :final isVelocity,
-        :final vocalScore,
+        :final recall,
         :final handIndex,
       ):
         buf.addByte(0x03);
@@ -5492,7 +5533,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         buf.addByte(isPotent ? 1 : 0);
         buf.addByte(isVelocity ? 1 : 0);
         _appendSpellProofTail(buf, spell, handIndex);
-        if (isSorcererMode) _appendSorcererBytes(buf, vocalScore);
+        if (isSorcererMode) _appendSorcererBytes(buf, recall);
     }
     return buf.toBytes();
   }
@@ -5524,24 +5565,39 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     }
   }
 
-  /// Appends the 3-byte sorcerer suffix to [buf] for spell action payloads.
+  /// Appends the sorcerer recall suffix to [buf] for spell action payloads.
   ///
-  /// Wire precision: pronunciation and volume are quantised to u8 [0x00–0xFE];
-  /// encoding: field_u8 = (value × 254).round().clamp(0, 254);
-  /// decoding: value = u8 / 254.0.
-  /// ±(1/254) ≈ 0.4% precision loss. Full double precision does NOT survive
-  /// the wire round trip.
+  ///   [recall bytes: 2 + spokenCount][suffixLen: 1]
   ///
-  /// Somatic score byte: 0xFF = absent (this pass). 0xFF is permanently
-  /// reserved as the absent sentinel — real somatic scores MUST fit [0x00–0xFE]
-  /// when implemented in the somatic-gesture pass.
-  // TODO(sorcerer): replace somatic 0xFF with somatic_u8 = (somaticScore × 254).round()
-  //   in the somatic-gesture pass.
-  void _appendSorcererBytes(BytesBuilder buf, VocalScore? score) {
-    buf.add(
-      (score ?? const VocalScore(pronunciation: 0.0, volume: 0.0))
-          .toWireBytes(),
-    );
+  /// Variable length, unlike the fixed 3-byte VocalScore suffix it replaces —
+  /// a recital is one opener plus up to 48 element words. The TRAILING length
+  /// byte is what keeps the decoder's read-from-the-end structure working:
+  /// the payload is parsed front-to-back for the spell and proof tail, so the
+  /// suffix can only be located by measuring back from the end, which a
+  /// variable-length blob cannot be without first knowing its size.
+  ///
+  /// Only slot INDICES cross the wire, never the words filling them
+  /// (VOCAL_RECALL_PLAN.md §8.10.1) — a player's vocabulary never leaves
+  /// their device.
+  void _appendSorcererBytes(BytesBuilder buf, IncantationRecall? recall) {
+    final bytes = (recall ?? IncantationRecall.silent).toWireBytes();
+    buf.add(bytes);
+    buf.addByte(bytes.length);
+  }
+
+  /// Reads the trailing recall suffix written by [_appendSorcererBytes].
+  ///
+  /// Returns null in wizard mode. A malformed suffix decodes to "no
+  /// utterance" rather than throwing: every unreadable position scores as
+  /// WRONG, so a corrupt recall can only cost the caster mana — there is
+  /// nothing here worth forfeiting a match over.
+  static IncantationRecall? _decodeSorcererSuffix(
+      Uint8List bytes, bool isSorcererMode) {
+    if (!isSorcererMode || bytes.isEmpty) return null;
+    final suffixLen = bytes[bytes.length - 1];
+    final start = bytes.length - 1 - suffixLen;
+    if (suffixLen < 2 || start < 0) return IncantationRecall.silent;
+    return IncantationRecall.fromWireBytes(bytes, start).recall;
   }
 
   /// Decode a [TurnAction] from [bytes] and optionally parse the trailing proof
@@ -5675,20 +5731,18 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         );
         final merkle = parseProofTail(bytes, pos, commitmentHex);
         // [KEY STRUCTURAL CONSTRAINT — no local recalculation]
-        // The vocal score is read verbatim from the last [VocalScore.wireSizeBytes]
-        // bytes of the payload. It is NEVER recomputed from local audio on the
-        // receiving side. Architectural guarantee: _decodeAction is a static method
-        // that holds no VocalScorer reference, making local recalculation
-        // structurally impossible. Recalculating the opponent's score from local
-        // audio would also be impossible (their microphone is unavailable to this
-        // device) and would desync lockstep if attempted via any other code path.
-        final vocalScore01 =
-            isSorcererMode && bytes.length >= VocalScore.wireSizeBytes
-            ? VocalScore.fromWireBytes(
-                bytes,
-                bytes.length - VocalScore.wireSizeBytes,
-              )
-            : null;
+        // What the caster SAID is read verbatim from the trailing suffix. It
+        // is NEVER recomputed from local audio: _decodeAction is a static
+        // method holding no scorer reference, making local recalculation
+        // structurally impossible, and the peer's microphone is unavailable to
+        // this device anyway.
+        //
+        // What IS recomputed locally is the EXPECTED sequence, derived from the
+        // certified trajectory (see _certifiedManaCost). That asymmetry is the
+        // whole of the recall model: the claim is the caster's, the check is
+        // ours. Pronunciation quality could never be checked this way, which is
+        // why it was replaced.
+        final recall01 = _decodeSorcererSuffix(bytes, isSorcererMode);
         return (
           action: SpellCastAction(
             spell: spell,
@@ -5696,7 +5750,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
             isPotent: isPotent01,
             isVelocity: isVelocity01,
             isEfficiency: isEfficiency01,
-            vocalScore: vocalScore01,
+            recall: recall01,
             conveyorDirection: conveyorDirection01,
           ),
           merkleProof: merkle,
@@ -5774,13 +5828,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         );
         final merkle3 = parseProofTail(bytes, pos3, commitmentHex3);
         // Same no-local-recalculation constraint as case 0x01 above.
-        final vocalScore03 =
-            isSorcererMode && bytes.length >= VocalScore.wireSizeBytes
-            ? VocalScore.fromWireBytes(
-                bytes,
-                bytes.length - VocalScore.wireSizeBytes,
-              )
-            : null;
+        final recall03 = _decodeSorcererSuffix(bytes, isSorcererMode);
         return (
           action: MysterySpellCastAction(
             spell: spell3,
@@ -5789,7 +5837,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
             immediateNonce: immNonce,
             isPotent: isPotent3,
             isVelocity: isVelocity3,
-            vocalScore: vocalScore03,
+            recall: recall03,
           ),
           merkleProof: merkle3,
         );
@@ -5841,13 +5889,13 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       return; // solo or verification not wired up
 
     final SpellAsset spell;
-    final VocalScore? vocalScore;
+    final IncantationRecall? recall;
     if (action is SpellCastAction) {
       spell = action.spell;
-      vocalScore = action.vocalScore;
+      recall = action.recall;
     } else if (action is MysterySpellCastAction) {
       spell = action.spell;
-      vocalScore = action.vocalScore;
+      recall = action.recall;
     } else {
       return;
     }
@@ -6044,19 +6092,36 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         outputs,
         certFormulas,
         peerAvatar,
-        vocalScore: vocalScore,
+        recall: recall,
         isEfficiency: claimsEfficiency,
         isSummon: spell.isSummon,
         certElementSequence: certElementSequence,
       );
-      if (peerAvatar.mana < verifiedCost) {
+      // A shortfall means two different things depending on mode, and
+      // conflating them would either forfeit innocent players or open a hole.
+      //
+      // SORCERER: legal. Recall can inflate a cost AFTER the player committed,
+      // and previewSpellCost deliberately quotes the honest base price rather
+      // than a worst case, so an unaffordable cast is an expected outcome. It
+      // fizzles and the mana is refunded; the turn is still spent
+      // (VOCAL_RECALL_PLAN.md §4). Both devices reach this from the same
+      // certified cost and the same avatar mana, so they agree without
+      // transmitting the decision.
+      //
+      // WIZARD: still a forfeit. There the UI gate prices exactly what the
+      // deduction charges, so a shortfall can only mean a desync or a peer
+      // claiming a cast they cannot pay for. Do NOT weaken this branch.
+      if (_fizzlesForMana(peerAvatar, verifiedCost)) {
+        _markFizzledForMana(action);
+      } else if (peerAvatar.mana < verifiedCost) {
         session.sendForfeit('insufficient_mana_for_spell');
         throw StateError(
           'peer spell requires $verifiedCost mana but peer avatar only has '
           '${peerAvatar.mana} — match forfeit',
         );
+      } else {
+        peerAvatar.mana = (peerAvatar.mana - verifiedCost).clamp(0, _kMaxMana);
       }
-      peerAvatar.mana = (peerAvatar.mana - verifiedCost).clamp(0, _kMaxMana);
     }
   }
 
@@ -6070,8 +6135,9 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   ///   2. Chain discount from [certFormulas] (trusted; replaces wire spell.formula).
   ///   3. Efficiency (Water) discount: −1/3, gated on [isEfficiency] (verified by the
   ///      caller against certified supreme-tags — see TrajectoryParser.certifiedSupremeTags).
-  ///   4. Sorcerer multiplier from wire-quantised [vocalScore] (committed in action hash;
-  ///      both clients run [CastingEnhancements.fromSorcererQuality] on the same u8 bytes).
+  ///   4. Recall multiplier from the transmitted [recall] (committed in the action
+  ///      hash), scored against the EXPECTED recital both clients derive from the
+  ///      certified trajectory. Exact integer arithmetic — see incantation_recall.dart.
   ///   5. nextSpellCostDouble: consume + double + HP shortfall. Both clients execute this
   ///      identically, keeping the status-effect list and state hash in sync.
   ///
@@ -6098,7 +6164,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     VerifiedSpellOutputs outputs,
     List<ParsedFormula> certFormulas,
     WizardAvatar caster, {
-    VocalScore? vocalScore,
+    IncantationRecall? recall,
     bool isEfficiency = false,
     bool isSummon = false,
     List<BorderZone>? certElementSequence,
@@ -6135,16 +6201,23 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       cost = (cost * 2 / 3).ceil();
     }
 
-    // 4. Sorcerer multiplier from wire-quantised vocal score.
-    // hasPotentLoadout/hasVelocityLoadout only gate effects, not cost; pass false.
-    if (isSorcererMode && vocalScore != null) {
-      final enhancements = CastingEnhancements.fromSorcererQuality(
-        vocalScore: vocalScore,
-        hasPotentLoadout: false,
-        hasVelocityLoadout: false,
-        hasEfficiencyLoadout: false,
-      );
-      cost = (cost * enhancements.manaCostMultiplier).ceil();
+    // 4. Recall multiplier. The EXPECTED recital is derived HERE, from the
+    // certified element sequence and the certified isSummon — never from
+    // anything the caster transmitted. That is what makes a recall claim
+    // checkable rather than self-reported, and it is the whole reason the
+    // verbal component moved off pronunciation quality
+    // (VOCAL_RECALL_PLAN.md §2).
+    //
+    // Exact integer arithmetic, rounded once — see incantation_recall.dart on
+    // why no double may appear anywhere on this path.
+    if (isSorcererMode && recall != null) {
+      cost = recall
+          .tallyAgainst(
+            expectedIsSummon: isSummon,
+            expectedElements:
+                expectedRecitalSlots(certElementSequence ?? const []),
+          )
+          .applyTo(cost);
     }
 
     // 5. nextSpellCostDouble: consume and double cost, convert excess to HP damage.
@@ -6211,8 +6284,10 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     SpellAsset spell,
     WizardAvatar caster, {
     CastingEnhancements? enhancements,
+    IncantationRecall? recall,
   }) {
-    final b = _spellCostBreakdown(spell, caster, enhancements: enhancements);
+    final b = _spellCostBreakdown(spell, caster,
+        enhancements: enhancements, recall: recall);
 
     if (b.hpDamage > 0) caster.absorbDamage(b.hpDamage);
 
@@ -6243,6 +6318,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     SpellAsset spell,
     WizardAvatar caster, {
     CastingEnhancements? enhancements,
+    IncantationRecall? recall,
   }) {
     // 1. Base + growth — mirrors _certifiedManaCost step 1.
     var cost = _wireBaseManaCost(spell);
@@ -6271,12 +6347,21 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       cost = (cost * 2 / 3).ceil();
     }
 
-    // Sorcerer-mode cost multiplier from vocal (and eventually somatic) quality.
-    // Applied after chain discount so poor casting inflates the already-discounted cost.
-    // TODO(sorcerer): placeholder passthrough — manaCostMultiplier is always 1.0
-    //   until CastingEnhancements.fromSorcererQuality() formula is finalised (playtest gate).
-    if (enhancements != null) {
-      cost = (cost * enhancements.manaCostMultiplier).ceil();
+    // Recall multiplier — the local mirror of _certifiedManaCost step 4, at
+    // the same relative position (after the chain and Efficiency discounts, so
+    // a shaky recital inflates the already-discounted cost).
+    //
+    // Reads the LOCAL element sequence where the certified path reads the
+    // certified one. That is the same trust split every step here already
+    // uses: this path prices the caster's own cast, and the certified path is
+    // what the peer charges them.
+    if (isSorcererMode && recall != null) {
+      cost = recall
+          .tallyAgainst(
+            expectedIsSummon: spell.isSummon,
+            expectedElements: expectedRecitalSlots(_elementSequence(spell)),
+          )
+          .applyTo(cost);
     }
 
     // nextSpellCostDouble status effect: double the cost (and report the
@@ -6317,13 +6402,18 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// charging for it or consuming anything. The UI's affordability gate and
   /// its cost readout both read this.
   ///
-  /// In sorcerer mode the true multiplier isn't knowable until after the voice
-  /// capture, which happens *after* the player has committed to casting — so
-  /// this prices the worst case ([CastingEnhancements.maxManaCostMultiplier],
-  /// with the Efficiency discount withheld, exactly as a fizzle would). A
-  /// well-spoken incantation then costs less than advertised, which is the
-  /// only direction that's safe: the alternative is a cast the gate approved
-  /// at 1.0× and the peer forfeits over at 1.5×.
+  /// In sorcerer mode the recall multiplier isn't knowable until after the
+  /// incantation, which happens *after* the player commits — so this quotes the
+  /// HONEST base price and lets an unaffordable outcome fizzle-and-refund
+  /// (VOCAL_RECALL_PLAN.md §4).
+  ///
+  /// That is a deliberate reversal. This used to quote a 1.5× worst case, for
+  /// one reason only: a cast the gate approved at 1.0× and the peer forfeited
+  /// over at 1.5× would read as a desync. Making a shortfall a legal, refunded
+  /// fizzle removes that failure mode, and with it the reason to quote a price
+  /// nobody pays — §4 retires `maxManaCostMultiplier` on exactly this
+  /// argument. Quoting the honest price also means the number the player reads
+  /// is the number a clean recital charges.
   ///
   /// Returns 0 for a proofless dev-flag spell — those are free on both devices
   /// (see [_isProoflessBypass]).
@@ -6334,20 +6424,12 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     bool isEfficiency = false,
   }) {
     if (_isProoflessBypass(spell)) return 0;
-    final enhancements = isSorcererMode
-        ? CastingEnhancements(
-            isPotent: isPotent,
-            isVelocity: isVelocity,
-            isEfficiency: false,
-            gameMode: GameMode.sorcerer,
-            enhancementEnabled: false,
-            manaCostMultiplier: CastingEnhancements.maxManaCostMultiplier,
-          )
-        : CastingEnhancements(
-            isPotent: isPotent,
-            isVelocity: isVelocity,
-            isEfficiency: isEfficiency,
-          );
+    final enhancements = CastingEnhancements(
+      isPotent: isPotent,
+      isVelocity: isVelocity,
+      isEfficiency: isEfficiency,
+      gameMode: isSorcererMode ? GameMode.sorcerer : GameMode.wizard,
+    );
     return _spellCostBreakdown(
       spell,
       _localAvatar(),
@@ -6783,6 +6865,24 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// The full flat element sequence for a local (trusted-wire) summon-mode
   /// spell -- unlike [_parsedFormulas], residuals are kept (see
   /// CreatureSpec.fromElements: every activation counts toward a creature).
+  /// The element slots a caster is expected to recite for [elementSequence].
+  ///
+  /// Truncated to COMPLETE TRIPLETS, matching PracticeFormula.fromSpellFormula:
+  /// a spell's activation list carries 1–2 residuals that never filled a group
+  /// of three, and those resolve to no effect (FormulaTracker.formulas drops
+  /// them). Asking a caster to recite words their cast never uses would price
+  /// mana against a recital the drill never taught.
+  static List<VocalSlot> expectedRecitalSlots(
+      List<BorderZone> elementSequence) {
+    final complete = (elementSequence.length ~/ 3) * 3;
+    return [
+      for (var i = 0; i < complete; i++)
+        if (VocalSlot.fromAffinityZone(elementSequence[i].name)
+            case final slot?)
+          slot,
+    ];
+  }
+
   static List<BorderZone> _elementSequence(SpellAsset spell) =>
       spell.formula.map(_zoneFromName).whereType<BorderZone>().toList();
 

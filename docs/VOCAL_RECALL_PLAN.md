@@ -392,3 +392,115 @@ commit. Cheap to get right now, nasty to debug later.
 - The separation threshold at which §8.7 warns, and the minimum word duration.
 - Whether six-player mesh needs anything special given five simultaneous ciphers
   (expected: no — a player prioritises one opponent).
+
+---
+
+# 9. Build log — 2026-08-04/05 `[implemented]`
+
+*What was actually built, and the four decisions taken during the build. Where §9
+and an earlier section disagree, §9 wins — it describes shipped code.*
+
+## 9.1 Length-normalized step `[ratified 2026-08-04, supersedes §8.5's flat step]`
+
+**§8.5's `step = 0.03` was calibrated against a 3–9 element vocabulary, and breaks
+outside it.** `FormulaTracker.step` commits at most one activation per generation, so a
+tier-48 spell can legitimately reach **48 element words**. At a flat step a perfect
+recital passes §3's binding constraint — an ungated skill check must never beat the gated
+Water/Efficiency loadout at −33% — at only ~13 element words, and reaches **−77%** at 48.
+
+The step is therefore normalized to the recital length:
+
+```
+n    = 1 (opener) + elementCount
+step = 1 − 0.737^(1/n)
+```
+
+A perfect recital now lands on the ratified **−26.3%** at every length. This
+*generalizes* §8.5 rather than overturning it: at 9 element words the table gives
+`30056 ppm` against the ratified `0.03`, and a total blank `+42.67%` against §8.5's
+`+42.6%`. The §8.5 table is preserved as a regression fixture.
+
+**Accepted consequence, flagged for playtest.** Per-word stakes now vary with length:
+~7.3% per unit on a 3-element spell (all-or-nothing), ~0.62% on a 48-element one (a
+grind). Same ceiling either way. It also makes the opener deterrent strongest on *short*
+spells — a wrong opener swings 23.7% at 3 elements and 1.9% at 48 — which is where §8.5
+wanted it, since a short incantation is the cheapest to fake.
+
+## 9.2 Determinism: baked step table, exact integers
+
+A normalized step is no longer a clean `(100±k)/100` rational, so §6's "compute in
+integers" needed a mechanism rather than an assertion:
+
+- The per-unit step is a **baked `ppm` table**, one entry per `n` in 1..49, committed as
+  source. `pow`/`exp` with fractional exponents are **not** bit-reproducible across
+  platforms and libm versions, and this value feeds the mana ledger — a one-ULP
+  disagreement becomes a one-mana disagreement becomes a state-hash desync.
+- The product is **exact BigInt**, rounded up **once**, matching the rest of TurnLoop's
+  mana chain.
+- `incantation_recall_test.dart` re-derives every table entry from the formula and
+  re-checks the −33% gate at every length 3..48.
+
+## 9.3 Opener defaults `[closes §8.11]`
+
+**`reformare`** (general) / **`invoco`** (summon). Both are phonemized by the same
+espeak-ng the templates are rendered with, and both needed checking:
+
+- `reformare` → `/ɹᵻfˈoːɹmɛɹ/`, which is literally the English word **"reformer"** — the
+  Latin `-are` collapses to `/ɛɹ/`. Fixed with a `kTtsTextOverride` of `"reformahray"`
+  → `/ɹᵻfˈoːɹmɑːɹˌeɪ/`, the same mechanism `ignis`/`ignisse` already uses.
+- `invoco` → `/ɪnvˈoʊkoʊ/`. No override needed.
+
+They are deliberately far apart (different onset, syllable count, stress shape), because
+§8.7 names opener-vs-opener as the load-bearing distance.
+
+## 9.4 Capture is press-and-hold `[ratified 2026-08-04]`
+
+The caster **holds the cast button**, chants `OPENER + trajectory` continuously, and
+**release ends the window**. The same press bounds the somatic-gesture window.
+
+This replaces the per-word 2500 ms window, which does not survive contact with the real
+maximum: 49 words × 2.5 s is ~two minutes per cast. It also reuses
+`HoldToRecordButton` (`lib/ui/widgets/hold_to_record_control.dart`), whose own header
+already requires exactly this — *"do not build a second capture-window mechanism
+elsewhere"* — because enrollment and live capture must segment identically or every DTW
+distance is skewed.
+
+## 9.5 Fizzle, refund, and the one weakened gate
+
+`previewSpellCost` now quotes the **honest base price**. It used to quote a 1.5× worst
+case for one reason: a cast the gate approved at 1.0× and the peer forfeited over at 1.5×
+would read as a desync. Making a shortfall a legal, refunded fizzle removes that failure
+mode, and with it `maxManaCostMultiplier`.
+
+**The peer's `insufficient_mana_for_spell` forfeit is now mode-split**, and this is the
+one place the change deliberately weakens a peer verification gate:
+
+- **Sorcerer:** a shortfall is legal — recall can inflate a cost *after* the player
+  committed. Fizzle, refund the mana, spend the turn.
+- **Wizard:** still a forfeit. The gate prices exactly what the deduction charges, so a
+  shortfall can only mean a desync or a peer claiming a cast they cannot pay for.
+
+Both halves are pinned by tests. The fizzle decision is never transmitted: each device
+derives it from the same certified cost and the same avatar mana.
+
+## 9.6 Status
+
+**Built:** the vocabulary slot model (`VocalSlot` + `VocabularyProfile`, `finitus`
+removed, enrollment/templates moved to `lib/sorcerer/` with a legacy-filename read path);
+the cost model (`IncantationRecall`); the wire format (variable-length, trailing length
+byte, slot indices only); the engine wiring (both cost paths, fizzle-with-refund, the
+forfeit split, honest preview); protocol bumped to **v4**; Piper assets and voice
+fixtures regenerated for all six slots.
+
+**Not yet built:**
+
+- **The capture itself (§9.4).** `IncantationRecallScorer` and the hold-to-cast wiring.
+  Until it lands, a sorcerer cast carries no recall and prices at the honest base cost —
+  no discount earned, no penalty charged.
+- The vocabulary UI, atomic re-keying, and §8.7's separation meter.
+- Repointing Practice Mode at the recall scorer, and retiring
+  `StreamingPhonemeScorer`.
+- A **two-loop parity test**: both devices deriving the same multiplier from the same
+  certified trajectory. This is the exact shape of desync this change could introduce and
+  is the most valuable remaining test.
+- The **two-device LAN pass**, which no automated test substitutes for.

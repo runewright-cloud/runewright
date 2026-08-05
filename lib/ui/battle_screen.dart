@@ -35,7 +35,6 @@ import '../battle/engine/turn_loop.dart';
 import '../battle/engine/wild_magic_applicator.dart' show WildMagicEvent;
 import '../battle/models/battle_state.dart';
 import '../battle/models/barrier.dart';
-import '../battle/models/casting_enhancements.dart';
 import '../battle/models/creature_spec.dart' show summonSummaryFromFormula;
 import '../battle/models/effect_kind.dart'
     show
@@ -59,7 +58,6 @@ import '../ffi/prover.dart' as prover;
 import '../ffi/srs_cache.dart';
 import '../identity/identity.dart';
 import '../protocol/match_session.dart' show ProofVerifier;
-import '../sorcerer/gesture.dart';
 import '../sorcerer/vocal_scorer.dart';
 import '../spells/chapter_asset.dart';
 import '../spells/enhancement_zone.dart';
@@ -750,13 +748,8 @@ class _BattleScreenState extends State<BattleScreen>
 
   // ── Sorcerer mode ──────────────────────────────────────────────────────────
   VocalScorer? _vocalScorer;
-  double _ambientFloorRms = 0.0;
   bool _isCapturingVoice = false;
   VocalSlot? _capturingWord;
-
-  /// Capture window for one incantation. Fixed for this pass — see
-  /// VocalScorer's lifecycle doc (vocal_scorer.dart) for the begin/end contract.
-  static const _voiceCaptureWindow = Duration(milliseconds: 2500);
 
   @override
   void initState() {
@@ -1024,16 +1017,15 @@ class _BattleScreenState extends State<BattleScreen>
     unawaited(_beginArtifactEntropyForTurn());
   }
 
-  /// Builds the active VocalScorer and runs the once-per-match ambient
-  /// noise-floor calibration (3 s of silence). No reference templates are
-  /// bundled yet — see ReferenceMatchVocalScorer's energy fallback — so
-  /// pronunciation scoring is loudness-based until templates are recorded
-  /// via ReferenceMatchVocalScorer.recordTemplate() and wired in here.
+  /// Builds the active scorer for sorcerer mode.
+  ///
+  /// The once-per-match ambient noise-floor calibration is GONE with the move
+  /// to recall scoring: volume is no longer scored at all. It was only ever
+  /// used to normalise a loudness component, and the design doc (§944) already
+  /// flagged that volume-scaling penalises players who can't project, in
+  /// venues that are loud by design. Recall asks WHICH word, not how loudly.
   Future<void> _initSorcererMode() async {
     _vocalScorer = VocalScorerFactory.create();
-    final floor = await AmbientCalibrator.measure();
-    if (!mounted) return;
-    setState(() => _ambientFloorRms = floor);
   }
 
   @override
@@ -1647,89 +1639,11 @@ class _BattleScreenState extends State<BattleScreen>
     final isVelocity = _selectedEnhancement == 'air';
     final isEfficiency = _selectedEnhancement == 'water';
 
-    final scorer = _vocalScorer;
-    final word = spell.formula.isNotEmpty
-        ? VocalSlot.fromAffinityZone(spell.formula.first)
-        : null;
-    if (!widget.state.config.sorcererMode || scorer == null || word == null) {
-      // Wizard mode, or sorcerer mode before calibration finishes, or a
-      // formula with no recognised primary affinity (e.g. wild magic) — cast
-      // with no vocal component rather than block the player.
-      _commitAction(
-        SpellCastAction(
-          spell: spell,
-          targetHex: target,
-          isPotent: isPotent,
-          isVelocity: isVelocity,
-          isEfficiency: isEfficiency,
-          conveyorDirection: conveyorDirection,
-          handIndex: _selectedHandIndex,
-        ),
-      );
-      return;
-    }
-
-    setState(() {
-      _isCapturingVoice = true;
-      _capturingWord = word;
-    });
-    await scorer.beginCapture(word);
-    await Future<void>.delayed(_voiceCaptureWindow);
-    final vocalScore = await scorer.endCapture(
-      ambientFloorRms: _ambientFloorRms,
-    );
-    if (!mounted) return;
-    setState(() {
-      _isCapturingVoice = false;
-      _capturingWord = null;
-    });
-
-    // Somatic/gesture seam (lib/sorcerer/gesture.dart) — stubbed off.
-    // GestureCapture/GestureClassifier/GestureEnrollment now exist
-    // (docs/SOMATIC_GESTURE_PLAN.md) and are exercised from
-    // practice_screen.dart's Gesture tab, but kSomaticCaptureEnabled stays
-    // false until a real-device confusion-matrix pass (test/sorcerer/)
-    // clears — a fixture harness calibrates, it doesn't validate hardware.
-    // When it flips: capture here with the same HoldToRecordButton window
-    // used by enrollment (SOMATIC_GESTURE_PLAN.md §7 — segmentation must
-    // match), classify, and IF the resolved gesture's zone is not in
-    // spell.supremeTags (the same certified-eligibility check the wizard-
-    // mode enhancement picker already gates on, §1651 above), downgrade to
-    // neutral client-side before folding .enhancementZone into the
-    // enhancement choice above — exactly parallel to how vocalScore feeds
-    // CastingEnhancements.fromSorcererQuality via hasPotentLoadout/
-    // hasVelocityLoadout/hasEfficiencyLoadout below. The peer-side forfeit
-    // gate for an unbacked claim (turn_loop.dart's
-    // TrajectoryParser.certifiedSupremeTags check) stays as the backstop —
-    // do not weaken it to a silent downgrade.
-    if (kSomaticCaptureEnabled) {
-      // TODO(somatic): capture a Gesture, map via .enhancementZone, fold in.
-    }
-
-    if (kDebugMode) {
-      // Mirrors exactly what TurnLoop will independently (re)compute from
-      // this same VocalScore at commit time and at resolution — see
-      // CastingEnhancements.fromSorcererQuality's determinism note.
-      final enhancements = CastingEnhancements.fromSorcererQuality(
-        vocalScore: vocalScore,
-        hasPotentLoadout: isPotent,
-        hasVelocityLoadout: isVelocity,
-        hasEfficiencyLoadout: isEfficiency,
-      );
-      final q =
-          (vocalScore.pronunciationU8 + vocalScore.volumeU8) / (2 * 254.0);
-      debugPrint(
-        '[sorcerer] word=${word.name} '
-        'rawPronunciation=${vocalScore.pronunciation.toStringAsFixed(4)} '
-        'rawVolume=${vocalScore.volume.toStringAsFixed(4)} '
-        'u8=(${vocalScore.pronunciationU8}, ${vocalScore.volumeU8}) '
-        'Q=${q.toStringAsFixed(4)} '
-        'manaCostMultiplier=${enhancements.manaCostMultiplier.toStringAsFixed(3)} '
-        'enhancementEnabled=${enhancements.enhancementEnabled} '
-        'fizzle=${enhancements.fizzle}',
-      );
-    }
-
+    // TODO(recall): sequential hold-to-cast capture lands here — the caster
+    // holds the CAST button, chants OPENER + the trajectory, and release ends
+    // the window (VOCAL_RECALL_PLAN.md §8.1, hold_to_record_control.dart).
+    // Until then a sorcerer cast carries no recall, which prices it at the
+    // honest base cost: no discount earned, no penalty charged.
     _commitAction(
       SpellCastAction(
         spell: spell,
@@ -1737,7 +1651,6 @@ class _BattleScreenState extends State<BattleScreen>
         isPotent: isPotent,
         isVelocity: isVelocity,
         isEfficiency: isEfficiency,
-        vocalScore: vocalScore,
         conveyorDirection: conveyorDirection,
         handIndex: _selectedHandIndex,
       ),
@@ -1792,45 +1705,13 @@ class _BattleScreenState extends State<BattleScreen>
       );
     }
 
-    final scorer = _vocalScorer;
-    final word = spell.formula.isNotEmpty
-        ? VocalSlot.fromAffinityZone(spell.formula.first)
-        : null;
-    if (!widget.state.config.sorcererMode || scorer == null || word == null) {
-      _commitAction(
-        MysterySpellCastAction(
-          spell: spell,
-          mysteryCommitment: commitment,
-          immediateTarget: isImmediate ? target : null,
-          immediateNonce: isImmediate ? nonce : null,
-          handIndex: _selectedHandIndex,
-        ),
-      );
-      return;
-    }
-
-    setState(() {
-      _isCapturingVoice = true;
-      _capturingWord = word;
-    });
-    await scorer.beginCapture(word);
-    await Future<void>.delayed(_voiceCaptureWindow);
-    final vocalScore = await scorer.endCapture(
-      ambientFloorRms: _ambientFloorRms,
-    );
-    if (!mounted) return;
-    setState(() {
-      _isCapturingVoice = false;
-      _capturingWord = null;
-    });
-
+    // TODO(recall): see _onCast — the hold-to-cast capture lands here too.
     _commitAction(
       MysterySpellCastAction(
         spell: spell,
         mysteryCommitment: commitment,
         immediateTarget: isImmediate ? target : null,
         immediateNonce: isImmediate ? nonce : null,
-        vocalScore: vocalScore,
         handIndex: _selectedHandIndex,
       ),
     );
