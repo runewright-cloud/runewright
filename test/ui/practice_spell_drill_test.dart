@@ -50,11 +50,6 @@ Finder _revealedWord(String word) => find.descendant(
       matching: find.text(word),
     );
 
-Finder _concealedWord(String word) => find.descendant(
-      of: find.byType(Chip),
-      matching: find.text(word),
-    );
-
 void main() {
   late Directory tempDir;
 
@@ -114,17 +109,19 @@ void main() {
   testWidgets('conceals the words until revealed', (tester) async {
     await pumpDrill(tester, _spell(formula: ['fire', 'earth', 'water']));
 
-    // Three concealed element words; finitus is shown because it is invariant
-    // and carries no recall information.
-    expect(find.text('? ? ?'), findsNWidgets(3));
+    // One opener + three element words, ALL concealed. Unlike the retired
+    // `finitus`, the opener is one of two and so carries real recall
+    // information (VOCAL_RECALL_PLAN.md §8.5).
+    expect(find.text('? ? ?'), findsNWidgets(4));
     expect(_revealedWord('ignis'), findsNothing);
     expect(_revealedWord('terra'), findsNothing);
     expect(_revealedWord('aqua'), findsNothing);
-    expect(_concealedWord('finitus'), findsOneWidget);
+    expect(_revealedWord('reformare'), findsNothing);
 
     await tapVisible(tester, find.text('Reveal words'));
 
     expect(find.text('? ? ?'), findsNothing);
+    expect(_revealedWord('reformare'), findsOneWidget);
     expect(_revealedWord('ignis'), findsOneWidget);
     expect(_revealedWord('terra'), findsOneWidget);
     expect(_revealedWord('aqua'), findsOneWidget);
@@ -142,7 +139,7 @@ void main() {
 
     await tapVisible(tester, find.text('Start Over'));
 
-    expect(find.text('? ? ?'), findsNWidgets(3));
+    expect(find.text('? ? ?'), findsNWidgets(4));
     expect(_revealedWord('ignis'), findsNothing);
     expect(
       find.text('Answer revealed — start over for a clean attempt.'),
@@ -158,8 +155,8 @@ void main() {
       tester,
       _spell(formula: ['fire', 'earth', 'water', 'air', 'fire']),
     );
-    expect(find.text('? ? ?'), findsNWidgets(3));
-    expect(_concealedWord('finitus'), findsOneWidget);
+    // One opener + the one complete triplet; the 2 residuals are dropped.
+    expect(find.text('? ? ?'), findsNWidgets(4));
   });
 
   testWidgets('main-menu mode keeps the random-formula controls',

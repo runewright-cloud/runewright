@@ -5,7 +5,7 @@
 // StreamingPhonemeScorer.
 //
 // Shipped now: SingleVoiceTemplateSource, one Piper voice (en_US-lessac-medium)
-// per VocalWord, generated offline by scripts/generate_practice_assets.dart
+// per VocalSlot, generated offline by scripts/generate_practice_assets.dart
 // from the exact same render used for the trainer clip (see that script's
 // header and latin_phonemes.dart's file header for the derivation trail).
 //
@@ -25,11 +25,10 @@ import 'dart:convert';
 
 import 'package:flutter/services.dart' show rootBundle;
 
-import '../sorcerer/vocal_score.dart';
-import 'latin_phonemes.dart';
+import 'vocal_slot.dart';
 import 'vocal_enrollment.dart';
 
-/// Reference data for scoring one [VocalWord]: the target MFCC frame
+/// Reference data for scoring one [VocalSlot]: the target MFCC frame
 /// sequence and the frame indices where each checkpoint ends.
 ///
 /// One checkpoint per whole word, not per phoneme — see file header on
@@ -43,7 +42,7 @@ class VocalTemplate {
     required this.checkpointLabels,
   });
 
-  final VocalWord word;
+  final VocalSlot word;
 
   /// One 13-element MFCC vector per ~10 ms frame (MfccExtractor convention).
   final List<List<double>> mfccFrames;
@@ -59,12 +58,12 @@ class VocalTemplate {
   final List<String> checkpointLabels;
 }
 
-/// Supplies the reference [VocalTemplate] for a [VocalWord].
+/// Supplies the reference [VocalTemplate] for a [VocalSlot].
 ///
 /// Implementations must not be imported by battle-layer code — Practice Mode
 /// is consensus-invisible and self-contained under lib/practice/ + lib/ui/.
 abstract class VocalTemplateSource {
-  Future<VocalTemplate> templateFor(VocalWord word);
+  Future<VocalTemplate> templateFor(VocalSlot word);
 
   /// The full exemplar SET for [word] — the references the scorer takes the
   /// min DTW distance over (StreamingPhonemeScorer, 2026-07-22: a set of the
@@ -75,7 +74,7 @@ abstract class VocalTemplateSource {
   /// Default: the single [templateFor] template as a one-element list, so
   /// single-template sources (e.g. [SingleVoiceTemplateSource]) need no
   /// change.
-  Future<List<VocalTemplate>> templatesFor(VocalWord word) async =>
+  Future<List<VocalTemplate>> templatesFor(VocalSlot word) async =>
       [await templateFor(word)];
 }
 
@@ -101,10 +100,10 @@ class SingleVoiceTemplateSource implements VocalTemplateSource {
 
   final String assetDir;
 
-  final Map<VocalWord, VocalTemplate> _cache = {};
+  final Map<VocalSlot, VocalTemplate> _cache = {};
 
   @override
-  Future<VocalTemplate> templateFor(VocalWord word) async {
+  Future<VocalTemplate> templateFor(VocalSlot word) async {
     final cached = _cache[word];
     if (cached != null) return cached;
 
@@ -125,7 +124,7 @@ class SingleVoiceTemplateSource implements VocalTemplateSource {
   }
 
   @override
-  Future<List<VocalTemplate>> templatesFor(VocalWord word) async =>
+  Future<List<VocalTemplate>> templatesFor(VocalSlot word) async =>
       [await templateFor(word)];
 }
 
@@ -146,11 +145,11 @@ class PerUserEnrolledTemplateSource implements VocalTemplateSource {
   final VocalEnrollment enrollment;
   final VocalTemplateSource fallback;
 
-  final Map<VocalWord, List<VocalTemplate>> _cache = {};
+  final Map<VocalSlot, List<VocalTemplate>> _cache = {};
 
   void invalidate() => _cache.clear();
 
-  VocalTemplate _templateFrom(VocalWord word, List<List<double>> frames) =>
+  VocalTemplate _templateFrom(VocalSlot word, List<List<double>> frames) =>
       VocalTemplate(
         word: word,
         mfccFrames: frames,
@@ -161,7 +160,7 @@ class PerUserEnrolledTemplateSource implements VocalTemplateSource {
   /// The player's enrolled take set for [word], or the fallback's set when
   /// that word isn't enrolled yet. Cached until [invalidate].
   @override
-  Future<List<VocalTemplate>> templatesFor(VocalWord word) async {
+  Future<List<VocalTemplate>> templatesFor(VocalSlot word) async {
     final cached = _cache[word];
     if (cached != null) return cached;
 
@@ -175,6 +174,6 @@ class PerUserEnrolledTemplateSource implements VocalTemplateSource {
 
   /// Back-compat single template: the first enrolled take (or fallback).
   @override
-  Future<VocalTemplate> templateFor(VocalWord word) async =>
+  Future<VocalTemplate> templateFor(VocalSlot word) async =>
       (await templatesFor(word)).first;
 }

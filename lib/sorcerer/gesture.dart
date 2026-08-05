@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// gesture.dart — Gesture: the somatic-cast counterpart to VocalWord/
+// gesture.dart — Gesture: the somatic-cast counterpart to VocalSlot/
 // VocalScore. The capture pipeline now exists (gesture_capture.dart,
 // gesture_classifier.dart, lib/practice/gesture_enrollment.dart,
 // practice_screen.dart's Gesture tab) — see docs/SOMATIC_GESTURE_PLAN.md.
 // [kSomaticCaptureEnabled] stays false until that pipeline has cleared a
 // real-device confusion-matrix pass (SORC.5, plan §9/§11); until then this
 // file is still the stable seam battle_screen.dart's cast-time enhancement
-// picker builds against, mirroring how VocalWord/VocalScore/
+// picker builds against, mirroring how VocalSlot/VocalScore/
 // fromSorcererQuality were seamed in before VocalScorer existed.
 //
 // [melee] is captured into the enrollment/calibration corpus now (it's one

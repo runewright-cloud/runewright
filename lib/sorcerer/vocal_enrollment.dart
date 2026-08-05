@@ -24,8 +24,8 @@ import 'dart:typed_data';
 
 import 'package:path_provider/path_provider.dart';
 
-import '../sorcerer/mfcc.dart';
-import '../sorcerer/vocal_score.dart';
+import 'mfcc.dart';
+import 'vocal_slot.dart';
 
 /// Thrown when an enrollment recording can't yield a usable template
 /// (too quiet, too short). The message is user-presentable.
@@ -71,32 +71,57 @@ class VocalEnrollment {
   /// oldest take (FIFO), so "record another" always refreshes the set.
   static const int maxTakes = 5;
 
-  File _fileFor(VocalWord word) => File('${baseDir.path}/${word.name}.json');
+  /// Where [word]'s takes are WRITTEN — always the current slot key.
+  File _fileFor(VocalSlot word) =>
+      File('${baseDir.path}/${word.storageKey}.json');
 
-  bool hasEnrollment(VocalWord word) => _fileFor(word).existsSync();
+  /// Where [word]'s takes are READ from: the current file if it exists,
+  /// otherwise the pre-§8 Latin filename.
+  ///
+  /// Enrollment used to be keyed by the fixed Latin word (`terra.json`);
+  /// slots renamed those to `earth.json` (VOCAL_RECALL_PLAN.md §8). Reading
+  /// through the legacy name means a player who enrolled before the rename
+  /// keeps their recordings instead of silently falling back to the Piper
+  /// voice — a fallback that would cost them mana under recall scoring
+  /// without ever telling them why.
+  ///
+  /// Read path only: the next [_writeTakes] moves them to the current name.
+  /// `finitus` is not migrated — that slot no longer exists.
+  File _readFileFor(VocalSlot word) {
+    final current = _fileFor(word);
+    if (current.existsSync()) return current;
+    for (final entry in VocalSlot.legacyStorageKeys.entries) {
+      if (entry.value != word) continue;
+      final legacy = File('${baseDir.path}/${entry.key}.json');
+      if (legacy.existsSync()) return legacy;
+    }
+    return current;
+  }
 
-  Set<VocalWord> enrolledWords() =>
-      VocalWord.values.where(hasEnrollment).toSet();
+  bool hasEnrollment(VocalSlot word) => _readFileFor(word).existsSync();
 
-  int takeCount(VocalWord word) => _readTakes(word).length;
+  Set<VocalSlot> enrolledWords() =>
+      VocalSlot.values.where(hasEnrollment).toSet();
+
+  int takeCount(VocalSlot word) => _readTakes(word).length;
 
   /// All enrolled exemplar takes for [word] (each a sequence of MFCC frames),
   /// or an empty list if none. Reads the multi-take format and transparently
   /// migrates the legacy single-`frames` format as a one-element set.
-  Future<List<List<List<double>>>?> loadTakes(VocalWord word) async {
+  Future<List<List<List<double>>>?> loadTakes(VocalSlot word) async {
     final takes = _readTakes(word);
     return takes.isEmpty ? null : takes;
   }
 
   /// Back-compat: the FIRST enrolled take's frames (or null). Retained for
   /// callers/tests that predate multi-take; new code uses [loadTakes].
-  Future<List<List<double>>?> loadFrames(VocalWord word) async {
+  Future<List<List<double>>?> loadFrames(VocalSlot word) async {
     final takes = _readTakes(word);
     return takes.isEmpty ? null : takes.first;
   }
 
-  List<List<List<double>>> _readTakes(VocalWord word) {
-    final file = _fileFor(word);
+  List<List<List<double>>> _readTakes(VocalSlot word) {
+    final file = _readFileFor(word);
     if (!file.existsSync()) return const [];
     final json = jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
     List<List<double>> frames(List raw) => raw
@@ -111,7 +136,7 @@ class VocalEnrollment {
   }
 
   Future<void> _writeTakes(
-      VocalWord word, List<List<List<double>>> takes) async {
+      VocalSlot word, List<List<List<double>>> takes) async {
     await baseDir.create(recursive: true);
     await _fileFor(word).writeAsString(jsonEncode({'takes': takes}));
   }
@@ -124,7 +149,7 @@ class VocalEnrollment {
   /// Throws [EnrollmentException] when the recording is too quiet/short or
   /// too long to be a usable single-word reference.
   Future<({int frameCount, int takeCount})> saveFromRecording(
-      VocalWord word, Uint8List pcm) async {
+      VocalSlot word, Uint8List pcm) async {
     final trimmed = trimSilence(pcm);
     final frames = MfccExtractor.extract(trimmed);
     if (frames.length < minVoicedFrames) {
@@ -147,22 +172,33 @@ class VocalEnrollment {
 
   /// Removes the take at [index] for [word]; deletes the word's file when no
   /// takes remain. No-op if the index is out of range.
-  Future<void> removeTake(VocalWord word, int index) async {
+  Future<void> removeTake(VocalSlot word, int index) async {
     final takes = _readTakes(word).toList();
     if (index < 0 || index >= takes.length) return;
     takes.removeAt(index);
     if (takes.isEmpty) {
-      final file = _fileFor(word);
-      if (file.existsSync()) await file.delete();
+      await _deleteFilesFor(word);
     } else {
       await _writeTakes(word, takes);
     }
   }
 
   /// Removes ALL takes for [word] (deletes its file). No-op if unenrolled.
-  Future<void> clearWord(VocalWord word) async {
-    final file = _fileFor(word);
-    if (file.existsSync()) await file.delete();
+  Future<void> clearWord(VocalSlot word) => _deleteFilesFor(word);
+
+  /// Deletes every file [word]'s takes could live in — the current slot key
+  /// AND any pre-§8 Latin name. Deleting only the current name would leave a
+  /// legacy file that [_readFileFor] then resurrects, so a "cleared" word
+  /// would come back with stale takes on the next read.
+  Future<void> _deleteFilesFor(VocalSlot word) async {
+    final files = <File>[
+      _fileFor(word),
+      for (final entry in VocalSlot.legacyStorageKeys.entries)
+        if (entry.value == word) File('${baseDir.path}/${entry.key}.json'),
+    ];
+    for (final file in files) {
+      if (file.existsSync()) await file.delete();
+    }
   }
 
   Future<void> clearAll() async {

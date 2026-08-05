@@ -60,7 +60,6 @@ import '../ffi/srs_cache.dart';
 import '../identity/identity.dart';
 import '../protocol/match_session.dart' show ProofVerifier;
 import '../sorcerer/gesture.dart';
-import '../sorcerer/vocal_score.dart';
 import '../sorcerer/vocal_scorer.dart';
 import '../spells/chapter_asset.dart';
 import '../spells/enhancement_zone.dart';
@@ -75,6 +74,7 @@ import 'scenery/scenery_painter.dart';
 import 'battlefield_painter.dart';
 import 'manuscript_theme.dart';
 import 'spell_card_painter.dart';
+import '../sorcerer/vocal_slot.dart';
 
 // ── Sightings capture (docs/SIGHTINGS_PLAN.md) ──────────────────────────────
 //
@@ -752,7 +752,7 @@ class _BattleScreenState extends State<BattleScreen>
   VocalScorer? _vocalScorer;
   double _ambientFloorRms = 0.0;
   bool _isCapturingVoice = false;
-  VocalWord? _capturingWord;
+  VocalSlot? _capturingWord;
 
   /// Capture window for one incantation. Fixed for this pass — see
   /// VocalScorer's lifecycle doc (vocal_scorer.dart) for the begin/end contract.
@@ -1649,7 +1649,7 @@ class _BattleScreenState extends State<BattleScreen>
 
     final scorer = _vocalScorer;
     final word = spell.formula.isNotEmpty
-        ? VocalWord.fromAffinityZone(spell.formula.first)
+        ? VocalSlot.fromAffinityZone(spell.formula.first)
         : null;
     if (!widget.state.config.sorcererMode || scorer == null || word == null) {
       // Wizard mode, or sorcerer mode before calibration finishes, or a
@@ -1794,7 +1794,7 @@ class _BattleScreenState extends State<BattleScreen>
 
     final scorer = _vocalScorer;
     final word = spell.formula.isNotEmpty
-        ? VocalWord.fromAffinityZone(spell.formula.first)
+        ? VocalSlot.fromAffinityZone(spell.formula.first)
         : null;
     if (!widget.state.config.sorcererMode || scorer == null || word == null) {
       _commitAction(

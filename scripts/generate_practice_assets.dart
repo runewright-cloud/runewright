@@ -44,13 +44,13 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' show sha256;
 import 'package:rune_duel/sorcerer/mfcc.dart';
-import 'package:rune_duel/sorcerer/vocal_score.dart';
+import 'package:rune_duel/sorcerer/vocal_slot.dart';
 
 const String kExpectedOnnxSha256 =
     '5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f';
 
 /// Per-word TTS INPUT spelling override — the string fed to Piper/espeak,
-/// distinct from [VocalWord.name] (what players see/say/cast). Use when the
+/// distinct from [VocalSlot.name] (what players see/say/cast). Use when the
 /// natural en-us letter-to-sound rules don't land where the design wants
 /// (as opposed to the accepted-as-is outcomes documented in
 /// latin_phonemes.dart's header, which are natural rule output Soren chose
@@ -66,8 +66,15 @@ const String kExpectedOnnxSha256 =
 ///      i.e. /ɪs/, not /aɪs/. "ignisse" -> /ɪɡnˈɪs/ ("ig-NISS") hits the
 ///      rhyme exactly AND happens to land stress on the second syllable
 ///      (unlike every "ignyce"-family attempt) — supersedes "ignyce".
-const Map<VocalWord, String> kTtsTextOverride = {
-  VocalWord.ignis: 'ignisse',
+///
+/// reformare (2026-08-04): plain "reformare" phonemizes to /ɹᵻfˈoːɹmɛɹ/ —
+/// literally the English word "reformer". The Latin "-are" tail collapses to
+/// /ɛɹ/ and the word stops sounding like an incantation at all.
+/// "reformahray" -> /ɹᵻfˈoːɹmɑːɹˌeɪ/ ("ruh-FOR-mah-ray") restores the
+/// four-syllable Latin shape. invoco needs no override.
+const Map<VocalSlot, String> kTtsTextOverride = {
+  VocalSlot.fire: 'ignisse',
+  VocalSlot.openerGeneral: 'reformahray',
 };
 
 Future<void> main() async {
@@ -93,13 +100,13 @@ Future<void> main() async {
   final audioDir = Directory('assets/audio/practice')..createSync(recursive: true);
   final templateDir = Directory('assets/practice_templates')..createSync(recursive: true);
 
-  for (final word in VocalWord.values) {
-    stdout.writeln('Rendering ${word.name}...');
+  for (final word in VocalSlot.values) {
+    stdout.writeln('Rendering ${word.name} ("${kTtsTextOverride[word] ?? word.defaultWord}")...');
     final wavBytes = await _renderWithPiper(
       piperBin: piperBin,
       piperLibDir: piperLibDir,
       voiceModel: voiceModel,
-      text: kTtsTextOverride[word] ?? word.name,
+      text: kTtsTextOverride[word] ?? word.defaultWord,
     );
 
     final wavFile = File('${audioDir.path}/${word.name}.wav');

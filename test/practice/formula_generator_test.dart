@@ -2,37 +2,44 @@
 //
 // formula_generator_test.dart — unit tests for PracticeFormulaGenerator
 // (lib/practice/formula_generator.dart). No entropy, no ZK — just checks
-// the Random-only generation shape and grammar (groups of 3 + one trailing
-// finitus).
+// the Random-only generation shape and grammar: one LEADING opener plus
+// groups of 3 element words (VOCAL_RECALL_PLAN.md §8.1).
 
 import 'dart:math';
 
 import 'package:test/test.dart';
 import 'package:rune_duel/practice/formula_generator.dart';
-import 'package:rune_duel/sorcerer/vocal_score.dart';
-
-const _elements = {VocalWord.ignis, VocalWord.ventus, VocalWord.aqua, VocalWord.terra};
+import 'package:rune_duel/sorcerer/vocal_slot.dart';
 
 void main() {
   group('generate', () {
     for (final k in [1, 2, 3]) {
-      test('formulaCount=$k produces ${k * 3} element words + one finitus', () {
+      test('formulaCount=$k produces one opener + ${k * 3} element words', () {
         final generator = PracticeFormulaGenerator(random: Random(42));
         final formula = generator.generate(formulaCount: k);
         expect(formula.words.length, k * 3 + 1);
-        expect(formula.words.last, VocalWord.finitus);
-        for (final w in formula.words.sublist(0, k * 3)) {
-          expect(_elements.contains(w), isTrue, reason: '$w should be an element word');
+        expect(formula.words.first.isOpener, isTrue);
+        expect(formula.elements.length, k * 3);
+        for (final w in formula.elements) {
+          expect(w.isElement, isTrue, reason: '$w should be an element word');
         }
       });
     }
 
-    test('finitus never appears before the final word', () {
+    test('an opener never appears after the first word', () {
       final generator = PracticeFormulaGenerator(random: Random(7));
       final formula = generator.generate(formulaCount: 3);
-      for (final w in formula.words.sublist(0, formula.words.length - 1)) {
-        expect(w, isNot(VocalWord.finitus));
+      for (final w in formula.elements) {
+        expect(w.isOpener, isFalse);
       }
+    });
+
+    test('isSummon picks which opener leads', () {
+      final generator = PracticeFormulaGenerator(random: Random(3));
+      expect(generator.generate(isSummon: true).opener,
+          VocalSlot.openerSummon);
+      expect(generator.generate(isSummon: false).opener,
+          VocalSlot.openerGeneral);
     });
 
     test('rejects formulaCount outside 1-3', () {
@@ -49,30 +56,52 @@ void main() {
   });
 
   group('fromSpellFormula', () {
-    test('maps zone names in order and appends one finitus', () {
+    test('leads with an opener, then maps zone names in order', () {
       final formula =
           PracticeFormula.fromSpellFormula(['fire', 'earth', 'water']);
       expect(formula!.words, [
-        VocalWord.ignis,
-        VocalWord.terra,
-        VocalWord.aqua,
-        VocalWord.finitus,
+        VocalSlot.openerGeneral,
+        VocalSlot.fire,
+        VocalSlot.earth,
+        VocalSlot.water,
       ]);
     });
 
-    test('a three-formula spell yields 9 element words + one finitus', () {
+    test('a summon spell leads with the summon opener', () {
+      final formula = PracticeFormula.fromSpellFormula(
+          ['fire', 'earth', 'water'],
+          isSummon: true);
+      expect(formula!.opener, VocalSlot.openerSummon);
+      expect(formula.elements, [
+        VocalSlot.fire,
+        VocalSlot.earth,
+        VocalSlot.water,
+      ]);
+    });
+
+    test('a three-formula spell yields one opener + 9 element words', () {
       final formula = PracticeFormula.fromSpellFormula([
         'fire', 'earth', 'water',
         'air', 'fire', 'earth',
         'water', 'air', 'fire',
       ]);
       expect(formula!.words.length, 10);
-      expect(formula.words.last, VocalWord.finitus);
+      expect(formula.opener.isOpener, isTrue);
       expect(
-        formula.words.sublist(0, 9).contains(VocalWord.finitus),
+        formula.elements.any((w) => w.isOpener),
         isFalse,
-        reason: 'finitus is spoken once for the whole spell, not per triplet',
+        reason: 'the opener is spoken once for the whole spell, not per triplet',
       );
+    });
+
+    // A tier-48 spell can commit one activation per generation, so the drill
+    // must handle far more than the 9 words the original design assumed.
+    test('handles a 48-element trajectory without truncating', () {
+      final formula = PracticeFormula.fromSpellFormula(
+        List.generate(48, (i) => ['fire', 'air', 'water', 'earth'][i % 4]),
+      );
+      expect(formula!.elements.length, 48);
+      expect(formula.words.length, 49);
     });
 
     // SpellAsset.formula stores FormulaTracker.committed, which includes the
@@ -82,10 +111,10 @@ void main() {
       final formula = PracticeFormula.fromSpellFormula(
           ['fire', 'earth', 'water', 'air', 'fire']);
       expect(formula!.words, [
-        VocalWord.ignis,
-        VocalWord.terra,
-        VocalWord.aqua,
-        VocalWord.finitus,
+        VocalSlot.openerGeneral,
+        VocalSlot.fire,
+        VocalSlot.earth,
+        VocalSlot.water,
       ]);
     });
 
@@ -106,13 +135,13 @@ void main() {
       final formula = PracticeFormula.fromSpellFormula(
           ['fire', 'air', 'water', 'earth', 'fire', 'air']);
       expect(formula!.words, [
-        VocalWord.ignis,
-        VocalWord.ventus,
-        VocalWord.aqua,
-        VocalWord.terra,
-        VocalWord.ignis,
-        VocalWord.ventus,
-        VocalWord.finitus,
+        VocalSlot.openerGeneral,
+        VocalSlot.fire,
+        VocalSlot.air,
+        VocalSlot.water,
+        VocalSlot.earth,
+        VocalSlot.fire,
+        VocalSlot.air,
       ]);
     });
   });

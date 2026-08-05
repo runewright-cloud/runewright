@@ -68,10 +68,10 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import '../sorcerer/mfcc.dart';
-import '../sorcerer/vocal_score.dart';
 import 'formula_generator.dart';
 import 'practice_feedback.dart';
-import 'vocal_template_source.dart';
+import '../sorcerer/vocal_template_source.dart';
+import '../sorcerer/vocal_slot.dart';
 
 class _Segment {
   _Segment({
@@ -82,7 +82,7 @@ class _Segment {
   }) : minRefLen = referenceSets.map((r) => r.length).reduce(math.min);
 
   final int wordIndex;
-  final VocalWord word;
+  final VocalSlot word;
   final String label;
 
   /// The word's exemplar SET — one or more CMN'd, c0-dropped reference
@@ -236,7 +236,7 @@ class StreamingPhonemeScorer {
   /// CMN'd, c0-dropped reference exemplar SETS for every word — the
   /// contrastive competitors (condition 4). Each word maps to one-or-more
   /// takes; match quality is the min cost/steps over the set.
-  Map<VocalWord, List<List<List<double>>>> _vocabulary = const {};
+  Map<VocalSlot, List<List<List<double>>>> _vocabulary = const {};
 
   int _currentSegmentIdx = 0;
   int _segmentQueryStart = 0;
@@ -291,8 +291,8 @@ class StreamingPhonemeScorer {
   /// vocabulary, as contrastive competitors) and resets all pointer state.
   /// Must be called before the first [acceptPcmChunk].
   Future<void> beginFormula(PracticeFormula formula) async {
-    final vocabulary = <VocalWord, List<List<List<double>>>>{};
-    for (final word in VocalWord.values) {
+    final vocabulary = <VocalSlot, List<List<List<double>>>>{};
+    for (final word in VocalSlot.values) {
       final templates = await _templateSource.templatesFor(word);
       vocabulary[word] = [
         for (final t in templates) _meanNormalize(_dropC0All(t.mfccFrames)),

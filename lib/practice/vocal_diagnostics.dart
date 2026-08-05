@@ -23,7 +23,7 @@ import 'dart:typed_data';
 import 'package:path_provider/path_provider.dart';
 
 import '../sorcerer/mfcc.dart';
-import '../sorcerer/vocal_score.dart';
+import '../sorcerer/vocal_slot.dart';
 
 class VocalDiagnostics {
   VocalDiagnostics(this.baseDir);
@@ -36,14 +36,14 @@ class VocalDiagnostics {
   }
 
   /// Count of saved attempt clips per word (for the UI's rep counter).
-  Map<VocalWord, int> attemptCounts() {
-    final counts = {for (final w in VocalWord.values) w: 0};
+  Map<VocalSlot, int> attemptCounts() {
+    final counts = {for (final w in VocalSlot.values) w: 0};
     if (!baseDir.existsSync()) return counts;
     for (final f in baseDir.listSync().whereType<File>()) {
       if (!f.path.toLowerCase().endsWith('.wav')) continue;
       final name = f.uri.pathSegments.last.split('_').first;
       final word =
-          VocalWord.values.where((w) => w.name == name).firstOrNull;
+          VocalSlot.values.where((w) => w.name == name).firstOrNull;
       if (word != null) counts[word] = counts[word]! + 1;
     }
     return counts;
@@ -52,7 +52,7 @@ class VocalDiagnostics {
   /// Writes [pcm] (PCM-16 LE mono, 16 kHz — the raw capture, NOT trimmed:
   /// the harness runs the real scorer which does its own gating) as a WAV
   /// labelled by [word]. Returns the file written.
-  Future<File> saveAttempt(VocalWord word, Uint8List pcm) async {
+  Future<File> saveAttempt(VocalSlot word, Uint8List pcm) async {
     await baseDir.create(recursive: true);
     final ts = DateTime.now().millisecondsSinceEpoch;
     final file = File('${baseDir.path}/${word.name}_$ts.wav');

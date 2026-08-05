@@ -33,9 +33,9 @@ import 'dart:typed_data';
 import 'package:test/test.dart';
 import 'package:rune_duel/practice/formula_generator.dart';
 import 'package:rune_duel/practice/streaming_phoneme_scorer.dart';
-import 'package:rune_duel/practice/vocal_template_source.dart';
+import 'package:rune_duel/sorcerer/vocal_template_source.dart';
 import 'package:rune_duel/sorcerer/mfcc.dart';
-import 'package:rune_duel/sorcerer/vocal_score.dart';
+import 'package:rune_duel/sorcerer/vocal_slot.dart';
 
 Uint8List _pcmFromWav(String path) {
   final bytes = File(path).readAsBytesSync();
@@ -71,9 +71,9 @@ Uint8List _pcmFromWav(String path) {
 /// [VocalTemplateSource] backed by a fixed multi-take set per word.
 class _MultiTakeSource implements VocalTemplateSource {
   _MultiTakeSource(this.sets);
-  final Map<VocalWord, List<List<List<double>>>> sets;
+  final Map<VocalSlot, List<List<List<double>>>> sets;
 
-  VocalTemplate _tpl(VocalWord w, List<List<double>> f) => VocalTemplate(
+  VocalTemplate _tpl(VocalSlot w, List<List<double>> f) => VocalTemplate(
         word: w,
         mfccFrames: f,
         checkpointFrameIndices: [f.length - 1],
@@ -81,21 +81,21 @@ class _MultiTakeSource implements VocalTemplateSource {
       );
 
   @override
-  Future<VocalTemplate> templateFor(VocalWord word) async =>
+  Future<VocalTemplate> templateFor(VocalSlot word) async =>
       _tpl(word, sets[word]!.first);
 
   @override
-  Future<List<VocalTemplate>> templatesFor(VocalWord word) async =>
+  Future<List<VocalTemplate>> templatesFor(VocalSlot word) async =>
       [for (final f in sets[word]!) _tpl(word, f)];
 }
 
 void main() {
-  const words = VocalWord.values;
+  const words = VocalSlot.values;
 
   // 2-element multi-take set per word: the bundled single-take template
   // (the trainer's own render) plus lessac2 (same voice, different
   // utterance) — both already committed, no new fixtures needed.
-  final sets = <VocalWord, List<List<List<double>>>>{};
+  final sets = <VocalSlot, List<List<List<double>>>>{};
   for (final w in words) {
     final bundled = jsonDecode(
         File('assets/practice_templates/${w.name}.json').readAsStringSync());
@@ -108,7 +108,7 @@ void main() {
   }
   final source = _MultiTakeSource(sets);
 
-  final fixtures = <String, Map<VocalWord, Uint8List>>{
+  final fixtures = <String, Map<VocalSlot, Uint8List>>{
     for (final voice in ['lessac2', 'amy'])
       voice: {
         for (final w in words)
@@ -116,7 +116,7 @@ void main() {
       },
   };
 
-  Future<bool> run(VocalWord target, Uint8List spokenAudio,
+  Future<bool> run(VocalSlot target, Uint8List spokenAudio,
       {int attempts = 2}) async {
     final scorer = StreamingPhonemeScorer(templateSource: source);
     await scorer.beginFormula(PracticeFormula([target]));

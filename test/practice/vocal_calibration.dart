@@ -31,10 +31,10 @@ import 'dart:typed_data';
 import 'package:test/test.dart';
 import 'package:rune_duel/practice/formula_generator.dart';
 import 'package:rune_duel/practice/streaming_phoneme_scorer.dart';
-import 'package:rune_duel/practice/vocal_enrollment.dart';
-import 'package:rune_duel/practice/vocal_template_source.dart';
+import 'package:rune_duel/sorcerer/vocal_enrollment.dart';
+import 'package:rune_duel/sorcerer/vocal_template_source.dart';
 import 'package:rune_duel/sorcerer/mfcc.dart';
-import 'package:rune_duel/sorcerer/vocal_score.dart';
+import 'package:rune_duel/sorcerer/vocal_slot.dart';
 
 const _enrollDir = String.fromEnvironment('ENROLL_DIR');
 const _attemptsDir = String.fromEnvironment('ATTEMPTS_DIR');
@@ -113,9 +113,9 @@ double _quality(List<List<double>> q, List<List<double>> refCmn) {
   return r.cost / r.steps;
 }
 
-Map<VocalWord, List<List<double>>> _loadEnroll(String dir) {
-  final out = <VocalWord, List<List<double>>>{};
-  for (final w in VocalWord.values) {
+Map<VocalSlot, List<List<double>>> _loadEnroll(String dir) {
+  final out = <VocalSlot, List<List<double>>>{};
+  for (final w in VocalSlot.values) {
     final f = File('$dir/${w.name}.json');
     if (!f.existsSync()) {
       stderr.writeln('WARNING: missing enrollment ${f.path}');
@@ -129,7 +129,7 @@ Map<VocalWord, List<List<double>>> _loadEnroll(String dir) {
   return out;
 }
 
-void _printSeparabilityMatrix(Map<VocalWord, List<List<double>>> enroll) {
+void _printSeparabilityMatrix(Map<VocalSlot, List<List<double>>> enroll) {
   final words = enroll.keys.toList();
   final rawQ = {
     for (final w in words) w: _maybeAddDeltas(_dropC0All(enroll[w]!)),
@@ -148,7 +148,7 @@ void _printSeparabilityMatrix(Map<VocalWord, List<List<double>>> enroll) {
 
   for (final spoken in words) {
     stdout.write(spoken.name.padRight(9));
-    final scores = <VocalWord, double>{};
+    final scores = <VocalSlot, double>{};
     for (final ref in words) {
       final q = _quality(rawQ[spoken]!, refCmn[ref]!);
       scores[ref] = q;
@@ -205,13 +205,13 @@ Uint8List _pcmFromWav(String path) {
 /// Backs the streaming scorer with either a single template per word
 /// (legacy grid) or a multi-take exemplar SET per word (multi-exemplar grid).
 class _EnrollSource implements VocalTemplateSource {
-  _EnrollSource(Map<VocalWord, List<List<double>>> enroll)
+  _EnrollSource(Map<VocalSlot, List<List<double>>> enroll)
       : sets = {for (final e in enroll.entries) e.key: [e.value]};
   _EnrollSource.sets(this.sets);
 
-  final Map<VocalWord, List<List<List<double>>>> sets;
+  final Map<VocalSlot, List<List<List<double>>>> sets;
 
-  VocalTemplate _tpl(VocalWord word, List<List<double>> frames) => VocalTemplate(
+  VocalTemplate _tpl(VocalSlot word, List<List<double>> frames) => VocalTemplate(
         word: word,
         mfccFrames: frames,
         checkpointFrameIndices: [frames.length - 1],
@@ -219,11 +219,11 @@ class _EnrollSource implements VocalTemplateSource {
       );
 
   @override
-  Future<VocalTemplate> templateFor(VocalWord word) async =>
+  Future<VocalTemplate> templateFor(VocalSlot word) async =>
       _tpl(word, sets[word]!.first);
 
   @override
-  Future<List<VocalTemplate>> templatesFor(VocalWord word) async =>
+  Future<List<VocalTemplate>> templatesFor(VocalSlot word) async =>
       [for (final f in sets[word]!) _tpl(word, f)];
 }
 
@@ -231,15 +231,15 @@ class _EnrollSource implements VocalTemplateSource {
 /// clip (trimmed + MFCC'd like enrollment), returning (derivedEnroll,
 /// remainingQueries). Simulates same-pace hold-to-record enrollment.
 ({
-  Map<VocalWord, List<List<double>>> enroll,
-  List<({VocalWord word, String path})> queries,
-}) _deriveFromClips(List<({VocalWord word, String path})> all) {
-  final byWord = <VocalWord, List<String>>{};
+  Map<VocalSlot, List<List<double>>> enroll,
+  List<({VocalSlot word, String path})> queries,
+}) _deriveFromClips(List<({VocalSlot word, String path})> all) {
+  final byWord = <VocalSlot, List<String>>{};
   for (final a in all) {
     byWord.putIfAbsent(a.word, () => []).add(a.path);
   }
-  final enroll = <VocalWord, List<List<double>>>{};
-  final queries = <({VocalWord word, String path})>[];
+  final enroll = <VocalSlot, List<List<double>>>{};
+  final queries = <({VocalSlot word, String path})>[];
   for (final entry in byWord.entries) {
     final paths = entry.value..sort();
     // Extract trimmed MFCC for each clip; pick the median by frame count as
@@ -266,8 +266,8 @@ class _EnrollSource implements VocalTemplateSource {
 /// held out as the query: W's template SET is its OTHER clips (no leakage);
 /// every OTHER word's template SET is ALL of its clips (no leakage risk,
 /// different word). Distance to a word = min cost/steps over its set.
-void _printMultiExemplarRankings(List<({VocalWord word, String path})> all) {
-  final byWord = <VocalWord, List<String>>{};
+void _printMultiExemplarRankings(List<({VocalSlot word, String path})> all) {
+  final byWord = <VocalSlot, List<String>>{};
   for (final a in all) {
     byWord.putIfAbsent(a.word, () => []).add(a.path);
   }
@@ -300,7 +300,7 @@ void _printMultiExemplarRankings(List<({VocalWord word, String path})> all) {
     for (final heldOut in paths) {
       total++;
       final query = rawByPath[heldOut]!;
-      final scores = <VocalWord, double>{};
+      final scores = <VocalSlot, double>{};
       for (final w in words) {
         final setPaths = w == word
             ? paths.where((p) => p != heldOut).toList()
@@ -334,15 +334,15 @@ void _printMultiExemplarRankings(List<({VocalWord word, String path})> all) {
   stdout.writeln('\n$correct/$total correct (argmin == target).');
 }
 
-List<({VocalWord word, String path})> _loadAttempts(String dir) {
-  final out = <({VocalWord word, String path})>[];
+List<({VocalSlot word, String path})> _loadAttempts(String dir) {
+  final out = <({VocalSlot word, String path})>[];
   for (final f in Directory(dir).listSync().whereType<File>()) {
     if (!f.path.toLowerCase().endsWith('.wav')) continue;
     final base = f.uri.pathSegments.last.replaceAll('.wav', '');
     final word =
-        VocalWord.values.where((w) => w.name == base.split('_').first).firstOrNull;
+        VocalSlot.values.where((w) => w.name == base.split('_').first).firstOrNull;
     if (word == null) {
-      stderr.writeln('skip (name not a VocalWord): ${f.path}');
+      stderr.writeln('skip (name not a VocalSlot): ${f.path}');
       continue;
     }
     out.add((word: word, path: f.path));
@@ -351,8 +351,8 @@ List<({VocalWord word, String path})> _loadAttempts(String dir) {
 }
 
 Future<bool> _runOne(
-  Map<VocalWord, List<List<double>>> enroll,
-  VocalWord target,
+  Map<VocalSlot, List<List<double>>> enroll,
+  VocalSlot target,
   Uint8List pcm, {
   required double floor,
   required int debounce,
@@ -386,8 +386,8 @@ Future<bool> _runOne(
 /// directly whether the target wins the argmin on the real voice and by how
 /// much — the core question, without the expensive streaming grid.
 void _printAttemptRankings(
-  Map<VocalWord, List<List<double>>> enroll,
-  List<({VocalWord word, String path})> attempts,
+  Map<VocalSlot, List<List<double>>> enroll,
+  List<({VocalSlot word, String path})> attempts,
 ) {
   final words = enroll.keys.toList();
   final refCmn = {
@@ -406,7 +406,7 @@ void _printAttemptRankings(
     final q =
         _maybeAddDeltas(_dropC0All(MfccExtractor.extract(_pcmFromWav(a.path))));
     stdout.write(a.word.name.padRight(10));
-    final scores = <VocalWord, double>{};
+    final scores = <VocalSlot, double>{};
     for (final w in words) {
       final s = _quality(q, refCmn[w]!);
       scores[w] = s;
@@ -434,8 +434,8 @@ void _printAttemptRankings(
 }
 
 Future<void> _gridSearch(
-  Map<VocalWord, List<List<double>>> enroll,
-  List<({VocalWord word, String path})> attempts,
+  Map<VocalSlot, List<List<double>>> enroll,
+  List<({VocalSlot word, String path})> attempts,
 ) async {
   final pcm = {for (final a in attempts) a.path: _pcmFromWav(a.path)};
 
@@ -445,7 +445,7 @@ Future<void> _gridSearch(
     final ok = await _runOne(enroll, a.word, pcm[a.path]!,
         floor: 6.25, debounce: 8, margin: 0.9);
     final wrongWins = <String>[];
-    for (final other in VocalWord.values) {
+    for (final other in VocalSlot.values) {
       if (other == a.word) continue;
       if (await _runOne(enroll, other, pcm[a.path]!,
           floor: 6.25, debounce: 8, margin: 0.9)) {
@@ -474,7 +474,7 @@ Future<void> _gridSearch(
               floor: f, debounce: d, margin: m)) {
             ok++;
           }
-          for (final other in VocalWord.values) {
+          for (final other in VocalSlot.values) {
             if (other == a.word) continue;
             if (await _runOne(enroll, other, pcm[a.path]!,
                 floor: f, debounce: d, margin: m)) {
@@ -520,8 +520,8 @@ void main() {
       return;
     }
 
-    Map<VocalWord, List<List<double>>> enroll;
-    List<({VocalWord word, String path})> attempts;
+    Map<VocalSlot, List<List<double>>> enroll;
+    List<({VocalSlot word, String path})> attempts;
 
     if (_deriveTemplates) {
       if (_attemptsDir.isEmpty) {

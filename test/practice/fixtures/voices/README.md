@@ -1,6 +1,7 @@
 # Practice Mode voice fixtures
 
-Piper TTS renders of the 5 incantation words, used by
+Piper TTS renders of the 6 default incantation words (one per
+`VocalSlot` — four elements plus the two openers), used by
 `test/practice/real_template_e2e_test.dart` to exercise the full
 StreamingPhonemeScorer crossing logic against the real bundled templates
 (`assets/practice_templates/*.json`, rendered from `en_US-lessac-medium`).
@@ -22,3 +23,12 @@ two commands, `--model` swapped) whenever the vocabulary or trainer voice
 changes, as on 2026-07-22 when the trainer switched from Italian
 (`it_IT-paola-medium`/`it_IT-riccardo-x_low`) to English (see
 docs/M4_findings.md).
+
+Regenerated 2026-08-04 for the VOCAL_RECALL_PLAN.md §8 vocabulary change:
+files are now named by `VocalSlot` (`fire`, `air`, `water`, `earth`,
+`openerGeneral`, `openerSummon`) rather than by the Latin word, since the
+word filling a slot is now the player's choice. `finitus` is gone; the two
+openers replace it. The rendered text is `VocalSlot.defaultWord`, with the
+same `kTtsTextOverride` spellings the bundled templates use (`ignisse` for
+fire, `reformahray` for openerGeneral) — the fixtures must be phonemized
+identically to the templates they are scored against.

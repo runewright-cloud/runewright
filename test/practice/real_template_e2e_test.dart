@@ -30,14 +30,14 @@ import 'dart:typed_data';
 import 'package:test/test.dart';
 import 'package:rune_duel/practice/formula_generator.dart';
 import 'package:rune_duel/practice/streaming_phoneme_scorer.dart';
-import 'package:rune_duel/practice/vocal_template_source.dart';
-import 'package:rune_duel/sorcerer/vocal_score.dart';
+import 'package:rune_duel/sorcerer/vocal_template_source.dart';
+import 'package:rune_duel/sorcerer/vocal_slot.dart';
 
 /// Loads the real bundled templates from disk (tests run from the repo
 /// root; rootBundle would need a Flutter binding).
 class _DiskTemplateSource implements VocalTemplateSource {
   @override
-  Future<VocalTemplate> templateFor(VocalWord word) async {
+  Future<VocalTemplate> templateFor(VocalSlot word) async {
     final raw = File('assets/practice_templates/${word.name}.json')
         .readAsStringSync();
     final json = jsonDecode(raw) as Map<String, dynamic>;
@@ -53,7 +53,7 @@ class _DiskTemplateSource implements VocalTemplateSource {
   }
 
   @override
-  Future<List<VocalTemplate>> templatesFor(VocalWord word) async =>
+  Future<List<VocalTemplate>> templatesFor(VocalSlot word) async =>
       [await templateFor(word)];
 }
 
@@ -91,8 +91,8 @@ Uint8List _pcmFromWav(String path) {
 }
 
 void main() {
-  const words = VocalWord.values;
-  final fixtures = <String, Map<VocalWord, Uint8List>>{
+  const words = VocalSlot.values;
+  final fixtures = <String, Map<VocalSlot, Uint8List>>{
     for (final voice in ['lessac2', 'amy'])
       voice: {
         for (final w in words)
@@ -104,7 +104,7 @@ void main() {
   /// of [spoken]'s audio separated by 0.5s pauses (mimicking a real
   /// retry cadence and triggering attempt segmentation). Returns true if
   /// the formula completed.
-  Future<bool> run(VocalWord target, Uint8List spokenAudio,
+  Future<bool> run(VocalSlot target, Uint8List spokenAudio,
       {int attempts = 2}) async {
     final scorer =
         StreamingPhonemeScorer(templateSource: _DiskTemplateSource());

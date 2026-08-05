@@ -17,17 +17,18 @@ import '../practice/gesture_template_source.dart';
 import '../practice/practice_feedback.dart';
 import '../practice/streaming_phoneme_scorer.dart';
 import '../practice/vocal_diagnostics.dart';
-import '../practice/vocal_enrollment.dart';
-import '../practice/vocal_template_source.dart';
+import '../sorcerer/vocal_enrollment.dart';
+import '../sorcerer/vocal_template_source.dart';
 import '../practice/vocal_tuning.dart';
 import '../sorcerer/gesture.dart';
 import '../sorcerer/gesture_capture.dart';
 import '../sorcerer/gesture_classifier.dart';
 import '../sorcerer/mfcc.dart';
-import '../sorcerer/vocal_score.dart';
 import '../spells/spell_asset.dart';
 import 'widgets/hold_to_record_control.dart';
 import 'widgets/vocal_strictness_slider.dart';
+import '../sorcerer/vocal_slot.dart';
+import '../sorcerer/vocabulary_profile.dart';
 
 /// Which persistence path a hold-to-record capture feeds — see
 /// [_PracticeScreenState._onHoldStart]/[_finishHold]. Enrollment takes and
@@ -73,12 +74,12 @@ class _PracticeScreenState extends State<PracticeScreen>
   // documents directory resolves in initState.
   VocalEnrollment? _enrollment;
   PerUserEnrolledTemplateSource? _templateSource;
-  Set<VocalWord> _enrolledWords = const {};
+  Set<VocalSlot> _enrolledWords = const {};
 
   /// Per-word exemplar take count (StreamingPhonemeScorer scores min-
   /// distance over this set — see vocal_enrollment.dart's 2026-07-22
   /// multi-take rework). Kept in sync with disk after every save/clear.
-  Map<VocalWord, int> _takeCounts = const {};
+  Map<VocalSlot, int> _takeCounts = const {};
 
   // Calibration capture (dev tool, off by default): records single-word
   // attempt clips to <docs>/practice_diagnostics/ for offline threshold
@@ -86,7 +87,7 @@ class _PracticeScreenState extends State<PracticeScreen>
   // test/practice/vocal_calibration.dart.
   VocalDiagnostics? _diagnostics;
   bool _calibrationMode = false;
-  Map<VocalWord, int> _attemptCounts = const {};
+  Map<VocalSlot, int> _attemptCounts = const {};
 
   // In-progress hold-to-record capture, shared by enrollment takes and
   // calibration attempts (see _HoldTarget and _onHoldStart/_finishHold) —
@@ -94,7 +95,7 @@ class _PracticeScreenState extends State<PracticeScreen>
   AudioRecorder? _holdRecorder;
   StreamSubscription<Uint8List>? _holdSub;
   BytesBuilder? _holdPcm;
-  VocalWord? _holdWord;
+  VocalSlot? _holdWord;
   _HoldTarget? _holdTarget;
 
   AudioRecorder? _recorder;
@@ -154,7 +155,22 @@ class _PracticeScreenState extends State<PracticeScreen>
     unawaited(_initEnrollment());
     unawaited(_initGestureEnrollment());
     unawaited(_initVocalTuning());
+    unawaited(_initVocabulary());
   }
+
+  /// The player's chosen words. Every place this screen shows a word must go
+  /// through [_labelFor] rather than [VocalSlot.name] — the enum names slots,
+  /// not words (VOCAL_RECALL_PLAN.md §8).
+  VocabularyProfile _vocabulary = VocabularyProfile.defaults;
+
+  Future<void> _initVocabulary() async {
+    final vocabulary = await VocabularyProfile.load();
+    if (!mounted) return;
+    setState(() => _vocabulary = vocabulary);
+  }
+
+  /// The word this player speaks for [slot].
+  String _labelFor(VocalSlot slot) => _vocabulary.labelFor(slot);
 
   Future<void> _initEnrollment() async {
     final enrollment = await VocalEnrollment.open();
@@ -165,7 +181,7 @@ class _PracticeScreenState extends State<PracticeScreen>
       _templateSource = PerUserEnrolledTemplateSource(enrollment: enrollment);
       _enrolledWords = enrollment.enrolledWords();
       _takeCounts = {
-        for (final w in VocalWord.values) w: enrollment.takeCount(w),
+        for (final w in VocalSlot.values) w: enrollment.takeCount(w),
       };
       _diagnostics = diagnostics;
       _attemptCounts = diagnostics.attemptCounts();
@@ -202,7 +218,7 @@ class _PracticeScreenState extends State<PracticeScreen>
   /// player's own pace (no fixed window) — this is what fixed the pace
   /// mismatch between careful slow enrollment and brisk real casting (see
   /// docs/M4_findings.md 2026-07-22).
-  Future<void> _onHoldStart(VocalWord word, _HoldTarget target) async {
+  Future<void> _onHoldStart(VocalSlot word, _HoldTarget target) async {
     if (_holdWord != null || _isCapturing) return;
     final recorder = AudioRecorder();
     try {
@@ -274,7 +290,7 @@ class _PracticeScreenState extends State<PracticeScreen>
               _takeCounts = {..._takeCounts, word: result.takeCount};
             });
           }
-          _showSnack('Saved "${word.name}" — '
+          _showSnack('Saved "${_labelFor(word)}" — '
               '${result.takeCount}/${VocalEnrollment.maxTakes} takes.');
         } on EnrollmentException catch (e) {
           _showSnack(e.message);
@@ -484,7 +500,7 @@ class _PracticeScreenState extends State<PracticeScreen>
     });
   }
 
-  Future<void> _playWord(VocalWord word) =>
+  Future<void> _playWord(VocalSlot word) =>
       _player.play(AssetSource('audio/practice/${word.name}.wav'));
 
   Future<void> _clearEnrollment() async {
@@ -495,14 +511,14 @@ class _PracticeScreenState extends State<PracticeScreen>
     if (mounted) {
       setState(() {
         _enrolledWords = enrollment.enrolledWords();
-        _takeCounts = {for (final w in VocalWord.values) w: 0};
+        _takeCounts = {for (final w in VocalSlot.values) w: 0};
       });
     }
     _showSnack('Cleared all voice enrollments — scoring falls back to the '
         'default voice.');
   }
 
-  Future<void> _clearWordEnrollment(VocalWord word) async {
+  Future<void> _clearWordEnrollment(VocalSlot word) async {
     final enrollment = _enrollment;
     if (enrollment == null) return;
     await enrollment.clearWord(word);
@@ -513,7 +529,7 @@ class _PracticeScreenState extends State<PracticeScreen>
         _takeCounts = {..._takeCounts, word: 0};
       });
     }
-    _showSnack('Cleared "${word.name}" — record it again to re-enroll.');
+    _showSnack('Cleared "${_labelFor(word)}" — record it again to re-enroll.');
   }
 
   void _showSnack(String message) {
@@ -771,7 +787,7 @@ class _PracticeScreenState extends State<PracticeScreen>
   Widget _buildEnrollmentCard() {
     final ready = _templateSource != null;
     final enrolledCount = _enrolledWords.length;
-    final total = VocalWord.values.length;
+    final total = VocalSlot.values.length;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -803,7 +819,7 @@ class _PracticeScreenState extends State<PracticeScreen>
               style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
             ),
             const SizedBox(height: 8),
-            for (final word in VocalWord.values)
+            for (final word in VocalSlot.values)
               _enrollmentRow(word, ready: ready),
           ],
         ),
@@ -811,7 +827,7 @@ class _PracticeScreenState extends State<PracticeScreen>
     );
   }
 
-  Widget _enrollmentRow(VocalWord word, {required bool ready}) {
+  Widget _enrollmentRow(VocalSlot word, {required bool ready}) {
     final takes = _takeCounts[word] ?? 0;
     final canHold =
         ready && !_isCapturing && (_holdWord == null || _holdWord == word);
@@ -825,7 +841,7 @@ class _PracticeScreenState extends State<PracticeScreen>
             onPressed: () => _playWord(word),
           ),
           HoldToRecordButton(
-            label: word.name,
+            label: _labelFor(word),
             icon: Icons.mic,
             enabled: canHold,
             onHoldStart: () => _onHoldStart(word, _HoldTarget.enrollment),
@@ -844,7 +860,7 @@ class _PracticeScreenState extends State<PracticeScreen>
           if (takes > 0)
             IconButton(
               icon: const Icon(Icons.close, size: 18),
-              tooltip: 'Clear ${word.name}\'s takes',
+              tooltip: 'Clear ${_labelFor(word)}\'s takes',
               onPressed: () => _clearWordEnrollment(word),
             ),
         ],
@@ -891,12 +907,12 @@ class _PracticeScreenState extends State<PracticeScreen>
                 spacing: 12,
                 runSpacing: 12,
                 children: [
-                  for (final word in VocalWord.values)
+                  for (final word in VocalSlot.values)
                     Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         HoldToRecordButton(
-                          label: word.name,
+                          label: _labelFor(word),
                           icon: Icons.mic,
                           enabled: ready &&
                               !_isCapturing &&
@@ -945,10 +961,11 @@ class _PracticeScreenState extends State<PracticeScreen>
             for (int i = 0; i < formula.words.length; i++)
               Chip(
                 label: Text(
-                  // Word count is not a secret; word identity is. The
-                  // terminator is always finitus and carries no recall
-                  // information, so showing it costs nothing.
-                  formula.words[i] == VocalWord.finitus ? 'finitus' : '? ? ?',
+                  // Word count is not a secret; word identity is. Every word
+                  // is concealed, the opener included — unlike the retired
+                  // `finitus`, which was invariant, the opener is one of two
+                  // and so carries real recall information (§8.5).
+                  '? ? ?',
                 ),
                 backgroundColor:
                     _target?.wordIndex == i ? Colors.amber.shade100 : null,
@@ -968,10 +985,10 @@ class _PracticeScreenState extends State<PracticeScreen>
     );
   }
 
-  Widget _wordChip(VocalWord word, int index) {
+  Widget _wordChip(VocalSlot word, int index) {
     final isCurrentTarget = _target?.wordIndex == index;
     return InputChip(
-      label: Text(word.name),
+      label: Text(_labelFor(word)),
       backgroundColor: isCurrentTarget ? Colors.amber.shade100 : null,
       onPressed: () => _playWord(word),
       avatar: const Icon(Icons.play_arrow, size: 18),
