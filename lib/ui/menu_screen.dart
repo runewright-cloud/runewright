@@ -13,6 +13,7 @@ import 'library_screen.dart';
 import 'manuscript_theme.dart' show kIlluminationGold, kRubricRed, kInkColor;
 import 'onboarding/onboarding_landing_screen.dart';
 import 'practice_screen.dart';
+import 'vocabulary_screen.dart';
 import 'settings_screen.dart';
 import 'sigil_painter.dart';
 
@@ -109,6 +110,13 @@ class MenuScreen extends StatelessWidget {
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const PracticeScreen()),
+                  ),
+                ),
+                _MenuButton(
+                  label: 'Incantations',
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const VocabularyScreen()),
                   ),
                 ),
                 _MenuButton(

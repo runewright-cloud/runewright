@@ -27,6 +27,7 @@ import 'package:flutter/services.dart' show rootBundle;
 
 import 'vocal_slot.dart';
 import 'vocal_enrollment.dart';
+import 'vocabulary_profile.dart';
 
 /// Reference data for scoring one [VocalSlot]: the target MFCC frame
 /// sequence and the frame indices where each checkpoint ends.
@@ -139,11 +140,27 @@ class SingleVoiceTemplateSource implements VocalTemplateSource {
 class PerUserEnrolledTemplateSource implements VocalTemplateSource {
   PerUserEnrolledTemplateSource({
     required this.enrollment,
+    this.vocabulary,
     VocalTemplateSource? fallback,
   }) : fallback = fallback ?? SingleVoiceTemplateSource();
 
   final VocalEnrollment enrollment;
   final VocalTemplateSource fallback;
+
+  /// The player's CURRENT words. When set, a slot's enrolled takes are used
+  /// only if they were recorded for the word the profile now names.
+  ///
+  /// This is the read half of atomic re-keying (§8.8). Committing a new
+  /// vocabulary touches several enrollment files plus the profile, so a crash
+  /// part-way could leave a slot holding audio of the old word under the new
+  /// word's name. Scoring against that would cost the player mana every cast,
+  /// for a reason invisible to them. Falling back to the bundled default is
+  /// worse at recognition but honest about it — and it self-heals the moment
+  /// they re-record.
+  ///
+  /// Null disables the check (Practice Mode's pre-§8 enrollment screen, and
+  /// any file written before labels existed).
+  final VocabularyProfile? vocabulary;
 
   final Map<VocalSlot, List<VocalTemplate>> _cache = {};
 
@@ -164,12 +181,25 @@ class PerUserEnrolledTemplateSource implements VocalTemplateSource {
     final cached = _cache[word];
     if (cached != null) return cached;
 
-    final takes = await enrollment.loadTakes(word);
+    final takes = _isStale(word) ? null : await enrollment.loadTakes(word);
     final templates = takes == null
         ? await fallback.templatesFor(word)
         : [for (final frames in takes) _templateFrom(word, frames)];
     _cache[word] = templates;
     return templates;
+  }
+
+  /// Whether [word]'s enrolled takes were recorded for a DIFFERENT word than
+  /// the profile now names — see [vocabulary].
+  ///
+  /// An unlabelled file is trusted: it predates labels, so there is no
+  /// evidence against it, and distrusting it would silently discard every
+  /// recording made before this check existed.
+  bool _isStale(VocalSlot word) {
+    final profile = vocabulary;
+    if (profile == null) return false;
+    final recorded = enrollment.labelFor(word);
+    return recorded != null && recorded != profile.labelFor(word);
   }
 
   /// Back-compat single template: the first enrolled take (or fallback).

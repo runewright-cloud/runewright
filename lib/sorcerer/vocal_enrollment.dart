@@ -136,9 +136,53 @@ class VocalEnrollment {
   }
 
   Future<void> _writeTakes(
-      VocalSlot word, List<List<List<double>>> takes) async {
+      VocalSlot word, List<List<List<double>>> takes,
+      {String? label}) async {
     await baseDir.create(recursive: true);
-    await _fileFor(word).writeAsString(jsonEncode({'takes': takes}));
+    await _fileFor(word).writeAsString(jsonEncode({
+      'label': ?label,
+      'takes': takes,
+    }));
+  }
+
+  /// The WORD these takes were recorded for, or null for a file written
+  /// before labels existed (or by the pre-§8 enrollment screen).
+  ///
+  /// This is what makes re-keying safe without cross-file atomicity (§8.8). A
+  /// vocabulary swap touches several files plus the profile, so a crash
+  /// part-way could leave a slot whose stored audio is for one word while the
+  /// profile now names another. Recording the word IN the file makes that
+  /// state DETECTABLE: [PerUserEnrolledTemplateSource] compares the two and
+  /// falls back to the bundled default rather than silently scoring a player
+  /// against audio of a word they no longer say — which would cost them mana
+  /// for no reason they could see.
+  String? labelFor(VocalSlot word) {
+    final file = _readFileFor(word);
+    if (!file.existsSync()) return null;
+    try {
+      final json =
+          jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
+      final label = json['label'];
+      return label is String && label.isNotEmpty ? label : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Copies [slots] from [staging] into this enrollment.
+  ///
+  /// The commit half of an atomic re-key: takes are recorded into a staging
+  /// enrollment first and only adopted once EVERY changed slot has them, so a
+  /// player never duels with half an old vocabulary and half a new one.
+  Future<void> adoptFrom(
+    VocalEnrollment staging,
+    Map<VocalSlot, String> labels,
+  ) async {
+    for (final entry in labels.entries) {
+      final takes = staging._readTakes(entry.key);
+      if (takes.isEmpty) continue;
+      await _writeTakes(entry.key, takes, label: entry.value);
+    }
   }
 
   /// Trims leading/trailing silence from [pcm] (PCM-16 LE mono, 16 kHz),
@@ -149,7 +193,7 @@ class VocalEnrollment {
   /// Throws [EnrollmentException] when the recording is too quiet/short or
   /// too long to be a usable single-word reference.
   Future<({int frameCount, int takeCount})> saveFromRecording(
-      VocalSlot word, Uint8List pcm) async {
+      VocalSlot word, Uint8List pcm, {String? label}) async {
     final trimmed = trimSilence(pcm);
     final frames = MfccExtractor.extract(trimmed);
     if (frames.length < minVoicedFrames) {
@@ -166,7 +210,7 @@ class VocalEnrollment {
     while (takes.length > maxTakes) {
       takes.removeAt(0); // FIFO: drop the oldest take
     }
-    await _writeTakes(word, takes);
+    await _writeTakes(word, takes, label: label ?? labelFor(word));
     return (frameCount: frames.length, takeCount: takes.length);
   }
 

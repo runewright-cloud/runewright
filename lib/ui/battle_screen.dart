@@ -78,6 +78,7 @@ import '../sorcerer/mfcc.dart';
 import 'widgets/hold_to_record_control.dart';
 import '../sorcerer/incantation_recall.dart';
 import '../sorcerer/incantation_recall_scorer.dart';
+import '../sorcerer/vocabulary_profile.dart';
 import '../sorcerer/vocal_enrollment.dart';
 import '../sorcerer/vocal_template_source.dart';
 
@@ -226,7 +227,6 @@ const Map<String, String> _kStatusLabel = {
   StatusEffectId.sluggish: 'Sluggish',
   StatusEffectId.quick: 'Quick',
   StatusEffectId.nextSpellCostDouble: '2× Cost',
-  StatusEffectId.blind: 'Blind',
   StatusEffectId.chainFast: 'Chain+',
   StatusEffectId.chainSlow: 'Chain−',
   StatusEffectId.chainSurcharge: 'Cursed Chain',
@@ -1047,8 +1047,15 @@ class _BattleScreenState extends State<BattleScreen>
   Future<void> _initSorcererMode() async {
     _vocalScorer = VocalScorerFactory.create();
     final enrollment = await VocalEnrollment.open();
+    // The profile is passed so a slot whose enrolled audio is for a word the
+    // player has since changed reads as stale and falls back to the bundled
+    // template, instead of scoring them against a word they no longer say.
+    final vocabulary = await VocabularyProfile.load();
     final scorer = IncantationRecallScorer(
-      templateSource: PerUserEnrolledTemplateSource(enrollment: enrollment),
+      templateSource: PerUserEnrolledTemplateSource(
+        enrollment: enrollment,
+        vocabulary: vocabulary,
+      ),
     );
     await scorer.load();
     if (!mounted) return;
