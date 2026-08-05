@@ -492,12 +492,16 @@ byte, slot indices only); the engine wiring (both cost paths, fizzle-with-refund
 forfeit split, honest preview); protocol bumped to **v4**; Piper assets and voice
 fixtures regenerated for all six slots.
 
+Also built: **the capture (§9.4)** — `IncantationRecallScorer` (whole-utterance
+segmentation plus per-position argmin over the candidate set) and the hold-to-cast
+wiring, on `HoldToRecordButton`. 1232 tests green.
+
 **Not yet built:**
 
-- **The capture itself (§9.4).** `IncantationRecallScorer` and the hold-to-cast wiring.
-  Until it lands, a sorcerer cast carries no recall and prices at the honest base cost —
-  no discount earned, no penalty charged.
-- The vocabulary UI, atomic re-keying, and §8.7's separation meter.
+- **The vocabulary UI.** Nothing lets a player *choose* their words yet, so every
+  vocabulary is the Latin default in practice. `VocabularyProfile` persists them and the
+  whole stack reads through it — the screen is the missing piece, along with atomic
+  re-keying (§8.8) and §8.7's separation meter.
 - Repointing Practice Mode at the recall scorer, and retiring
   `StreamingPhonemeScorer`.
 - A **two-loop parity test**: both devices deriving the same multiplier from the same
