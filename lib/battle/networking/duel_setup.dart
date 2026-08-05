@@ -78,6 +78,8 @@ class DuelSetupResult {
     required this.peerBookRootHex,
     required this.peerBookLeafCount,
     required this.peerPermissions,
+    required this.localAvatarId,
+    required this.peerAvatarId,
   });
 
   final BattleSession session;
@@ -111,6 +113,15 @@ class DuelSetupResult {
   /// (BATTLE_AUTH_PLAN §5) — feed into `TurnLoop.peerPermissions` so a
   /// loaned spell the peer casts (but doesn't own) can be authorized.
   final List<SpellPermission> peerPermissions;
+
+  /// This device's chosen [AvatarArt.id] (docs/AVATAR_PICKER_PLAN.md §5.2),
+  /// or '' if none has been chosen. Presentation only.
+  final String localAvatarId;
+
+  /// The peer's chosen avatar id, exchanged the same way as
+  /// [localAvatarId]. Presentation only — an unrecognised id degrades to the
+  /// default via `avatarArtById` returning null.
+  final String peerAvatarId;
 }
 
 /// Runs the full LAN duel handshake over an already-connected [transport]
@@ -181,6 +192,13 @@ Future<DuelSetupResult> runDuelSetup({
   final myWizardName = await Identity.loadWizardName() ?? '';
   final peerWizardName = await session.exchangeWizardName(myWizardName);
 
+  // Step 4b (cont'd): chosen avatar id — same unauthenticated,
+  // presentation-only treatment as wizardName (docs/AVATAR_PICKER_PLAN.md
+  // §5.2). Not threaded into buildDuelBattleState/WizardAvatar — the sprite
+  // map lives purely in the UI layer via AvatarAssignment.
+  final myAvatarId = await Identity.loadAvatarId() ?? '';
+  final peerAvatarId = await session.exchangeAvatarId(myAvatarId);
+
   // Step 5: spell-permission exchange (BATTLE_AUTH_PLAN §5). Send the local
   // grants where WE are grantee, for spells in our own chapter — so a
   // loaned spell we hold a grant for (but don't own) can still be cast and
@@ -230,6 +248,8 @@ Future<DuelSetupResult> runDuelSetup({
     peerBookRootHex: peerBookRootHex,
     peerBookLeafCount: peerBookLeafCount,
     peerPermissions: peerPermissions,
+    localAvatarId: myAvatarId,
+    peerAvatarId: peerAvatarId,
   );
 }
 

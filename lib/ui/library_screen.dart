@@ -29,6 +29,7 @@ import '../spells/spell_permission.dart';
 import '../spells/supreme_tags.dart' show deriveSupremeTags;
 import '../main.dart' show GameScreen;
 import 'manuscript_theme.dart';
+import 'practice_screen.dart';
 import 'sigil_painter.dart';
 import 'spell_art_pack_screen.dart';
 import 'spell_card_painter.dart';
@@ -96,6 +97,17 @@ Future<void> _setCustomArtOnSpell(
 
 /// Deletes [spell]'s stored art bytes and clears its art metadata, reverting
 /// its card to the commitmentHex-derived coat of arms.
+/// Opens the practice studio in spell-drill mode for [spell] — the same
+/// screen the main menu reaches, but preloaded with this spell's own
+/// incantation instead of a random formula. Shared by both tabs, which build
+/// _SpellCard from separate State classes.
+void _openPracticeForSpell(BuildContext context, SpellAsset spell) {
+  Navigator.push(
+    context,
+    MaterialPageRoute(builder: (_) => PracticeScreen(spell: spell)),
+  );
+}
+
 Future<void> _clearCustomArtOnSpell(SpellAsset spell, VoidCallback onReload) async {
   await SpellArtStore.delete(spell.spellHashHex);
   await spell.withoutArt().save();
@@ -480,6 +492,8 @@ class _CraftingsTabState extends State<_CraftingsTab>
     );
   }
 
+  void _practiceSpell(SpellAsset spell) => _openPracticeForSpell(context, spell);
+
   Future<void> _deleteSpell(SpellAsset spell) async {
     await spell.delete();
     _reload();
@@ -621,6 +635,7 @@ class _CraftingsTabState extends State<_CraftingsTab>
                 onBindCounterCharm: () => _bindCounterCharm(spell),
                 onSetArt: () => _setCustomArt(spell),
                 onClearArt: () => _clearCustomArt(spell),
+                onPractice: () => _practiceSpell(spell),
               );
             },
           ),
@@ -677,6 +692,8 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
       MaterialPageRoute(builder: (_) => GameScreen(loadedSpell: spell)),
     );
   }
+
+  void _practiceSpell(SpellAsset spell) => _openPracticeForSpell(context, spell);
 
   Future<void> _deleteSpell(SpellAsset spell) async {
     await spell.delete();
@@ -820,6 +837,7 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
                 onBindCounterCharm: () => _bindCounterCharm(spell),
                 onSetArt: () => _setCustomArt(spell),
                 onClearArt: () => _clearCustomArt(spell),
+                onPractice: () => _practiceSpell(spell),
               );
             },
           ),
@@ -841,6 +859,7 @@ class _SpellCard extends StatelessWidget {
     required this.onView,
     required this.onSetArt,
     required this.onClearArt,
+    required this.onPractice,
     this.wizardName,
     this.creatorKeyBytes,
   });
@@ -853,10 +872,17 @@ class _SpellCard extends StatelessWidget {
   final VoidCallback onView;
   final VoidCallback onSetArt;
   final VoidCallback onClearArt;
+  final VoidCallback onPractice;
   final String? wizardName;
   final Uint8List? creatorKeyBytes;
 
   bool get _isKin => kinSiblings > 1;
+
+  /// Whether this spell has an incantation worth drilling. A trajectory that
+  /// produced fewer than 3 activations forms no complete formula, so there is
+  /// nothing to recite — see PracticeFormula.fromSpellFormula, which drops the
+  /// same residuals FormulaTracker.formulas does.
+  bool get _canPractice => spell.formula.length >= 3;
 
   /// True for one of the five shipped starter spells (docs/BASIC_SPELLS_PLAN.md).
   /// These ship with every install under a dev owner_pubkey that is NOT this
@@ -918,6 +944,8 @@ class _SpellCard extends StatelessWidget {
       onSetArt();
     } else if (action == 'clear_art') {
       onClearArt();
+    } else if (action == 'practice') {
+      onPractice();
     }
   }
 
@@ -981,6 +1009,11 @@ class _SpellCard extends StatelessWidget {
                           onSelected: (v) => _onMenuSelected(context, v),
                           itemBuilder: (_) => [
                             const PopupMenuItem(value: 'view', child: Text('View')),
+                            if (_canPractice)
+                              const PopupMenuItem(
+                                value: 'practice',
+                                child: Text('Practice Incantation'),
+                              ),
                             const PopupMenuItem(value: 'add', child: Text('Add to Chapter')),
                             const PopupMenuItem(
                               value: 'bind_charm',

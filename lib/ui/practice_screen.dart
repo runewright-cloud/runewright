@@ -14,19 +14,19 @@ import 'package:record/record.dart';
 import '../practice/formula_generator.dart';
 import '../practice/gesture_enrollment.dart';
 import '../practice/gesture_template_source.dart';
-import '../practice/practice_feedback.dart';
-import '../practice/streaming_phoneme_scorer.dart';
 import '../practice/vocal_diagnostics.dart';
-import '../practice/vocal_enrollment.dart';
-import '../practice/vocal_template_source.dart';
-import '../practice/vocal_tuning.dart';
+import '../sorcerer/vocal_enrollment.dart';
+import '../sorcerer/vocal_template_source.dart';
 import '../sorcerer/gesture.dart';
 import '../sorcerer/gesture_capture.dart';
 import '../sorcerer/gesture_classifier.dart';
 import '../sorcerer/mfcc.dart';
-import '../sorcerer/vocal_score.dart';
+import '../spells/spell_asset.dart';
 import 'widgets/hold_to_record_control.dart';
-import 'widgets/vocal_strictness_slider.dart';
+import '../sorcerer/incantation_recall.dart';
+import '../sorcerer/incantation_recall_scorer.dart';
+import '../sorcerer/vocal_slot.dart';
+import '../sorcerer/vocabulary_profile.dart';
 
 /// Which persistence path a hold-to-record capture feeds — see
 /// [_PracticeScreenState._onHoldStart]/[_finishHold]. Enrollment takes and
@@ -37,7 +37,18 @@ import 'widgets/vocal_strictness_slider.dart';
 enum _HoldTarget { enrollment, calibration }
 
 class PracticeScreen extends StatefulWidget {
-  const PracticeScreen({super.key});
+  const PracticeScreen({super.key, this.spell});
+
+  /// When non-null, the screen opens in **spell-drill mode**: the incantation
+  /// is this spell's own (see PracticeFormula.fromSpellFormula) rather than a
+  /// random one, the formula-count chips are hidden (a spell's length is a
+  /// property of the spell, not a setting), and the words start concealed —
+  /// the drill is recalling them, not reading them.
+  ///
+  /// Typed as SpellAsset via the library's Practice menu item
+  /// (library_screen.dart). Null for the main-menu entry point, which keeps
+  /// the original random-formula behaviour.
+  final SpellAsset? spell;
 
   @override
   State<PracticeScreen> createState() => _PracticeScreenState();
@@ -47,7 +58,13 @@ class _PracticeScreenState extends State<PracticeScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tabController;
   final _generator = PracticeFormulaGenerator();
-  final _player = AudioPlayer();
+  // Created on first playback, not on screen open: constructing an
+  // AudioPlayer spins up a native audio session and a per-player event
+  // channel, which is wasted work for a player who only records, and is a
+  // hard failure under `flutter test` (no audioplayers plugin) for screens
+  // that never play a clip.
+  AudioPlayer? _playerOrNull;
+  AudioPlayer get _player => _playerOrNull ??= AudioPlayer();
 
   // Enrollment-backed template source (player's own voice per word, Piper
   // fallback until enrolled) — see vocal_enrollment.dart for why same-voice
@@ -55,12 +72,12 @@ class _PracticeScreenState extends State<PracticeScreen>
   // documents directory resolves in initState.
   VocalEnrollment? _enrollment;
   PerUserEnrolledTemplateSource? _templateSource;
-  Set<VocalWord> _enrolledWords = const {};
+  Set<VocalSlot> _enrolledWords = const {};
 
-  /// Per-word exemplar take count (StreamingPhonemeScorer scores min-
+  /// Per-word exemplar take count (IncantationRecallScorer scores min-
   /// distance over this set — see vocal_enrollment.dart's 2026-07-22
   /// multi-take rework). Kept in sync with disk after every save/clear.
-  Map<VocalWord, int> _takeCounts = const {};
+  Map<VocalSlot, int> _takeCounts = const {};
 
   // Calibration capture (dev tool, off by default): records single-word
   // attempt clips to <docs>/practice_diagnostics/ for offline threshold
@@ -68,7 +85,7 @@ class _PracticeScreenState extends State<PracticeScreen>
   // test/practice/vocal_calibration.dart.
   VocalDiagnostics? _diagnostics;
   bool _calibrationMode = false;
-  Map<VocalWord, int> _attemptCounts = const {};
+  Map<VocalSlot, int> _attemptCounts = const {};
 
   // In-progress hold-to-record capture, shared by enrollment takes and
   // calibration attempts (see _HoldTarget and _onHoldStart/_finishHold) —
@@ -76,25 +93,35 @@ class _PracticeScreenState extends State<PracticeScreen>
   AudioRecorder? _holdRecorder;
   StreamSubscription<Uint8List>? _holdSub;
   BytesBuilder? _holdPcm;
-  VocalWord? _holdWord;
+  VocalSlot? _holdWord;
   _HoldTarget? _holdTarget;
 
   AudioRecorder? _recorder;
   StreamSubscription<Uint8List>? _micSub;
-  StreamSubscription<PracticeFeedback>? _completeSub;
-  StreamingPhonemeScorer? _scorer;
+  BytesBuilder? _attemptPcm;
 
-  // Player-adjustable recognition strictness (2026-07-22 playtest ask) — also
-  // exposed in SettingsScreen; both read/write the same persisted VocalTuning.
-  // Null until loaded, so _newFormula falls back to VocalTuning's shipped
-  // default rather than blocking on the docs-directory read.
-  VocalTuning? _vocalTuning;
+  /// The same scorer battle uses — that is the point of a drill. When these
+  /// were two different code paths, practising well told you nothing about
+  /// whether a cast would land.
+  IncantationRecallScorer? _recallScorer;
+
+  /// The last recited attempt, or null before one is made.
+  IncantationRecall? _attempt;
+
 
   PracticeFormula? _formula;
-  PracticeFeedback? _feedback;
+
+  /// Spell-drill mode only: whether the word chips are concealed. Starts true
+  /// on every fresh attempt (see [_startFormula]) because recalling the
+  /// sequence *is* the exercise — revealing is the "show me the answer"
+  /// escape hatch, and the UI marks the attempt as revealed so a peeked run
+  /// doesn't read as a clean one.
+  bool _wordsHidden = false;
+
+  /// Set when the player reveals a concealed formula, cleared on restart.
+  bool _didReveal = false;
   bool _isCapturing = false;
   int _formulaCount = 1;
-  ({int wordIndex, String label})? _target;
 
   // Gesture (somatic) enrollment — SOMATIC_GESTURE_PLAN.md §3. All five
   // gestures ship together (not phased): the four enhancements plus melee.
@@ -125,8 +152,22 @@ class _PracticeScreenState extends State<PracticeScreen>
     _tabController = TabController(length: 2, vsync: this);
     unawaited(_initEnrollment());
     unawaited(_initGestureEnrollment());
-    unawaited(_initVocalTuning());
+    unawaited(_initVocabulary());
   }
+
+  /// The player's chosen words. Every place this screen shows a word must go
+  /// through [_labelFor] rather than [VocalSlot.name] — the enum names slots,
+  /// not words (VOCAL_RECALL_PLAN.md §8).
+  VocabularyProfile _vocabulary = VocabularyProfile.defaults;
+
+  Future<void> _initVocabulary() async {
+    final vocabulary = await VocabularyProfile.load();
+    if (!mounted) return;
+    setState(() => _vocabulary = vocabulary);
+  }
+
+  /// The word this player speaks for [slot].
+  String _labelFor(VocalSlot slot) => _vocabulary.labelFor(slot);
 
   Future<void> _initEnrollment() async {
     final enrollment = await VocalEnrollment.open();
@@ -137,26 +178,19 @@ class _PracticeScreenState extends State<PracticeScreen>
       _templateSource = PerUserEnrolledTemplateSource(enrollment: enrollment);
       _enrolledWords = enrollment.enrolledWords();
       _takeCounts = {
-        for (final w in VocalWord.values) w: enrollment.takeCount(w),
+        for (final w in VocalSlot.values) w: enrollment.takeCount(w),
       };
       _diagnostics = diagnostics;
       _attemptCounts = diagnostics.attemptCounts();
     });
+    // Spell-drill mode has nothing to choose, so load the incantation as soon
+    // as there's a template source to score it against — the player lands on
+    // a ready drill rather than on a button they'd always press.
+    if (_isSpellDrill) await _newFormula();
   }
 
-  Future<void> _initVocalTuning() async {
-    final tuning = await VocalTuning.load();
-    if (!mounted) return;
-    setState(() => _vocalTuning = tuning);
-  }
 
-  void _onVocalTuningChanged(double strictness) {
-    setState(() => _vocalTuning = VocalTuning(strictness));
-  }
 
-  void _onVocalTuningChangeEnd(double strictness) {
-    unawaited(VocalTuning(strictness).save());
-  }
 
   /// Minimum captured audio (bytes, PCM-16 @ 16 kHz ⇒ 0.25 s) for a
   /// calibration hold to count as a real attempt rather than an accidental
@@ -170,7 +204,7 @@ class _PracticeScreenState extends State<PracticeScreen>
   /// player's own pace (no fixed window) — this is what fixed the pace
   /// mismatch between careful slow enrollment and brisk real casting (see
   /// docs/M4_findings.md 2026-07-22).
-  Future<void> _onHoldStart(VocalWord word, _HoldTarget target) async {
+  Future<void> _onHoldStart(VocalSlot word, _HoldTarget target) async {
     if (_holdWord != null || _isCapturing) return;
     final recorder = AudioRecorder();
     try {
@@ -242,7 +276,7 @@ class _PracticeScreenState extends State<PracticeScreen>
               _takeCounts = {..._takeCounts, word: result.takeCount};
             });
           }
-          _showSnack('Saved "${word.name}" — '
+          _showSnack('Saved "${_labelFor(word)}" — '
               '${result.takeCount}/${VocalEnrollment.maxTakes} takes.');
         } on EnrollmentException catch (e) {
           _showSnack(e.message);
@@ -286,9 +320,7 @@ class _PracticeScreenState extends State<PracticeScreen>
     unawaited(_stopCapture());
     unawaited(_holdSub?.cancel());
     unawaited(_holdRecorder?.stop().then((_) => _holdRecorder?.dispose()));
-    _completeSub?.cancel();
-    _scorer?.dispose();
-    _player.dispose();
+    _playerOrNull?.dispose(); // never touch the getter here — it would create one
     _gestureCapture.dispose();
     super.dispose();
   }
@@ -402,32 +434,46 @@ class _PracticeScreenState extends State<PracticeScreen>
     _showSnack('Cleared all gesture enrollments.');
   }
 
+  /// True when this screen is drilling one specific library spell rather than
+  /// generating random formulas — see [PracticeScreen.spell].
+  bool get _isSpellDrill => widget.spell != null;
+
+  /// The spell's own incantation, or null if it has no complete triplet (a
+  /// spell whose trajectory produced fewer than 3 activations casts no
+  /// formula, so there is nothing to recite). The library hides the Practice
+  /// entry point for those, so in practice this is only null defensively.
+  PracticeFormula? get _spellFormula {
+    final spell = widget.spell;
+    if (spell == null) return null;
+    return PracticeFormula.fromSpellFormula(spell.formula);
+  }
+
   Future<void> _newFormula() async {
+    final formula = _isSpellDrill
+        ? _spellFormula
+        : _generator.generate(formulaCount: _formulaCount);
+    if (formula == null) return;
+    await _startFormula(formula);
+  }
+
+  /// Installs [formula] as the active drill: fresh scorer, fresh feedback,
+  /// and (in spell-drill mode) words concealed again so a repeat attempt is
+  /// still a recall test rather than a reading test.
+  Future<void> _startFormula(PracticeFormula formula) async {
     final templateSource = _templateSource;
     if (templateSource == null) return; // enrollment dir still resolving
     await _stopCapture();
-    final formula = _generator.generate(formulaCount: _formulaCount);
-    final tuning = _vocalTuning ?? VocalTuning(VocalTuning.defaultStrictness);
-    final scorer = StreamingPhonemeScorer(
-      templateSource: templateSource,
-      checkpointFloor: tuning.floor,
-      debounceFrames: tuning.debounceFrames,
-      contrastiveMargin: tuning.margin,
-    );
-    await scorer.beginFormula(formula);
-    await _completeSub?.cancel();
-    _completeSub = scorer.onComplete.listen(_onFormulaComplete);
-    _scorer?.dispose();
+    final scorer = IncantationRecallScorer(templateSource: templateSource);
+    await scorer.load();
+    if (!mounted) return;
     setState(() {
       _formula = formula;
-      _scorer = scorer;
-      _feedback = null;
-      _target = scorer.currentTarget;
+      _recallScorer = scorer;
+      _attempt = null;
+      _wordsHidden = _isSpellDrill;
+      _didReveal = false;
     });
   }
-
-  Future<void> _playWord(VocalWord word) =>
-      _player.play(AssetSource('audio/practice/${word.name}.wav'));
 
   Future<void> _clearEnrollment() async {
     final enrollment = _enrollment;
@@ -437,14 +483,14 @@ class _PracticeScreenState extends State<PracticeScreen>
     if (mounted) {
       setState(() {
         _enrolledWords = enrollment.enrolledWords();
-        _takeCounts = {for (final w in VocalWord.values) w: 0};
+        _takeCounts = {for (final w in VocalSlot.values) w: 0};
       });
     }
     _showSnack('Cleared all voice enrollments — scoring falls back to the '
         'default voice.');
   }
 
-  Future<void> _clearWordEnrollment(VocalWord word) async {
+  Future<void> _clearWordEnrollment(VocalSlot word) async {
     final enrollment = _enrollment;
     if (enrollment == null) return;
     await enrollment.clearWord(word);
@@ -455,7 +501,7 @@ class _PracticeScreenState extends State<PracticeScreen>
         _takeCounts = {..._takeCounts, word: 0};
       });
     }
-    _showSnack('Cleared "${word.name}" — record it again to re-enroll.');
+    _showSnack('Cleared "${_labelFor(word)}" — record it again to re-enroll.');
   }
 
   void _showSnack(String message) {
@@ -473,8 +519,7 @@ class _PracticeScreenState extends State<PracticeScreen>
   }
 
   Future<void> _startCapture() async {
-    final scorer = _scorer;
-    if (scorer == null || _isCapturing) return;
+    if (_recallScorer == null || _isCapturing) return;
 
     final recorder = AudioRecorder();
     try {
@@ -495,11 +540,10 @@ class _PracticeScreenState extends State<PracticeScreen>
         numChannels: 1,
         sampleRate: MfccExtractor.sampleRate,
       ));
+      final pcm = BytesBuilder();
       _recorder = recorder;
-      _micSub = stream.listen((chunk) {
-        scorer.acceptPcmChunk(chunk);
-        if (mounted) setState(() => _target = scorer.currentTarget);
-      });
+      _attemptPcm = pcm;
+      _micSub = stream.listen(pcm.add, onError: (_) {});
       setState(() => _isCapturing = true);
     } catch (e, st) {
       // Without this, a failure here (e.g. the platform audio backend
@@ -516,29 +560,54 @@ class _PracticeScreenState extends State<PracticeScreen>
     }
   }
 
-  /// Manual bail-out only — there is deliberately no automatic timeout here.
-  /// An unmet checkpoint floor stalls the pointer forever on its own; this
-  /// button exists purely so a player can abandon a capture, not to enforce
-  /// a listening window.
-  Future<void> _stopCapture() async {
+  /// Closes the capture window. [score] false abandons the attempt — a press
+  /// dragged off the button was not a performed incantation.
+  Future<void> _stopCapture({bool score = false}) async {
     await _micSub?.cancel();
     _micSub = null;
-    await _recorder?.stop();
-    _recorder?.dispose();
-    _recorder = null;
-    if (mounted) setState(() => _isCapturing = false);
+    final pcm = _attemptPcm;
+    _attemptPcm = null;
+    if (_recorder != null) {
+      try {
+        await _recorder!.stop();
+      } catch (_) {
+        // Already stopped; the buffered audio is still good.
+      }
+      _recorder!.dispose();
+      _recorder = null;
+    }
+    if (!mounted) return;
+    setState(() => _isCapturing = false);
+
+    final formula = _formula;
+    final scorer = _recallScorer;
+    if (!score || pcm == null || formula == null || scorer == null) return;
+    final attempt = scorer.score(
+      pcm.toBytes(),
+      expectedElements: formula.elements.length,
+    );
+    setState(() => _attempt = attempt);
   }
 
-  void _onFormulaComplete(PracticeFeedback feedback) {
-    unawaited(_stopCapture());
-    if (mounted) setState(() => _feedback = feedback);
+  /// The attempt scored against the formula — the same tally the engine
+  /// charges mana on, so the number shown here is the number a duel uses.
+  RecallTally? get _attemptTally {
+    final attempt = _attempt;
+    final formula = _formula;
+    if (attempt == null || formula == null) return null;
+    return attempt.tallyAgainst(
+      expectedIsSummon: formula.opener == VocalSlot.openerSummon,
+      expectedElements: formula.elements,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Practice'),
+        title: Text(_isSpellDrill
+            ? 'Practice — ${widget.spell!.name.isNotEmpty ? widget.spell!.name : 'Unnamed Spell'}'
+            : 'Practice'),
         bottom: TabBar(
           controller: _tabController,
           tabs: const [
@@ -566,125 +635,93 @@ class _PracticeScreenState extends State<PracticeScreen>
         children: [
           _buildEnrollmentCard(),
           const SizedBox(height: 16),
-          _buildStrictnessCard(),
-          const SizedBox(height: 16),
           _buildCalibrationCard(),
           const SizedBox(height: 16),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Text('Formulas: '),
-              for (final k in [1, 2, 3])
-                ChoiceChip(
-                  label: Text('$k'),
-                  selected: _formulaCount == k,
-                  onSelected: (_) => setState(() => _formulaCount = k),
-                ),
-            ],
-          ),
-          const SizedBox(height: 12),
+          // Formula length is a property of the spell in drill mode, so the
+          // count chips would be a setting that can't legally be changed.
+          if (!_isSpellDrill) ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Text('Formulas: '),
+                for (final k in [1, 2, 3])
+                  ChoiceChip(
+                    label: Text('$k'),
+                    selected: _formulaCount == k,
+                    onSelected: (_) => setState(() => _formulaCount = k),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+          ],
           ElevatedButton(
             onPressed: _newFormula,
-            child: const Text('New Formula'),
+            child: Text(_isSpellDrill ? 'Start Over' : 'New Formula'),
           ),
           const SizedBox(height: 16),
           if (formula != null) ...[
-            Wrap(
-              alignment: WrapAlignment.center,
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (int i = 0; i < formula.words.length; i++)
-                  _wordChip(formula.words[i], i),
-              ],
-            ),
+            if (_wordsHidden)
+              _buildConcealedFormula(formula)
+            else
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (int i = 0; i < formula.words.length; i++)
+                    _wordChip(formula.words[i], i),
+                ],
+              ),
             const SizedBox(height: 12),
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
+                // Playing the formula aloud is giving away the answer, so it
+                // counts as a reveal in drill mode — same escape hatch, same
+                // marking.
                 TextButton.icon(
-                  onPressed: _playFormula,
+                  onPressed: _wordsHidden ? null : _playFormula,
                   icon: const Icon(Icons.volume_up),
                   label: const Text('Play formula'),
                 ),
               ],
             ),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              onPressed: _isCapturing ? _stopCapture : _startCapture,
-              icon: Icon(_isCapturing ? Icons.stop : Icons.mic),
-              label: Text(_isCapturing ? 'Stop' : 'Start speaking'),
-            ),
-            if (_isCapturing && _target != null) ...[
-              const SizedBox(height: 12),
-              Text(
-                'Listening for: word ${_target!.wordIndex + 1} — "${_target!.label}"',
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontStyle: FontStyle.italic),
-              ),
+            if (_isSpellDrill && _didReveal)
               const Text(
-                'If a word doesn\'t register, take a breath and say it '
-                'again — a short pause is what starts a fresh attempt.',
+                'Answer revealed — start over for a clean attempt.',
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 11, color: Colors.grey),
               ),
-              const SizedBox(height: 4),
-              Text(
-                _scorer?.currentNormalizedQuality != null
-                    ? 'quality: ${_scorer!.currentNormalizedQuality!.toStringAsFixed(2)}'
-                        ' / floor: ${_scorer!.floor.toStringAsFixed(2)} (lower is better)'
-                    : 'quality: — (no audio evaluated yet)',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-              ),
-              // Stall hint: after a couple of seconds without a crossing,
-              // if another vocabulary word explains the audio better than
-              // the target, say so gently. Informational only — the
-              // pointer still only ever advances on the real conditions.
-              if (_scorer != null &&
-                  _scorer!.currentSegmentDwellMs > 2500 &&
-                  _scorer!.currentBestGuess != null) ...[
-                const SizedBox(height: 6),
-                Text(
-                  'Hearing something closer to '
-                  '"${_scorer!.currentBestGuess!.label}"…',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontStyle: FontStyle.italic,
-                    color: Colors.orange.shade800,
-                  ),
-                ),
-              ],
-            ],
+            const SizedBox(height: 16),
+            // Hold, chant the whole incantation, release — the exact shape a
+            // real cast uses (VOCAL_RECALL_PLAN.md §9.4), on the same control.
+            // A drill that segmented differently from battle would be
+            // practising a skill the duel never tests.
+            HoldToRecordButton(
+              label: _isCapturing ? 'Reciting…' : 'Hold and recite',
+              icon: Icons.mic,
+              enabled: _recallScorer != null,
+              onHoldStart: () => unawaited(_startCapture()),
+              onHoldEnd: () => unawaited(_stopCapture(score: true)),
+              onHoldCancel: () => unawaited(_stopCapture()),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Say the opener, then each element word in order, in one breath.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 11, color: Colors.grey),
+            ),
           ],
-          if (_feedback != null) ...[
+          if (_attempt != null) ...[
             const SizedBox(height: 24),
             const Divider(),
-            _buildFeedback(_feedback!),
+            _buildAttemptResult(),
           ],
         ],
       ),
     );
   }
 
-  /// Recognition strictness dial (2026-07-22 playtest ask) — same control
-  /// and same persisted VocalTuning as SettingsScreen; new formulas pick up
-  /// the current value (already-running captures are unaffected).
-  Widget _buildStrictnessCard() {
-    final tuning = _vocalTuning;
-    if (tuning == null) return const SizedBox.shrink();
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: VocalStrictnessSlider(
-          strictness: tuning.strictness,
-          onChanged: _onVocalTuningChanged,
-          onChangeEnd: _onVocalTuningChangeEnd,
-        ),
-      ),
-    );
-  }
 
   /// Voice-enrollment status + per-word hold-to-record rows. Multiple takes
   /// per word (2026-07-22 multi-exemplar rework) are what make right-vs-
@@ -695,7 +732,7 @@ class _PracticeScreenState extends State<PracticeScreen>
   Widget _buildEnrollmentCard() {
     final ready = _templateSource != null;
     final enrolledCount = _enrolledWords.length;
-    final total = VocalWord.values.length;
+    final total = VocalSlot.values.length;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -727,7 +764,7 @@ class _PracticeScreenState extends State<PracticeScreen>
               style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
             ),
             const SizedBox(height: 8),
-            for (final word in VocalWord.values)
+            for (final word in VocalSlot.values)
               _enrollmentRow(word, ready: ready),
           ],
         ),
@@ -735,7 +772,7 @@ class _PracticeScreenState extends State<PracticeScreen>
     );
   }
 
-  Widget _enrollmentRow(VocalWord word, {required bool ready}) {
+  Widget _enrollmentRow(VocalSlot word, {required bool ready}) {
     final takes = _takeCounts[word] ?? 0;
     final canHold =
         ready && !_isCapturing && (_holdWord == null || _holdWord == word);
@@ -743,13 +780,8 @@ class _PracticeScreenState extends State<PracticeScreen>
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
-          IconButton(
-            icon: const Icon(Icons.volume_up, size: 20),
-            tooltip: 'Hear the model pronunciation',
-            onPressed: () => _playWord(word),
-          ),
           HoldToRecordButton(
-            label: word.name,
+            label: _labelFor(word),
             icon: Icons.mic,
             enabled: canHold,
             onHoldStart: () => _onHoldStart(word, _HoldTarget.enrollment),
@@ -768,7 +800,7 @@ class _PracticeScreenState extends State<PracticeScreen>
           if (takes > 0)
             IconButton(
               icon: const Icon(Icons.close, size: 18),
-              tooltip: 'Clear ${word.name}\'s takes',
+              tooltip: 'Clear ${_labelFor(word)}\'s takes',
               onPressed: () => _clearWordEnrollment(word),
             ),
         ],
@@ -815,12 +847,12 @@ class _PracticeScreenState extends State<PracticeScreen>
                 spacing: 12,
                 runSpacing: 12,
                 children: [
-                  for (final word in VocalWord.values)
+                  for (final word in VocalSlot.values)
                     Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         HoldToRecordButton(
-                          label: word.name,
+                          label: _labelFor(word),
                           icon: Icons.mic,
                           enabled: ready &&
                               !_isCapturing &&
@@ -853,67 +885,121 @@ class _PracticeScreenState extends State<PracticeScreen>
     );
   }
 
-  Widget _wordChip(VocalWord word, int index) {
-    final isCurrentTarget = _target?.wordIndex == index;
-    return InputChip(
-      label: Text(word.name),
-      backgroundColor: isCurrentTarget ? Colors.amber.shade100 : null,
-      onPressed: () => _playWord(word),
-      avatar: const Icon(Icons.play_arrow, size: 18),
+  /// The concealed form of a drill formula: one blank per word, so the player
+  /// knows *how many* words to recite (a spell's length is visible on its
+  /// library card anyway) without being shown *which*. The blank for the word
+  /// currently being listened for is highlighted, mirroring [_wordChip]'s
+  /// amber target so live progress still reads without leaking ahead.
+  Widget _buildConcealedFormula(PracticeFormula formula) {
+    return Column(
+      children: [
+        Wrap(
+          alignment: WrapAlignment.center,
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (int i = 0; i < formula.words.length; i++)
+              Chip(
+                label: Text(
+                  // Word count is not a secret; word identity is. Every word
+                  // is concealed, the opener included — unlike the retired
+                  // `finitus`, which was invariant, the opener is one of two
+                  // and so carries real recall information (§8.5).
+                  '? ? ?',
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        TextButton.icon(
+          onPressed: () => setState(() {
+            _wordsHidden = false;
+            _didReveal = true;
+          }),
+          icon: const Icon(Icons.visibility, size: 18),
+          label: const Text('Reveal words'),
+        ),
+      ],
     );
   }
 
-  Widget _buildFeedback(PracticeFeedback feedback) {
-    final stall = feedback.stallPoint;
+  /// One word of the revealed formula. Coloured by the last attempt once one
+  /// exists, so a player sees WHICH word they missed rather than a score.
+  Widget _wordChip(VocalSlot word, int index) {
+    final attempt = _attempt;
+    Color? background;
+    if (attempt != null) {
+      final spoken = index == 0
+          ? attempt.opener
+          : (index - 1 < attempt.elements.length
+              ? attempt.elements[index - 1]
+              : null);
+      background =
+          spoken == word ? Colors.green.shade100 : Colors.red.shade100;
+    }
+    return Chip(
+      label: Text(_labelFor(word)),
+      backgroundColor: background,
+    );
+  }
+
+  /// What the last attempt scored, in the terms a duel uses.
+  ///
+  /// Shows the MANA MULTIPLIER rather than a quality percentage, because that
+  /// is the only number that exists any more — recall does not produce a
+  /// score, it produces a price (VOCAL_RECALL_PLAN.md §3).
+  Widget _buildAttemptResult() {
+    final tally = _attemptTally;
+    final formula = _formula;
+    if (tally == null || formula == null) return const SizedBox.shrink();
+
+    // Priced against a round 100 so the figure reads as a percentage without
+    // inventing a second formula: this is literally RecallTally.applyTo.
+    final multiplier = tally.applyTo(100);
+    final delta = multiplier - 100;
+    final perfect = tally.isPerfect;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text('Feedback', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        Text(
+          perfect
+              ? 'Perfect recall'
+              : '${tally.correct} of ${tally.units} right',
+          textAlign: TextAlign.center,
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        const SizedBox(height: 4),
+        Text(
+          delta == 0
+              ? 'No change to the mana cost.'
+              : delta < 0
+                  ? 'Casts for ${-delta}% less mana.'
+                  : 'Costs $delta% more mana.',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: delta <= 0 ? Colors.green.shade800 : Colors.red.shade800,
+          ),
+        ),
         const SizedBox(height: 8),
-        Text('Time to completion: ${feedback.timeToCompletionMs} ms (informational only)'),
-        Text('Loudness: ${(feedback.averageLoudness * 100).round()}% (informational, non-gating)'),
-        if (stall != null)
-          Text('Held you up most: word ${stall.wordIndex + 1}, "${stall.label}" '
-              '(${stall.dwellMs} ms)'),
-        const SizedBox(height: 12),
-        const Text('Per-checkpoint clarity:'),
-        for (final c in feedback.checkpoints)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 2),
-            child: Row(
-              children: [
-                SizedBox(width: 80, child: Text('word ${c.wordIndex + 1}')),
-                SizedBox(width: 48, child: Text('"${c.label}"')),
-                Expanded(
-                  child: LinearProgressIndicator(value: c.clarity01),
-                ),
-                SizedBox(
-                  width: 56,
-                  child: Text(
-                    // Raw normalizedQuality, not just the clarity bar --
-                    // this is what actually cleared the floor (currently
-                    // 7.0) at crossing time. Shown even though completion
-                    // may have happened "too fast to read live," since this
-                    // is the after-the-fact record of it.
-                    c.normalizedQuality.toStringAsFixed(1),
-                    textAlign: TextAlign.right,
-                    style: const TextStyle(fontSize: 12, color: Colors.grey),
-                  ),
-                ),
-              ],
-            ),
+        if (!_wordsHidden)
+          const Text(
+            'Green words were heard correctly; red were not.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 11, color: Colors.grey),
+          )
+        else
+          TextButton(
+            onPressed: () => setState(() {
+              _wordsHidden = false;
+              _didReveal = true;
+            }),
+            child: const Text('Show me which ones'),
           ),
       ],
     );
   }
 
-  /// Gesture (somatic) capture/enrollment tab — SOMATIC_GESTURE_PLAN.md §8.
-  /// Not a game feature: this is the calibration tool. It records repeated
-  /// examples of each v1 gesture plus the confusables that define the
-  /// reject boundary (idle/walk/garbage), and lets you test a capture
-  /// against what's enrolled so far. kSomaticCaptureEnabled stays false in
-  /// battle until a real confusion-matrix pass (test/sorcerer/) clears —
-  /// this tab is how that corpus gets built.
   Widget _buildGestureTab() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),

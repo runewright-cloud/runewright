@@ -1,5 +1,54 @@
 # M4 — Findings Log (live, updated per milestone)
 
+## Avatar Picker Plan built end-to-end; two widget-test traps worth knowing (2026-08-03)
+
+**Context:** docs/AVATAR_PICKER_PLAN.md implemented in full — Monsters + a
+96x96 portrait atlas in `build_avatar_pack.py`, `AvatarPortraitAtlas`, avatar
+id persistence, `AvatarPickerScreen`, the Settings Avatar card, and the
+`avatarId` (0x1E) handshake exchange (`kBattleProtocolVersion` 2 → 3). All 53
+portraits auto-detected cleanly via the bounding-box rule; only the two
+overrides the plan already named (`Flower-01.png`, `Mermaid_01.bmp`) were
+needed — no new overrides, no plan corrections. All 46 pre-existing avatar
+ids kept their exact atlas cell (diff-verified).
+
+**Two widget-test traps hit while writing §6's tests, neither previously
+documented here:**
+
+1. **`ui.decodeImageFromPixels` (and any real image codec decode —
+   `rootBundle.load` + `instantiateImageCodec`) hangs forever inside a bare
+   `testWidgets` `await`, up to the 10-minute timeout.** The completion
+   callback arrives from a real engine thread, which never reaches an awaited
+   Future inside `testWidgets`' FakeAsync zone unless bridged through
+   `tester.runAsync(() => ...)`. First surfaced as a 10-minute-timeout test
+   failure with no other symptom. Fix: wrap the decode call itself in
+   `tester.runAsync`. This is presumably why
+   `wizard_movement_preview_test.dart`'s equivalent real-file decode is gated
+   behind an opt-in env var (`WIZARD_PREVIEW_DIR`) and a no-op by default —
+   it was never meant to run unattended, which had the side effect of hiding
+   this trap. A widget test needing a decoded image should build a synthetic
+   one with `decodeImageFromPixels` wrapped in `runAsync`, not read a real
+   asset file.
+2. **`SettingsScreen` needs `installFakePathProvider()`, not just
+   `installFakeSecureStorage()`, or `pumpAndSettle` hangs.** `_load()` awaits
+   `VocalTuning.load()` first, which resolves a file path via
+   `path_provider` — with no mock, the plugin channel call never completes
+   under the headless test engine, and the screen never gets past its
+   spinner. `credits_screen_test.dart` already carried this requirement
+   (it calls `installFakePathProvider()` for exactly this reason); a new test
+   pumping `SettingsScreen` needs to copy that, not just the secure-storage
+   mock.
+
+**Verification gate note:** the contact sheet (§3.4) and the full positive
+test suite (1115 tests, one pre-existing test's tile-position assumption
+fixed for the new Avatar card pushing content down — no other regressions)
+are done. The interactive `flutter run -d linux` click-through and the
+two-device LAN pass from §7.2/§7.3 were **not** completed this session — no
+GUI input-automation tool (`xdotool` or equivalent) is available in this
+environment and no root to install one, so the picker/settings/battlefield
+visual flow has not been driven by hand. Leave both on the outstanding list
+per the plan's own instruction not to report the feature complete without
+them.
+
 ## Trade manual-IP fallback + real bug report: hung on "Waiting for their offer" (2026-07-28)
 
 **Context:** Commune/Trade never had a manual-IP fallback the way
@@ -4172,3 +4221,72 @@ half of "when an air barrier collapses" and is untouched by this change.
 cast this in a running app or across two devices. Per the verification hierarchy that means it
 is not done: the Spell Test Lab is the intended path (build a `[TEST]` Watery / Boost spell,
 Test Battle, cast it on yourself).
+
+---
+
+## M4.x — Exclusive tile occupancy, the melee lunge, and animated summon movement (2026-08-04)
+
+Three changes to how summons read and behave on the board, from one session's direction.
+
+**1. Bodies are exclusive.** Nothing may stand on anything else — avatar on avatar, avatar on
+summon, summon on summon. The rule was already in the design doc (v3.0 states it most explicitly
+under *Flying*: "may move through other entities as if they were not there, but still not end
+their move in the same tile as another entity"), but only three of the five movement paths
+enforced it, each with its own hand-rolled copy of the predicate. There is now one:
+`tileOccupied(state, hex, {ignoreAvatarId, ignoreMinionId})` in `tile_entry_resolver.dart`.
+Every path consults it — declared walks, the free-move window, conveyor cascades, creature AI
+steps, spawn placement, and the client-side move preview.
+
+- **The avatar movement phase resolves against a pre-move snapshot** (`TurnLoop._occupiedTiles()`),
+  not live positions, and this is the one non-obvious part. Movement is simultaneous, but
+  `_resolveAvatarMovement` walks avatars one at a time and writes each position as it goes. Using
+  live positions would let whoever comes first in iteration order walk through a tile the second
+  player hasn't vacated yet, and forbid the reverse. The snapshot makes it order-independent —
+  and it means **two adjacent wizards can never swap tiles**, which is the deliberate,
+  explainable version of that rule rather than an accident of list order.
+- **Walking into a body is reported as a one-sided `MovementContest`** so the UI shows the
+  existing lunge-and-recoil. Gameplay-wise it is just "the walk ended here"; nothing reads it
+  back. Without it the walk stops a tile early with nothing on screen to say why, which reads as
+  a bug. Note the consequence for tests: the *origin-holder* branch of `resolveMovement`'s
+  arbitration is now effectively unreachable for avatars (you cannot reach an occupied origin to
+  contest it), so a stationary wizard no longer records a `wonContestAt`.
+- **Flying keeps its documented exemption**: it walks *through* bodies and is only pulled back if
+  it would come to rest on one (the truncation loop at the end of `_walkAvatar`). Budget already
+  spent stays spent. Creature AI gets no such exemption — it steps one tile at a time and every
+  one of those tiles is somewhere it comes to rest, so there is no pass-through to distinguish.
+
+**2. Attack range 0 now means zero.** `Minion.effectiveAttackRange` used to `clamp(1, 999)`,
+which quietly turned every melee creature into a reach-1 skirmisher — and `attackRange` is
+`waterCount ~/ 3`, so *most* creatures have none. It now clamps at 0, and `_creatureTurn` spends
+one movement point stepping the creature onto its target's tile, strikes, and shoves it straight
+back out (it cannot stay — see rule 1). **A creature that spent its whole budget closing arrives
+with nothing left to strike with and waits for next turn**, and one with `moveSpeed 0` and
+`range 0` can never attack at all. That is the literal reading of the rule and it is a real
+nerf to melee; if playtesting says the "spend a point" cost is too harsh, the knob is the
+`unspent > 0` guard in `_creatureTurn`, not the clamp.
+
+**3. Summons walk instead of teleporting, and wear a proper portrait.**
+
+- `MinionMoveEvent` / `TurnLoop.lastMinionMoveEvents` / `onSummonMovementResolved` mirror the
+  avatar trio exactly, awaited at the end of Phase 5b **before `_reapDead`** so a creature that
+  lunged in and died to a Molten Carapace is seen making the lunge rather than vanishing off a
+  tile it never visibly left. The list is cleared at the *start* of the Summons phase, not the
+  turn: a Potent summon's Phase 5 bonus action is already shown by that spell's own card reveal,
+  and replaying it here would walk the creature twice.
+- The painter's walk timeline is now shared, not duplicated: `AvatarMoveAnimation` and
+  `MinionMoveAnimation` both extend `EntityMoveAnimation`, and `wizardWalkStateAt` became
+  `entityWalkStateAt`. A melee creature's whole attack *is* the lunge-and-recoil, so it arrives
+  through the same `lungeTile` field a wizard's lost contest does. Both playbacks share the one
+  `_moveAnimController` — they never overlap (avatars in Phase 3, creatures in Phase 5b).
+- The card-art thumbnail went from `hexSize * 0.62` to `kHexInscribedSquare` (`2√3/(1+√3)` ≈
+  1.268 — the largest axis-aligned square a flat-top hex can hold; the slanted edge binds, not
+  the flat-to-flat height). Adjacent tile centres are √3 apart, so neighbours still clear each
+  other by ≈ 0.46·hexSize. The thumbnail is a widget layered over the painter, so it has to ride
+  the animated token: `BattlefieldPainter.minionTokenPos` is the single shared position source,
+  and `_MinionArtOverlay` rebuilds off the same controller.
+
+**Verification.** 1168 tests green (`test/battle/engine/tile_exclusivity_test.dart` is new and
+covers both rules end-to-end through the real commit-reveal pipeline; the painter/timeline side
+is in `test/ui/wizard_movement_animation_test.dart`), `flutter build linux` clean. **Not yet
+hardware-verified** — per the verification hierarchy that means it is not done. The Spell Test
+Lab is the path: summon a melee creature next to something and watch it lunge.

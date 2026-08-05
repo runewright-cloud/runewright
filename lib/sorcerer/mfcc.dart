@@ -296,7 +296,7 @@ class DtwMatcher {
   /// Corner-anchored DTW between [query] and [ref], returning both the
   /// accumulated path cost and the path's step count (length in cells).
   ///
-  /// Used by Practice Mode's StreamingPhonemeScorer to derive a
+  /// Used by IncantationRecallScorer to derive a
   /// length-normalized (cost / steps) local match quality — accumulated
   /// cost alone rises with path length (more warping/more frames), which
   /// would penalize slower deliveries even when every frame matches well.

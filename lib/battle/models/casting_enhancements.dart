@@ -31,9 +31,6 @@
 // pedometer tile-transition rate rather than applying discrete tile jumps.
 // Each affected SpellEffect is annotated with a TODO(sorcerer) comment.
 
-import 'dart:math' show pow;
-
-import '../../sorcerer/vocal_score.dart';
 
 enum GameMode { wizard, sorcerer }
 
@@ -76,92 +73,30 @@ class CastingEnhancements {
   /// before applying a spell's effects.
   final bool fizzle;
 
-  // ── Sorcerer mode seam ──────────────────────────────────────────────────────
+  // ── Sorcerer mode seam ────────────────────────────────────────────────────
   //
-  // Curve constants — playtest-tunable. Forgiving defaults: a hexagonal-room,
-  // mid-volume, roughly-on-target attempt should clear qMin; only near-silence
-  // or a wildly wrong word should fizzle.
-
-  /// Quality at/above which the loadout enhancement is fully active and mana
-  /// cost is unpenalised.
-  static const double qMin = 0.55;
-
-  /// Quality below which the cast fizzles outright (no effect, mana still spent).
-  static const double qFizzle = 0.20;
-
-  /// Ease-in exponent for the [qFizzle, qMin) penalty ramp: penalty
-  /// accelerates as quality drops toward qFizzle rather than scaling linearly.
-  static const double rampExponent = 2.2;
-
-  /// The largest [manaCostMultiplier] [fromSorcererQuality] can ever return —
-  /// the fizzle bracket's value, which is also the ceiling of the penalty ramp
-  /// (`1.01 + eased × (1.50 − 1.01)` tops out here as `eased → 1`).
-  ///
-  /// Exists because the UI has to gate affordability *before* the voice
-  /// capture that produces the score: TurnLoop.previewSpellCost prices a
-  /// sorcerer-mode cast at this multiplier so a badly-spoken incantation can
-  /// never turn an affordable spell into one the peer forfeits over. Keep it
-  /// in step with the fizzle bracket above.
-  static const double maxManaCostMultiplier = 1.50;
-
-  /// Derive enhancements from a per-cast [VocalScore].
-  ///
-  /// Reads only [VocalScore.pronunciationU8]/[VocalScore.volumeU8] — the
-  /// wire-quantised values — never the raw doubles. This is what keeps the
-  /// result identical on the casting device (which has the raw score, before
-  /// it's ever put on the wire) and the peer device (which only ever sees the
-  /// wire-decoded score): both snap to the same u8 grid before the curve runs.
-  ///
-  /// [hasPotentLoadout]/[hasVelocityLoadout]/[hasEfficiencyLoadout] gate
-  /// which loadout enhancement (if any) the caster is even eligible for;
-  /// [VocalScore] quality then gates whether that eligibility is actually
-  /// realised this cast.
-  ///
-  // TODO(sorcerer): combine seam — pronunciation and volume are weighted
-  //   equally (simple mean) for now. Weighting them differently is a later,
-  //   playtest-driven decision.
-  // TODO(sorcerer): somatic score is not yet folded into Q (somatic capture
-  //   doesn't exist this pass — see vocal_score.dart's 0xFF sentinel).
-  static CastingEnhancements fromSorcererQuality({
-    required VocalScore vocalScore,
-    required bool hasPotentLoadout,
-    required bool hasVelocityLoadout,
-    required bool hasEfficiencyLoadout,
-  }) {
-    final q = (vocalScore.pronunciationU8 + vocalScore.volumeU8) / (2 * 254.0);
-
-    if (q < qFizzle) {
-      return const CastingEnhancements(
-        gameMode: GameMode.sorcerer,
-        fizzle: true,
-        enhancementEnabled: false,
-        manaCostMultiplier: 1.50,
-      );
-    }
-
-    if (q < qMin) {
-      // t: 0 at the qMin edge (best in this bracket) → 1 at the qFizzle edge
-      // (worst before fizzling). Raising t to rampExponent (>1) makes the
-      // penalty grow slowly near qMin and accelerate near qFizzle (ease-in).
-      final t = (qMin - q) / (qMin - qFizzle);
-      final eased = pow(t, rampExponent).toDouble();
-      final multiplier = 1.01 + eased * (1.50 - 1.01);
-      return CastingEnhancements(
-        gameMode: GameMode.sorcerer,
-        enhancementEnabled: false,
-        manaCostMultiplier: multiplier,
-      );
-    }
-
-    return CastingEnhancements(
-      gameMode: GameMode.sorcerer,
-      enhancementEnabled: true,
-      isPotent: hasPotentLoadout,
-      isVelocity: hasVelocityLoadout,
-      isEfficiency: hasEfficiencyLoadout,
-      manaCostMultiplier: 1.0,
-    );
-  }
+  // RETIRED (VOCAL_RECALL_PLAN.md §3/§4): fromSorcererQuality() and its curve
+  // constants (qMin/qFizzle/rampExponent/maxManaCostMultiplier) are gone.
+  //
+  // They scored PRONUNCIATION QUALITY, which the receiving device can never
+  // recheck — it has no access to the caster's microphone — so the whole curve
+  // ran on a number the peer had to take on trust. The verbal component now
+  // measures trajectory RECALL, which the peer recomputes from the certified
+  // trajectory; the multiplier is applied in TurnLoop's mana chain by
+  // IncantationRecall, in exact integers, and never appears here.
+  //
+  // Two consequences worth stating, because both removed machinery:
+  //   - Recall NEVER gates the loadout enhancement. Getting words wrong costs
+  //     mana, full stop (§4), so [enhancementEnabled] no longer varies with
+  //     how well the caster spoke.
+  //   - Recall NEVER fizzles a cast. [fizzle] now means one thing only: the
+  //     cost outran the caster's pool, in which case the mana is REFUNDED and
+  //     the turn is spent (TurnLoop._fizzlesForMana).
+  //
+  // maxManaCostMultiplier existed purely so previewSpellCost could quote a
+  // worst case and guarantee a bad incantation never turned an affordable
+  // spell into a peer-side forfeit. Fizzle-with-refund makes a shortfall
+  // legal, which retires that guarantee's only purpose.
 
   CastingEnhancements copyWith({
     bool? isPotent,

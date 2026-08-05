@@ -3,13 +3,14 @@
 // mana_affordability_gate_test.dart — TurnLoop.previewSpellCost /
 // canAffordSpell, the price the UI's cast barrier reads.
 //
-// The bug this exists for: the caster's own deduction clamps
-// (`av.mana = (av.mana - cost).clamp(0, _kMaxMana)`), so overspending looks
-// harmless locally — the bar just empties. The *peer* is what notices:
-// _verifyPeerSpellCast sends `insufficient_mana_for_spell` and forfeits.
-// One device plays on, the other stops: a desync. battle_screen.dart greys
-// the card and kills the CAST button off these two methods, so what they
-// must guarantee is:
+// The bug this exists for: the caster's own deduction used to clamp
+// (`av.mana = (av.mana - cost).clamp(0, _kMaxMana)`), so overspending looked
+// harmless locally — the bar just emptied — while the peer forfeited the
+// match. One device plays on, the other stops: a desync. Overspending now
+// fizzles and refunds on both devices instead (TurnLoop._fizzlesForMana), so
+// the desync is gone, but a cast that silently does nothing is still a wasted
+// turn. battle_screen.dart greys the card and kills the CAST button off these
+// two methods, so what they must guarantee is:
 //
 //   1. the preview equals what the cast actually charges (a preview that's
 //      cheaper than the deduction is the same bug with extra steps), and
@@ -249,29 +250,37 @@ void main() {
   });
 
   group('sorcerer mode', () {
-    test('quotes the worst-case multiplier, so a fizzled incantation can\'t '
-        'overshoot the gate', () {
-      // The vocal score doesn't exist until after the player commits to the
-      // cast, and a poor one multiplies cost by 1.50. Quoting 1.0× would let
-      // the gate approve a cast the peer then forfeits over.
+    // REVERSED 2026-08-04 (VOCAL_RECALL_PLAN.md §4). This used to quote a 1.50x
+    // worst case, because a bad incantation could inflate a cast the gate had
+    // approved at 1.0x into one the peer forfeited over — a desync.
+    //
+    // Fizzle-with-refund removes that failure mode at the source: a shortfall
+    // in sorcerer mode is now legal, fizzles, and refunds the mana (the turn is
+    // still spent). With nothing left to protect against, quoting a price
+    // nobody pays only misinformed the player, so the gate quotes the honest
+    // base cost — which is also what a clean recital actually charges.
+    test('quotes the honest base cost, same as wizard mode', () {
       final wizard = setup(mana: 200);
       final sorcerer = setup(mana: 200, sorcererMode: true);
       final s = spell(segmentCount: 12);
 
-      final wizardCost = wizard.loop.previewSpellCost(s);
-      final sorcererCost = sorcerer.loop.previewSpellCost(s);
-
-      expect(sorcererCost, (wizardCost * 1.50).ceil());
+      expect(
+        sorcerer.loop.previewSpellCost(s),
+        wizard.loop.previewSpellCost(s),
+      );
     });
 
-    test('withholds the Efficiency discount, as a fizzle would', () {
+    test('applies the Efficiency discount, which no longer hinges on a fizzle',
+        () {
+      // Recall never gates the loadout enhancement (§4: wrong words cost mana,
+      // full stop), so Efficiency is live in the quote whenever the caster is
+      // eligible for it.
       final ctx = setup(mana: 200, sorcererMode: true);
       final s = spell(segmentCount: 12, supremeTags: const ['water']);
 
       expect(
         ctx.loop.previewSpellCost(s, isEfficiency: true),
-        ctx.loop.previewSpellCost(s),
-        reason: 'a fizzle disables the loadout enhancement entirely',
+        lessThan(ctx.loop.previewSpellCost(s)),
       );
     });
   });

@@ -4,14 +4,20 @@
 // Regenerate with: python3 scripts/build_avatar_pack.py
 //
 // The shipped wizard-avatar catalog: one row per character in
-// assets/art_pack/avatars/avatar_atlas.png (432x1024). Art provenance and
+// assets/art_pack/avatars/avatar_atlas.png (432x1152), with a
+// matching portrait cell in assets/art_pack/avatars/avatar_portraits.png
+// (576x864) at the same col/row. Art provenance and
 // licence are recorded in assets/art_pack/avatars/ATTRIBUTION.md.
 
 part of 'avatar_sprites.dart';
 
 /// Atlas dimensions, for the source-rect maths in [AvatarAtlas].
 const int kAvatarAtlasWidth = 432;
-const int kAvatarAtlasHeight = 1024;
+const int kAvatarAtlasHeight = 1152;
+
+/// Portrait atlas dimensions, for the source-rect maths in [AvatarPortraitAtlas].
+const int kAvatarPortraitAtlasWidth = 576;
+const int kAvatarPortraitAtlasHeight = 864;
 
 /// Every avatar shipped in the pack, in stable catalog order. Ids are stable
 /// across regeneration and are what a player's avatar choice is persisted as —
@@ -23,6 +29,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.heroes,
     atlasCol: 0,
     atlasRow: 0,
+    portraitCol: 0,
+    portraitRow: 0,
   ),
   AvatarArt(
     id: 'fighter_f_02',
@@ -30,6 +38,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.heroes,
     atlasCol: 1,
     atlasRow: 0,
+    portraitCol: 1,
+    portraitRow: 0,
   ),
   AvatarArt(
     id: 'fighter_m_01',
@@ -37,6 +47,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.heroes,
     atlasCol: 2,
     atlasRow: 0,
+    portraitCol: 2,
+    portraitRow: 0,
   ),
   AvatarArt(
     id: 'fighter_m_02',
@@ -44,6 +56,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.heroes,
     atlasCol: 3,
     atlasRow: 0,
+    portraitCol: 3,
+    portraitRow: 0,
   ),
   AvatarArt(
     id: 'healer_f_01',
@@ -51,6 +65,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.heroes,
     atlasCol: 4,
     atlasRow: 0,
+    portraitCol: 4,
+    portraitRow: 0,
   ),
   AvatarArt(
     id: 'healer_m_01',
@@ -58,6 +74,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.heroes,
     atlasCol: 5,
     atlasRow: 0,
+    portraitCol: 5,
+    portraitRow: 0,
   ),
   AvatarArt(
     id: 'mage_f_01',
@@ -65,6 +83,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.heroes,
     atlasCol: 0,
     atlasRow: 1,
+    portraitCol: 0,
+    portraitRow: 1,
   ),
   AvatarArt(
     id: 'mage_m_01',
@@ -72,6 +92,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.heroes,
     atlasCol: 1,
     atlasRow: 1,
+    portraitCol: 1,
+    portraitRow: 1,
   ),
   AvatarArt(
     id: 'ranger_f_01',
@@ -79,6 +101,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.heroes,
     atlasCol: 2,
     atlasRow: 1,
+    portraitCol: 2,
+    portraitRow: 1,
   ),
   AvatarArt(
     id: 'ranger_m_01',
@@ -86,6 +110,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.heroes,
     atlasCol: 3,
     atlasRow: 1,
+    portraitCol: 3,
+    portraitRow: 1,
   ),
   AvatarArt(
     id: 'aristocrate_f_01',
@@ -93,6 +119,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 4,
     atlasRow: 1,
+    portraitCol: 4,
+    portraitRow: 1,
   ),
   AvatarArt(
     id: 'aristocrate_f_02',
@@ -100,6 +128,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 5,
     atlasRow: 1,
+    portraitCol: 5,
+    portraitRow: 1,
   ),
   AvatarArt(
     id: 'aristocrate_f_03',
@@ -107,6 +137,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 0,
     atlasRow: 2,
+    portraitCol: 0,
+    portraitRow: 2,
   ),
   AvatarArt(
     id: 'bard_m_01',
@@ -114,6 +146,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 1,
     atlasRow: 2,
+    portraitCol: 1,
+    portraitRow: 2,
   ),
   AvatarArt(
     id: 'clown_01',
@@ -121,6 +155,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 2,
     atlasRow: 2,
+    portraitCol: 2,
+    portraitRow: 2,
   ),
   AvatarArt(
     id: 'cultist_01',
@@ -128,6 +164,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 3,
     atlasRow: 2,
+    portraitCol: 3,
+    portraitRow: 2,
   ),
   AvatarArt(
     id: 'dancer_f_01',
@@ -135,6 +173,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 4,
     atlasRow: 2,
+    portraitCol: 4,
+    portraitRow: 2,
   ),
   AvatarArt(
     id: 'king_01',
@@ -142,6 +182,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 5,
     atlasRow: 2,
+    portraitCol: 5,
+    portraitRow: 2,
   ),
   AvatarArt(
     id: 'mask_m_01',
@@ -149,6 +191,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 0,
     atlasRow: 3,
+    portraitCol: 0,
+    portraitRow: 3,
   ),
   AvatarArt(
     id: 'npc_f_amanda',
@@ -156,6 +200,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 1,
     atlasRow: 3,
+    portraitCol: 1,
+    portraitRow: 3,
   ),
   AvatarArt(
     id: 'pirate_f_01',
@@ -163,6 +209,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 2,
     atlasRow: 3,
+    portraitCol: 2,
+    portraitRow: 3,
   ),
   AvatarArt(
     id: 'prince_01',
@@ -170,6 +218,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 3,
     atlasRow: 3,
+    portraitCol: 3,
+    portraitRow: 3,
   ),
   AvatarArt(
     id: 'princess_01',
@@ -177,6 +227,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 4,
     atlasRow: 3,
+    portraitCol: 4,
+    portraitRow: 3,
   ),
   AvatarArt(
     id: 'snow_m_01',
@@ -184,6 +236,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 5,
     atlasRow: 3,
+    portraitCol: 5,
+    portraitRow: 3,
   ),
   AvatarArt(
     id: 'townfolk_adult_f_001',
@@ -191,6 +245,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 0,
     atlasRow: 4,
+    portraitCol: 0,
+    portraitRow: 4,
   ),
   AvatarArt(
     id: 'townfolk_adult_f_002',
@@ -198,6 +254,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 1,
     atlasRow: 4,
+    portraitCol: 1,
+    portraitRow: 4,
   ),
   AvatarArt(
     id: 'townfolk_adult_f_003',
@@ -205,6 +263,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 2,
     atlasRow: 4,
+    portraitCol: 2,
+    portraitRow: 4,
   ),
   AvatarArt(
     id: 'townfolk_adult_f_004',
@@ -212,6 +272,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 3,
     atlasRow: 4,
+    portraitCol: 3,
+    portraitRow: 4,
   ),
   AvatarArt(
     id: 'townfolk_adult_f_005',
@@ -219,6 +281,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 4,
     atlasRow: 4,
+    portraitCol: 4,
+    portraitRow: 4,
   ),
   AvatarArt(
     id: 'townfolk_adult_f_006',
@@ -226,6 +290,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 5,
     atlasRow: 4,
+    portraitCol: 5,
+    portraitRow: 4,
   ),
   AvatarArt(
     id: 'townfolk_adult_m_001',
@@ -233,6 +299,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 0,
     atlasRow: 5,
+    portraitCol: 0,
+    portraitRow: 5,
   ),
   AvatarArt(
     id: 'townfolk_adult_m_002',
@@ -240,6 +308,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 1,
     atlasRow: 5,
+    portraitCol: 1,
+    portraitRow: 5,
   ),
   AvatarArt(
     id: 'townfolk_adult_m_003',
@@ -247,6 +317,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 2,
     atlasRow: 5,
+    portraitCol: 2,
+    portraitRow: 5,
   ),
   AvatarArt(
     id: 'townfolk_adult_m_004',
@@ -254,6 +326,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 3,
     atlasRow: 5,
+    portraitCol: 3,
+    portraitRow: 5,
   ),
   AvatarArt(
     id: 'townfolk_adult_m_005',
@@ -261,6 +335,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 4,
     atlasRow: 5,
+    portraitCol: 4,
+    portraitRow: 5,
   ),
   AvatarArt(
     id: 'townfolk_adult_m_006',
@@ -268,6 +344,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 5,
     atlasRow: 5,
+    portraitCol: 5,
+    portraitRow: 5,
   ),
   AvatarArt(
     id: 'townfolk_adult_m_007',
@@ -275,6 +353,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 0,
     atlasRow: 6,
+    portraitCol: 0,
+    portraitRow: 6,
   ),
   AvatarArt(
     id: 'townfolk_adult_m_008',
@@ -282,6 +362,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 1,
     atlasRow: 6,
+    portraitCol: 1,
+    portraitRow: 6,
   ),
   AvatarArt(
     id: 'townfolk_adult_m_009',
@@ -289,6 +371,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 2,
     atlasRow: 6,
+    portraitCol: 2,
+    portraitRow: 6,
   ),
   AvatarArt(
     id: 'townfolk_child_f_001',
@@ -296,6 +380,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 3,
     atlasRow: 6,
+    portraitCol: 3,
+    portraitRow: 6,
   ),
   AvatarArt(
     id: 'townfolk_child_f_002',
@@ -303,6 +389,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 4,
     atlasRow: 6,
+    portraitCol: 4,
+    portraitRow: 6,
   ),
   AvatarArt(
     id: 'townfolk_child_m_001',
@@ -310,6 +398,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 5,
     atlasRow: 6,
+    portraitCol: 5,
+    portraitRow: 6,
   ),
   AvatarArt(
     id: 'townfolk_child_m_002',
@@ -317,6 +407,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 0,
     atlasRow: 7,
+    portraitCol: 0,
+    portraitRow: 7,
   ),
   AvatarArt(
     id: 'townfolk_old_f_001',
@@ -324,6 +416,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 1,
     atlasRow: 7,
+    portraitCol: 1,
+    portraitRow: 7,
   ),
   AvatarArt(
     id: 'townfolk_old_m_001',
@@ -331,6 +425,8 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 2,
     atlasRow: 7,
+    portraitCol: 2,
+    portraitRow: 7,
   ),
   AvatarArt(
     id: 'townfolk_old_m_002',
@@ -338,5 +434,70 @@ const List<AvatarArt> kAvatarCatalog = [
     category: AvatarCategory.npc,
     atlasCol: 3,
     atlasRow: 7,
+    portraitCol: 3,
+    portraitRow: 7,
+  ),
+  AvatarArt(
+    id: 'flower_01',
+    name: 'Flower 01',
+    category: AvatarCategory.monsters,
+    atlasCol: 4,
+    atlasRow: 7,
+    portraitCol: 4,
+    portraitRow: 7,
+  ),
+  AvatarArt(
+    id: 'grassspirit_01',
+    name: 'GrassSpirit 01',
+    category: AvatarCategory.monsters,
+    atlasCol: 5,
+    atlasRow: 7,
+    portraitCol: 5,
+    portraitRow: 7,
+  ),
+  AvatarArt(
+    id: 'mermaid_01',
+    name: 'Mermaid 01',
+    category: AvatarCategory.monsters,
+    atlasCol: 0,
+    atlasRow: 8,
+    portraitCol: 0,
+    portraitRow: 8,
+  ),
+  AvatarArt(
+    id: 'mushroom_01',
+    name: 'Mushroom 01',
+    category: AvatarCategory.monsters,
+    atlasCol: 1,
+    atlasRow: 8,
+    portraitCol: 1,
+    portraitRow: 8,
+  ),
+  AvatarArt(
+    id: 'poprigunchik_01',
+    name: 'Poprigunchik 01',
+    category: AvatarCategory.monsters,
+    atlasCol: 2,
+    atlasRow: 8,
+    portraitCol: 2,
+    portraitRow: 8,
+  ),
+  AvatarArt(
+    id: 'seed_01',
+    name: 'Seed 01',
+    category: AvatarCategory.monsters,
+    atlasCol: 3,
+    atlasRow: 8,
+    portraitCol: 3,
+    portraitRow: 8,
+  ),
+  AvatarArt(
+    id: 'shrump_01',
+    name: 'Shrump 01',
+    category: AvatarCategory.monsters,
+    atlasCol: 4,
+    atlasRow: 8,
+    portraitCol: 4,
+    portraitRow: 8,
   ),
 ];

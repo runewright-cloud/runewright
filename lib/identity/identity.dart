@@ -22,6 +22,7 @@ import 'key_packing.dart';
 const _kSeedStorageKey = 'runewright.identity.ed25519_seed_v1';
 const _kWizardNameKey = 'runewright.identity.wizard_name_v1';
 const _kCommunitySeedKey = 'runewright.identity.community_seed_v1';
+const _kAvatarIdKey = 'runewright.identity.avatar_id_v1';
 
 /// A loaded Ed25519 identity: the keypair plus its circuit-facing encoding.
 class Identity {
@@ -69,6 +70,20 @@ class Identity {
     return _storage.read(key: _kCommunitySeedKey);
   }
 
+  /// Persists the player's chosen avatar id (docs/AVATAR_PICKER_PLAN.md §5.1)
+  /// — an [AvatarArt.id] from lib/ui/avatars/avatar_sprites.dart. Purely
+  /// cosmetic: not sensitive, no migration needed, since a null read means
+  /// "use the deterministic default", exactly today's pre-picker behaviour.
+  static Future<void> saveAvatarId(String avatarId) async {
+    await _storage.write(key: _kAvatarIdKey, value: avatarId);
+  }
+
+  /// Returns the stored avatar id, or null if the player hasn't chosen one
+  /// (callers fall back to [AvatarAssignment]'s deterministic default).
+  static Future<String?> loadAvatarId() async {
+    return _storage.read(key: _kAvatarIdKey);
+  }
+
   /// Wipes the on-device identity and wizard name — debug / testing use only.
   /// After calling this, [exists] returns false and the app will show
   /// onboarding on next launch (or navigate there manually).
@@ -76,6 +91,7 @@ class Identity {
     await _storage.delete(key: _kSeedStorageKey);
     await _storage.delete(key: _kWizardNameKey);
     await _storage.delete(key: _kCommunitySeedKey);
+    await _storage.delete(key: _kAvatarIdKey);
   }
 
   /// Read-only boot check: is there already a Runekey on this device? Unlike

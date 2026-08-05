@@ -26,6 +26,7 @@
 import 'vocal_score.dart';
 import 'vocal_scorer.dart';
 import 'reference_match_vocal_scorer.dart';
+import 'vocal_slot.dart';
 
 /// Sherpa-ONNX [KeywordSpotter]-based [VocalScorer] (not yet integrated).
 ///
@@ -42,11 +43,11 @@ class SherpaVocalScorer implements VocalScorer {
   // ── Sherpa-ONNX fields (uncomment after step 4 above) ────────────────────
   // late final KeywordSpotter _kws;       // from sherpa_onnx package
   // late final OnlineStream _stream;      // per-utterance stream
-  // VocalWord? _pendingTarget;
+  // VocalSlot? _pendingTarget;
   // ─────────────────────────────────────────────────────────────────────────
 
   @override
-  Future<void> beginCapture(VocalWord targetWord) async {
+  Future<void> beginCapture(VocalSlot targetWord) async {
     // TODO(sorcerer): create a new OnlineStream from _kws here and start
     //   piping PCM chunks into _kws.acceptWaveform(). The keyword to match
     //   is targetWord.name (e.g. 'ignis').

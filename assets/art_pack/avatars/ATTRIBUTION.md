@@ -1,8 +1,9 @@
 # Attribution — 24x32 characters (wizard avatars)
 
 This directory contains a derived form of third-party artwork: the walk blocks are
-cropped, colour-keyed to real alpha and edge-bled by `scripts/build_avatar_pack.py`.
-This file is the authoritative provenance record.
+cropped, colour-keyed to real alpha and edge-bled, and the portraits are cropped
+uncropped-art (opaque, not colour-keyed) by `scripts/build_avatar_pack.py`. This file
+is the authoritative provenance record.
 
 ## Source
 
@@ -25,7 +26,7 @@ this derived directory is tracked. Regenerate with:
 
 ## Atlas layout
 
-`avatar_atlas.png` is 432x1024 RGBA. Each character occupies one 72x128 cell,
+`avatar_atlas.png` is 432x1152 RGBA. Each character occupies one 72x128 cell,
 laid out left-to-right / top-to-bottom in catalog order. Within a cell the frames are
 a 3-column x 4-row grid of 24x32 poses:
 
@@ -39,7 +40,15 @@ a 3-column x 4-row grid of 24x32 poses:
 That is the RPG Maker 2000 charset order, *not* RPG Maker XP's. It was verified
 against the art rather than assumed — see the build script's docstring.
 
-`lib/ui/avatars/avatar_catalog.g.dart` is generated alongside this atlas and is the
+`avatar_portraits.png` is 576x864 RGBA. Each character occupies one
+96x96 cell at the same col/row as its walk-atlas cell, packed left-to-right /
+top-to-bottom in the same catalog order. Portraits are **uncropped source art**,
+pad-centred with the sheet's own background where the source is smaller than the
+cell, and ship fully **opaque** — unlike the walk atlas, they are not colour-keyed
+(the transparency key colour also appears as legitimate art colour inside several
+portraits, so keying would punch holes in hair and clothing).
+
+`lib/ui/avatars/avatar_catalog.g.dart` is generated alongside both atlases and is the
 canonical id → cell mapping.
 
 ## Characters
@@ -92,3 +101,10 @@ canonical id → cell mapping.
 | `townfolk_old_f_001` | Townfolk Old F 001 | npc | `Townfolk-Old-F-001.png` | `fa75be45dac93a7b…` |
 | `townfolk_old_m_001` | Townfolk Old M 001 | npc | `Townfolk-Old-M-001.png` | `c3ea3c82d9d40d9a…` |
 | `townfolk_old_m_002` | Townfolk Old M 002 | npc | `Townfolk-Old-M-002.png` | `1417bf20aad98117…` |
+| `flower_01` | Flower 01 | monsters | `Flower-01.png` | `8b138c2dd492383b…` |
+| `grassspirit_01` | GrassSpirit 01 | monsters | `GrassSpirit-01.png` | `e8b499754e9b1078…` |
+| `mermaid_01` | Mermaid 01 | monsters | `Mermaid_01.bmp` | `20565af65b2dc16a…` |
+| `mushroom_01` | Mushroom 01 | monsters | `Mushroom-01.png` | `dd640da8549533ae…` |
+| `poprigunchik_01` | Poprigunchik 01 | monsters | `Poprigunchik_01.png` | `f45541f8c17743cd…` |
+| `seed_01` | Seed 01 | monsters | `Seed-01.png` | `80d963f8586ec5a2…` |
+| `shrump_01` | Shrump 01 | monsters | `Shrump-01.png` | `12669a6a6b8c374c…` |

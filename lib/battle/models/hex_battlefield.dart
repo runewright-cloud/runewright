@@ -168,7 +168,19 @@ class Battlefield {
   ///
   /// [flyingPlayerIds] are wizards under wild magic's Updraft: they ignore
   /// terrain entirely while moving (WILD_MAGIC_PLAN.md A11), matching
-  /// TurnLoop._walkAvatar. They still contest destination tiles normally.
+  /// TurnLoop._walkAvatar. They still contest destination tiles normally, and
+  /// they alone may path through [blockedTiles] (design v3.0 §Flying: move
+  /// through other entities, but never come to rest on one — the real walk in
+  /// TurnLoop._walkAvatar is what enforces the second half).
+  ///
+  /// [blockedTiles] are tiles held by a body at the START of the movement
+  /// phase — every living avatar's tile and every living minion's footprint.
+  /// Bodies are exclusive, so a walker stops dead in front of one instead of
+  /// stepping through it. A player's own origin is never a blocker to
+  /// themselves. This is a *snapshot*, deliberately: movement is simultaneous,
+  /// so resolving it against positions that shift as each player is walked in
+  /// turn would hand the first player in iteration order a free pass through a
+  /// tile the second hasn't vacated yet.
   ///
   /// **Ice sliding is deliberately NOT modelled here.** The returned
   /// [MovementResult.paths] are re-walked verbatim as DECLARED STEPS by
@@ -186,12 +198,18 @@ class Battlefield {
     int maxTilesPerTurn = 2,
     Map<HexCoord, TileEffect> tileEffects = const {},
     Set<String> flyingPlayerIds = const {},
+    Set<HexCoord> blockedTiles = const {},
   }) {
     final origins = Map<String, HexCoord>.from(occupancy);
 
     // ── Step 1: Walk each path step-by-step ───────────────────────────────────
     // walkedPaths[id] = [origin, step1, step2, ...] after budget/blocker clamp.
     final walkedPaths = <String, List<HexCoord>>{};
+    // Recorded first, before any arbitration, so that a player both stopped by
+    // a body AND pushed back off a contested tile lunges at the body -- the
+    // furthest they visibly reached. UI-only, exactly like the rest of
+    // [contests]; see [MovementContest].
+    final contests = <MovementContest>[];
 
     for (final id in origins.keys) {
       final origin = origins[id]!;
@@ -212,6 +230,17 @@ class Battlefield {
         // terrain.dart). Missing it here would let the preview arbitrate a
         // destination the real walk can never reach.
         if (tileBlocksMovement(effect)) break;
+        // A body blocks the way. Their own origin doesn't count -- a path that
+        // doubles back through where it started isn't walking through anyone.
+        if (!flying && step != origin && blockedTiles.contains(step)) {
+          // Recorded as a one-sided contest so the UI shows the shoulder-check
+          // rather than an unexplained early stop. Gameplay-wise this is just
+          // "the walk ended here"; nothing reads it back.
+          contests.add(
+            MovementContest(tile: step, contestants: [id], winnerId: null),
+          );
+          break;
+        }
         final cost = 1 + (effect is SlowTile ? effect.extraMoveCost : 0);
         if (cost > remaining) break;
         current    = step;
@@ -232,7 +261,6 @@ class Battlefield {
       for (final entry in walkedPaths.entries) entry.key: entry.value.length - 1,
     };
     final bounced = <String>{};
-    final contests = <MovementContest>[];
 
     // Stepping back can land a loser on a tile someone else is claiming, so
     // arbitration runs to a fixed point. Every pass that changes anything

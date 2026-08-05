@@ -44,6 +44,17 @@ Offset hexToPixel(HexCoord coord, Offset center, double hexSize) => Offset(
   center.dy + hexSize * (sqrt(3) / 2 * coord.q + sqrt(3) * coord.r),
 );
 
+/// Side length, in units of `hexSize`, of the largest axis-aligned square that
+/// fits inside a flat-top hex: `2√3 / (1 + √3)` ≈ 1.268.
+///
+/// Derivation, for a hex of circumradius 1 centred at the origin: the square's
+/// top-right corner sits at (h, h), and the hex's upper-right edge is the line
+/// `√3·x + y = √3`. Substituting gives `h = √3 / (1 + √3)`, and the side is
+/// `2h`. (The horizontal flat-to-flat constraint, |y| ≤ √3/2, is slacker, so
+/// the slanted edge is what binds.) Neighbouring tile centres are √3 apart, so
+/// two adjacent squares still clear each other by ≈ 0.46·hexSize.
+final double kHexInscribedSquare = 2 * sqrt(3) / (1 + sqrt(3));
+
 HexCoord _hexRound(double q, double r) {
   final s = -q - r;
   var rq = q.round();
@@ -112,6 +123,129 @@ class PendingCastOrb {
   final int rangeRadius;
 }
 
+// ── Attack animation ──────────────────────────────────────────────────────────
+
+/// One ordinary attack to animate — a wizard's haymaker or a creature's strike,
+/// built by the UI layer from the engine's [AttackEvent]s (turn_loop.dart),
+/// which are the gameplay source of truth for the damage itself.
+///
+/// Two forms, chosen by [melee]: a blow at arm's length is a coloured blade
+/// swiping across the target tile, while an attack with real reach throws
+/// something across the intervening tiles — the same orb the spell cast
+/// animation flies, so "a thing crossed the board and hit you" reads the same
+/// way whoever threw it. Which one a given attacker gets is decided upstream by
+/// its attack range, not here.
+///
+/// [startFraction] delays the strike within the playback it rides, because that
+/// playback is sometimes shared: a melee creature's blow has to land on the
+/// frame its lunging token arrives, not when the timeline starts. Standalone
+/// playbacks (a wizard haymaker, a creature that struck without moving) pass 0
+/// and start immediately.
+class AttackAnimation {
+  const AttackAnimation({
+    required this.fromHex,
+    required this.toHex,
+    required this.color,
+    required this.melee,
+    this.startFraction = 0.0,
+  });
+
+  final HexCoord fromHex;
+  final HexCoord toHex;
+  final Color color;
+  final bool melee;
+  final double startFraction;
+}
+
+/// The fraction of a *shared* movement playback at which an attack riding it
+/// begins — a hair before the walking tokens arrive ([_kMoveTravelEnd]), so the
+/// blade is already moving on the frame the lunge connects. Same reasoning, and
+/// the same lead-in, as the collision spark.
+const double kAttackStrikeStart = _kMoveTravelEnd - 0.06;
+
+// Melee timeline, as a fraction of one attack's own (post-[startFraction])
+// window: the blade sweeps across the target over the first 45%, then the whole
+// stroke fades out. A swipe that lingers reads as a drawn line rather than a
+// blow, and the fade is also what clears it — the driving controller is
+// one-shot and simply sits at t=1 once it finishes.
+const double _kSlashSweepEnd = 0.45;
+
+/// One [AttackAnimation]'s own progress at overall playback fraction [t], or
+/// null before its [AttackAnimation.startFraction] lead-in has elapsed (i.e.
+/// nothing to draw yet).
+double? attackProgressAt(AttackAnimation anim, double t) {
+  final start = anim.startFraction.clamp(0.0, 0.99);
+  if (t < start) return null;
+  return ((t - start) / (1 - start)).clamp(0.0, 1.0);
+}
+
+/// One frame of a melee swipe: the blade's leading edge, its trailing edge, and
+/// how solid the whole stroke is right now.
+class MeleeSlashStroke {
+  const MeleeSlashStroke({
+    required this.tail,
+    required this.head,
+    required this.alpha,
+  });
+
+  final Offset tail;
+  final Offset head;
+
+  /// 1 through the sweep, falling to 0 as the stroke fades out.
+  final double alpha;
+
+  /// Whether this frame is worth drawing at all — a faded-out stroke, or one
+  /// whose ends have converged, is nothing.
+  bool get isVisible => alpha > 0 && (head - tail).distance >= 0.5;
+}
+
+/// The blade's position at progress [p] (0..1 of one attack's own window), on a
+/// grid whose (0,0) hex is centred at [center].
+///
+/// Top-level and public for the same reason [entityWalkStateAt] is: this
+/// function *is* the swipe, and it's the part worth testing directly.
+///
+/// The stroke is laid square across the line of attack — perpendicular to
+/// attacker→target — which is what makes it read as a blow struck at the
+/// target rather than as a line pointing at it. Its leading edge crosses first
+/// and the tail follows only once the head is past halfway, so the mark travels
+/// with visible length instead of growing out of a fixed point.
+MeleeSlashStroke meleeSlashStrokeAt(
+  AttackAnimation anim,
+  double p,
+  Offset center,
+  double hexSize,
+) {
+  final from = hexToPixel(anim.fromHex, center, hexSize);
+  final to = hexToPixel(anim.toHex, center, hexSize);
+  final delta = to - from;
+  // Degenerate only if something struck its own tile; face "down" so the
+  // stroke is still drawn rather than skipped.
+  final axis = delta.distance < 0.001
+      ? const Offset(0, 1)
+      : delta / delta.distance;
+  final across = Offset(-axis.dy, axis.dx);
+
+  // Bite a little short of the tile centre, on the attacker's side: the blow
+  // lands on the near face of the target, not behind it.
+  final anchor = to - axis * (hexSize * 0.14);
+  final reach = hexSize * 0.72;
+  final tipA = anchor - across * reach;
+  final tipB = anchor + across * reach;
+
+  final sweep = (p / _kSlashSweepEnd).clamp(0.0, 1.0);
+  final head = Offset.lerp(tipA, tipB, Curves.easeOutCubic.transform(sweep))!;
+  final tail = Offset.lerp(
+    tipA,
+    tipB,
+    Curves.easeInCubic.transform(((sweep - 0.5) / 0.5).clamp(0.0, 1.0)),
+  )!;
+  final alpha = p <= _kSlashSweepEnd
+      ? 1.0
+      : (1 - (p - _kSlashSweepEnd) / (1 - _kSlashSweepEnd)).clamp(0.0, 1.0);
+  return MeleeSlashStroke(tail: tail, head: head, alpha: alpha);
+}
+
 // Conveyor chain animation timeline: the token rides the belt for the first
 // 82% of playback, then the whole visualization fades out over the rest.
 const double _kChainTravelEnd = 0.82;
@@ -142,55 +276,87 @@ const double _kMoveTravelEnd = 0.72;
 // rendering glitch, whereas a clear near-miss reads as a shoulder-check.
 const double _kLungeReach = 0.48;
 
-/// One wizard's walk this turn, to animate rather than teleport: the token
+/// One entity's walk this turn, to animate rather than teleport: the token
 /// slides along [path] tile-to-tile over one playback of
 /// [BattlefieldPainter.moveAnimation].
 ///
-/// Every wizard's animation shares that one timeline, which is what makes a
-/// collision legible — both tokens arrive at the contested tile on the same
-/// frame, and whoever lost recoils off it. Purely cosmetic; built by the UI
-/// layer from [AvatarMoveEvent] (turn_loop.dart), which is the gameplay source
-/// of truth for where anyone actually ended up.
-class AvatarMoveAnimation {
-  const AvatarMoveAnimation({
-    required this.playerId,
+/// Every mover in a given playback shares that one timeline, which is what
+/// makes a collision legible — both tokens arrive at the contested tile on the
+/// same frame, and whoever lost recoils off it. Purely cosmetic; built by the
+/// UI layer from the engine's move events (turn_loop.dart), which are the
+/// gameplay source of truth for where anyone actually ended up.
+///
+/// Subclassed rather than used directly so the token being walked carries its
+/// own identity: [AvatarMoveAnimation] keys on playerId, [MinionMoveAnimation]
+/// on Minion.id. The timeline itself ([entityWalkStateAt]) is identical for
+/// both — a summon crossing the board should read exactly like a wizard does.
+abstract class EntityMoveAnimation {
+  const EntityMoveAnimation({
     required this.path,
     this.lungeTile,
     this.wonContestAt,
   });
 
-  final String playerId;
-
   /// Tiles visited in order, starting with the pre-move origin. A single-entry
-  /// path means the wizard ended where they began — worth animating only when
-  /// [lungeTile] is set, i.e. they were shoved all the way back to their own
-  /// tile, which is the ONE case that distinguishes "lost a collision" from
-  /// "chose not to move". Wizards who genuinely stood still are left out by the
-  /// caller and drawn from occupancy as usual.
+  /// path means the entity ended where it began — worth animating only when
+  /// [lungeTile] is set, i.e. it was shoved all the way back to its own tile,
+  /// which is the ONE case that distinguishes "lost a collision" (or "lunged
+  /// in to strike and was pushed out") from "chose not to move". Entities that
+  /// genuinely stood still are left out by the caller and drawn from their
+  /// board position as usual.
   final List<HexCoord> path;
 
-  /// A contested tile this wizard reached for and lost: the token travels
-  /// [_kLungeReach] of the way onto it, then is pushed back to [path]'s last
-  /// tile. Null when no collision touched them.
+  /// A tile this entity reached onto but does not end on: the token travels
+  /// [_kLungeReach] of the way there, then is pushed back to [path]'s last
+  /// tile. A contested tile a wizard lost, or the enemy tile a melee summon
+  /// stepped into to land its blow. Null when nothing pushed it back.
   final HexCoord? lungeTile;
 
-  /// A contested tile this wizard reached for and *kept* by being faster.
-  /// Only drives the impact spark — they end there either way.
+  /// A contested tile this entity reached for and *kept* by being faster.
+  /// Only drives the impact spark — it ends there either way.
   final HexCoord? wonContestAt;
 
   /// The tile a collision visibly happened on, if any.
   HexCoord? get contestedTile => lungeTile ?? wonContestAt;
 }
 
-/// A wizard's drawn position and facing on one frame of a walk — the resolved
-/// output of [wizardWalkStateAt].
+/// One wizard's walk — see [EntityMoveAnimation]. Built from [AvatarMoveEvent].
+class AvatarMoveAnimation extends EntityMoveAnimation {
+  const AvatarMoveAnimation({
+    required this.playerId,
+    required super.path,
+    super.lungeTile,
+    super.wonContestAt,
+  });
+
+  final String playerId;
+}
+
+/// One summon's walk — see [EntityMoveAnimation]. Built from [MinionMoveEvent].
+///
+/// A melee (range 0) creature's strike arrives as [EntityMoveAnimation
+/// .lungeTile]: it must stand on its target's tile to land a blow and is
+/// shoved straight back out, so the lunge-and-recoil *is* the attack, not a
+/// decoration on it.
+class MinionMoveAnimation extends EntityMoveAnimation {
+  const MinionMoveAnimation({
+    required this.minionId,
+    required super.path,
+    super.lungeTile,
+  });
+
+  final String minionId;
+}
+
+/// An entity's drawn position and facing on one frame of a walk — the resolved
+/// output of [entityWalkStateAt].
 class WizardWalkState {
   const WizardWalkState(this.pos, this.facing);
   final Offset pos;
   final AvatarFacing facing;
 }
 
-/// One wizard's position and facing at playback fraction [t] (0..1) of their
+/// One entity's position and facing at playback fraction [t] (0..1) of their
 /// [anim], on a grid whose (0,0) hex is centred at [center] with the given
 /// [hexSize].
 ///
@@ -205,14 +371,14 @@ class WizardWalkState {
 /// collision rather than as two unrelated moves. (Speed differences are
 /// already expressed by *who wins the tile*, not by who gets there first.)
 ///
-/// A wizard who lost a contest keeps walking past their final tile, partway
-/// onto the tile they wanted, and is then shoved back over the remaining
-/// `1 - _kMoveTravelEnd` of the timeline — decelerating, since a recoil that
-/// arrives at constant speed reads as a second move rather than a rebound.
-/// They stay facing the tile they lost throughout: being pushed off a tile
-/// you are still reaching for is the pose that tells the story.
-WizardWalkState wizardWalkStateAt(
-  AvatarMoveAnimation anim,
+/// An entity that lost a contest (or lunged in to strike) keeps walking past
+/// its final tile, partway onto the tile it wanted, and is then shoved back
+/// over the remaining `1 - _kMoveTravelEnd` of the timeline — decelerating,
+/// since a recoil that arrives at constant speed reads as a second move rather
+/// than a rebound. It stays facing the tile it lost throughout: being pushed
+/// off a tile you are still reaching for is the pose that tells the story.
+WizardWalkState entityWalkStateAt(
+  EntityMoveAnimation anim,
   double t,
   Offset center,
   double hexSize,
@@ -354,7 +520,10 @@ class BattlefieldPainter extends CustomPainter {
     this.effectBloomAnimation,
     this.terrainBeneath = false,
     this.avatarMoveAnimations = const [],
+    this.minionMoveAnimations = const [],
     this.moveAnimation,
+    this.attackAnimations = const [],
+    this.attackAnimation,
     this.avatarAtlas,
     this.avatarAssignment = const AvatarAssignment(),
   }) : super(
@@ -363,6 +532,7 @@ class BattlefieldPainter extends CustomPainter {
            castAnimation,
            effectBloomAnimation,
            moveAnimation,
+           attackAnimation,
          ]),
        );
 
@@ -385,9 +555,31 @@ class BattlefieldPainter extends CustomPainter {
   /// movement phase left them.
   final List<AvatarMoveAnimation> avatarMoveAnimations;
 
-  /// Drives [avatarMoveAnimations], 0→1 over one turn's movement. Merged into
-  /// the repaint listenable so the walk animates without a widget rebuild.
+  /// This turn's summon walks, played back over [moveAnimation] exactly as
+  /// [avatarMoveAnimations] are — a creature that crossed the board should
+  /// visibly cross it, not blink to its destination. Same clear-when-done
+  /// contract, and for the same reason.
+  ///
+  /// The two lists are never non-empty at once: avatars walk during Phase 3
+  /// and summons during Phase 5b, so one controller serves both.
+  final List<MinionMoveAnimation> minionMoveAnimations;
+
+  /// Drives [avatarMoveAnimations] and [minionMoveAnimations], 0→1 over one
+  /// playback. Merged into the repaint listenable so the walk animates without
+  /// a widget rebuild.
   final Animation<double>? moveAnimation;
+
+  /// The blows landing right now — wizard haymakers during the melee round,
+  /// creature strikes during the Summons phase. Same clear-when-done contract
+  /// as the move animations; an attack list left installed would keep redrawing
+  /// a spent slash at t=1 forever. See [AttackAnimation].
+  final List<AttackAnimation> attackAnimations;
+
+  /// Drives [attackAnimations], 0→1 over one playback. Its own controller
+  /// rather than [moveAnimation]'s, because the two run *together* during the
+  /// Summons phase (the lunge and the blow are one event) and separately during
+  /// the melee round (nobody is walking). Merged into the repaint listenable.
+  final Animation<double>? attackAnimation;
 
   /// The decoded avatar sprite sheet, or null while it loads (or if it failed).
   /// Null means every wizard falls back to the placeholder disc token, which is
@@ -564,6 +756,14 @@ class BattlefieldPainter extends CustomPainter {
   static Color colorForAffinity(SpellAffinity affinity) =>
       _kElementColor[affinity] ?? Colors.white;
 
+  /// The colour every melee swipe is drawn in — blood red, brighter than the
+  /// [_kMeleePick] prompt tint it has to be legible over. Deliberately *not*
+  /// per-attacker or per-element: a blow at arm's length is the one attack in
+  /// the game that has no elemental flavour to express, and keeping every
+  /// swipe the same colour is what makes "something just hit that tile" read
+  /// instantly, whoever swung.
+  static const Color meleeStrikeColor = Color(0xFFD03A28);
+
   /// The cast-orb color for whichever wizard cast the spell: gold for the
   /// local player, red for the first opponent (matching the existing board
   /// token colors), and a fixed extra palette for any further wizards in a
@@ -689,15 +889,22 @@ class BattlefieldPainter extends CustomPainter {
     // Pass 3 — minion tokens (Big/EEEE creatures draw one token per
     // occupied tile, label on the anchor tile only). A just-summoned creature
     // is held back until its card resolves, then blooms out of the cast tile.
+    // A creature mid-walk is drawn at its interpolated position; the rest of
+    // its footprint rides along at the same offset, so a Big creature moves
+    // as one body rather than shedding its outlying tiles.
+    final creatureWalks = _minionWalkStates(center);
     for (final m in minions) {
       if (!m.isAlive) continue;
       if (_minionHeldBack(m.id)) continue;
       final friendly = m.teamId == localTeamId;
+      final walk = creatureWalks[m.id];
+      final anchor = _hexToPixel(m.position, center);
+      final shift = walk == null ? Offset.zero : walk.pos - anchor;
       _bloomWrap(canvas, center, () {
         for (final tile in m.occupiedTiles) {
           _drawMinionToken(
             canvas,
-            _hexToPixel(tile, center),
+            _hexToPixel(tile, center) + shift,
             m,
             friendly,
             showLabel: tile == m.position,
@@ -723,8 +930,9 @@ class BattlefieldPainter extends CustomPainter {
     }
 
     // Pass 4.2 — collision impact. Drawn after both tokens so the spark sits
-    // between them at the moment they meet.
-    if (walking.isNotEmpty) {
+    // between them at the moment they meet. Covers a melee summon's lunge too:
+    // the flash on the tile it stepped into IS the blow landing.
+    if (walking.isNotEmpty || creatureWalks.isNotEmpty) {
       _drawCollisionSparks(canvas, center);
     }
 
@@ -795,6 +1003,15 @@ class BattlefieldPainter extends CustomPainter {
       final t = (castAnimation?.value ?? 1.0).clamp(0.0, 1.0);
       for (final anim in conveyorChainAnimations) {
         _drawConveyorChainAnimation(canvas, center, anim, t);
+      }
+    }
+
+    // Pass 7 — attacks (melee swipes, thrown orbs). Last, so a blow is never
+    // drawn under the token it lands on.
+    if (attackAnimations.isNotEmpty) {
+      final t = (attackAnimation?.value ?? 1.0).clamp(0.0, 1.0);
+      for (final anim in attackAnimations) {
+        _drawAttackAnimation(canvas, center, anim, t);
       }
     }
   }
@@ -1559,6 +1776,90 @@ class BattlefieldPainter extends CustomPainter {
     );
   }
 
+  /// Renders one [AttackAnimation] at overall playback fraction [t] (0..1),
+  /// after re-basing [t] onto the attack's own window (see
+  /// [AttackAnimation.startFraction]): a swipe across the target for a blow at
+  /// arm's length, a thrown orb for one with reach.
+  void _drawAttackAnimation(
+    Canvas canvas,
+    Offset center,
+    AttackAnimation anim,
+    double t,
+  ) {
+    final p = attackProgressAt(anim, t);
+    if (p == null) return;
+
+    if (anim.melee) {
+      _drawMeleeSlash(canvas, center, anim, p);
+      return;
+    }
+    // Reach: the same flight the spell orbs make, so a thrown attack reads as
+    // a thing crossing the board rather than as a second kind of spell.
+    final from = _hexToPixel(anim.fromHex, center);
+    final to = _hexToPixel(anim.toHex, center);
+    if (p < _kCastTravelEnd) {
+      final travel = Curves.easeInOut.transform(
+        (p / _kCastTravelEnd).clamp(0.0, 1.0),
+      );
+      _drawCastOrb(
+        canvas,
+        Offset.lerp(from, to, travel)!,
+        anim.color,
+        // Smaller than a spell orb: a creature's shot should not read as
+        // heavy as an inscribed spell landing on the same tile.
+        radiusScale: 0.7,
+        alpha: 1.0,
+      );
+    } else {
+      final burst = ((p - _kCastTravelEnd) / (1 - _kCastTravelEnd)).clamp(
+        0.0,
+        1.0,
+      );
+      _drawCastBurst(canvas, to, anim.color, burst);
+    }
+  }
+
+  /// Draws the blade at progress [p] (0..1 of this attack's own window) — see
+  /// [meleeSlashStrokeAt], which is where the swipe itself lives.
+  void _drawMeleeSlash(
+    Canvas canvas,
+    Offset center,
+    AttackAnimation anim,
+    double p,
+  ) {
+    final stroke = meleeSlashStrokeAt(anim, p, center, hexSize);
+    if (!stroke.isVisible) return;
+    final (tail, head, fade) = (stroke.tail, stroke.head, stroke.alpha);
+
+    // Glow, then body, then a thin white edge — the same three-layer build as
+    // the cast orb, so the two effects sit in one visual language.
+    canvas.drawLine(
+      tail,
+      head,
+      Paint()
+        ..color = anim.color.withValues(alpha: 0.5 * fade)
+        ..strokeWidth = hexSize * 0.24
+        ..strokeCap = StrokeCap.round
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, hexSize * 0.12),
+    );
+    canvas.drawLine(
+      tail,
+      head,
+      Paint()
+        ..color = anim.color.withValues(alpha: 0.9 * fade)
+        ..strokeWidth = hexSize * 0.11
+        ..strokeCap = StrokeCap.round,
+    );
+    canvas.drawLine(
+      tail,
+      head,
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.7 * fade)
+        ..strokeWidth = hexSize * 0.035
+        ..strokeCap = StrokeCap.round,
+    );
+  }
+
   void _drawCastBurst(Canvas canvas, Offset pos, Color color, double p) {
     final alpha = 1 - p;
     // Expanding ring.
@@ -1579,7 +1880,7 @@ class BattlefieldPainter extends CustomPainter {
     );
   }
 
-  // ── Wizard movement ────────────────────────────────────────────────────────
+  // ── Wizard / summon movement ───────────────────────────────────────────────
 
   /// Where every mid-walk wizard is right now, and which way they're facing.
   ///
@@ -1591,9 +1892,37 @@ class BattlefieldPainter extends CustomPainter {
     final t = (moveAnimation?.value ?? 1.0).clamp(0.0, 1.0);
     return {
       for (final anim in avatarMoveAnimations)
-        anim.playerId: wizardWalkStateAt(anim, t, center, hexSize),
+        anim.playerId: entityWalkStateAt(anim, t, center, hexSize),
     };
   }
+
+  /// The summon equivalent of [_walkStates], keyed by Minion.id. Same timeline,
+  /// same controller — the two playbacks just never run at once (avatars walk
+  /// in Phase 3, summons in Phase 5b).
+  Map<String, WizardWalkState> _minionWalkStates(Offset center) {
+    if (minionMoveAnimations.isEmpty) return const {};
+    final t = (moveAnimation?.value ?? 1.0).clamp(0.0, 1.0);
+    return {
+      for (final anim in minionMoveAnimations)
+        anim.minionId: entityWalkStateAt(anim, t, center, hexSize),
+    };
+  }
+
+  /// Where a summon's token should be drawn this frame: its animated position
+  /// if it is mid-walk, otherwise its board tile. Public because the card-art
+  /// thumbnail is a widget layered over this painter (battle_screen.dart's
+  /// _MinionArtOverlay) and has to ride along with the token it sits on —
+  /// two sources of truth for one creature's position is exactly the kind of
+  /// seam that drifts.
+  static Offset minionTokenPos(
+    MinionMoveAnimation? anim,
+    HexCoord position,
+    double t,
+    Offset center,
+    double hexSize,
+  ) => anim == null
+      ? hexToPixel(position, center, hexSize)
+      : entityWalkStateAt(anim, t.clamp(0.0, 1.0), center, hexSize).pos;
 
   /// A brief spark on every tile two wizards reached for at once, peaking as
   /// they meet. Without it a speed win looks like the loser simply chose to
@@ -1607,7 +1936,10 @@ class BattlefieldPainter extends CustomPainter {
     final p = ((t - start) / (1 - start)).clamp(0.0, 1.0);
 
     final tiles = <HexCoord>{
-      for (final anim in avatarMoveAnimations)
+      for (final anim in <EntityMoveAnimation>[
+        ...avatarMoveAnimations,
+        ...minionMoveAnimations,
+      ])
         if (anim.contestedTile != null) anim.contestedTile!,
     };
     for (final tile in tiles) {
@@ -1740,6 +2072,8 @@ class BattlefieldPainter extends CustomPainter {
       !identical(old.resolutionBaseline, resolutionBaseline) ||
       old.terrainBeneath != terrainBeneath ||
       old.avatarMoveAnimations.length != avatarMoveAnimations.length ||
+      old.minionMoveAnimations.length != minionMoveAnimations.length ||
+      old.attackAnimations.length != attackAnimations.length ||
       !identical(old.avatarAtlas, avatarAtlas) ||
       !identical(old.avatarAssignment, avatarAssignment) ||
       !identical(old.effectBloom, effectBloom);

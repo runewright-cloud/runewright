@@ -295,6 +295,7 @@ class _BattleLobbyScreenState extends State<BattleLobbyScreen> {
             peerRawPubkey: result.peer.rawPubkey,
             peerPermissions: result.peerPermissions,
             pactIdHex: widget.pactIdHex,
+            peerAvatarId: result.peerAvatarId,
           ),
         ),
       );

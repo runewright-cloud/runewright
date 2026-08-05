@@ -88,9 +88,32 @@ HexCoord _add(HexCoord a, HexCoord b) => HexCoord(a.q + b.q, a.r + b.r);
 List<HexCoord> _neighborsOf(HexCoord h) =>
     _kNeighborDirs.map((d) => _add(h, d)).toList();
 
-bool _isOccupied(BattleState state, HexCoord hex) =>
-    state.avatars.any((a) => a.isAlive && a.position == hex) ||
-    state.minions.any((m) => m.isAlive && m.occupiedTiles.contains(hex));
+/// True when [hex] is stood on by a living entity — any wizard avatar, or any
+/// tile of any minion's footprint.
+///
+/// Bodies are exclusive: nothing may share a tile with anything else (design
+/// v3.0, stated most explicitly under Flying — "may move through other
+/// entities as if they were not there, but still not end their move in the
+/// same tile as another entity"). This is the single predicate every movement
+/// path consults, so that rule has exactly one definition rather than the four
+/// hand-rolled copies it used to have.
+///
+/// [ignoreAvatarId]/[ignoreMinionId] exclude whoever is doing the moving: an
+/// entity is never a blocker to itself, and a Big creature's own footprint
+/// would otherwise pin it in place.
+bool tileOccupied(
+  BattleState state,
+  HexCoord hex, {
+  String? ignoreAvatarId,
+  String? ignoreMinionId,
+}) =>
+    state.avatars.any(
+      (a) => a.isAlive && a.playerId != ignoreAvatarId && a.position == hex,
+    ) ||
+    state.minions.any(
+      (m) =>
+          m.isAlive && m.id != ignoreMinionId && m.occupiedTiles.contains(hex),
+    );
 
 /// Resolves tile-entry effects starting at [enteredTile]. Pure/deterministic
 /// given [rng] -- does not mutate [state] or any entity; the caller applies
@@ -104,7 +127,12 @@ bool _isOccupied(BattleState state, HexCoord hex) =>
 /// cascade is by construction a ConveyorTile, never lava.
 ///
 /// [footprintValid] lets multi-tile (Big/EEEE) minions reject a candidate
-/// tile whose full footprint wouldn't fit; null for single-tile entities.
+/// tile whose full footprint wouldn't fit; null for single-tile entities. A
+/// minion caller's predicate already carries the occupancy rule (it consults
+/// [tileOccupied]); an *avatar* caller instead passes [moverAvatarId], which
+/// applies the same rule with that avatar excluded from it. Passing neither
+/// means a cascade may push the entity onto an occupied tile — only correct
+/// for something that isn't a body, so callers moving one should pass one.
 TileEntryOutcome resolveTileEntry({
   required BattleState state,
   required Random rng,
@@ -113,6 +141,7 @@ TileEntryOutcome resolveTileEntry({
   required int currentHp,
   bool applyEntryLava = true,
   bool Function(HexCoord)? footprintValid,
+  String? moverAvatarId,
 }) {
   var totalDamage = 0;
   final enterEffect = state.tileEffects[enteredTile];
@@ -121,7 +150,12 @@ TileEntryOutcome resolveTileEntry({
   }
 
   final chain = _walkChain(
-    state: state, start: enteredTile, flying: flying, footprintValid: footprintValid);
+    state: state,
+    start: enteredTile,
+    flying: flying,
+    footprintValid: footprintValid,
+    moverAvatarId: moverAvatarId,
+  );
   if (chain.loop != null) {
     return _resolveLoop(
       state: state,
@@ -152,11 +186,16 @@ TileEntryOutcome resolveTileEntry({
   required HexCoord start,
   required bool flying,
   bool Function(HexCoord)? footprintValid,
+  String? moverAvatarId,
 }) {
   bool canEnter(HexCoord hex) {
     if (!state.battlefield.isInBounds(hex)) return false;
     if (tileBlocksMovement(state.tileEffects[hex])) return false;
     if (footprintValid != null && !footprintValid(hex)) return false;
+    if (moverAvatarId != null &&
+        tileOccupied(state, hex, ignoreAvatarId: moverAvatarId)) {
+      return false;
+    }
     return true;
   }
 
@@ -196,9 +235,15 @@ TileEntryPrediction predictTileEntry({
   required HexCoord enteredTile,
   required bool flying,
   bool Function(HexCoord)? footprintValid,
+  String? moverAvatarId,
 }) {
   final chain = _walkChain(
-    state: state, start: enteredTile, flying: flying, footprintValid: footprintValid);
+    state: state,
+    start: enteredTile,
+    flying: flying,
+    footprintValid: footprintValid,
+    moverAvatarId: moverAvatarId,
+  );
   return TileEntryPrediction(
     finalPosition: chain.current,
     path: chain.path,
@@ -236,11 +281,14 @@ class TileEntryPrediction {
 /// [declaredPath] from wherever the push left off); stops early and reports
 /// [MovePathPrediction.indeterminate] the moment a conveyor chain would
 /// enter a closed loop.
+/// [moverId] is the walking avatar's playerId, so its own tile isn't mistaken
+/// for a blocker. Omit it only for a caller that isn't planning a body's move.
 MovePathPrediction predictAvatarMove({
   required BattleState state,
   required HexCoord origin,
   required List<HexCoord> declaredPath,
   required int budget,
+  String? moverId,
 }) {
   var current = origin;
   var remaining = budget;
@@ -252,6 +300,9 @@ MovePathPrediction predictAvatarMove({
     if (hexDistance(current, step) != 1) break;
     final effect = state.tileEffects[step];
     if (tileBlocksMovement(effect)) break;
+    // Bodies are exclusive — see [tileOccupied]. The real walk stops here, so
+    // the preview must too, or the player plans a step they never get.
+    if (tileOccupied(state, step, ignoreAvatarId: moverId)) break;
     final cost = 1 + (effect is SlowTile ? effect.extraMoveCost : 0);
     if (cost > remaining) break;
     remaining -= cost;
@@ -259,7 +310,12 @@ MovePathPrediction predictAvatarMove({
     path.add(current);
 
     if (effect is ConveyorTile && effect.directionSet) {
-      final prediction = predictTileEntry(state: state, enteredTile: current, flying: false);
+      final prediction = predictTileEntry(
+        state: state,
+        enteredTile: current,
+        flying: false,
+        moverAvatarId: moverId,
+      );
       current = prediction.finalPosition;
       path.addAll(prediction.path.skip(1));
       if (prediction.enteredIndeterminateLoop) {
@@ -305,7 +361,7 @@ HexCoord? _findLoopExit(
     if (loop.contains(n)) return false;
     if (!state.battlefield.isInBounds(n)) return false;
     if (tileBlocksMovement(state.tileEffects[n])) return false;
-    if (_isOccupied(state, n)) return false;
+    if (tileOccupied(state, n)) return false;
     if (footprintValid != null && !footprintValid(n)) return false;
     return true;
   }).toList();

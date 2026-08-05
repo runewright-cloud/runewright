@@ -68,8 +68,13 @@ abstract final class StatusEffectId {
   static const nextSpellCostDouble = 'nextSpellCostDouble';
 
   // ── Perception ────────────────────────────────────────────────────────────
-  // Blind: all map information beyond adjacent tiles is hidden.
-  static const blind = 'blind';
+  // Blind ("all map information beyond adjacent tiles is hidden") was scrapped,
+  // not deferred. Hiding entities from one peer while both peers advance the
+  // same deterministic state is an information-theoretic dead end: either the
+  // blinded client holds the hidden positions anyway (and the blindness is
+  // cosmetic, defeatable by reading memory), or it doesn't (and the two clients
+  // can no longer agree on the state they're both stepping). Don't reintroduce
+  // it without a hidden-information protocol to hang it on.
 
   // ── Chain accumulation rate ───────────────────────────────────────────────
   // modifiers: {'chainAccMultiplierPct': int}  (200 = 2×, 50 = 0.5×)

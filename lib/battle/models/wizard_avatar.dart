@@ -370,9 +370,6 @@ class WizardAvatar {
   bool get isQuick => activeStatusEffects
       .any((fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.quick);
 
-  bool get isBlind => activeStatusEffects
-      .any((fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.blind);
-
   /// Wild magic (Updraft): this wizard ignores terrain while moving —
   /// chasms, walls, lava, slow tiles, ice sliding, and conveyor pushes.
   /// See StatusEffectId.flying.

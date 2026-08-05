@@ -12,7 +12,7 @@
 import 'package:flutter/material.dart';
 
 import '../spells/spell_art_pack.dart';
-import 'credits_screen.dart';
+import 'about_screen.dart';
 import 'manuscript_theme.dart';
 
 // Mirrors spell_card_painter.dart's private elemental palette -- kept as a
@@ -307,8 +307,8 @@ class _ArtPreviewDialog extends StatelessWidget {
 }
 
 /// Persistent attribution line -- CC BY-SA 4.0 §3(a) requires attribution;
-/// this is the contextual pointer, the Credits screen (pushed on tap) is
-/// the full resource. Never hardcodes the licence text -- reads from
+/// this is the contextual pointer, the About screen's Credits tab (pushed
+/// on tap) is the full resource. Never hardcodes the licence text -- reads from
 /// [kPainterlyLicence] so a future licence change (docs/SPELL_ART_PACK_PLAN.md
 /// D-1) is a generator change plus a regeneration, not a UI edit.
 class _AttributionFooter extends StatelessWidget {
@@ -317,7 +317,7 @@ class _AttributionFooter extends StatelessWidget {
     return InkWell(
       onTap: () => Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => const CreditsScreen()),
+        MaterialPageRoute(builder: (_) => const AboutScreen(initialTab: 1)),
       ),
       child: Container(
         width: double.infinity,

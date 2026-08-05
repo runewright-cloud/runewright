@@ -1,39 +1,27 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// vocal_score.dart — VocalScore value type and VocalWord vocabulary enum.
+// vocal_score.dart — VocalScore value type.
 //
 // VocalScore is the output of VocalScorer.endCapture() and encodes both the
 // pronunciation confidence (0.0–1.0) and the volume level relative to the
 // ambient noise floor (0.0–1.0).
+//
+// RETIRING (VOCAL_RECALL_PLAN.md §1). Pronunciation quality is structurally
+// unverifiable — see the RECEIVING-SIDE CONSTRAINT on fromWireBytes below,
+// which says outright that the peer cannot recalculate this from audio. The
+// verbal component now measures trajectory RECALL, which the peer *can*
+// recompute from `dominance_trajectory` (a public input to the proof). This
+// type is superseded by IncantationRecall (incantation_recall.dart) and
+// survives only until the last pronunciation-scoring caller is gone.
+//
+// The vocabulary enum moved to vocal_slot.dart and became VocalSlot — an
+// enum of SLOTS, since the word filling each is now the player's choice.
 //
 // Wire encoding: each field is quantised to u8 via toWireBytes() before
 // transmission. Full double precision does NOT survive the wire round trip;
 // see the precision comment on toWireBytes().
 
 import 'dart:typed_data';
-
-// ── Vocabulary ────────────────────────────────────────────────────────────────
-
-/// The five incantation words recognised in Sorcerer mode.
-enum VocalWord {
-  ignis,  // fire
-  ventus, // air (wind)
-  aqua,   // water
-  terra,  // earth
-  finitus;  // terminator (dismissal / chain break)
-
-  /// Maps a spell's primary affinity zone name (SpellAsset.formula[0]; one
-  /// of 'fire'/'air'/'water'/'earth', see spell_asset.dart) to the
-  /// incantation word the caster must speak. Returns null for an unrecognised
-  /// or empty zone name.
-  static VocalWord? fromAffinityZone(String zone) => switch (zone.toLowerCase()) {
-        'fire' => VocalWord.ignis,
-        'air' => VocalWord.ventus,
-        'water' => VocalWord.aqua,
-        'earth' => VocalWord.terra,
-        _ => null,
-      };
-}
 
 // ── Score type ────────────────────────────────────────────────────────────────
 

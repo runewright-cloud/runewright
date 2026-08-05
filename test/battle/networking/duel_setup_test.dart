@@ -187,6 +187,64 @@ void main() {
     await transportGuest.disconnect();
   });
 
+  test('the chosen avatar id is threaded end-to-end into DuelSetupResult', () async {
+    // Identity's avatar-id storage is a single process-global fake in tests
+    // (fake_secure_storage.dart), so host and guest necessarily read the same
+    // saved value here — this test proves step 4b's fields are populated and
+    // wired through the full handshake, not left null/empty. The genuinely
+    // asymmetric "each side gets the OTHER's id, not its own" property is
+    // covered directly at the wire level in
+    // battle_session_avatar_id_test.dart, where two independent literal
+    // strings can be driven per side.
+    await Identity.saveAvatarId('ranger_f_01');
+
+    final hostIdentity = await Identity.ephemeral();
+    final guestIdentity = await Identity.ephemeral();
+    final hostOwnerHex = await hostIdentity.ownerPubkeyHex();
+    final guestOwnerHex = await guestIdentity.ownerPubkeyHex();
+
+    final hostChapter = await makeChapter(
+      idSuffix: '55',
+      ownerPubkeyHex: hostOwnerHex,
+      artifacts: const [ArtifactEntry(kind: ArtifactKind.manaGem)],
+    );
+    final guestChapter = await makeChapter(
+      idSuffix: '66',
+      ownerPubkeyHex: guestOwnerHex,
+      artifacts: const [ArtifactEntry(kind: ArtifactKind.manaGem)],
+    );
+
+    const hostConfig = MatchConfig();
+    final (transportHost, transportGuest) = InMemoryTransport.pair();
+
+    final results = await Future.wait([
+      runDuelSetup(
+        transport: transportHost,
+        role: DuelRole.host,
+        localIdentity: hostIdentity,
+        localChapter: hostChapter,
+        hostConfig: hostConfig,
+      ),
+      runDuelSetup(
+        transport: transportGuest,
+        role: DuelRole.guest,
+        localIdentity: guestIdentity,
+        localChapter: guestChapter,
+        hostConfig: hostConfig,
+      ),
+    ]);
+    final hostResult = results[0];
+    final guestResult = results[1];
+
+    expect(hostResult.localAvatarId, 'ranger_f_01');
+    expect(guestResult.localAvatarId, 'ranger_f_01');
+    expect(hostResult.peerAvatarId, 'ranger_f_01');
+    expect(guestResult.peerAvatarId, 'ranger_f_01');
+
+    await transportHost.disconnect();
+    await transportGuest.disconnect();
+  });
+
   test('two independent TurnLoops over the real handshake result stay in '
       'lockstep across turns', () async {
     final hostIdentity = await Identity.ephemeral();

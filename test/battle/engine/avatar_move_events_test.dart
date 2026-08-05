@@ -151,9 +151,12 @@ void main() {
       expect(event.path.last, isNot(const HexCoord(1, 0)));
     });
 
-    test('losing a contested tile records the tile that was lost', () async {
-      // The dummy holds its own origin at (2,0) — nobody can be shoved off the
-      // tile they started on — so the local wizard reaches for it and loses.
+    test('walking into another body stops short and records the lunge',
+        () async {
+      // Bodies are exclusive: the dummy is simply standing at (2,0), so the
+      // local wizard walks into it and rebounds. This is NOT arbitration —
+      // nobody contested anything — but it has to *look* like a collision, or
+      // the walk ends one tile early for no visible reason.
       final ctx = _setup(dummyPos: const HexCoord(2, 0));
 
       await ctx.loop.runTurn(
@@ -165,12 +168,15 @@ void main() {
 
       final local = _eventFor(ctx.loop, 'local');
       expect(local.path.last, const HexCoord(1, 0));
+      expect(ctx.local.position, const HexCoord(1, 0));
       expect(local.lungeTile, const HexCoord(2, 0));
       expect(local.wonContestAt, isNull);
 
-      // The holder kept the tile, which is what the impact spark marks.
+      // The wizard who was stood on it never moved and never contested: it
+      // held the tile by being there, not by winning a speed check.
       final dummy = _eventFor(ctx.loop, 'dummy');
-      expect(dummy.wonContestAt, const HexCoord(2, 0));
+      expect(dummy.path, [const HexCoord(2, 0)]);
+      expect(dummy.wonContestAt, isNull);
       expect(dummy.lungeTile, isNull);
     });
 

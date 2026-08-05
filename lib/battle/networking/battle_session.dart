@@ -393,6 +393,19 @@ class BattleSession implements BattleTurnSession {
     return utf8.decode(frame.payload);
   }
 
+  /// Both sides send their player-chosen avatar id simultaneously.
+  /// Unauthenticated — presentation only (which sprite the wizard wears on
+  /// the battlefield), never fed into cast authorization or the state-hash
+  /// lockstep. Returns the peer's avatar id, or '' if they haven't chosen
+  /// one. Copies [exchangeWizardName]'s shape verbatim (send first, then
+  /// await the frame) — this repo has already been bitten by a broadcast
+  /// stream frame being dropped when a listener attached after the send.
+  Future<String> exchangeAvatarId(String ours) async {
+    send(BattleMsgType.avatarId, Uint8List.fromList(utf8.encode(ours)));
+    final frame = await framesOfType(BattleMsgType.avatarId).first;
+    return utf8.decode(frame.payload);
+  }
+
   /// Both sides send their Chapter Merkle root simultaneously.
   /// Returns the peer's root bytes (32 bytes).
   Future<Uint8List> exchangeBookCommitment(Uint8List ourRoot) async {

@@ -45,8 +45,13 @@ enum BattleMsgType {
   // unauthenticated alongside the rest of setup — presentation only, never
   // trusted for identity/authorization (that's exchangeIdentityAuth's job).
   wizardName(0x1D),       // UTF-8 bytes, may be empty
-
-
+  // Player-chosen avatar id (Identity.loadAvatarId(), an AvatarArt.id from
+  // lib/ui/avatars/avatar_sprites.dart), exchanged the same way and for the
+  // same reason as wizardName — unauthenticated, presentation only, never
+  // fed into cast authorization or the state-hash lockstep. An unknown id
+  // (older peer, dropped catalog entry) degrades to the default via
+  // avatarArtById returning null. See docs/AVATAR_PICKER_PLAN.md §5.2.
+  avatarId(0x1E),         // UTF-8 bytes, may be empty
 
   // Commit-reveal entropy (§3)
   nonceCommit(0x20),

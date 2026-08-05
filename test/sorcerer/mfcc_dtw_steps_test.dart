@@ -2,7 +2,7 @@
 //
 // mfcc_dtw_steps_test.dart — unit tests for DtwMatcher.distanceWithSteps
 // (lib/sorcerer/mfcc.dart), added for Practice Mode's
-// StreamingPhonemeScorer. The property under test is exactly the one the
+// the recall scorer. The property under test is exactly the one the
 // checkpoint floor depends on: cost/steps (length-normalized local match
 // quality) stays close whether the same content is delivered at reference
 // speed or stretched out, whereas raw accumulated cost does not.

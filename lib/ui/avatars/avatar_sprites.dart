@@ -15,10 +15,10 @@
 //
 //   1. (now) Every wizard gets *some* character sprite instead of a coloured
 //      circle, assigned deterministically from their playerId.
-//   2. (later) The player picks their avatar from the catalog. That is a
-//      picker UI over [kAvatarCatalog] plus persistence of the chosen id, and
-//      it enters through [AvatarAssignment.explicit] — see its doc comment for
-//      the one thing that work must not forget.
+//   2. (done) The player picks their avatar from the catalog — see
+//      docs/AVATAR_PICKER_PLAN.md and lib/ui/avatars/avatar_picker_screen.dart.
+//      The choice enters through [AvatarAssignment.explicit] — see its doc
+//      comment for the one property that work had to keep.
 //   3. (later still) Real walk/idle animation. The atlas already carries all
 //      12 poses per character (4 facings x 3 frames), and the movement
 //      animation already knows which way a wizard is walking, so this is a
@@ -75,9 +75,17 @@ enum AvatarPose {
   final int col;
 }
 
-/// Which source directory a character came from. Only a grouping hint for the
-/// future picker UI; the battlefield does not care.
-enum AvatarCategory { heroes, npc }
+/// Which source directory a character came from. The picker's tab grouping
+/// (avatar_picker_screen.dart). Never serialized — only [AvatarArt.id] is
+/// persisted — so appending [monsters] last is safe; do not assume the
+/// ordering itself is load-bearing.
+enum AvatarCategory { heroes, npc, monsters }
+
+/// Portrait cell side length in avatar_portraits.png, and the atlas's column
+/// count — mirrors the build script's `PORTRAIT_CELL` / `ATLAS_COLS` so the
+/// walk atlas and portrait atlas stay index-aligned.
+const int kAvatarPortraitCell = 96;
+const int kAvatarPortraitCols = 6;
 
 /// One character in the shipped pack. Generated into [kAvatarCatalog] —
 /// see avatar_catalog.g.dart.
@@ -88,11 +96,13 @@ class AvatarArt {
     required this.category,
     required this.atlasCol,
     required this.atlasRow,
+    required this.portraitCol,
+    required this.portraitRow,
   });
 
   /// Stable identifier, and the value a player's avatar choice is persisted
-  /// (and, eventually, transmitted) as. Regenerating the pack must never
-  /// change one — see avatar_catalog.g.dart.
+  /// (and transmitted over the LAN handshake) as. Regenerating the pack must
+  /// never change one — see avatar_catalog.g.dart.
   final String id;
 
   /// Human-readable label for the picker. Derived from the source filename, so
@@ -106,12 +116,28 @@ class AvatarArt {
   final int atlasCol;
   final int atlasRow;
 
+  /// Position of this character's 96x96 portrait cell within
+  /// avatar_portraits.png — always equal to [atlasCol]/[atlasRow] today (the
+  /// build script packs both atlases in the same catalog order), but kept as
+  /// separate fields rather than derived so a future repack of one atlas
+  /// alone can't silently desync the other.
+  final int portraitCol;
+  final int portraitRow;
+
   /// The atlas rect for one pose of this character.
   Rect frameRect(AvatarFacing facing, AvatarPose pose) => Rect.fromLTWH(
     (atlasCol * kAvatarBlockWidth + pose.col * kAvatarFrameWidth).toDouble(),
     (atlasRow * kAvatarBlockHeight + facing.row * kAvatarFrameHeight).toDouble(),
     kAvatarFrameWidth.toDouble(),
     kAvatarFrameHeight.toDouble(),
+  );
+
+  /// The portrait-atlas rect for this character's portrait card.
+  Rect get portraitRect => Rect.fromLTWH(
+    (portraitCol * kAvatarPortraitCell).toDouble(),
+    (portraitRow * kAvatarPortraitCell).toDouble(),
+    kAvatarPortraitCell.toDouble(),
+    kAvatarPortraitCell.toDouble(),
   );
 }
 
@@ -149,9 +175,20 @@ List<AvatarArt> get selectableAvatars => List.unmodifiable(kAvatarCatalog);
 class AvatarAssignment {
   const AvatarAssignment({this.explicit = const {}});
 
-  /// playerId → chosen [AvatarArt.id]. Empty today; the future picker fills it
-  /// (and the future handshake fills the peer's entries). Ids not in the
-  /// catalog fall back to the default, so a stale choice degrades quietly.
+  /// playerId → chosen [AvatarArt.id]. Filled from two sources: the local
+  /// player's [Identity.loadAvatarId] choice, and the peer's choice as
+  /// received over [BattleSession.exchangeAvatarId] in a LAN duel — see
+  /// duel_setup.dart step 4b and battle_screen.dart's `_avatarAssignment`
+  /// construction.
+  ///
+  /// A locally-stored choice is invisible to the peer, so a chosen avatar has
+  /// to travel in the handshake and be installed here via [explicit] on BOTH
+  /// devices. A choice applied only to the local map is not a bug that fails
+  /// loudly — each player just sees a different board than the other, which
+  /// is exactly the class of seam bug CLAUDE.md's handoff notes warn about.
+  ///
+  /// Ids not in the catalog fall back to the default, so a stale choice (or
+  /// an unrecognised id from a newer peer) degrades quietly.
   final Map<String, String> explicit;
 
   AvatarArt artFor(String playerId) {
@@ -196,6 +233,46 @@ class AvatarAtlas {
 
   /// The decoded atlas, or null if [load] has not completed (or failed).
   /// Painters treat null as "draw the placeholder token instead".
+  static ui.Image? get imageOrNull => _image;
+
+  static Future<ui.Image> load() {
+    final cached = _image;
+    if (cached != null) return Future.value(cached);
+    return _pending ??= _decode();
+  }
+
+  static Future<ui.Image> _decode() async {
+    final data = await rootBundle.load(assetPath);
+    final codec = await ui.instantiateImageCodec(data.buffer.asUint8List());
+    final frame = await codec.getNextFrame();
+    _image = frame.image;
+    _pending = null;
+    return frame.image;
+  }
+
+  /// Test hook — drops the cached decode so a fake atlas can be installed.
+  @visibleForTesting
+  static void resetForTest() {
+    _image = null;
+    _pending = null;
+  }
+}
+
+/// Loads and caches the shipped avatar portrait atlas — same shape and
+/// one-decode-per-process property as [AvatarAtlas], pointing at
+/// avatar_portraits.png instead. Used by the avatar picker (the browsing
+/// surface) and the settings thumbnail; the battlefield itself only ever
+/// draws walk-atlas frames.
+class AvatarPortraitAtlas {
+  AvatarPortraitAtlas._();
+
+  static const String assetPath = 'assets/art_pack/avatars/avatar_portraits.png';
+
+  static ui.Image? _image;
+  static Future<ui.Image>? _pending;
+
+  /// The decoded atlas, or null if [load] has not completed (or failed).
+  /// Callers treat null as "draw a labelled placeholder instead".
   static ui.Image? get imageOrNull => _image;
 
   static Future<ui.Image> load() {

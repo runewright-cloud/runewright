@@ -22,6 +22,7 @@ import 'package:record/record.dart';
 import 'mfcc.dart';
 import 'reference_match_vocal_scorer.dart';
 import 'vocal_score.dart';
+import 'vocal_slot.dart';
 
 // ── Abstract interface ────────────────────────────────────────────────────────
 
@@ -35,7 +36,7 @@ abstract class VocalScorer {
   /// [targetWord] is the expected incantation. The implementation uses it to
   /// select the reference template or keyword for pronunciation scoring.
   /// Must not be called while a capture is already in progress.
-  Future<void> beginCapture(VocalWord targetWord);
+  Future<void> beginCapture(VocalSlot targetWord);
 
   /// Stops the microphone and returns the computed [VocalScore].
   ///
@@ -103,13 +104,13 @@ class VocalScorerFactory {
   /// has been confirmed; see sherpa_vocal_scorer.dart for the integration steps.
   ///
   /// [templates] — optional pre-extracted MFCC reference templates, keyed by
-  /// [VocalWord]. When absent the scorer uses energy-based fallback scoring
+  /// [VocalSlot]. When absent the scorer uses energy-based fallback scoring
   /// (real, audio-dependent, but less accurate than DTW).
   ///
   // TODO(sorcerer): switch to SherpaVocalScorer once validated:
   //   return SherpaVocalScorer(delegate: ReferenceMatchVocalScorer(templates: templates ?? {}));
   static VocalScorer create({
-    Map<VocalWord, List<List<double>>>? templates,
+    Map<VocalSlot, List<List<double>>>? templates,
   }) =>
       ReferenceMatchVocalScorer(templates: templates ?? {});
 }

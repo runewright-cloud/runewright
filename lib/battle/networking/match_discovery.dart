@@ -40,7 +40,18 @@ import '../../protocol/transport.dart';
 /// `maxMana` and hashes an extra byte per accoutrement — i.e. it would desync
 /// on the first state-hash exchange instead of failing the handshake. Aborting
 /// at the gate is the whole point.
-const kBattleProtocolVersion = 2;
+///
+/// v3 (2026-08-03, avatar picker): the setup flow gained an `avatarId` (0x1E)
+/// exchange in step 4b. A v2 client never sends it, so a v3 client would
+/// block forever on `framesOfType(avatarId).first` — a hang, not a failure.
+/// Aborting at the capabilities gate turns that into a legible error.
+///
+/// v4 (2026-08-04, vocal recall): the sorcerer suffix on a spell action changed
+/// from a fixed 3-byte VocalScore to a variable-length IncantationRecall with a
+/// trailing length byte. A v3 client would read a v4 recall's bytes as a score
+/// and charge wildly wrong mana — a silent desync, which is worse than a
+/// refused handshake.
+const kBattleProtocolVersion = 4;
 
 /// The max circuit tier (12 / 24 / 48) this device can reliably prove.
 ///

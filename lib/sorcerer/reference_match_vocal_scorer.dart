@@ -22,26 +22,27 @@ import 'package:record/record.dart';
 import 'mfcc.dart';
 import 'vocal_score.dart';
 import 'vocal_scorer.dart';
+import 'vocal_slot.dart';
 
 /// MFCC+DTW [VocalScorer]. The active implementation while Sherpa-ONNX is
 /// pending Latin-phoneme validation. See [VocalScorerFactory.create].
 class ReferenceMatchVocalScorer implements VocalScorer {
   ReferenceMatchVocalScorer({
-    Map<VocalWord, List<List<double>>>? templates,
+    Map<VocalSlot, List<List<double>>>? templates,
   }) : _templates = Map.of(templates ?? {});
 
   // word → sequence of 13-element MFCC vectors (one per 10 ms frame)
-  final Map<VocalWord, List<List<double>>> _templates;
+  final Map<VocalSlot, List<List<double>>> _templates;
 
   final AudioRecorder _recorder = AudioRecorder();
   final List<Uint8List> _chunks = [];
-  VocalWord? _targetWord;
+  VocalSlot? _targetWord;
   bool _capturing = false;
 
   // ── VocalScorer interface ─────────────────────────────────────────────────
 
   @override
-  Future<void> beginCapture(VocalWord targetWord) async {
+  Future<void> beginCapture(VocalSlot targetWord) async {
     assert(!_capturing, 'beginCapture called while already capturing');
     _targetWord = targetWord;
     _chunks.clear();
@@ -116,7 +117,7 @@ class ReferenceMatchVocalScorer implements VocalScorer {
   ///
   /// Must not be called while [beginCapture]…[endCapture] is in progress.
   Future<List<List<double>>> recordTemplate(
-    VocalWord word, {
+    VocalSlot word, {
     Duration duration = const Duration(seconds: 2),
   }) async {
     assert(!_capturing, 'recordTemplate called while a capture is pending');
@@ -138,6 +139,6 @@ class ReferenceMatchVocalScorer implements VocalScorer {
   }
 
   /// Unmodifiable view of current templates (for serialisation).
-  Map<VocalWord, List<List<double>>> get templates =>
+  Map<VocalSlot, List<List<double>>> get templates =>
       Map.unmodifiable(_templates);
 }

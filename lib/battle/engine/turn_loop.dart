@@ -176,7 +176,8 @@ import 'trajectory_parser.dart';
 import 'wild_magic.dart';
 import 'wild_magic_applicator.dart';
 import 'forced_cast.dart';
-import '../../sorcerer/vocal_score.dart';
+import '../../sorcerer/incantation_recall.dart';
+import '../../sorcerer/vocal_slot.dart';
 
 // ── Turn input / action types ─────────────────────────────────────────────────
 
@@ -239,7 +240,7 @@ class SpellCastAction extends TurnAction {
     this.isPotent = false,
     this.isVelocity = false,
     this.isEfficiency = false,
-    this.vocalScore,
+    this.recall,
     this.conveyorDirection,
     this.delayedOriginHex,
     this.handIndex,
@@ -262,12 +263,20 @@ class SpellCastAction extends TurnAction {
   /// set this.
   final int? handIndex;
 
-  /// Sorcerer-mode vocal quality score for this cast. Null in Wizard mode.
+  /// What the caster's device heard them recite. Null in Wizard mode.
   ///
-  /// Set by the caster's device from the VocalScorer output and committed
-  /// inside the action hash. Populated on the receiving side by decoding the
-  /// transmitted bytes — never recomputed from local audio (see _decodeAction).
-  final VocalScore? vocalScore;
+  /// Slot indices only, never words (VOCAL_RECALL_PLAN.md §8.10.1). Set by the
+  /// caster's device and committed inside the action hash; populated on the
+  /// receiving side by decoding the transmitted bytes. The peer scores it by
+  /// recomputing the EXPECTED sequence from the certified trajectory, which is
+  /// what makes recall verifiable where pronunciation quality never was.
+  final IncantationRecall? recall;
+
+  /// Set at commit time when the recall-inflated cost exceeded the caster's
+  /// mana: the cast fizzles and the mana is refunded, but the turn is spent
+  /// (§4). NOT transmitted — each device computes it from the same certified
+  /// cost and the same avatar mana, so both arrive at the same answer.
+  bool fizzledForMana = false;
 
   /// The caster's chosen push direction, if this cast will create a
   /// ConveyorTile (Air-flavor tileModification) and the caster picked one
@@ -350,6 +359,71 @@ class AvatarMoveEvent {
   final HexCoord? wonContestAt;
 }
 
+/// One summon's movement this turn — the [AvatarMoveEvent] of the Summons
+/// phase, and UI-only in exactly the same way: a creature that crossed three
+/// tiles should be seen crossing them, not blink to its destination. Carries
+/// no gameplay effect; [TurnLoop] never reads these back. See
+/// [TurnLoop.lastMinionMoveEvents].
+class MinionMoveEvent {
+  const MinionMoveEvent({
+    required this.minionId,
+    required this.path,
+    this.lungeTile,
+  });
+
+  final String minionId;
+
+  /// Every tile actually visited, in order, starting with the pre-move tile —
+  /// including free displacement picked up along the way (conveyor pushes), so
+  /// the token follows the real route. Length 1 means "did not move", which is
+  /// still worth emitting when [lungeTile] is set.
+  final List<HexCoord> path;
+
+  /// The enemy tile a melee (range 0) creature stepped onto to land its blow.
+  /// It cannot stay there — bodies are exclusive — so the UI reaches the token
+  /// onto that tile and shoves it back to [path]'s last tile, which is the
+  /// whole visible form the attack takes. Null for a creature with reach, and
+  /// for one that had no movement left to strike with.
+  final HexCoord? lungeTile;
+}
+
+/// One ordinary attack that landed this turn — a wizard's haymaker or a
+/// creature's strike — so the UI can show the blow itself rather than only its
+/// consequences. UI-only bookkeeping, exactly like [MinionMoveEvent]: the
+/// damage has already been applied by the time this is emitted and [TurnLoop]
+/// never reads these back.
+///
+/// [range] is the attacker's *effective* attack range at the moment it struck
+/// (a wizard haymaker is always 1), which is what decides the form the attack
+/// takes on screen: reach 0/1 is a blow at arm's length, reach 2+ is something
+/// thrown across the intervening tiles. [affinity] is the attacker's element,
+/// null for a wizard — wizards punch, they don't have an elemental flavour.
+class AttackEvent {
+  const AttackEvent({
+    required this.from,
+    required this.to,
+    required this.range,
+    this.affinity,
+  });
+
+  /// The attacker's tile at the moment of the blow (post-movement).
+  final HexCoord from;
+
+  /// The tile struck. For a melee creature this is the tile it lunges onto —
+  /// the same tile as [MinionMoveEvent.lungeTile] — so the two animations line
+  /// up on the same target.
+  final HexCoord to;
+
+  final int range;
+
+  final SpellAffinity? affinity;
+
+  /// Whether this blow was struck within arm's reach. Reach 1 counts: the
+  /// attacker is standing next to its target either way, and only a creature
+  /// that can strike from 2+ tiles away has anything to throw.
+  bool get isMelee => range <= 1;
+}
+
 /// One spell resolved this turn, in resolution order — drives the UI's
 /// MtG-style card reveal sequence (battle_screen.dart): each entry is shown
 /// full-card for 2s, then becomes a thumbnail (neutral tray for incantations,
@@ -410,7 +484,7 @@ class MysterySpellCastAction extends TurnAction {
     this.immediateNonce,
     this.isPotent = false,
     this.isVelocity = false,
-    this.vocalScore,
+    this.recall,
     this.handIndex,
   });
 
@@ -426,9 +500,11 @@ class MysterySpellCastAction extends TurnAction {
   final bool isPotent;
   final bool isVelocity;
 
-  /// Sorcerer-mode vocal quality score. Null in Wizard mode.
-  /// Transmitted and decoded identically to SpellCastAction.vocalScore.
-  final VocalScore? vocalScore;
+  /// See [SpellCastAction.recall].
+  final IncantationRecall? recall;
+
+  /// See [SpellCastAction.fizzledForMana].
+  bool fizzledForMana = false;
 
   /// See [SpellCastAction.handIndex].
   final int? handIndex;
@@ -623,6 +699,28 @@ Future<AccoutrementKind?> _defaultNoActivation(
 /// null — headless callers (tests, solo mode) animate nothing.
 typedef MovementPlayback = Future<void> Function(List<AvatarMoveEvent> moves);
 
+/// The Summons-phase counterpart of [MovementPlayback]: awaited once, after
+/// every creature has acted, so their walks *and* their attacks play out before
+/// the turn moves on. Same contract, same reason it is awaited rather than
+/// fired and forgotten.
+///
+/// Both lists arrive together because the two are one event on screen: a melee
+/// creature's lunge and the blow it lunged to land have to be seen happening at
+/// the same moment, not one after the other. Either list may be empty — a
+/// creature with reach attacks without moving, and a creature that closed the
+/// distance may arrive with nothing left to strike with.
+typedef SummonMovementPlayback =
+    Future<void> Function(
+      List<MinionMoveEvent> moves,
+      List<AttackEvent> attacks,
+    );
+
+/// Awaited once at Phase 4b, after every wizard's haymaker has been applied, so
+/// the punches are seen landing before the turn moves on to spell resolution.
+/// Same cosmetic-and-blocking contract as [MovementPlayback]; defaults to null,
+/// so headless callers animate nothing.
+typedef AttackPlayback = Future<void> Function(List<AttackEvent> attacks);
+
 /// The loadout artifacts a player may declare at Phase 0.
 ///
 /// [AccoutrementKind.counterCharm] is deliberately absent — charms self-trigger
@@ -696,6 +794,8 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     this.freeMoveDirectionPicker = _defaultNoFreeMove,
     this.artifactActivationPicker = _defaultNoActivation,
     this.onMovementResolved,
+    this.onSummonMovementResolved,
+    this.onMeleeResolved,
     this.onPhase,
     this.signMessage,
     this.peerRawPubkey,
@@ -743,6 +843,17 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// See [MovementPlayback] for why this is awaited rather than fired and
   /// forgotten. Null (the default) skips it entirely.
   final MovementPlayback? onMovementResolved;
+
+  /// Optional UI playback hook: awaited once per turn, after every summon has
+  /// taken its Phase 5b action and before the dead are reaped, so a creature
+  /// is seen making the move (or the melee lunge) that killed it. See
+  /// [SummonMovementPlayback]. Null (the default) skips it entirely.
+  final SummonMovementPlayback? onSummonMovementResolved;
+
+  /// Optional UI playback hook: awaited once per turn, at Phase 4b, after every
+  /// wizard's melee has been applied and before spell resolution begins. See
+  /// [AttackPlayback]. Null (the default) skips it entirely.
+  final AttackPlayback? onMeleeResolved;
 
   /// Optional UI notification hook: fired at the two phase boundaries a
   /// caller can't otherwise observe from outside [runTurn] — [TurnPhase
@@ -1213,6 +1324,25 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// at the same instant, and the loser recoils off it. See [AvatarMoveEvent].
   List<AvatarMoveEvent> lastAvatarMoveEvents = [];
 
+  /// Every summon's walk during the most recent Summons phase — one entry per
+  /// creature that actually went somewhere or lunged, for the UI's movement
+  /// animation. Cleared at the start of the Summons phase rather than at the
+  /// start of the turn: a Potent summon's bonus action happens back in Phase 5
+  /// and is already shown by that spell's own card reveal, so replaying it here
+  /// would walk the creature a second time. See [MinionMoveEvent].
+  List<MinionMoveEvent> lastMinionMoveEvents = [];
+
+  /// Every blow a summon landed during the most recent Summons phase, for the
+  /// UI's attack animation. Cleared alongside [lastMinionMoveEvents] and for
+  /// the same reason (a Potent summon's Phase 5 bonus action is already shown
+  /// by its spell's card reveal). See [AttackEvent].
+  List<AttackEvent> lastMinionAttackEvents = [];
+
+  /// Every wizard haymaker that landed during the most recent Phase 4b melee
+  /// round — the local player's and the peer's — for the UI's attack animation.
+  /// Cleared and repopulated each turn at the melee round. See [AttackEvent].
+  List<AttackEvent> lastMeleeAttackEvents = [];
+
   /// Wild-magic effects that fired during the most recent [runTurn] call, in
   /// resolution order. Cleared and repopulated at the start of every turn.
   ///
@@ -1662,14 +1792,71 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
     final av = _localAvatar();
     final castingEnhancements = _castingEnhancementsFor(action);
-    av.mana =
-        (av.mana -
-                _spellManaCost(
-                  committedSpell,
-                  av,
-                  enhancements: castingEnhancements,
-                ))
-            .clamp(0, _kMaxMana);
+    final recall = switch (action) {
+      SpellCastAction(:final recall) => recall,
+      MysterySpellCastAction(:final recall) => recall,
+      _ => null,
+    };
+
+    // Price it WITHOUT charging first, so a shortfall can fizzle-and-refund
+    // rather than silently clamping to zero (VOCAL_RECALL_PLAN.md §4).
+    final preview = _spellCostBreakdown(
+      committedSpell,
+      av,
+      enhancements: castingEnhancements,
+      recall: recall,
+    );
+    if (_fizzlesForMana(av, preview.cost)) {
+      _markFizzledForMana(action);
+      return; // mana refunded (never deducted); the turn is still spent
+    }
+
+    av.mana = (av.mana -
+            _spellManaCost(
+              committedSpell,
+              av,
+              enhancements: castingEnhancements,
+              recall: recall,
+            ))
+        .clamp(0, _kMaxMana);
+  }
+
+  /// Whether a cast priced at [cost] fizzles for want of mana.
+  ///
+  /// Applies in BOTH modes. Sorcerer mode needs it because recall can INFLATE
+  /// a cost after the player has already committed (VOCAL_RECALL_PLAN.md §4),
+  /// but the response is right for wizard mode too, and it replaces what used
+  /// to be a match forfeit there.
+  ///
+  /// Forfeiting was never really punishing a cheat — an unaffordable cast wins
+  /// its caster nothing — it was avoiding a DESYNC. The caster's own deduction
+  /// clamped at zero and played on while the peer stopped the match, and those
+  /// two devices disagreeing is the actual failure. Fizzling fixes that at the
+  /// source: both devices price the cast from the same certified inputs, so
+  /// both reach the same verdict and stay in step. Ending someone's match over
+  /// it is a wildly disproportionate response to a move that already
+  /// accomplishes nothing.
+  ///
+  /// The UI still gates affordability ([canAffordSpell]); this is the backstop
+  /// behind it, not a replacement for it.
+  ///
+  /// Known narrow edge, accepted in §4: refund-on-shortfall is a take-back.
+  /// Deliberately blanking a cast you regret returns the mana at the cost of
+  /// the turn. Only reachable when a spell already costs most of the pool.
+  bool _fizzlesForMana(WizardAvatar caster, int cost) => cost > caster.mana;
+
+  /// Records that [action] fizzled for want of mana, so resolution skips its
+  /// effects. Both devices compute this from the same certified cost and the
+  /// same avatar mana, so they always agree without transmitting anything.
+  static void _markFizzledForMana(TurnAction action) {
+    switch (action) {
+      case SpellCastAction():
+        action.fizzledForMana = true;
+      case MysterySpellCastAction():
+        action.fizzledForMana = true;
+      default:
+        break;
+    }
   }
 
   /// DEV FLAG (kAllowProoflessSpells — lib/dev_flags.dart). Delete with it.
@@ -1721,36 +1908,25 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   CastingEnhancements? _castingEnhancementsFor(TurnAction action) =>
       switch (action) {
         SpellCastAction(
-          :final vocalScore,
           :final isPotent,
           :final isVelocity,
           :final isEfficiency,
         ) =>
-          isSorcererMode && vocalScore != null
-              ? CastingEnhancements.fromSorcererQuality(
-                  vocalScore: vocalScore,
-                  hasPotentLoadout: isPotent,
-                  hasVelocityLoadout: isVelocity,
-                  hasEfficiencyLoadout: isEfficiency,
-                )
-              : CastingEnhancements(
-                  isPotent: isPotent,
-                  isVelocity: isVelocity,
-                  isEfficiency: isEfficiency,
-                ),
+          CastingEnhancements(
+            isPotent: isPotent,
+            isVelocity: isVelocity,
+            isEfficiency: isEfficiency,
+            gameMode: isSorcererMode ? GameMode.sorcerer : GameMode.wizard,
+          ),
         MysterySpellCastAction(
-          :final vocalScore,
           :final isPotent,
           :final isVelocity,
         ) =>
-          isSorcererMode && vocalScore != null
-              ? CastingEnhancements.fromSorcererQuality(
-                  vocalScore: vocalScore,
-                  hasPotentLoadout: isPotent,
-                  hasVelocityLoadout: isVelocity,
-                  hasEfficiencyLoadout: false,
-                )
-              : CastingEnhancements(isPotent: isPotent, isVelocity: isVelocity),
+          CastingEnhancements(
+            isPotent: isPotent,
+            isVelocity: isVelocity,
+            gameMode: isSorcererMode ? GameMode.sorcerer : GameMode.wizard,
+          ),
         _ => null,
       };
 
@@ -1991,9 +2167,27 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         if (_avatarById(peerId) case final peerAvatarForMelee?)
           (peerAvatarForMelee, peerMeleeTarget),
     ]..sort((a, b) => a.$1.playerId.compareTo(b.$1.playerId));
+    lastMeleeAttackEvents = [];
     for (final (actor, target) in meleeApplications) {
+      // Emitted on the same adjacency test _applyHaymaker itself gates on, so
+      // a punch thrown at a tile the actor is no longer next to (it lost a
+      // contest, it was pushed) is neither applied nor animated. A haymaker
+      // that lands on an illusion decoy still animates: the swing happened,
+      // and the reveal that it hit a decoy is the decoy's job to tell.
+      if (_isAdjacent(actor.position, target)) {
+        lastMeleeAttackEvents.add(
+          AttackEvent(from: actor.position, to: target, range: 1),
+        );
+      }
       final hit = _applyHaymaker(actor, target, walked, meleeRng);
       _applyCounterCharmProc(actor, hit, meleeRng);
+    }
+    // Played back after both haymakers have been applied, so simultaneous
+    // punches are seen as simultaneous — the same "one shared timeline" rule
+    // the movement playback follows.
+    final playMelee = onMeleeResolved;
+    if (playMelee != null && lastMeleeAttackEvents.isNotEmpty) {
+      await playMelee(List<AttackEvent>.unmodifiable(lastMeleeAttackEvents));
     }
 
     onPhase?.call(TurnPhase.actionResolve);
@@ -2120,7 +2314,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     final summonsRng = HashRng(
       _phaseSeed(entropy, matchId, state.turnNumber, 0x01),
     );
-    _resolveSummons(summonsRng);
+    await _resolveSummons(summonsRng);
 
     // ── Phase 5.5: Post-resolution free-move (barrier burst) ──────────────
     // A barrier destroyed by damage this turn (a "burst" — not one that
@@ -2283,13 +2477,15 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
   // ── Phase 5b: Summons act ─────────────────────────────────────────────────
 
-  void _resolveSummons(HashRng rng) {
+  Future<void> _resolveSummons(HashRng rng) async {
     // Both clients run the same deterministic AI for all minions (creation
     // order maintained by state.minions list). A summon cast this very turn
     // (Potent or not) starts with actedThisTurn=false, so it's included in
     // this sweep — its first action is always this same turn, here. A
     // Potent summon additionally got an immediate bonus action during Phase
     // 5 (see _castSummon), so it acts a second time right here.
+    lastMinionMoveEvents = [];
+    lastMinionAttackEvents = [];
     final living = state.minions
         .where((m) => m.isAlive && !m.actedThisTurn)
         .toList();
@@ -2298,6 +2494,17 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       creature.actedThisTurn = true;
     }
     state.resetMinionActions();
+    // Walk the tokens before anything reaps or dispels: a creature that lunged
+    // in and died to a Molten Carapace should be seen making the lunge, not
+    // vanish from the tile it never visibly left. Same await-the-UI contract
+    // as the avatar walk in Phase 3 — see [SummonMovementPlayback].
+    final playSummonMovement = onSummonMovementResolved;
+    if (playSummonMovement != null) {
+      await playSummonMovement(
+        List<MinionMoveEvent>.unmodifiable(lastMinionMoveEvents),
+        List<AttackEvent>.unmodifiable(lastMinionAttackEvents),
+      );
+    }
     _reapDead(rng);
     _applyPhoenixSaves();
     // Creature AI moves illusory clones too — one that closes on a scryer
@@ -2367,9 +2574,13 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     if (target == null) return;
 
     final before = creature.position;
+    // Tiles actually visited, for the UI to walk the token rather than
+    // teleport it. See [MinionMoveEvent].
+    final route = <HexCoord>[before];
+    final int unspent;
     switch (personality) {
       case SummonPersonality.evasive:
-        _evasiveMove(creature, target.position, rng);
+        unspent = _evasiveMove(creature, target.position, rng, route);
       case SummonPersonality.protective:
         final owner = _avatarById(creature.ownerId);
         if (owner != null && owner.isAlive) {
@@ -2378,19 +2589,47 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           final interpose = dir == null
               ? owner.position
               : HexCoord(owner.position.q + dir.q, owner.position.r + dir.r);
-          _aggressiveMove(creature, interpose, rng);
+          unspent = _aggressiveMove(creature, interpose, rng, route);
         } else {
-          _aggressiveMove(creature, target.position, rng);
+          unspent = _aggressiveMove(creature, target.position, rng, route);
         }
       case SummonPersonality.aggressive:
       case SummonPersonality.tactical:
       case SummonPersonality.obedient: // unreachable — see above
-        _aggressiveMove(creature, target.position, rng);
+        unspent = _aggressiveMove(creature, target.position, rng, route);
     }
     final movedTiles = hexDistance(before, creature.position);
 
-    if (creature.distanceTo(target.position) <= creature.effectiveAttackRange) {
+    final range = creature.effectiveAttackRange;
+    HexCoord? lunge;
+    if (range == 0) {
+      // A melee creature has no reach at all: to land a blow it has to stand
+      // on its target, which costs it a movement point and which it cannot
+      // keep (bodies are exclusive — see [tileOccupied]), so it is shoved
+      // straight back out onto the tile it came from. Spent its whole budget
+      // closing the distance? Then it arrives with nothing left to strike
+      // with, and waits for next turn.
+      if (creature.isAlive &&
+          unspent > 0 &&
+          creature.distanceTo(target.position) == 1) {
+        lunge = target.position;
+        _recordAttack(creature, target.position, range);
+        // The lunge step is real movement, so Charger (FAFA) counts it.
+        _creatureAttack(creature, target, rng, movedTiles: movedTiles + 1);
+      }
+    } else if (creature.distanceTo(target.position) <= range) {
+      _recordAttack(creature, target.position, range);
       _creatureAttack(creature, target, rng, movedTiles: movedTiles);
+    }
+
+    if (route.length > 1 || lunge != null) {
+      lastMinionMoveEvents.add(
+        MinionMoveEvent(
+          minionId: creature.id,
+          path: List.unmodifiable(route),
+          lungeTile: lunge,
+        ),
+      );
     }
   }
 
@@ -2476,22 +2715,40 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// directly toward [target], one tile at a time, up to move speed. Entering
   /// a conveyor tile pushes immediately (see _resolveMinionConveyorPush) and
   /// the creature keeps walking with whatever budget remains.
-  void _aggressiveMove(Minion creature, HexCoord target, HashRng rng) {
+  ///
+  /// Appends every tile entered to [route] (which starts with the creature's
+  /// pre-move tile) and returns the movement budget left unspent — a melee
+  /// creature needs one more point to lunge onto its target, so "did it arrive
+  /// with anything left?" is part of the answer, not just where it stopped.
+  int _aggressiveMove(
+    Minion creature,
+    HexCoord target,
+    HashRng rng,
+    List<HexCoord> route,
+  ) {
     final flying = creature.abilities.contains(SummonAbility.flying);
     var steps = creature.effectiveMoveSpeed;
     while (steps > 0 && creature.isAlive && creature.distanceTo(target) > 0) {
       final step = _creatureGreedyStep(creature, target);
       if (step == null) break;
       creature.position = step;
+      route.add(step);
       steps -= _terrainMoveCost(creature, step, flying);
-      _resolveMinionConveyorPush(creature, flying, rng);
+      _resolveMinionConveyorPush(creature, flying, rng, route);
     }
+    return max(0, steps);
   }
 
   /// Evasive: back away while closer than attack range, approach while
   /// farther, stop once at ideal range — using the full move-speed budget.
-  /// Same immediate-push-then-continue conveyor behavior as [_aggressiveMove].
-  void _evasiveMove(Minion creature, HexCoord target, HashRng rng) {
+  /// Same immediate-push-then-continue conveyor behavior, [route] recording
+  /// and unspent-budget return as [_aggressiveMove].
+  int _evasiveMove(
+    Minion creature,
+    HexCoord target,
+    HashRng rng,
+    List<HexCoord> route,
+  ) {
     final flying = creature.abilities.contains(SummonAbility.flying);
     final range = creature.effectiveAttackRange;
     var steps = creature.effectiveMoveSpeed;
@@ -2507,9 +2764,11 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       }
       if (step == null) break;
       creature.position = step;
+      route.add(step);
       steps -= _terrainMoveCost(creature, step, flying);
-      _resolveMinionConveyorPush(creature, flying, rng);
+      _resolveMinionConveyorPush(creature, flying, rng, route);
     }
+    return max(0, steps);
   }
 
   /// Applies FloorIsLava damage (unless flying) for [step] just entered, and
@@ -2527,8 +2786,15 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
   /// Called immediately after the creature enters a new tile mid-walk: if
   /// that tile is a conveyor, resolves the cascading/looping push
-  /// (tile_entry_resolver.dart) right away. No-op if flying.
-  void _resolveMinionConveyorPush(Minion creature, bool flying, HashRng rng) {
+  /// (tile_entry_resolver.dart) right away. No-op if flying. Every tile the
+  /// push carried the creature through is appended to [route], so the walk
+  /// animation follows the real journey rather than the declared one.
+  void _resolveMinionConveyorPush(
+    Minion creature,
+    bool flying,
+    HashRng rng,
+    List<HexCoord> route,
+  ) {
     if (flying) return;
     if (state.tileEffects[creature.position] is! ConveyorTile) return;
     final outcome = resolveTileEntry(
@@ -2541,6 +2807,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       footprintValid: (t) => _footprintValid(t, creature),
     );
     creature.position = outcome.finalPosition;
+    route.addAll(outcome.animationPath.skip(1));
     if (outcome.totalDamage > 0) creature.takeDamage(outcome.totalDamage);
     if (outcome.animationPath.length > 1) {
       lastConveyorChainEvents.add(
@@ -2584,6 +2851,11 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     for (final t in footprintFor(center, creature.abilities)) {
       if (!state.battlefield.isInBounds(t)) return false;
       if (!flying && tileBlocksMovement(state.tileEffects[t])) return false;
+      // Bodies are exclusive (see [tileOccupied]). Flying gets no exemption
+      // here the way a wizard's walk does: a creature's AI moves one tile at a
+      // time and each of those tiles is somewhere it comes to rest, so there
+      // is no "passing through" to distinguish from landing.
+      if (tileOccupied(state, t, ignoreMinionId: creature.id)) return false;
     }
     return true;
   }
@@ -2615,6 +2887,21 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   }
 
   // ── Attack resolution + abilities ─────────────────────────────────────────
+
+  /// Notes one creature strike for the UI. Recorded *before* the damage is
+  /// applied, from the attacker's pre-lunge tile: a melee creature ends the
+  /// turn back where it started, and an attacker that dies to the blow it just
+  /// landed (Molten Carapace) should still be seen throwing it.
+  void _recordAttack(Minion attacker, HexCoord target, int range) {
+    lastMinionAttackEvents.add(
+      AttackEvent(
+        from: attacker.position,
+        to: target,
+        range: range,
+        affinity: attacker.affinity,
+      ),
+    );
+  }
 
   void _creatureAttack(
     Minion attacker,
@@ -2720,6 +3007,13 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     Map<String, int> speeds,
     HashRng rng,
   ) {
+    // Snapshot of every body on the board before anyone moves. Movement is
+    // simultaneous, so both the arbitration preview and each avatar's real
+    // walk resolve against this one fixed set rather than against positions
+    // that mutate as the loop below walks each avatar in turn -- otherwise the
+    // first player in iteration order could walk through a tile the second
+    // player is about to vacate, and the second could not. See [tileOccupied].
+    final bodies = _occupiedTiles();
     final preview = state.battlefield.resolveMovement(
       movePaths,
       speeds,
@@ -2728,10 +3022,13 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         for (final av in state.avatars)
           if (av.isFlying) av.playerId,
       },
+      blockedTiles: bodies,
     );
     final walked = <String, List<HexCoord>>{};
     for (final av in state.avatars) {
       final origin = av.position;
+      // Everyone else's body. Rebuilt per avatar so nobody blocks themselves.
+      final blockers = bodies.difference({origin});
       final budget = max(0, speeds[av.playerId] ?? av.effectiveMoveSpeed);
       // Fall back to the declared path only for an avatar the battlefield
       // didn't know about (absent from occupancy, so absent from the preview).
@@ -2744,6 +3041,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         clearedPath,
         budget,
         rng,
+        blocked: blockers.contains,
       ).path;
       // Statuesque (wild magic, row 3 Earth) breaks on a VOLUNTARY move. A
       // path longer than [origin] means at least one declared step was taken;
@@ -2809,16 +3107,27 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// of [budget] the walk consumed -- the free-move window prices a Boost run
   /// off `spent`, so tiles a conveyor or ice slide handed over for free
   /// correctly cost nothing.
+  ///
+  /// [blocked] reports tiles held by another body (see [tileOccupied]); a step
+  /// into one stops the walk, because bodies are exclusive. A flying wizard
+  /// (Updraft) is the design's one exception: it walks *through* other
+  /// entities and is only pulled back if it would come to rest on one, which
+  /// is the truncation after the loop. The caller supplies the predicate
+  /// rather than this reading live positions, so the simultaneous movement
+  /// phase can resolve every avatar against one pre-move snapshot.
   ({List<HexCoord> path, int spent}) _walkAvatar(
     WizardAvatar av,
     HexCoord origin,
     List<HexCoord> declaredPath,
     int budget,
-    HashRng rng,
-  ) {
+    HashRng rng, {
+    bool Function(HexCoord)? blocked,
+  }) {
     var current = origin;
     var remaining = budget;
     final path = <HexCoord>[origin];
+    bool isBlocked(HexCoord hex) =>
+        hex != origin && (blocked?.call(hex) ?? false);
 
     // Updraft (wild magic, row 2 Air): a flying wizard ignores terrain
     // entirely — chasms, walls, lava, slow tiles, ice sliding, and conveyor
@@ -2834,6 +3143,8 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       // ChasmTile blocks movement exactly like a wall — but NOT targeting;
       // that distinction is the entire reason it is its own class (A9).
       if (tileBlocksMovement(effect)) break;
+      // So does another body, unless this wizard is flying over it.
+      if (!flying && isBlocked(step)) break;
       final cost = 1 + (effect is SlowTile ? effect.extraMoveCost : 0);
       if (cost > remaining) break;
       remaining -= cost;
@@ -2863,6 +3174,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           flying: false,
           currentHp: av.hp,
           applyEntryLava: false, // already charged just above
+          moverAvatarId: av.playerId,
         );
         current = outcome.finalPosition;
         path.addAll(outcome.animationPath.skip(1));
@@ -2878,6 +3190,15 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           );
         }
       }
+    }
+
+    // A flying wizard walked through whatever was in the way; it may not
+    // *land* on it, though, so back it off along its own route to the last
+    // tile nobody is standing on. The origin is always such a tile, so this
+    // terminates. Budget already spent stays spent — bumping into a crowd
+    // mid-flight costs you the move, which is the point of the restriction.
+    while (path.length > 1 && isBlocked(path.last)) {
+      path.removeLast();
     }
     return (path: path, spent: budget - remaining);
   }
@@ -3051,7 +3372,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           :final isPotent,
           :final isVelocity,
           :final isEfficiency,
-          :final vocalScore,
           :final conveyorDirection,
         ):
           // Statuesque (wild magic, row 3 Earth) breaks on a cast — a choice,
@@ -3059,22 +3379,18 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           // Broken here, before resolution, so it covers a fizzled or
           // countered cast too: the wizard still chose to cast.
           _breakStatuesque(actor.playerId);
-          // isSorcererMode + non-null vocalScore is checked at both ends of
-          // the wire (commit-time mana deduction above, here at resolution),
-          // so the two are always in lockstep — see CastingEnhancements
-          // .fromSorcererQuality for why this agrees with the peer's copy.
-          final enhancements = isSorcererMode && vocalScore != null
-              ? CastingEnhancements.fromSorcererQuality(
-                  vocalScore: vocalScore,
-                  hasPotentLoadout: isPotent,
-                  hasVelocityLoadout: isVelocity,
-                  hasEfficiencyLoadout: isEfficiency,
-                )
-              : CastingEnhancements(
-                  isPotent: isPotent,
-                  isVelocity: isVelocity,
-                  isEfficiency: isEfficiency,
-                );
+          // Recall NEVER gates the loadout enhancement and never fizzles a
+          // cast (VOCAL_RECALL_PLAN.md §4: getting words wrong costs mana,
+          // full stop). The only fizzle left is a cast whose recall-inflated
+          // cost outran the caster's pool, and that is decided at commit time
+          // on both devices — see [SpellCastAction.fizzledForMana].
+          final enhancements = CastingEnhancements(
+            isPotent: isPotent,
+            isVelocity: isVelocity,
+            isEfficiency: isEfficiency,
+            gameMode: isSorcererMode ? GameMode.sorcerer : GameMode.wizard,
+            fizzle: action.fizzledForMana,
+          );
           // Clouds (Water-Fire) base effect: an entity standing in a cloud's
           // radius (or carrying the lingering Earth-flavor restriction) may
           // only target adjacent tiles, and a target tile inside a cloud's
@@ -3270,7 +3586,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       targetHex: action.immediateTarget!,
       isPotent: action.isPotent,
       isVelocity: action.isVelocity,
-      vocalScore: action.vocalScore,
+      recall: action.recall,
     );
   }
 
@@ -5169,7 +5485,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         :final isPotent,
         :final isVelocity,
         :final isEfficiency,
-        :final vocalScore,
+        :final recall,
         :final conveyorDirection,
         :final handIndex,
       ):
@@ -5190,7 +5506,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         buf.addByte(conveyorDirection != null ? 1 : 0);
         if (conveyorDirection != null) buf.add(_encodeCoord(conveyorDirection));
         _appendSpellProofTail(buf, spell, handIndex);
-        if (isSorcererMode) _appendSorcererBytes(buf, vocalScore);
+        if (isSorcererMode) _appendSorcererBytes(buf, recall);
 
       case DashAction():
         buf.addByte(0x04);
@@ -5205,7 +5521,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         :final immediateNonce,
         :final isPotent,
         :final isVelocity,
-        :final vocalScore,
+        :final recall,
         :final handIndex,
       ):
         buf.addByte(0x03);
@@ -5228,7 +5544,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         buf.addByte(isPotent ? 1 : 0);
         buf.addByte(isVelocity ? 1 : 0);
         _appendSpellProofTail(buf, spell, handIndex);
-        if (isSorcererMode) _appendSorcererBytes(buf, vocalScore);
+        if (isSorcererMode) _appendSorcererBytes(buf, recall);
     }
     return buf.toBytes();
   }
@@ -5260,24 +5576,39 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     }
   }
 
-  /// Appends the 3-byte sorcerer suffix to [buf] for spell action payloads.
+  /// Appends the sorcerer recall suffix to [buf] for spell action payloads.
   ///
-  /// Wire precision: pronunciation and volume are quantised to u8 [0x00–0xFE];
-  /// encoding: field_u8 = (value × 254).round().clamp(0, 254);
-  /// decoding: value = u8 / 254.0.
-  /// ±(1/254) ≈ 0.4% precision loss. Full double precision does NOT survive
-  /// the wire round trip.
+  ///   [recall bytes: 2 + spokenCount][suffixLen: 1]
   ///
-  /// Somatic score byte: 0xFF = absent (this pass). 0xFF is permanently
-  /// reserved as the absent sentinel — real somatic scores MUST fit [0x00–0xFE]
-  /// when implemented in the somatic-gesture pass.
-  // TODO(sorcerer): replace somatic 0xFF with somatic_u8 = (somaticScore × 254).round()
-  //   in the somatic-gesture pass.
-  void _appendSorcererBytes(BytesBuilder buf, VocalScore? score) {
-    buf.add(
-      (score ?? const VocalScore(pronunciation: 0.0, volume: 0.0))
-          .toWireBytes(),
-    );
+  /// Variable length, unlike the fixed 3-byte VocalScore suffix it replaces —
+  /// a recital is one opener plus up to 48 element words. The TRAILING length
+  /// byte is what keeps the decoder's read-from-the-end structure working:
+  /// the payload is parsed front-to-back for the spell and proof tail, so the
+  /// suffix can only be located by measuring back from the end, which a
+  /// variable-length blob cannot be without first knowing its size.
+  ///
+  /// Only slot INDICES cross the wire, never the words filling them
+  /// (VOCAL_RECALL_PLAN.md §8.10.1) — a player's vocabulary never leaves
+  /// their device.
+  void _appendSorcererBytes(BytesBuilder buf, IncantationRecall? recall) {
+    final bytes = (recall ?? IncantationRecall.silent).toWireBytes();
+    buf.add(bytes);
+    buf.addByte(bytes.length);
+  }
+
+  /// Reads the trailing recall suffix written by [_appendSorcererBytes].
+  ///
+  /// Returns null in wizard mode. A malformed suffix decodes to "no
+  /// utterance" rather than throwing: every unreadable position scores as
+  /// WRONG, so a corrupt recall can only cost the caster mana — there is
+  /// nothing here worth forfeiting a match over.
+  static IncantationRecall? _decodeSorcererSuffix(
+      Uint8List bytes, bool isSorcererMode) {
+    if (!isSorcererMode || bytes.isEmpty) return null;
+    final suffixLen = bytes[bytes.length - 1];
+    final start = bytes.length - 1 - suffixLen;
+    if (suffixLen < 2 || start < 0) return IncantationRecall.silent;
+    return IncantationRecall.fromWireBytes(bytes, start).recall;
   }
 
   /// Decode a [TurnAction] from [bytes] and optionally parse the trailing proof
@@ -5411,20 +5742,18 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         );
         final merkle = parseProofTail(bytes, pos, commitmentHex);
         // [KEY STRUCTURAL CONSTRAINT — no local recalculation]
-        // The vocal score is read verbatim from the last [VocalScore.wireSizeBytes]
-        // bytes of the payload. It is NEVER recomputed from local audio on the
-        // receiving side. Architectural guarantee: _decodeAction is a static method
-        // that holds no VocalScorer reference, making local recalculation
-        // structurally impossible. Recalculating the opponent's score from local
-        // audio would also be impossible (their microphone is unavailable to this
-        // device) and would desync lockstep if attempted via any other code path.
-        final vocalScore01 =
-            isSorcererMode && bytes.length >= VocalScore.wireSizeBytes
-            ? VocalScore.fromWireBytes(
-                bytes,
-                bytes.length - VocalScore.wireSizeBytes,
-              )
-            : null;
+        // What the caster SAID is read verbatim from the trailing suffix. It
+        // is NEVER recomputed from local audio: _decodeAction is a static
+        // method holding no scorer reference, making local recalculation
+        // structurally impossible, and the peer's microphone is unavailable to
+        // this device anyway.
+        //
+        // What IS recomputed locally is the EXPECTED sequence, derived from the
+        // certified trajectory (see _certifiedManaCost). That asymmetry is the
+        // whole of the recall model: the claim is the caster's, the check is
+        // ours. Pronunciation quality could never be checked this way, which is
+        // why it was replaced.
+        final recall01 = _decodeSorcererSuffix(bytes, isSorcererMode);
         return (
           action: SpellCastAction(
             spell: spell,
@@ -5432,7 +5761,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
             isPotent: isPotent01,
             isVelocity: isVelocity01,
             isEfficiency: isEfficiency01,
-            vocalScore: vocalScore01,
+            recall: recall01,
             conveyorDirection: conveyorDirection01,
           ),
           merkleProof: merkle,
@@ -5510,13 +5839,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         );
         final merkle3 = parseProofTail(bytes, pos3, commitmentHex3);
         // Same no-local-recalculation constraint as case 0x01 above.
-        final vocalScore03 =
-            isSorcererMode && bytes.length >= VocalScore.wireSizeBytes
-            ? VocalScore.fromWireBytes(
-                bytes,
-                bytes.length - VocalScore.wireSizeBytes,
-              )
-            : null;
+        final recall03 = _decodeSorcererSuffix(bytes, isSorcererMode);
         return (
           action: MysterySpellCastAction(
             spell: spell3,
@@ -5525,7 +5848,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
             immediateNonce: immNonce,
             isPotent: isPotent3,
             isVelocity: isVelocity3,
-            vocalScore: vocalScore03,
+            recall: recall03,
           ),
           merkleProof: merkle3,
         );
@@ -5577,13 +5900,13 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       return; // solo or verification not wired up
 
     final SpellAsset spell;
-    final VocalScore? vocalScore;
+    final IncantationRecall? recall;
     if (action is SpellCastAction) {
       spell = action.spell;
-      vocalScore = action.vocalScore;
+      recall = action.recall;
     } else if (action is MysterySpellCastAction) {
       spell = action.spell;
-      vocalScore = action.vocalScore;
+      recall = action.recall;
     } else {
       return;
     }
@@ -5780,19 +6103,29 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         outputs,
         certFormulas,
         peerAvatar,
-        vocalScore: vocalScore,
+        recall: recall,
         isEfficiency: claimsEfficiency,
         isSummon: spell.isSummon,
         certElementSequence: certElementSequence,
       );
-      if (peerAvatar.mana < verifiedCost) {
-        session.sendForfeit('insufficient_mana_for_spell');
-        throw StateError(
-          'peer spell requires $verifiedCost mana but peer avatar only has '
-          '${peerAvatar.mana} — match forfeit',
-        );
+      // A peer who can't pay FIZZLES; it is not a forfeit any more.
+      //
+      // This used to end the match on `insufficient_mana_for_spell`. That was
+      // aimed at a desync rather than a cheat — the caster's deduction clamped
+      // at zero and played on while this device stopped — and it is a wildly
+      // disproportionate answer to a move that wins its caster nothing. Both
+      // devices now price the cast from the same certified inputs and reach
+      // the same verdict, so the desync it guarded against cannot happen, and
+      // nothing has to be transmitted to keep them agreed.
+      //
+      // Sorcerer mode makes a shortfall genuinely routine besides: recall can
+      // inflate a cost after the player has committed, and previewSpellCost
+      // deliberately quotes the honest base price rather than a worst case.
+      if (_fizzlesForMana(peerAvatar, verifiedCost)) {
+        _markFizzledForMana(action);
+      } else {
+        peerAvatar.mana = (peerAvatar.mana - verifiedCost).clamp(0, _kMaxMana);
       }
-      peerAvatar.mana = (peerAvatar.mana - verifiedCost).clamp(0, _kMaxMana);
     }
   }
 
@@ -5806,8 +6139,9 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   ///   2. Chain discount from [certFormulas] (trusted; replaces wire spell.formula).
   ///   3. Efficiency (Water) discount: −1/3, gated on [isEfficiency] (verified by the
   ///      caller against certified supreme-tags — see TrajectoryParser.certifiedSupremeTags).
-  ///   4. Sorcerer multiplier from wire-quantised [vocalScore] (committed in action hash;
-  ///      both clients run [CastingEnhancements.fromSorcererQuality] on the same u8 bytes).
+  ///   4. Recall multiplier from the transmitted [recall] (committed in the action
+  ///      hash), scored against the EXPECTED recital both clients derive from the
+  ///      certified trajectory. Exact integer arithmetic — see incantation_recall.dart.
   ///   5. nextSpellCostDouble: consume + double + HP shortfall. Both clients execute this
   ///      identically, keeping the status-effect list and state hash in sync.
   ///
@@ -5834,7 +6168,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     VerifiedSpellOutputs outputs,
     List<ParsedFormula> certFormulas,
     WizardAvatar caster, {
-    VocalScore? vocalScore,
+    IncantationRecall? recall,
     bool isEfficiency = false,
     bool isSummon = false,
     List<BorderZone>? certElementSequence,
@@ -5871,16 +6205,23 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       cost = (cost * 2 / 3).ceil();
     }
 
-    // 4. Sorcerer multiplier from wire-quantised vocal score.
-    // hasPotentLoadout/hasVelocityLoadout only gate effects, not cost; pass false.
-    if (isSorcererMode && vocalScore != null) {
-      final enhancements = CastingEnhancements.fromSorcererQuality(
-        vocalScore: vocalScore,
-        hasPotentLoadout: false,
-        hasVelocityLoadout: false,
-        hasEfficiencyLoadout: false,
-      );
-      cost = (cost * enhancements.manaCostMultiplier).ceil();
+    // 4. Recall multiplier. The EXPECTED recital is derived HERE, from the
+    // certified element sequence and the certified isSummon — never from
+    // anything the caster transmitted. That is what makes a recall claim
+    // checkable rather than self-reported, and it is the whole reason the
+    // verbal component moved off pronunciation quality
+    // (VOCAL_RECALL_PLAN.md §2).
+    //
+    // Exact integer arithmetic, rounded once — see incantation_recall.dart on
+    // why no double may appear anywhere on this path.
+    if (isSorcererMode && recall != null) {
+      cost = recall
+          .tallyAgainst(
+            expectedIsSummon: isSummon,
+            expectedElements:
+                expectedRecitalSlots(certElementSequence ?? const []),
+          )
+          .applyTo(cost);
     }
 
     // 5. nextSpellCostDouble: consume and double cost, convert excess to HP damage.
@@ -5941,14 +6282,16 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// The arithmetic lives in [_spellCostBreakdown] so [previewSpellCost] can
   /// ask "what would this cost?" without charging for it. Do not reintroduce a
   /// second copy of the formula here — the UI gate and the deduction must
-  /// agree to the mana, or the peer's `insufficient_mana_for_spell` check
-  /// forfeits the match (see [_verifyPeerSpellCast] step 4).
+  /// agree to the mana, or the player is offered casts that then fizzle for
+  /// want of it (see [_fizzlesForMana]).
   int _spellManaCost(
     SpellAsset spell,
     WizardAvatar caster, {
     CastingEnhancements? enhancements,
+    IncantationRecall? recall,
   }) {
-    final b = _spellCostBreakdown(spell, caster, enhancements: enhancements);
+    final b = _spellCostBreakdown(spell, caster,
+        enhancements: enhancements, recall: recall);
 
     if (b.hpDamage > 0) caster.absorbDamage(b.hpDamage);
 
@@ -5979,6 +6322,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     SpellAsset spell,
     WizardAvatar caster, {
     CastingEnhancements? enhancements,
+    IncantationRecall? recall,
   }) {
     // 1. Base + growth — mirrors _certifiedManaCost step 1.
     var cost = _wireBaseManaCost(spell);
@@ -6007,12 +6351,21 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       cost = (cost * 2 / 3).ceil();
     }
 
-    // Sorcerer-mode cost multiplier from vocal (and eventually somatic) quality.
-    // Applied after chain discount so poor casting inflates the already-discounted cost.
-    // TODO(sorcerer): placeholder passthrough — manaCostMultiplier is always 1.0
-    //   until CastingEnhancements.fromSorcererQuality() formula is finalised (playtest gate).
-    if (enhancements != null) {
-      cost = (cost * enhancements.manaCostMultiplier).ceil();
+    // Recall multiplier — the local mirror of _certifiedManaCost step 4, at
+    // the same relative position (after the chain and Efficiency discounts, so
+    // a shaky recital inflates the already-discounted cost).
+    //
+    // Reads the LOCAL element sequence where the certified path reads the
+    // certified one. That is the same trust split every step here already
+    // uses: this path prices the caster's own cast, and the certified path is
+    // what the peer charges them.
+    if (isSorcererMode && recall != null) {
+      cost = recall
+          .tallyAgainst(
+            expectedIsSummon: spell.isSummon,
+            expectedElements: expectedRecitalSlots(_elementSequence(spell)),
+          )
+          .applyTo(cost);
     }
 
     // nextSpellCostDouble status effect: double the cost (and report the
@@ -6053,13 +6406,18 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// charging for it or consuming anything. The UI's affordability gate and
   /// its cost readout both read this.
   ///
-  /// In sorcerer mode the true multiplier isn't knowable until after the voice
-  /// capture, which happens *after* the player has committed to casting — so
-  /// this prices the worst case ([CastingEnhancements.maxManaCostMultiplier],
-  /// with the Efficiency discount withheld, exactly as a fizzle would). A
-  /// well-spoken incantation then costs less than advertised, which is the
-  /// only direction that's safe: the alternative is a cast the gate approved
-  /// at 1.0× and the peer forfeits over at 1.5×.
+  /// In sorcerer mode the recall multiplier isn't knowable until after the
+  /// incantation, which happens *after* the player commits — so this quotes the
+  /// HONEST base price and lets an unaffordable outcome fizzle-and-refund
+  /// (VOCAL_RECALL_PLAN.md §4).
+  ///
+  /// That is a deliberate reversal. This used to quote a 1.5× worst case, for
+  /// one reason only: a cast the gate approved at 1.0× and the peer forfeited
+  /// over at 1.5× would read as a desync. Making a shortfall a legal, refunded
+  /// fizzle removes that failure mode, and with it the reason to quote a price
+  /// nobody pays — §4 retires `maxManaCostMultiplier` on exactly this
+  /// argument. Quoting the honest price also means the number the player reads
+  /// is the number a clean recital charges.
   ///
   /// Returns 0 for a proofless dev-flag spell — those are free on both devices
   /// (see [_isProoflessBypass]).
@@ -6070,20 +6428,12 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     bool isEfficiency = false,
   }) {
     if (_isProoflessBypass(spell)) return 0;
-    final enhancements = isSorcererMode
-        ? CastingEnhancements(
-            isPotent: isPotent,
-            isVelocity: isVelocity,
-            isEfficiency: false,
-            gameMode: GameMode.sorcerer,
-            enhancementEnabled: false,
-            manaCostMultiplier: CastingEnhancements.maxManaCostMultiplier,
-          )
-        : CastingEnhancements(
-            isPotent: isPotent,
-            isVelocity: isVelocity,
-            isEfficiency: isEfficiency,
-          );
+    final enhancements = CastingEnhancements(
+      isPotent: isPotent,
+      isVelocity: isVelocity,
+      isEfficiency: isEfficiency,
+      gameMode: isSorcererMode ? GameMode.sorcerer : GameMode.wizard,
+    );
     return _spellCostBreakdown(
       spell,
       _localAvatar(),
@@ -6093,8 +6443,9 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
   /// Whether the local avatar can pay for [spell] this turn.
   ///
-  /// This is the client-side mirror of the peer's `insufficient_mana_for_spell`
-  /// forfeit ([_verifyPeerSpellCast] step 4). Casting anyway isn't a local
+  /// This is the client-side mirror of [_fizzlesForMana]: casting anyway is no
+  /// longer a forfeit, but it does waste the turn, so the UI should not offer
+  /// it. Casting anyway isn't a local
   /// nuisance that resolves for less — the caster's own deduction clamps at 0
   /// and plays on while the *opponent's* device forfeits the match, which
   /// reads as a desync. Gate the cast in the UI instead.
@@ -6265,13 +6616,21 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     for (final tile in hexNeighbors(actor.position)) {
       if (!state.battlefield.isInBounds(tile)) continue;
       if (tileBlocksMovement(state.tileEffects[tile])) continue;
-      if (state.avatars.any((av) => av.isAlive && av.position == tile))
-        continue;
-      if (state.minions.any((m) => m.isAlive && m.position == tile)) continue;
+      if (tileOccupied(state, tile, ignoreAvatarId: actor.playerId)) continue;
       candidates.add(tile);
     }
     return candidates;
   }
+
+  /// Every tile a living body stands on right now — each avatar's tile and
+  /// each minion's whole footprint. The blocker set for movement; see
+  /// [tileOccupied], which is the same rule stated one tile at a time.
+  Set<HexCoord> _occupiedTiles() => {
+    for (final av in state.avatars)
+      if (av.isAlive) av.position,
+    for (final m in state.minions)
+      if (m.isAlive) ...m.occupiedTiles,
+  };
 
   /// Price of a Boost run that spends [paidTiles] chargeable tiles (i.e. tiles
   /// beyond [FreeMoveGrant.freeTiles]), in the units of [resource]:
@@ -6348,7 +6707,17 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     if (grant.isEmpty) return;
 
     final origin = av.position;
-    final walk = _walkAvatar(av, origin, declaredPath, grant.maxTiles, rng);
+    // Unlike the movement phase, this window is sequential — one avatar walks
+    // at a time, with everyone else standing still — so live positions are the
+    // right blocker set and no snapshot is needed.
+    final walk = _walkAvatar(
+      av,
+      origin,
+      declaredPath,
+      grant.maxTiles,
+      rng,
+      blocked: (hex) => tileOccupied(state, hex, ignoreAvatarId: av.playerId),
+    );
     if (walk.path.length <= 1) return; // blocked before the first step landed
 
     av.position = walk.path.last;
@@ -6501,6 +6870,24 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// The full flat element sequence for a local (trusted-wire) summon-mode
   /// spell -- unlike [_parsedFormulas], residuals are kept (see
   /// CreatureSpec.fromElements: every activation counts toward a creature).
+  /// The element slots a caster is expected to recite for [elementSequence].
+  ///
+  /// Truncated to COMPLETE TRIPLETS, matching PracticeFormula.fromSpellFormula:
+  /// a spell's activation list carries 1–2 residuals that never filled a group
+  /// of three, and those resolve to no effect (FormulaTracker.formulas drops
+  /// them). Asking a caster to recite words their cast never uses would price
+  /// mana against a recital the drill never taught.
+  static List<VocalSlot> expectedRecitalSlots(
+      List<BorderZone> elementSequence) {
+    final complete = (elementSequence.length ~/ 3) * 3;
+    return [
+      for (var i = 0; i < complete; i++)
+        if (VocalSlot.fromAffinityZone(elementSequence[i].name)
+            case final slot?)
+          slot,
+    ];
+  }
+
   static List<BorderZone> _elementSequence(SpellAsset spell) =>
       spell.formula.map(_zoneFromName).whereType<BorderZone>().toList();
 
