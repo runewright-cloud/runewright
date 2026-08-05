@@ -5,7 +5,11 @@
 //   - Avatar — the character sprite the player's wizard wears on the
 //     battlefield (docs/AVATAR_PICKER_PLAN.md). The most concrete and least
 //     consequential control on the page, so it leads.
-//   - The vocal recognition strictness dial (2026-07-22 playtest ask) — also
+//   - (RETIRED) The vocal recognition strictness dial. It tuned
+//     StreamingPhonemeScorer's checkpoint floor and contrastive margin, and
+//     recall scoring has no such thresholds to loosen: deciding which of four
+//     words was spoken is an argmin, not a pass/fail against a bar. See
+//     VOCAL_RECALL_PLAN.md §9. Formerly:
 //     exposed directly in PracticeScreen's Vocal tab so it's adjustable without
 //     leaving practice; both read/write the same persisted VocalTuning, so
 //     changing it in either place updates the other on next open.
@@ -23,14 +27,12 @@ import 'package:flutter/material.dart';
 import '../battle/models/wild_magic_effect.dart'
     show kDefaultCommunitySeed, normalizeCommunitySeed;
 import '../identity/identity.dart';
-import '../practice/vocal_tuning.dart';
 import '../spells/library_backup_io.dart';
 import 'avatars/avatar_picker_screen.dart';
 import 'avatars/avatar_sprites.dart';
 import 'about_screen.dart';
 import 'manuscript_theme.dart' show kIlluminationGold;
 import 'onboarding/onboarding_landing_screen.dart';
-import 'widgets/vocal_strictness_slider.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -40,7 +42,6 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  VocalTuning? _tuning;
   final _seedController = TextEditingController();
 
   /// The player's saved avatar id, or null before it loads / if unset (falls
@@ -69,9 +70,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _load() async {
-    final tuning = await VocalTuning.load();
     if (!mounted) return;
-    setState(() => _tuning = tuning);
     unawaited(_loadSeed());
     unawaited(_loadAvatar());
   }
@@ -245,12 +244,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final tuning = _tuning;
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
-      body: tuning == null
-          ? const Center(child: CircularProgressIndicator())
-          : ListView(
+      // No longer gated on a load: the strictness dial was the only setting
+      // that had to be read from disk before anything could render, and it
+      // retired with the streaming scorer.
+      body: ListView(
               padding: const EdgeInsets.all(16),
               children: [
                 Card(
@@ -271,18 +270,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     trailing: TextButton(
                       onPressed: () => unawaited(_changeAvatar()),
                       child: const Text('Change'),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: VocalStrictnessSlider(
-                      strictness: tuning.strictness,
-                      onChanged: (v) =>
-                          setState(() => _tuning = VocalTuning(v)),
-                      onChangeEnd: (v) => unawaited(VocalTuning(v).save()),
                     ),
                   ),
                 ),

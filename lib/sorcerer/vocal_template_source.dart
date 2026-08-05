@@ -2,7 +2,7 @@
 //
 // vocal_template_source.dart — VocalTemplate value type and the thin,
 // swappable VocalTemplateSource abstraction in front of
-// StreamingPhonemeScorer.
+// IncantationRecallScorer.
 //
 // Shipped now: SingleVoiceTemplateSource, one Piper voice (en_US-lessac-medium)
 // per VocalSlot, generated offline by scripts/generate_practice_assets.dart
@@ -52,7 +52,7 @@ class VocalTemplate {
   /// length == checkpointLabels.length. Always length 1 (the whole word) in
   /// the shipped [SingleVoiceTemplateSource] — kept as a list, not a single
   /// int, so a future forced-alignment-based source could reintroduce real
-  /// sub-word checkpoints without changing [StreamingPhonemeScorer].
+  /// sub-word checkpoints without changing the scorer.
   final List<int> checkpointFrameIndices;
 
   /// Human-readable label per checkpoint, for feedback UI.
@@ -67,7 +67,7 @@ abstract class VocalTemplateSource {
   Future<VocalTemplate> templateFor(VocalSlot word);
 
   /// The full exemplar SET for [word] — the references the scorer takes the
-  /// min DTW distance over (StreamingPhonemeScorer, 2026-07-22: a set of the
+  /// min DTW distance over (2026-07-22: a set of the
   /// speaker's own takes discriminates confusable words where a single
   /// brittle exemplar can't; see docs/M4_findings.md). Battle-portable: the
   /// whole-utterance path can call this and min over the same set.

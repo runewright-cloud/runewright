@@ -19,7 +19,7 @@ void main() {
 
   setUp(() async {
     installFakeSecureStorage();
-    // VocalTuning.load() (SettingsScreen's own _load) reads via path_provider
+    // SettingsScreen's own _load reads via path_provider
     // — without this mock the plugin channel call never resolves under the
     // headless test engine and pumpAndSettle hangs, same as
     // credits_screen_test.dart's identical requirement for this screen.

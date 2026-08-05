@@ -65,7 +65,7 @@ class VocalEnrollment {
   static const int trimPaddingFrames = 3;
 
   /// Maximum exemplar takes kept per word. Scoring is min-distance over this
-  /// set (StreamingPhonemeScorer); more takes capture more of the speaker's
+  /// set (IncantationRecallScorer); more takes capture more of the speaker's
   /// natural variation, but past a handful the returns flatten and the
   /// per-frame DTW cost grows linearly. Appending past the cap drops the
   /// oldest take (FIFO), so "record another" always refreshes the set.

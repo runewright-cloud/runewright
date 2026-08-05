@@ -41,12 +41,17 @@ SpellAsset _spell({
       formula: formula,
     );
 
-// The enrollment card at the top of the Vocal tab lists all five word names
-// too, so bare find.text('ignis') would match it. Scope word assertions to
-// the formula's chips: revealed words are InputChips (tappable, they play the
-// model clip), concealed ones are plain Chips.
+// The enrollment card at the top of the Vocal tab lists every word name too,
+// so a bare find.text('ignis') would match it. Scope word assertions to the
+// formula's chips.
+//
+// Revealed and concealed chips are both plain Chips now — revealed words used
+// to be tappable InputChips that played a model clip, and that clip retired
+// with pronunciation scoring (VOCAL_RECALL_PLAN.md §8.9). The two are told
+// apart by their text instead: a concealed chip reads '? ? ?', so searching
+// for the word itself can only match a revealed one.
 Finder _revealedWord(String word) => find.descendant(
-      of: find.byType(InputChip),
+      of: find.byType(Chip),
       matching: find.text(word),
     );
 

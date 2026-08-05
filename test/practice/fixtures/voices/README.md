@@ -2,8 +2,8 @@
 
 Piper TTS renders of the 6 default incantation words (one per
 `VocalSlot` — four elements plus the two openers), used by
-`test/practice/real_template_e2e_test.dart` to exercise the full
-StreamingPhonemeScorer crossing logic against the real bundled templates
+`test/sorcerer/recall_real_voice_e2e_test.dart` to exercise
+IncantationRecallScorer against the real bundled templates
 (`assets/practice_templates/*.json`, rendered from `en_US-lessac-medium`).
 
 - `lessac2_*.wav` — the SAME voice as the templates but a different
