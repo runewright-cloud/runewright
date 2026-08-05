@@ -27,6 +27,7 @@ import '../spells/spell_art_store.dart';
 import '../spells/spell_asset.dart';
 import '../spells/spell_permission.dart';
 import '../spells/supreme_tags.dart' show deriveSupremeTags;
+import '../dev_flags.dart' show kShowDevSurfaces;
 import '../main.dart' show GameScreen;
 import 'manuscript_theme.dart';
 import 'practice_screen.dart';
@@ -346,7 +347,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 5,
+      // DEV FLAG (kShowDevSurfaces — lib/dev_flags.dart): the TESTS tab is the
+      // fifth. Hiding it drops both the tab and its view, so the two lists
+      // below stay the same length as this count.
+      length: kShowDevSurfaces ? 5 : 4,
       child: Scaffold(
         backgroundColor: kParchmentColor,
         appBar: AppBar(
@@ -393,7 +397,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
               Tab(text: 'SIGHTINGS'),
               Tab(text: 'LOANS'),
               Tab(text: 'CHAPTERS'),
-              Tab(text: 'TESTS'),
+              if (kShowDevSurfaces) Tab(text: 'TESTS'),
             ],
           ),
         ),
@@ -415,10 +419,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
               onChapterSelected: _onChapterSelected,
               onChaptersChanged: _loadChapters,
             ),
-            _TestsTab(
-              selectedChapterId: _selectedChapterId,
-              onChaptersChanged: _loadChapters,
-            ),
+            if (kShowDevSurfaces)
+              _TestsTab(
+                selectedChapterId: _selectedChapterId,
+                onChaptersChanged: _loadChapters,
+              ),
           ],
         ),
       ),
@@ -427,6 +432,19 @@ class _LibraryScreenState extends State<LibraryScreen> {
 }
 
 // ── Craftings tab ─────────────────────────────────────────────────────────────
+
+// DEV FLAG (kShowDevSurfaces — lib/dev_flags.dart). Craftings loads every
+// persisted spell, so Spell Test Lab spells show up here too — the TESTS tab
+// is a filtered view of the same store, not their exclusive home. Hiding the
+// lab therefore has to hide its output as well, or a leftover `[TEST]` spell
+// stays castable; with kAllowProoflessSpells off it carries no proof, and the
+// opponent forfeits the match on receipt.
+//
+// This filters the list, it does not delete anything. The spells stay on disk
+// under the `[TEST] ` prefix and reappear when the flag goes back on.
+List<SpellAsset> _visible(List<SpellAsset> spells) => kShowDevSurfaces
+    ? spells
+    : spells.where((s) => !s.name.startsWith(kTestSpellNamePrefix)).toList();
 
 class _CraftingsTab extends StatefulWidget {
   const _CraftingsTab({
@@ -467,7 +485,7 @@ class _CraftingsTabState extends State<_CraftingsTab>
     for (final s in all) {
       if (s.segmentCount < 0) await s.delete();
     }
-    return SpellAsset.loadAll();
+    return _visible(await SpellAsset.loadAll());
   }
 
   Future<void> _loadIdentity() async {
@@ -482,7 +500,7 @@ class _CraftingsTabState extends State<_CraftingsTab>
   }
 
   void _reload() => setState(() {
-    _spellsFuture = SpellAsset.loadAll();
+    _spellsFuture = SpellAsset.loadAll().then(_visible);
   });
 
   void _viewSpell(SpellAsset spell) {

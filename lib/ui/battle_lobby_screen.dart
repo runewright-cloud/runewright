@@ -27,6 +27,7 @@ import '../battle/models/match_config.dart';
 import '../battle/models/wild_magic_effect.dart'
     show kDefaultCommunitySeed, normalizeCommunitySeed;
 import '../battle/networking/match_discovery.dart';
+import '../dev_flags.dart' show kShowDevSurfaces;
 import '../identity/identity.dart';
 import '../protocol/lan_socket_transport.dart';
 import '../protocol/transport.dart';
@@ -414,10 +415,14 @@ class _IdleSection extends StatelessWidget {
         Divider(color: kInkColor.withValues(alpha: 0.12)),
         const SizedBox(height: 24),
         _LobbyButton(label: 'SOLO PRACTICE', onTap: onSoloPracticeTap),
-        const SizedBox(height: 24),
-        Divider(color: kInkColor.withValues(alpha: 0.12)),
-        const SizedBox(height: 24),
-        _LobbyButton(label: 'SPELL TEST LAB', onTap: onSpellTestLabTap),
+        // DEV FLAG (kShowDevSurfaces — lib/dev_flags.dart). The lab's spells
+        // carry no proof, so they need kAllowProoflessSpells too.
+        if (kShowDevSurfaces) ...[
+          const SizedBox(height: 24),
+          Divider(color: kInkColor.withValues(alpha: 0.12)),
+          const SizedBox(height: 24),
+          _LobbyButton(label: 'SPELL TEST LAB', onTap: onSpellTestLabTap),
+        ],
       ],
     );
   }

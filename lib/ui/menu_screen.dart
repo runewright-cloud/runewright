@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart' hide Element;
 import '../apprentice/apprenticeship.dart';
+import '../dev_flags.dart' show kShowDevSurfaces;
 import '../identity/identity.dart';
 import '../identity/key_packing.dart';
 import '../main.dart';
@@ -133,15 +134,18 @@ class MenuScreen extends StatelessWidget {
                     MaterialPageRoute(builder: (_) => const SettingsScreen()),
                   ),
                 ),
-                const SizedBox(height: 24),
-                // TEMPORARY -- remove once onboarding is reachable some other way.
-                _MenuButton(
-                  label: 'DEBUG: View Onboarding',
-                  onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const OnboardingLandingScreen()),
+                // DEV FLAG (kShowDevSurfaces -- lib/dev_flags.dart): onboarding
+                // is otherwise reachable only on a fresh install.
+                if (kShowDevSurfaces) ...[
+                  const SizedBox(height: 24),
+                  _MenuButton(
+                    label: 'DEBUG: View Onboarding',
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const OnboardingLandingScreen()),
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
           ),
