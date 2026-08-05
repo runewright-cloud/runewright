@@ -1823,16 +1823,27 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
   /// Whether a cast priced at [cost] fizzles for want of mana.
   ///
-  /// Sorcerer mode only, and it exists because recall can INFLATE a cost after
-  /// the player has already committed (VOCAL_RECALL_PLAN.md §4). Wizard mode
-  /// prices exactly at the gate, so a shortfall there is not a legal outcome —
-  /// it is evidence of a desync or a cheating peer, and must stay a forfeit.
+  /// Applies in BOTH modes. Sorcerer mode needs it because recall can INFLATE
+  /// a cost after the player has already committed (VOCAL_RECALL_PLAN.md §4),
+  /// but the response is right for wizard mode too, and it replaces what used
+  /// to be a match forfeit there.
+  ///
+  /// Forfeiting was never really punishing a cheat — an unaffordable cast wins
+  /// its caster nothing — it was avoiding a DESYNC. The caster's own deduction
+  /// clamped at zero and played on while the peer stopped the match, and those
+  /// two devices disagreeing is the actual failure. Fizzling fixes that at the
+  /// source: both devices price the cast from the same certified inputs, so
+  /// both reach the same verdict and stay in step. Ending someone's match over
+  /// it is a wildly disproportionate response to a move that already
+  /// accomplishes nothing.
+  ///
+  /// The UI still gates affordability ([canAffordSpell]); this is the backstop
+  /// behind it, not a replacement for it.
   ///
   /// Known narrow edge, accepted in §4: refund-on-shortfall is a take-back.
   /// Deliberately blanking a cast you regret returns the mana at the cost of
   /// the turn. Only reachable when a spell already costs most of the pool.
-  bool _fizzlesForMana(WizardAvatar caster, int cost) =>
-      isSorcererMode && cost > caster.mana;
+  bool _fizzlesForMana(WizardAvatar caster, int cost) => cost > caster.mana;
 
   /// Records that [action] fizzled for want of mana, so resolution skips its
   /// effects. Both devices compute this from the same certified cost and the
@@ -6097,28 +6108,21 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         isSummon: spell.isSummon,
         certElementSequence: certElementSequence,
       );
-      // A shortfall means two different things depending on mode, and
-      // conflating them would either forfeit innocent players or open a hole.
+      // A peer who can't pay FIZZLES; it is not a forfeit any more.
       //
-      // SORCERER: legal. Recall can inflate a cost AFTER the player committed,
-      // and previewSpellCost deliberately quotes the honest base price rather
-      // than a worst case, so an unaffordable cast is an expected outcome. It
-      // fizzles and the mana is refunded; the turn is still spent
-      // (VOCAL_RECALL_PLAN.md §4). Both devices reach this from the same
-      // certified cost and the same avatar mana, so they agree without
-      // transmitting the decision.
+      // This used to end the match on `insufficient_mana_for_spell`. That was
+      // aimed at a desync rather than a cheat — the caster's deduction clamped
+      // at zero and played on while this device stopped — and it is a wildly
+      // disproportionate answer to a move that wins its caster nothing. Both
+      // devices now price the cast from the same certified inputs and reach
+      // the same verdict, so the desync it guarded against cannot happen, and
+      // nothing has to be transmitted to keep them agreed.
       //
-      // WIZARD: still a forfeit. There the UI gate prices exactly what the
-      // deduction charges, so a shortfall can only mean a desync or a peer
-      // claiming a cast they cannot pay for. Do NOT weaken this branch.
+      // Sorcerer mode makes a shortfall genuinely routine besides: recall can
+      // inflate a cost after the player has committed, and previewSpellCost
+      // deliberately quotes the honest base price rather than a worst case.
       if (_fizzlesForMana(peerAvatar, verifiedCost)) {
         _markFizzledForMana(action);
-      } else if (peerAvatar.mana < verifiedCost) {
-        session.sendForfeit('insufficient_mana_for_spell');
-        throw StateError(
-          'peer spell requires $verifiedCost mana but peer avatar only has '
-          '${peerAvatar.mana} — match forfeit',
-        );
       } else {
         peerAvatar.mana = (peerAvatar.mana - verifiedCost).clamp(0, _kMaxMana);
       }
@@ -6278,8 +6282,8 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// The arithmetic lives in [_spellCostBreakdown] so [previewSpellCost] can
   /// ask "what would this cost?" without charging for it. Do not reintroduce a
   /// second copy of the formula here — the UI gate and the deduction must
-  /// agree to the mana, or the peer's `insufficient_mana_for_spell` check
-  /// forfeits the match (see [_verifyPeerSpellCast] step 4).
+  /// agree to the mana, or the player is offered casts that then fizzle for
+  /// want of it (see [_fizzlesForMana]).
   int _spellManaCost(
     SpellAsset spell,
     WizardAvatar caster, {
@@ -6439,8 +6443,9 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
   /// Whether the local avatar can pay for [spell] this turn.
   ///
-  /// This is the client-side mirror of the peer's `insufficient_mana_for_spell`
-  /// forfeit ([_verifyPeerSpellCast] step 4). Casting anyway isn't a local
+  /// This is the client-side mirror of [_fizzlesForMana]: casting anyway is no
+  /// longer a forfeit, but it does waste the turn, so the UI should not offer
+  /// it. Casting anyway isn't a local
   /// nuisance that resolves for less — the caster's own deduction clamps at 0
   /// and plays on while the *opponent's* device forfeits the match, which
   /// reads as a desync. Gate the cast in the UI instead.

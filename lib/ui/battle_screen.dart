@@ -1580,7 +1580,7 @@ class _BattleScreenState extends State<BattleScreen>
   // The engine charges the caster with a clamp (`.clamp(0, _kMaxMana)`), so
   // overspending locally looks harmless — the bar just empties. The opponent's
   // device is the one that notices: TurnLoop._verifyPeerSpellCast sends
-  // `insufficient_mana_for_spell` and forfeits the match. That asymmetry is
+  // the cast fizzles for want of mana, wasting the turn. That asymmetry is
   // what a player sees as "my laptop let me cast it and my Pixel desynced".
   // These three helpers are the barrier; TurnLoop.previewSpellCost is the
   // single shared price so the gate and the deduction cannot disagree.
@@ -3538,7 +3538,7 @@ class _ActionBar extends StatelessWidget {
   /// The local caster's mana. With [selectedSpellCost] this decides whether
   /// CAST is live: an unaffordable cast is not a local inconvenience, it makes
   /// the *peer* forfeit the match (TurnLoop._verifyPeerSpellCast,
-  /// `insufficient_mana_for_spell`), so the button must not offer it.
+  /// it fizzles and wastes the turn), so the button must not offer it.
   final int? availableMana;
 
   final bool hasTarget;
@@ -4859,7 +4859,7 @@ class _SpellBook extends StatelessWidget {
   /// Whether the caster can't pay for a card under any enhancement choice.
   /// Such a card renders with a red price and refuses taps: casting it would
   /// empty the local mana bar harmlessly while the *peer* forfeits the match
-  /// over `insufficient_mana_for_spell`. Defaults to "always affordable" for
+  /// into a cast that only fizzles. Defaults to "always affordable" for
   /// callers with no avatar to price against.
   final bool Function(int index, SpellAsset spell) isUnaffordable;
 
@@ -4994,7 +4994,7 @@ class _SpellBook extends StatelessWidget {
 
 /// The mana price of a hand card, in its top-left corner. Red when the caster
 /// can't pay it — the visible half of the affordability gate that keeps a
-/// player from casting into the peer's `insufficient_mana_for_spell` forfeit.
+/// player from casting into a spell that fizzles for want of mana.
 class _ManaCostBadge extends StatelessWidget {
   const _ManaCostBadge({required this.cost, required this.affordable});
 

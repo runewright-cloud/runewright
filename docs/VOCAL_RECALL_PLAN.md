@@ -472,16 +472,25 @@ case for one reason: a cast the gate approved at 1.0× and the peer forfeited ov
 would read as a desync. Making a shortfall a legal, refunded fizzle removes that failure
 mode, and with it `maxManaCostMultiplier`.
 
-**The peer's `insufficient_mana_for_spell` forfeit is now mode-split**, and this is the
-one place the change deliberately weakens a peer verification gate:
+**The peer's `insufficient_mana_for_spell` forfeit is removed outright** — in BOTH
+modes. `[ratified 2026-08-05, supersedes the mode-split first built]`
 
-- **Sorcerer:** a shortfall is legal — recall can inflate a cost *after* the player
-  committed. Fizzle, refund the mana, spend the turn.
-- **Wizard:** still a forfeit. The gate prices exactly what the deduction charges, so a
-  shortfall can only mean a desync or a peer claiming a cast they cannot pay for.
+The forfeit was never really punishing a cheat: an unaffordable cast wins its caster
+nothing. It was avoiding a **desync** — the caster's own deduction clamped at zero and
+played on while the peer stopped the match, and those two devices disagreeing is the
+actual failure. Fizzle-with-refund fixes that at the source, because both devices price
+the cast from the same certified inputs and reach the same verdict. With the desync gone,
+ending someone's match is a wildly disproportionate answer to a move that already
+accomplishes nothing.
 
-Both halves are pinned by tests. The fizzle decision is never transmitted: each device
-derives it from the same certified cost and the same avatar mana.
+So a shortfall fizzles and refunds everywhere; the turn is still spent. Sorcerer mode
+merely makes it *routine* rather than exceptional, since recall can inflate a cost after
+the player has committed. The decision is never transmitted — each device derives it from
+the same certified cost and the same avatar mana.
+
+`canAffordSpell` and the UI gate stay: a cast that silently does nothing is still a
+wasted turn, so the button should not offer it. The fizzle is the backstop behind the
+gate, not a replacement for it.
 
 ## 9.6 Status
 

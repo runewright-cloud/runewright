@@ -252,10 +252,7 @@ void main() {
       expect(action.fizzledForMana, isTrue);
     });
 
-    test('wizard mode never fizzles for mana — that stays a forfeit', () async {
-      // The gate prices exactly what the deduction charges in wizard mode, so
-      // a shortfall there means a desync or a cheating peer. Weakening this
-      // half would be the actual bug.
+    test('an affordable wizard-mode cast is charged, not fizzled', () async {
       final probe = setup(sorcererMode: false);
       final base = probe.loop.previewSpellCost(spell());
 
@@ -266,7 +263,26 @@ void main() {
       );
       await ctx.loop.runTurn(TurnInput(action: action));
       expect(action.fizzledForMana, isFalse);
-      expect(ctx.local.mana, 0); // charged in full, not refunded
+      expect(ctx.local.mana, 0); // exactly affordable: charged in full
+    });
+
+    // Wizard mode fizzles too, as of Soren's call 2026-08-05. It used to
+    // forfeit the match on `insufficient_mana_for_spell`, which was aimed at a
+    // desync rather than a cheat — and ending someone's match is a wildly
+    // disproportionate answer to a move that wins its caster nothing.
+    test('an unaffordable wizard-mode cast fizzles and refunds too', () async {
+      final probe = setup(sorcererMode: false);
+      final base = probe.loop.previewSpellCost(spell());
+
+      final ctx = setup(mana: base - 1, sorcererMode: false);
+      final before = ctx.local.mana;
+      final action = SpellCastAction(
+        spell: spell(),
+        targetHex: ctx.local.position,
+      );
+      await ctx.loop.runTurn(TurnInput(action: action));
+      expect(action.fizzledForMana, isTrue);
+      expect(ctx.local.mana, before, reason: 'refunded, not clamped to zero');
     });
   });
 

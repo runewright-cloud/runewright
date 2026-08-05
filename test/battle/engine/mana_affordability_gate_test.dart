@@ -3,13 +3,14 @@
 // mana_affordability_gate_test.dart — TurnLoop.previewSpellCost /
 // canAffordSpell, the price the UI's cast barrier reads.
 //
-// The bug this exists for: the caster's own deduction clamps
-// (`av.mana = (av.mana - cost).clamp(0, _kMaxMana)`), so overspending looks
-// harmless locally — the bar just empties. The *peer* is what notices:
-// _verifyPeerSpellCast sends `insufficient_mana_for_spell` and forfeits.
-// One device plays on, the other stops: a desync. battle_screen.dart greys
-// the card and kills the CAST button off these two methods, so what they
-// must guarantee is:
+// The bug this exists for: the caster's own deduction used to clamp
+// (`av.mana = (av.mana - cost).clamp(0, _kMaxMana)`), so overspending looked
+// harmless locally — the bar just emptied — while the peer forfeited the
+// match. One device plays on, the other stops: a desync. Overspending now
+// fizzles and refunds on both devices instead (TurnLoop._fizzlesForMana), so
+// the desync is gone, but a cast that silently does nothing is still a wasted
+// turn. battle_screen.dart greys the card and kills the CAST button off these
+// two methods, so what they must guarantee is:
 //
 //   1. the preview equals what the cast actually charges (a preview that's
 //      cheaper than the deduction is the same bug with extra steps), and
