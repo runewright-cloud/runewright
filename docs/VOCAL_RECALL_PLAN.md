@@ -505,6 +505,12 @@ Also built: **the capture (§9.4)** — `IncantationRecallScorer` (whole-utteran
 segmentation plus per-position argmin over the candidate set) and the hold-to-cast
 wiring, on `HoldToRecordButton`. 1232 tests green.
 
+Also built: **Practice Mode repointed** at the recall scorer, so the drill and battle
+run one code path. `StreamingPhonemeScorer`, `PracticeFeedback`, the strictness dial
+(`VocalTuning` + its Settings card) and the Piper trainer clips are all retired; the
+real-voice fixture e2e is ported to `test/sorcerer/recall_real_voice_e2e_test.dart`.
+1245 tests green.
+
 **Not yet built:**
 
 - **The vocabulary UI.** Nothing lets a player *choose* their words yet, so every
