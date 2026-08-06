@@ -10,6 +10,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
+import 'package:rune_duel/engine/border_zone.dart';
+
+import 'counter_charm.dart';
 
 // ── Artifact loadout ──────────────────────────────────────────────────────────
 
@@ -22,50 +25,54 @@ import 'package:path_provider/path_provider.dart';
 enum ArtifactKind { manaGem, bookmark, rodOfSpreading, counterCharm }
 
 class ArtifactEntry {
-  const ArtifactEntry({
-    required this.kind,
-    this.targetCommitmentHex,
-    this.targetSpellName,
-  });
+  const ArtifactEntry({required this.kind, this.trajectory});
 
   final ArtifactKind kind;
 
-  /// [counterCharm] only: Poseidon2(packed_grid) of the attuned spell's grid.
-  /// Null means the charm is unbound (added to the chapter but not yet
-  /// attuned to a spell — see [ChapterAsset.bindFirstUnboundCounterCharm]).
-  /// Once bound, triggers on the first cast of a spell with this grid
-  /// commitment by any wizard in the match, including the charm's own owner.
-  final String? targetCommitmentHex;
+  /// [counterCharm] only: the elemental trajectory this charm is attuned to
+  /// (docs/COUNTER_CHARM_KINSHIP_PLAN.md Phase 2). Any spell whose certified
+  /// element sequence opens with this trajectory is countered, formula by
+  /// formula, for as long as the two sequences stay in lockstep.
+  ///
+  /// Null means the charm is unattuned — added to the chapter but not yet
+  /// given a trajectory (see [ChapterAsset.attuneFirstUnattunedCounterCharm]).
+  /// When set it is always a whole number of formulas, per
+  /// [isValidCharmTrajectory]; the display string is derived on demand via
+  /// [charmTrajectoryLabel] rather than stored.
+  ///
+  /// This replaced a `targetCommitmentHex` that bound the charm to one
+  /// specific spell's grid. A charm persisted under that scheme loads as
+  /// unattuned: the grid commitment says nothing about behaviour, so there is
+  /// nothing to migrate it to, and the player re-types a trajectory.
+  final List<BorderZone>? trajectory;
 
-  /// [counterCharm] only: display-only name recorded at binding time.
-  /// May become stale if the spell is later renamed or deleted.
-  final String? targetSpellName;
+  bool get isCounterCharm => kind == ArtifactKind.counterCharm;
 
-  bool get isUnboundCounterCharm =>
-      kind == ArtifactKind.counterCharm && targetCommitmentHex == null;
+  bool get isUnattunedCounterCharm => isCounterCharm && trajectory == null;
 
-  ArtifactEntry copyWith({
-    String? targetCommitmentHex,
-    String? targetSpellName,
-  }) =>
-      ArtifactEntry(
-        kind: kind,
-        targetCommitmentHex: targetCommitmentHex ?? this.targetCommitmentHex,
-        targetSpellName: targetSpellName ?? this.targetSpellName,
-      );
+  ArtifactEntry copyWith({List<BorderZone>? trajectory}) =>
+      ArtifactEntry(kind: kind, trajectory: trajectory ?? this.trajectory);
 
   Map<String, dynamic> toJson() => {
         'kind': kind.name,
-        if (targetCommitmentHex != null)
-          'targetCommitmentHex': targetCommitmentHex,
-        if (targetSpellName != null) 'targetSpellName': targetSpellName,
+        if (trajectory != null)
+          'trajectory': charmTrajectoryToNames(trajectory!),
       };
 
-  static ArtifactEntry fromJson(Map<String, dynamic> json) => ArtifactEntry(
-        kind: _kindFromName(json['kind'] as String),
-        targetCommitmentHex: json['targetCommitmentHex'] as String?,
-        targetSpellName: json['targetSpellName'] as String?,
-      );
+  static ArtifactEntry fromJson(Map<String, dynamic> json) {
+    final raw = json['trajectory'] as List<dynamic>?;
+    final trajectory =
+        raw == null ? null : charmTrajectoryFromNames(raw.cast<String>());
+    return ArtifactEntry(
+      kind: _kindFromName(json['kind'] as String),
+      // A trajectory that survived the name decode but isn't a whole number
+      // of formulas can't be matched or priced, so it loads as unattuned
+      // rather than as a charm that silently never fires.
+      trajectory: trajectory != null && isValidCharmTrajectory(trajectory)
+          ? trajectory
+          : null,
+    );
+  }
 
   /// Reads an [ArtifactKind] name, aliasing the pre-v3.0 `deflectionRod` slot
   /// name onto its replacement [ArtifactKind.rodOfSpreading] so chapters
@@ -127,23 +134,21 @@ class ChapterAsset {
 
   int get artifactSlotsRemaining => maxArtifactSlots - artifacts.length;
 
-  int get unboundCounterCharmCount =>
-      artifacts.where((a) => a.isUnboundCounterCharm).length;
+  int get unattunedCounterCharmCount =>
+      artifacts.where((a) => a.isUnattunedCounterCharm).length;
 
-  /// Binds the first unbound counter charm in [artifacts] to [commitmentHex]
-  /// / [spellName]. Returns the updated chapter, or `null` if there is no
-  /// unbound charm to bind (caller shows "No unbound charms available.").
-  ChapterAsset? bindFirstUnboundCounterCharm({
-    required String commitmentHex,
-    required String spellName,
+  /// Attunes the first unattuned counter charm in [artifacts] to
+  /// [trajectory]. Returns the updated chapter, or `null` if there is no
+  /// unattuned charm to attune (caller shows "No unattuned charms
+  /// available.") or [trajectory] isn't a whole number of formulas.
+  ChapterAsset? attuneFirstUnattunedCounterCharm({
+    required List<BorderZone> trajectory,
   }) {
-    final idx = artifacts.indexWhere((a) => a.isUnboundCounterCharm);
+    if (!isValidCharmTrajectory(trajectory)) return null;
+    final idx = artifacts.indexWhere((a) => a.isUnattunedCounterCharm);
     if (idx < 0) return null;
     final updated = List<ArtifactEntry>.from(artifacts);
-    updated[idx] = updated[idx].copyWith(
-      targetCommitmentHex: commitmentHex,
-      targetSpellName: spellName,
-    );
+    updated[idx] = updated[idx].copyWith(trajectory: trajectory);
     return ChapterAsset(
       id: id,
       name: name,
@@ -179,6 +184,21 @@ class ChapterAsset {
         entries: entries,
         artifacts: [...artifacts, artifact],
       );
+
+  /// Replaces the artifact at [index] — the re-attune path, now that a charm's
+  /// trajectory is typed rather than harvested from a spell and can therefore
+  /// be changed without deleting and re-adding the charm.
+  ChapterAsset withArtifactAt(int index, ArtifactEntry artifact) {
+    final updated = List<ArtifactEntry>.from(artifacts);
+    updated[index] = artifact;
+    return ChapterAsset(
+      id: id,
+      name: name,
+      createdAt: createdAt,
+      entries: entries,
+      artifacts: updated,
+    );
+  }
 
   ChapterAsset withoutArtifactAt(int index) {
     final updated = List<ArtifactEntry>.from(artifacts)..removeAt(index);

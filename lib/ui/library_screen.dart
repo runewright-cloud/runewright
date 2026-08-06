@@ -21,6 +21,7 @@ import '../battle/models/minion.dart' show SummonPersonality, kSummonPersonality
 import '../spells/basic_spell_seed.dart' show seedBasicSpells;
 import '../spells/basic_spells.dart' show isBasicSpell;
 import '../spells/chapter_asset.dart';
+import '../spells/counter_charm.dart';
 import '../spells/sighting_asset.dart';
 import '../spells/spell_art_import.dart';
 import '../spells/spell_art_io.dart';
@@ -32,12 +33,15 @@ import '../spells/spell_permission.dart';
 import '../spells/supreme_tags.dart' show deriveSupremeTags;
 import '../dev_flags.dart' show kShowDevSurfaces;
 import '../main.dart' show GameScreen;
+import '../sorcerer/vocal_enrollment.dart';
+import 'counter_charm_attune_dialog.dart';
 import 'manuscript_theme.dart';
 import 'practice_screen.dart';
 import 'sigil_painter.dart';
 import 'spell_art_pack_screen.dart';
 import 'spell_card_painter.dart';
 import 'spell_test_lab_screen.dart' show kTestSpellNamePrefix;
+import 'vocabulary_screen.dart';
 
 // ── Custom spell art (P1: own library spells only) ──────────────────────────
 //
@@ -101,12 +105,30 @@ Future<void> _setCustomArtOnSpell(
 
 /// Deletes [spell]'s stored art bytes and clears its art metadata, reverting
 /// its card to the commitmentHex-derived coat of arms.
-/// Opens the practice studio in spell-drill mode for [spell] — the same
-/// screen the main menu reaches, but preloaded with this spell's own
-/// incantation instead of a random formula. Shared by both tabs, which build
-/// _SpellCard from separate State classes.
-void _openPracticeForSpell(BuildContext context, SpellAsset spell) {
-  Navigator.push(
+/// Opens the practice drill for [spell] — the ONLY way into PracticeScreen,
+/// since practice is always a drill of one specific spell. Shared by both
+/// tabs, which build _SpellCard from separate State classes.
+///
+/// Gated on voice enrollment: the drill scores a recital against the player's
+/// own recordings, exactly as a duel does, so with too few takes it would
+/// report mistakes they did not make. Rather than let them practise against a
+/// lie, send them to Attune Spell Components' Vocal tab to record — and hand it the spell
+/// so its commit button continues straight into the drill instead of dumping
+/// them back here to start over.
+Future<void> _openPracticeForSpell(
+    BuildContext context, SpellAsset spell) async {
+  final enrollment = await VocalEnrollment.open();
+  if (!context.mounted) return;
+  if (!enrollment.isPracticeReady()) {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => VocabularyScreen(proceedToPracticeWith: spell),
+      ),
+    );
+    return;
+  }
+  await Navigator.push(
     context,
     MaterialPageRoute(builder: (_) => PracticeScreen(spell: spell)),
   );
@@ -182,63 +204,11 @@ Future<void> _choosePackArtOnSpell(
   onReload();
 }
 
-/// Binds the first unbound counter charm in the chapter [chapterId] to
-/// [spell]'s grid commitment. Shared by the Craftings and Tests tabs' menu
-/// actions. Reports every outcome (no chapter selected, no runes to bind to,
-/// already-attuned duplicate, no unbound charm, success) via a snackbar.
-Future<void> _bindCounterCharmOnSpell(
-  BuildContext context,
-  SpellAsset spell,
-  String? chapterId,
-  VoidCallback onReload,
-) async {
-  if (chapterId == null) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Select a chapter in the Chapters tab first.')),
-    );
-    return;
-  }
-  if (spell.commitmentHex.isEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('This spell has no runes to attune to.')),
-    );
-    return;
-  }
-  if (await _blockedAsMastersChapter(context, chapterId)) return;
-
-  final chapter = await ChapterAsset.loadById(chapterId);
-  if (chapter == null || !context.mounted) return;
-
-  if (chapter.artifacts.any((a) =>
-      a.kind == ArtifactKind.counterCharm &&
-      a.targetCommitmentHex == spell.commitmentHex)) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('A charm is already attuned to these runes.')),
-    );
-    return;
-  }
-
-  final spellName = spell.name.isNotEmpty ? spell.name : 'Unnamed Spell';
-  final updated = chapter.bindFirstUnboundCounterCharm(
-    commitmentHex: spell.commitmentHex,
-    spellName: spellName,
-  );
-  if (updated == null) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('No unbound charms available.')),
-    );
-    return;
-  }
-
-  await updated.save();
-  onReload();
-
-  if (context.mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Counter charm attuned to "$spellName".')),
-    );
-  }
-}
+// Counter charms are attuned to an elemental TRAJECTORY, on the charm itself,
+// in the chapter editor (see _CounterCharmTile and
+// counter_charm_attune_dialog.dart). The old per-spell "Bind to Counter
+// Charm" menu action is gone with the grid binding it attached: you no longer
+// have to own — or ever have faced — a spell in order to counter it.
 
 // ── The master's chapter is read-only (MASTER_APPRENTICE_PLAN.md §8) ────────
 //
@@ -642,7 +612,8 @@ class _CraftingsTabState extends State<_CraftingsTab>
     );
   }
 
-  void _practiceSpell(SpellAsset spell) => _openPracticeForSpell(context, spell);
+  void _practiceSpell(SpellAsset spell) =>
+      unawaited(_openPracticeForSpell(context, spell));
 
   Future<void> _deleteSpell(SpellAsset spell) async {
     await spell.delete();
@@ -729,13 +700,6 @@ class _CraftingsTabState extends State<_CraftingsTab>
     }
   }
 
-  Future<void> _bindCounterCharm(SpellAsset spell) => _bindCounterCharmOnSpell(
-        context,
-        spell,
-        widget.selectedChapterId,
-        widget.onChaptersChanged,
-      );
-
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -760,11 +724,14 @@ class _CraftingsTabState extends State<_CraftingsTab>
             message: 'Your grimoire is empty.\nInscribe your first spell from Rune Craft.',
           );
         }
+        // Kin is BEHAVIOURAL now (COUNTER_CHARM_KINSHIP_PLAN.md Phase 3):
+        // same trajectory and same base mana cost, not same grid. A spell
+        // whose trajectory is under the kinship threshold has a null kinKey
+        // and is kin to nothing — including another exempt spell.
         final kinCount = <String, int>{};
         for (final s in spells) {
-          if (s.commitmentHex.isNotEmpty) {
-            kinCount[s.commitmentHex] = (kinCount[s.commitmentHex] ?? 0) + 1;
-          }
+          final key = s.kinKey;
+          if (key != null) kinCount[key] = (kinCount[key] ?? 0) + 1;
         }
         return RefreshIndicator(
           color: kIlluminationGold,
@@ -775,8 +742,8 @@ class _CraftingsTabState extends State<_CraftingsTab>
             itemCount: spells.length,
             itemBuilder: (context, i) {
               final spell = spells[i];
-              final siblings =
-                  spell.commitmentHex.isNotEmpty ? (kinCount[spell.commitmentHex] ?? 1) : 1;
+              final kinKey = spell.kinKey;
+              final siblings = kinKey != null ? (kinCount[kinKey] ?? 1) : 1;
               return _SpellCard(
                 spell: spell,
                 kinSiblings: siblings,
@@ -786,7 +753,6 @@ class _CraftingsTabState extends State<_CraftingsTab>
                 onView: () => _viewSpell(spell),
                 onDelete: () => _deleteSpell(spell),
                 onAddToChapter: () => _addToChapter(spell),
-                onBindCounterCharm: () => _bindCounterCharm(spell),
                 onSetArt: () => _setCustomArt(spell),
                 onClearArt: () => _clearCustomArt(spell),
                 onPractice: () => _practiceSpell(spell),
@@ -847,7 +813,8 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
     );
   }
 
-  void _practiceSpell(SpellAsset spell) => _openPracticeForSpell(context, spell);
+  void _practiceSpell(SpellAsset spell) =>
+      unawaited(_openPracticeForSpell(context, spell));
 
   Future<void> _deleteSpell(SpellAsset spell) async {
     await spell.delete();
@@ -857,13 +824,6 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
   Future<void> _setCustomArt(SpellAsset spell) => _chooseSpellArt(context, spell, _reload);
 
   Future<void> _clearCustomArt(SpellAsset spell) => _clearCustomArtOnSpell(spell, _reload);
-
-  Future<void> _bindCounterCharm(SpellAsset spell) => _bindCounterCharmOnSpell(
-        context,
-        spell,
-        widget.selectedChapterId,
-        widget.onChaptersChanged,
-      );
 
   /// Adds every spell in [spells] to the selected chapter as a single batch:
   /// one chapter load, one save, skipping any whose grid commitment is
@@ -996,7 +956,6 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
                 onView: () => _viewSpell(spell),
                 onDelete: () => _deleteSpell(spell),
                 onAddToChapter: () => _addAllToChapter([spell]),
-                onBindCounterCharm: () => _bindCounterCharm(spell),
                 onSetArt: () => _setCustomArt(spell),
                 onClearArt: () => _clearCustomArt(spell),
                 onPractice: () => _practiceSpell(spell),
@@ -1017,7 +976,6 @@ class _SpellCard extends StatelessWidget {
     required this.kinSiblings,
     required this.onDelete,
     required this.onAddToChapter,
-    required this.onBindCounterCharm,
     required this.onView,
     required this.onSetArt,
     required this.onClearArt,
@@ -1031,7 +989,6 @@ class _SpellCard extends StatelessWidget {
   final int kinSiblings;
   final VoidCallback onDelete;
   final VoidCallback onAddToChapter;
-  final VoidCallback onBindCounterCharm;
   final VoidCallback onView;
   final VoidCallback onSetArt;
   final VoidCallback onClearArt;
@@ -1149,8 +1106,6 @@ class _SpellCard extends StatelessWidget {
       });
     } else if (action == 'add') {
       onAddToChapter();
-    } else if (action == 'bind_charm') {
-      onBindCounterCharm();
     } else if (action == 'set_art') {
       onSetArt();
     } else if (action == 'clear_art') {
@@ -1226,10 +1181,6 @@ class _SpellCard extends StatelessWidget {
                                 child: Text('Practice Incantation'),
                               ),
                             const PopupMenuItem(value: 'add', child: Text('Add to Chapter')),
-                            const PopupMenuItem(
-                              value: 'bind_charm',
-                              child: Text('Bind to Counter Charm'),
-                            ),
                             PopupMenuItem(
                               value: 'set_art',
                               child: Text(spell.artHash == null
@@ -1746,16 +1697,32 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
     widget.onChapterChanged();
   }
 
-  // For counterCharm, only ever removes an *unbound* charm — a bound charm
-  // is removed exclusively via _removeCounterCharm (with its own confirm
-  // dialog naming the attuned spell), never by this generic +/- control.
   Future<void> _decrementArtifact(ArtifactKind kind) async {
     if (_readOnly) return;
-    final idx = kind == ArtifactKind.counterCharm
-        ? _chapter.artifacts.lastIndexWhere((a) => a.isUnboundCounterCharm)
-        : _chapter.artifacts.lastIndexWhere((a) => a.kind == kind);
+    final idx = _chapter.artifacts.lastIndexWhere((a) => a.kind == kind);
     if (idx < 0) return;
     final updated = _chapter.withoutArtifactAt(idx);
+    await updated.save();
+    setState(() => _chapter = updated);
+    widget.onChapterChanged();
+  }
+
+  /// Opens the trajectory editor for the charm at [index] and saves the
+  /// result. This is the ONLY attunement path now — a charm is attuned to a
+  /// trajectory the player types, not to a spell they happen to own, so there
+  /// is nothing to reach it from a spell's menu with.
+  Future<void> _attuneCounterCharm(int index) async {
+    if (_readOnly) return;
+    final charm = _chapter.artifacts[index];
+    final trajectory = await showCounterCharmAttuneDialog(
+      context,
+      initial: charm.trajectory ?? const [],
+    );
+    if (trajectory == null || !mounted) return;
+    final updated = _chapter.withArtifactAt(
+      index,
+      ArtifactEntry(kind: charm.kind, trajectory: trajectory),
+    );
     await updated.save();
     setState(() => _chapter = updated);
     widget.onChapterChanged();
@@ -1764,12 +1731,17 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
   Future<void> _removeCounterCharm(int index) async {
     if (_readOnly) return;
     final charm = _chapter.artifacts[index];
-    final targetName = charm.targetSpellName ?? 'this spell';
+    final trajectory = charm.trajectory;
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('Remove Counter Charm'),
-        content: Text('Remove the charm attuned to "$targetName"?'),
+        content: Text(
+          trajectory == null
+              ? 'Remove this unattuned charm?'
+              : 'Remove the charm attuned to '
+                  '${charmTrajectoryLabel(trajectory)}?',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -1790,20 +1762,20 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
   }
 
   Widget _buildBody(List<SpellAsset?> spells) {
-    // Group non-CC artifacts by kind; collect bound-CC indices for individual
-    // display (unbound CCs are shown as a single grouped count tile, same as
-    // the other kinds).
+    // Non-charm artifacts are interchangeable and group by kind. Every counter
+    // charm gets its own tile, attuned or not: a charm's trajectory is what
+    // the player is actually managing, and an unattuned charm needs somewhere
+    // visible to be attuned FROM (it can never fire until it is).
     final kindCounts = <ArtifactKind, int>{};
-    final boundCharmIndices = <int>[];
+    final charmIndices = <int>[];
     for (int i = 0; i < _chapter.artifacts.length; i++) {
       final a = _chapter.artifacts[i];
       if (a.kind == ArtifactKind.counterCharm) {
-        if (a.targetCommitmentHex != null) boundCharmIndices.add(i);
+        charmIndices.add(i);
       } else {
         kindCounts[a.kind] = (kindCounts[a.kind] ?? 0) + 1;
       }
     }
-    final unboundCharmCount = _chapter.unboundCounterCharmCount;
 
     const groupedKinds = [
       ArtifactKind.manaGem,
@@ -1835,19 +1807,10 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
               onDecrement: readOnly ? null : () => _decrementArtifact(kind),
               onIncrement: readOnly ? null : () => _incrementArtifact(kind),
             ),
-        if (unboundCharmCount > 0)
-          _ArtifactGroupTile(
-            kind: ArtifactKind.counterCharm,
-            count: unboundCharmCount,
-            canIncrement: slotsRemaining > 0,
-            onDecrement:
-                readOnly ? null : () => _decrementArtifact(ArtifactKind.counterCharm),
-            onIncrement:
-                readOnly ? null : () => _incrementArtifact(ArtifactKind.counterCharm),
-          ),
-        for (final idx in boundCharmIndices)
+        for (final idx in charmIndices)
           _CounterCharmTile(
             artifact: _chapter.artifacts[idx],
+            onAttune: readOnly ? null : () => _attuneCounterCharm(idx),
             onRemove: readOnly ? null : () => _removeCounterCharm(idx),
           ),
         if (_chapter.artifacts.isEmpty)
@@ -2287,16 +2250,28 @@ class _ArtifactGroupTile extends StatelessWidget {
   }
 }
 
+/// One counter charm in a chapter's loadout, attuned or not.
+///
+/// Tapping opens the trajectory editor ([showCounterCharmAttuneDialog]) — the
+/// only attunement path, since a charm is keyed to behaviour rather than to a
+/// spell the player owns. An unattuned charm says so plainly: it still earns
+/// the melee proc passive, but it can never fire its counter.
 class _CounterCharmTile extends StatelessWidget {
-  const _CounterCharmTile({required this.artifact, required this.onRemove});
+  const _CounterCharmTile({
+    required this.artifact,
+    required this.onAttune,
+    required this.onRemove,
+  });
 
   final ArtifactEntry artifact;
 
-  /// Null in a read-only chapter (a master's loan, §8).
+  /// Both null in a read-only chapter (a master's loan, §8).
+  final VoidCallback? onAttune;
   final VoidCallback? onRemove;
 
   @override
   Widget build(BuildContext context) {
+    final trajectory = artifact.trajectory;
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Container(
@@ -2312,31 +2287,48 @@ class _CounterCharmTile extends StatelessWidget {
               Icon(Icons.block, size: 16, color: kInkColor.withValues(alpha: 0.55)),
               const SizedBox(width: 10),
               Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Counter Charm',
-                      style: TextStyle(
-                        fontFamily: 'serif',
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                        color: kInkColor,
-                        letterSpacing: 0.3,
+                child: InkWell(
+                  onTap: onAttune,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Counter Charm',
+                        style: TextStyle(
+                          fontFamily: 'serif',
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          color: kInkColor,
+                          letterSpacing: 0.3,
+                        ),
                       ),
-                    ),
-                    if (artifact.targetSpellName != null) ...[
                       const SizedBox(height: 2),
                       Text(
-                        'Attuned to: ${artifact.targetSpellName}',
+                        trajectory == null
+                            ? 'Not attuned — tap to set a trajectory'
+                            : '${charmTrajectoryLabel(trajectory)}  ·  '
+                                '♦ ${counterCharmManaCost(trajectory)} per trigger',
                         style: manuscriptCaptionStyle(
-                          color: kInkColor.withValues(alpha: 0.6),
+                          color: kInkColor.withValues(
+                            alpha: trajectory == null ? 0.45 : 0.7,
+                          ),
                         ).copyWith(fontStyle: FontStyle.normal),
                       ),
                     ],
-                  ],
+                  ),
                 ),
               ),
+              if (onAttune != null)
+                IconButton(
+                  icon: Icon(
+                    Icons.edit_outlined,
+                    size: 16,
+                    color: kInkColor.withValues(alpha: 0.45),
+                  ),
+                  visualDensity: VisualDensity.compact,
+                  tooltip: trajectory == null ? 'Attune charm' : 'Change trajectory',
+                  onPressed: onAttune,
+                ),
               if (onRemove != null)
                 IconButton(
                   icon: Icon(

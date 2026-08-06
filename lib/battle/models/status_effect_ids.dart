@@ -47,9 +47,26 @@ abstract final class StatusEffectId {
 
   // Penetrating: spells ignore impassable tiles; deal damage to entities en route.
   // modifiers: {'penetrationDamage': int}
+  //
+  // Consumed in TurnLoop._applySpell (via _penetrationDamageFor): its presence
+  // is the line-of-sight exemption passed to losBlockerTile, so a penetrating
+  // caster's spells resolve at the declared target instead of on the wall in
+  // the way, and its modifier drives _applyPenetrationEnRoute. Unwired until
+  // 2026-08-05 because the thing it bypasses did not exist yet — see
+  // docs/WALL_LOS_PLAN.md.
   static const penetrating = 'penetrating';
 
-  // Turbulent: caster's next spell range randomised 1–max (range is still declared).
+  // Turbulent: the bearer's spells fly in the declared direction but travel a
+  // randomised distance, 1..effectiveSpellRange — so a cast can fall short OR
+  // sail past the tile it was aimed at. No modifiers; the roll's ceiling is
+  // read off the bearer, which is why an Airy Inertia stacked on top widens
+  // the spread rather than cancelling it.
+  //
+  // Consumed in TurnLoop._resolveActions (via _turbulentTarget), which rolls
+  // the real destination BEFORE the orb event and the line-of-sight walk, so
+  // the card and the flying orb show where the spell actually went. Unlike
+  // [penetrating] this is NOT consumed on use: it persists for its full
+  // duration and randomises every cast in that window (ruling 2026-08-06).
   static const turbulent = 'turbulent';
 
   // Cloud-bound targeting: same "adjacent-only" restriction a cloud imposes

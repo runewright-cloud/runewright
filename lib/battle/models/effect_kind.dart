@@ -124,7 +124,7 @@ const Map<EffectKind, Map<SpellAffinity, String>> kEffectDescription = {
         'Penetrating: spells can\'t be blocked by walls; 1 damage to anything in hexes en route.',
     SpellAffinity.earth: 'Reduce spell range by 1 for 4 turns.',
     SpellAffinity.water:
-        'Turbulent: next spell fires in the intended direction but its range is randomized 1–max.',
+        'Turbulent: spells fly in the intended direction but their range is randomized 1–max, falling short or sailing past, for 4 turns.',
     SpellAffinity.air: 'Increase spell range by 1.',
   },
   EffectKind.clouds: {

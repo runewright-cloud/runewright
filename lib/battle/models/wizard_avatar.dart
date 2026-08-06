@@ -48,6 +48,7 @@
 
 import 'dart:math' show pow;
 
+import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/battle/models/effect_kind.dart' show SpellAffinity;
 import 'package:rune_duel/battle/models/barrier.dart';
@@ -79,20 +80,27 @@ class Accoutrement {
   const Accoutrement({
     required this.id,
     required this.kind,
-    this.targetCommitmentHex,
+    this.charmTrajectory,
     this.counterCharmRevealed = false,
   });
 
   final String id;
   final AccoutrementKind kind;
 
-  /// [counterCharm] only: the Poseidon2 grid-hash of the targeted spell.
-  /// Triggers when the opponent casts a spell whose commitment matches —
-  /// revealed via commit-reveal-with-salt at activation time.
-  final String? targetCommitmentHex;
+  /// [counterCharm] only: the elemental trajectory this charm is attuned to
+  /// (docs/COUNTER_CHARM_KINSHIP_PLAN.md Phase 2). Triggers on any cast — by
+  /// any wizard, including the charm's own owner — whose certified element
+  /// sequence opens with this trajectory, cancelling formulas for as long as
+  /// the two sequences stay in lockstep. Null for an unattuned charm, which
+  /// can never fire.
+  ///
+  /// Replaces the grid-commitment binding: the charm is keyed to what a spell
+  /// DOES, so it can be attuned to a spell the owner has never faced, and a
+  /// charm minted mid-battle is no longer dead weight.
+  final List<BorderZone>? charmTrajectory;
 
-  /// [counterCharm] only: true once the charm has activated and its target
-  /// has been publicly revealed.
+  /// [counterCharm] only: true once the charm has activated and its
+  /// trajectory has been publicly revealed.
   final bool counterCharmRevealed;
 
   // Absorption Rod / Deflection Totem mechanic:
@@ -101,22 +109,18 @@ class Accoutrement {
   // accoutrements. If so: halve all time-based effect durations (ceil), consume
   // 1 rod/totem per spell (not per effect). Implemented in EffectApplicator.
 
-  // TODO(battle): counter charm reveal hook — reveal targetCommitmentHex via
-  //   commit-reveal-with-salt (design doc §mystery-and-counter-charms).
-  //   Trigger: opponent's spell commitmentHex == targetCommitmentHex AND
-  //   the casting ownerPubkeyHex != this charm's owner's ownerPubkeyHex.
   // TODO(battle): burn hook — remove this accoutrement from avatar and apply
   //   burn effect; targeting drawn from CommitRevealEntropy (design doc §burn).
-  //   Burning a counter charm reveals its targetCommitmentHex.
+  //   Burning a counter charm reveals its charmTrajectory.
 
   Accoutrement copyWith({
-    String? targetCommitmentHex,
+    List<BorderZone>? charmTrajectory,
     bool? counterCharmRevealed,
   }) =>
       Accoutrement(
         id: id,
         kind: kind,
-        targetCommitmentHex: targetCommitmentHex ?? this.targetCommitmentHex,
+        charmTrajectory: charmTrajectory ?? this.charmTrajectory,
         counterCharmRevealed: counterCharmRevealed ?? this.counterCharmRevealed,
       );
 }

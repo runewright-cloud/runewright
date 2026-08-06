@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// vocabulary_screen.dart — where a player chooses the six words they cast with.
+// vocabulary_screen.dart — "Attune Spell Components": the one place a player
+// tunes the components they cast with. Two tabs, one per component type —
+// **Vocal** (the six words, below) and **Somatic** (the five gestures, in
+// widgets/gesture_training_panel.dart).
+//
+// The two tabs share a shape but not a mechanism, and deliberately so: words
+// are chosen AND recorded (a rename invalidates its audio, so both are staged
+// together), whereas a gesture has nothing to name — you only record it. So
+// only the vocal side carries the staging/commit machinery described below.
 //
 // VOCAL_RECALL_PLAN.md §8. Editing is STAGED: nothing a player types or records
 // here touches the live vocabulary until they commit, and committing is
@@ -15,6 +23,12 @@
 // Re-keying itself is free (§8.8). Retraining your own brain onto new words is
 // the real cost and a sufficient limiter; it is also the counter-espionage
 // move, and the answer to an opponent who cracked you between matches.
+//
+// This is also the ONLY place voice takes are recorded. The practice drill
+// used to carry its own enrollment card; it doesn't any more, because a word
+// and the audio for it are one thing and splitting them across two screens let
+// them drift. A player who tries to practise without enough takes is sent here
+// first — see [VocabularyScreen.proceedToPracticeWith].
 
 import 'dart:async';
 import 'dart:io';
@@ -29,10 +43,20 @@ import '../sorcerer/vocabulary_profile.dart';
 import '../sorcerer/vocabulary_separation.dart';
 import '../sorcerer/vocal_enrollment.dart';
 import '../sorcerer/vocal_slot.dart';
+import '../spells/spell_asset.dart';
+import 'practice_screen.dart';
+import 'widgets/gesture_training_panel.dart';
 import 'widgets/hold_to_record_control.dart';
 
 class VocabularyScreen extends StatefulWidget {
-  const VocabularyScreen({super.key});
+  const VocabularyScreen({super.key, this.proceedToPracticeWith});
+
+  /// Set when the player was diverted here on their way to practising a spell
+  /// (library › Practice Incantation, with too few takes to score fairly —
+  /// see VocalEnrollment.isPracticeReady). Two effects: every slot must reach
+  /// [VocalEnrollment.minTakesForPractice] before the commit unlocks, and
+  /// committing continues to the drill instead of just popping back.
+  final SpellAsset? proceedToPracticeWith;
 
   @override
   State<VocabularyScreen> createState() => _VocabularyScreenState();
@@ -50,6 +74,13 @@ class _VocabularyScreenState extends State<VocabularyScreen> {
 
   /// Takes recorded on this screen, per slot, not yet adopted.
   final Map<VocalSlot, int> _stagedTakes = {};
+
+  /// Takes already on disk per slot, read at open and refreshed after every
+  /// commit. Needed because a commit REPLACES a slot's takes with the staged
+  /// ones rather than appending (adoptFrom) — so what a slot will end up with
+  /// is the staged count where one exists and this otherwise, which is what
+  /// [_effectiveTakes] returns and what the practice gate is measured against.
+  Map<VocalSlot, int> _liveTakes = const {};
 
   VocabularySeparation? _separation;
   bool _busy = false;
@@ -82,6 +113,9 @@ class _VocabularyScreenState extends State<VocabularyScreen> {
       _live = live;
       _liveEnrollment = enrollment;
       _staging = staging;
+      _liveTakes = {
+        for (final slot in VocalSlot.values) slot: enrollment.takeCount(slot),
+      };
       for (final slot in VocalSlot.values) {
         _draft[slot] = live.labelFor(slot);
         _controllers[slot] = TextEditingController(text: live.labelFor(slot));
@@ -114,8 +148,29 @@ class _VocabularyScreenState extends State<VocabularyScreen> {
   Set<VocalSlot> get _awaitingTakes =>
       {for (final slot in _changed) if ((_stagedTakes[slot] ?? 0) == 0) slot};
 
+  /// What [slot] will hold once this edit commits — see [_liveTakes].
+  int _effectiveTakes(VocalSlot slot) =>
+      _stagedTakes[slot] ?? _liveTakes[slot] ?? 0;
+
+  /// True when the player was sent here from the library's Practice entry
+  /// point rather than choosing to re-key.
+  bool get _isPracticeGate => widget.proceedToPracticeWith != null;
+
+  /// Gate mode only: slots still short of [VocalEnrollment.minTakesForPractice].
+  /// Practising against a vocabulary the scorer can't tell apart teaches the
+  /// wrong lesson, so the drill stays behind this.
+  Set<VocalSlot> get _underEnrolled => {
+        for (final slot in VocalSlot.values)
+          if (_effectiveTakes(slot) < VocalEnrollment.minTakesForPractice) slot,
+      };
+
+  /// Whether there is anything to write. Staged takes count on their own: a
+  /// player topping up recordings for words they're keeping has made a real
+  /// change even though no label moved.
+  bool get _hasPendingWork => _changed.isNotEmpty || _stagedTakes.isNotEmpty;
+
   String? get _blockingReason {
-    if (_changed.isEmpty) return null;
+    if (!_hasPendingWork && !_isPracticeGate) return null;
     for (final slot in _changed) {
       final reason = VocabularyProfile.rejectReason(_draft[slot] ?? '');
       if (reason != null) return reason;
@@ -134,6 +189,15 @@ class _VocabularyScreenState extends State<VocabularyScreen> {
     if (_awaitingTakes.isNotEmpty) {
       return 'Record ${_awaitingTakes.length} more '
           '${_awaitingTakes.length == 1 ? 'word' : 'words'} before saving.';
+    }
+    if (_isPracticeGate) {
+      final short = _underEnrolled;
+      if (short.isNotEmpty) {
+        return 'Practice needs ${VocalEnrollment.minTakesForPractice} '
+            'recordings of each word so it can tell them apart. '
+            '${short.length} ${short.length == 1 ? 'word is' : 'words are'} '
+            'still short: ${short.map((s) => '"${_draft[s]}"').join(', ')}.';
+      }
     }
     return null;
   }
@@ -231,31 +295,66 @@ class _VocabularyScreenState extends State<VocabularyScreen> {
     final staging = _staging;
     final live = _liveEnrollment;
     if (staging == null || live == null || _blockingReason != null) return;
+    // A satisfied gate with nothing staged is a pass-through, not a no-op:
+    // the player already has the recordings the drill wanted, so asking them
+    // to re-record words they own would be a dead end with a save button on
+    // it. Only reachable defensively — the gate opens this screen precisely
+    // because a slot was short — but a stuck screen is not worth the risk.
+    if (!_hasPendingWork) {
+      if (_isPracticeGate) _goToPractice();
+      return;
+    }
     setState(() => _busy = true);
     try {
-      final labels = {
-        for (final slot in _changed) slot: _draft[slot]!.trim(),
+      // Every slot with staged audio is adopted, not only the renamed ones —
+      // topping up takes for a word you're keeping is a legitimate edit, and
+      // it is the whole of what the practice gate asks for. Renamed slots
+      // always have staged audio (the atomicity rule above), so this is a
+      // superset of _changed.
+      final adopted = {
+        for (final slot in _stagedTakes.keys) slot: _draft[slot]!.trim(),
       };
       // Takes first, profile second. Each enrollment file records the word it
       // holds audio for, so if this is interrupted the affected slot reads as
       // stale and falls back to the bundled template rather than scoring the
       // player against a word they no longer say.
-      await live.adoptFrom(staging, labels);
-      final profile = _live.withLabels(labels);
+      await live.adoptFrom(staging, adopted);
+      final profile = _live.withLabels({
+        for (final slot in _changed) slot: _draft[slot]!.trim(),
+      });
       await profile.save();
       await staging.clearAll();
       if (!mounted) return;
       setState(() {
         _live = profile;
+        _liveTakes = {
+          for (final slot in VocalSlot.values) slot: live.takeCount(slot),
+        };
         _stagedTakes.clear();
         _busy = false;
       });
+      if (_isPracticeGate) {
+        _goToPractice();
+        return;
+      }
       _show('Vocabulary saved. Practise it before your next duel.');
     } catch (e) {
       if (!mounted) return;
       setState(() => _busy = false);
       _show('Could not save the vocabulary: $e');
     }
+  }
+
+  /// Continues into the drill the player originally asked for. Replaces this
+  /// route rather than stacking on it: they asked to practise, were diverted
+  /// here, and have now paid the toll — Back from the drill should return to
+  /// the library they started from, not to this page.
+  void _goToPractice() {
+    final spell = widget.proceedToPracticeWith;
+    if (spell == null) return;
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => PracticeScreen(spell: spell)),
+    );
   }
 
   Future<void> _revert() async {
@@ -282,21 +381,61 @@ class _VocabularyScreenState extends State<VocabularyScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final blocking = _blockingReason;
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Your Incantations'),
-        actions: [
-          if (_changed.isNotEmpty)
-            TextButton(
-              onPressed: _busy ? null : _revert,
-              child: const Text('Revert'),
-            ),
-        ],
+    // Always opens on Vocal: it is the tab a practice gate diverted the player
+    // to, and the one with unsaved work to lose.
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Attune Spell Components'),
+          actions: [
+            if (_hasPendingWork)
+              TextButton(
+                onPressed: _busy ? null : _revert,
+                child: const Text('Revert'),
+              ),
+          ],
+          bottom: const TabBar(
+            tabs: [
+              Tab(text: 'Vocal'),
+              Tab(text: 'Somatic'),
+            ],
+          ),
+        ),
+        body: TabBarView(
+          children: [
+            _buildVocalTab(context),
+            const GestureTrainingPanel(),
+          ],
+        ),
       ),
-      body: ListView(
+    );
+  }
+
+  Widget _buildVocalTab(BuildContext context) {
+    final blocking = _blockingReason;
+    return ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          // Why the player is here when they asked for a drill. Stated before
+          // the words themselves, so it reads as an explanation rather than as
+          // a refusal they discover at the bottom of the page.
+          if (_isPracticeGate) ...[
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(
+                  'Before you can practise, record each of your words '
+                  '${VocalEnrollment.minTakesForPractice} times in your own '
+                  'voice. Practice scores you the way a duel does — against '
+                  'your recordings — so without them it would mark you wrong '
+                  'for words you said perfectly well.',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
           const Text(
             'These are the words you speak to cast. Choose words you '
             'associate with each element — words you picked are far easier to '
@@ -304,6 +443,17 @@ class _VocabularyScreenState extends State<VocabularyScreen> {
             'An opponent who learns your words can read your spells as you '
             'cast them. Changing your words costs nothing, so change them '
             'whenever someone has your measure.',
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Attune each word about '
+            '${VocalEnrollment.suggestedTakes} times, and roughly the same '
+            'number for every word — a word you have attuned far more than '
+            'its neighbours starts winning ties it should lose. There is no '
+            'upper limit: keep going as long as you like, and your oldest '
+            'attunement quietly retires to make room, so what you are scored '
+            'against is always how you speak now.',
+            style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 20),
           _sectionHeader('Opener — spoken first, every cast'),
@@ -323,19 +473,24 @@ class _VocabularyScreenState extends State<VocabularyScreen> {
               ),
             ),
           FilledButton(
-            onPressed:
-                (_busy || _changed.isEmpty || blocking != null) ? null : _commit,
+            // In gate mode the button is "get me to the drill", so an
+            // unblocked gate enables it even with nothing to save.
+            onPressed: (_busy ||
+                    blocking != null ||
+                    !(_hasPendingWork || _isPracticeGate))
+                ? null
+                : _commit,
             child: Text(
-              _changed.isEmpty ? 'No changes' : 'Save vocabulary',
+              _isPracticeGate
+                  ? 'Save and proceed to practice'
+                  : (_hasPendingWork ? 'Save vocabulary' : 'No changes'),
             ),
           ),
           if (_status != null) ...[
             const SizedBox(height: 12),
             Text(_status!, style: Theme.of(context).textTheme.bodySmall),
           ],
-        ],
-      ),
-    );
+        ]);
   }
 
   Widget _sectionHeader(String text) => Padding(
@@ -353,9 +508,18 @@ class _VocabularyScreenState extends State<VocabularyScreen> {
       };
 
   Widget _slotRow(VocalSlot slot) {
-    final changed = _changed.contains(slot);
     final needsTake = _awaitingTakes.contains(slot);
-    final takes = _stagedTakes[slot] ?? 0;
+    final effective = _effectiveTakes(slot);
+    // Every row states where it stands against the SUGGESTION, not just the
+    // rows in flight: a count only guides a player if it's visible before they
+    // have a reason to look. Under the suggestion it reads as progress
+    // ("2 of 4"); at or above it, just the count — there is no ceiling to show
+    // progress toward.
+    final helper = needsTake
+        ? 'Hold to attune'
+        : effective < VocalEnrollment.suggestedTakes
+            ? '$effective of ${VocalEnrollment.suggestedTakes} attunements'
+            : '$effective attunements';
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
@@ -368,9 +532,7 @@ class _VocabularyScreenState extends State<VocabularyScreen> {
               decoration: InputDecoration(
                 isDense: true,
                 border: const OutlineInputBorder(),
-                helperText: needsTake
-                    ? 'Hold to record'
-                    : (changed ? '$takes recorded' : null),
+                helperText: helper,
               ),
               onChanged: (value) => setState(() {
                 _draft[slot] = value;
@@ -383,7 +545,10 @@ class _VocabularyScreenState extends State<VocabularyScreen> {
           ),
           const SizedBox(width: 8),
           HoldToRecordButton(
-            label: takes > 0 ? 'Again' : 'Record',
+            // "Again" only once THIS edit has staged a take — the button
+            // labels what the next hold does to the staging set, not what the
+            // slot holds on disk.
+            label: (_stagedTakes[slot] ?? 0) > 0 ? 'Again' : 'Attune',
             icon: Icons.mic,
             enabled: !_busy &&
                 (_recording == null || _recording == slot) &&

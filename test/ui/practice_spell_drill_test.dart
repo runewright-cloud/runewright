@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// practice_spell_drill_test.dart — widget tests for PracticeScreen's
-// spell-drill mode (the library's "Practice Incantation" destination).
+// practice_spell_drill_test.dart — widget tests for PracticeScreen, which is
+// now only ever a spell drill (the library's "Practice Incantation" is its one
+// entry point).
 //
-// Covers the three things that make a drill a *recall* exercise rather than a
-// reading one: the spell's own incantation is loaded (not a random formula),
-// the formula-count chips are gone (length is a property of the spell), and
-// the words start concealed until the player asks to see them.
+// Covers the things that make a drill a *recall* exercise rather than a
+// reading one: the spell's own incantation is loaded, there is no way to ask
+// for a different formula, and the words start concealed until the player asks
+// to see them. Also pins the surfaces that moved out — voice enrollment now
+// lives on Attune Spell Components, as does gesture enrollment.
 //
 // Scoring itself is not exercised here — that needs a mic and lives in
 // test/practice/real_template_e2e_test.dart.
@@ -41,10 +43,6 @@ SpellAsset _spell({
       formula: formula,
     );
 
-// The enrollment card at the top of the Vocal tab lists every word name too,
-// so a bare find.text('ignis') would match it. Scope word assertions to the
-// formula's chips.
-//
 // Revealed and concealed chips are both plain Chips now — revealed words used
 // to be tappable InputChips that played a model clip, and that clip retired
 // with pronunciation scoring (VOCAL_RECALL_PLAN.md §8.9). The two are told
@@ -80,8 +78,7 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  // The drill controls sit below the enrollment, strictness and calibration
-  // cards, so at the default 800x600 test surface they start off-screen —
+  // Some drill controls still fall below the default 800x600 test surface —
   // tapping without scrolling first dispatches the pointer at coordinates
   // outside the viewport and silently hits nothing.
   //
@@ -103,12 +100,22 @@ void main() {
     expect(find.text('Practice — Ember Wake'), findsOneWidget);
   });
 
-  testWidgets('hides the formula-count chips in drill mode', (tester) async {
+  testWidgets('offers no way to ask for a different formula', (tester) async {
     await pumpDrill(tester, _spell());
+    // Length is a property of the spell, not a setting, and there is no random
+    // formula to generate any more — the screen drills this spell or nothing.
     expect(find.text('Formulas: '), findsNothing);
-    // "New Formula" would imply a different spell; drill mode re-runs this one.
     expect(find.text('New Formula'), findsNothing);
     expect(find.text('Start Over'), findsOneWidget);
+  });
+
+  testWidgets('no longer carries enrollment or calibration', (tester) async {
+    await pumpDrill(tester, _spell());
+    // Recording takes moved to Attune Spell Components
+    // (vocabulary_screen.dart) so a word and its audio are chosen and staged
+    // together; gesture enrollment moved to that page's Somatic tab.
+    expect(find.textContaining('Voice enrollment:'), findsNothing);
+    expect(find.text('Calibration capture (dev)'), findsNothing);
   });
 
   testWidgets('conceals the words until revealed', (tester) async {
@@ -162,18 +169,5 @@ void main() {
     );
     // One opener + the one complete triplet; the 2 residuals are dropped.
     expect(find.text('? ? ?'), findsNWidgets(4));
-  });
-
-  testWidgets('main-menu mode keeps the random-formula controls',
-      (tester) async {
-    await tester.pumpWidget(const MaterialApp(home: PracticeScreen()));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Practice'), findsOneWidget);
-    expect(find.text('Formulas: '), findsOneWidget);
-    expect(find.text('New Formula'), findsOneWidget);
-    expect(find.text('Start Over'), findsNothing);
-    // No formula is loaded until the player presses New Formula.
-    expect(find.text('? ? ?'), findsNothing);
   });
 }

@@ -44,7 +44,7 @@ WizardAvatar _bareAvatar(String id, HexCoord pos) => WizardAvatar(
       maxMana: 100,
       position: pos,
       teamId: id,
-      baseSpellRange: 3,
+      baseSpellRange: 6,
     );
 
 BattleState _bareState(List<WizardAvatar> avatars, {int radius = 6}) {
@@ -145,7 +145,7 @@ int _fullPrice(SpellAsset spell) {
     maxMana: 9999,
     position: lp,
     teamId: 'solo',
-    baseSpellRange: 3,
+    baseSpellRange: 6,
   );
   final dummy = WizardAvatar(
     playerId: dummyId,
@@ -155,7 +155,7 @@ int _fullPrice(SpellAsset spell) {
     maxMana: 9999,
     position: dp,
     teamId: 'foe',
-    baseSpellRange: 3,
+    baseSpellRange: 6,
   );
 
   final state = BattleState(

@@ -80,14 +80,31 @@ class WildMagic {
   ///      invariant 11 holds by construction rather than by a padding rule.
   ///      `wild_magic_test.dart`'s preimage-independence test is the guard
   ///      against a future edit quietly reading them back in.
-  static String seedHex(VerifiedSpellOutputs outputs, String communitySeed) {
-    final commitment = _hexToBytes(outputs.commitmentHex);
+  static String seedHex(VerifiedSpellOutputs outputs, String communitySeed) =>
+      seedHexFromParts(
+        commitmentHex: outputs.commitmentHex,
+        t: outputs.t,
+        communitySeed: communitySeed,
+      );
+
+  /// [seedHex]'s body, over the two values it actually reads. Split out so the
+  /// library's display-only preview ([wildMagicPreviewFor]) can hash a stored
+  /// `SpellAsset` without inventing a second SHA-256 preimage — the whole
+  /// point of §10 invariant 2 is that this function is the ONLY place the
+  /// preimage layout is written down. Consensus code calls [seedHex]; nothing
+  /// on the consensus path should be reaching for this overload.
+  static String seedHexFromParts({
+    required String commitmentHex,
+    required int t,
+    required String communitySeed,
+  }) {
+    final commitment = _hexToBytes(commitmentHex);
     assert(commitment.length == 32, 'commitment must be a 32-byte Field');
     final seed = utf8.encode(normalizeCommunitySeed(communitySeed));
 
     final preimage = Uint8List(commitment.length + 1 + seed.length)
       ..setRange(0, commitment.length, commitment)
-      ..[commitment.length] = outputs.t & 0xFF;
+      ..[commitment.length] = t & 0xFF;
     preimage.setRange(commitment.length + 1, preimage.length, seed);
 
     return _toHex(sha256.convert(preimage).bytes);
@@ -212,11 +229,39 @@ class WildMagic {
     VerifiedSpellOutputs outputs,
     List<ParsedFormula> certifiedFormulas,
     String communitySeed,
-  ) {
-    final eligible = eligibleElements(certifiedFormulas);
+  ) =>
+      triggersFromParts(
+        commitmentHex: outputs.commitmentHex,
+        t: outputs.t,
+        formulas: certifiedFormulas,
+        communitySeed: communitySeed,
+      );
+
+  /// [triggersFor]'s body, over the values it actually reads.
+  ///
+  /// **This is not a licence to derive wild magic from untrusted data.** §4.6 /
+  /// §10 invariant 6 still stands: anything that can change the battle state
+  /// must go through [triggersFor] with certified proof outputs. This overload
+  /// exists for the library card's *display-only* preview
+  /// ([wildMagicPreviewFor]), which reads a locally-stored `SpellAsset` and
+  /// paints a label — so that the preview and the real thing can never
+  /// disagree about the rules, only about where their inputs came from.
+  static List<WildMagicTrigger> triggersFromParts({
+    required String commitmentHex,
+    required int t,
+    required List<ParsedFormula> formulas,
+    required String communitySeed,
+  }) {
+    final eligible = eligibleElements(formulas);
     if (eligible.isEmpty) return const [];
 
-    final rows = scan(seedHex(outputs, communitySeed));
+    final rows = scan(
+      seedHexFromParts(
+        commitmentHex: commitmentHex,
+        t: t,
+        communitySeed: communitySeed,
+      ),
+    );
     if (rows.isEmpty) return const [];
 
     return [

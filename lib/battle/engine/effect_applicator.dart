@@ -33,6 +33,7 @@ import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/battle/models/barrier.dart';
 import 'package:rune_duel/battle/models/battle_state.dart';
 import 'package:rune_duel/battle/models/effect_descriptor.dart'; // also exports SpellAffinity
+import 'package:rune_duel/battle/models/effect_kind.dart' show EffectKind;
 import 'package:rune_duel/battle/models/hex_battlefield.dart' show hexDistance;
 import 'package:rune_duel/battle/models/illusion.dart';
 import 'package:rune_duel/battle/models/minion.dart';
@@ -43,6 +44,8 @@ import 'package:rune_duel/battle/models/status_effect_ids.dart';
 import 'package:rune_duel/battle/models/terrain.dart';
 import 'package:rune_duel/battle/models/wizard_avatar.dart';
 import 'draw_schedule.dart';
+import 'line_of_sight.dart';
+import 'terrain_ops.dart';
 import 'tile_entry_resolver.dart';
 
 // ── Apply context ─────────────────────────────────────────────────────────────
@@ -159,7 +162,75 @@ class EffectApplicator {
     _dispatch(ctx, effect);
   }
 
-  static void _dispatch(ApplyContext ctx, SpellEffect effect) => switch (effect) {
+  /// Resolves one effect at one tile, then applies the terrain fallback
+  /// (WALL_LOS_PLAN.md §2.4): an effect that cannot reasonably act on terrain
+  /// deals **1 typed damage** to it instead.
+  ///
+  /// Per effect, not per spell — a spell carrying *reduce move speed* and
+  /// *mana reflection* deals 2 to a wall. The 1 damage carries the effect's
+  /// own affinity and runs the resistance wheel (§3.1), so an Airy
+  /// non-applicable effect deals 2 to an Earth wall.
+  ///
+  /// The fallback is **exclusive**: it fires only when the tile is bare
+  /// terrain, i.e. there is nothing standing on it for the effect to act on
+  /// (§3.6). A Reflections spell aimed at a wizard who happens to be standing
+  /// on a lava tile links the wizard and leaves the lava alone. Damage is the
+  /// exception and is never exclusive — see [_damageTile].
+  ///
+  /// This is a complete rule precisely because **every** effect in this game
+  /// resolves against whoever occupies the tile it lands on — there is no
+  /// effect that reaches the caster regardless of where the spell was aimed.
+  /// Keep it that way: a new effect that buffs `ctx.caster` directly would
+  /// slip past the fallback and quietly stop paying the §2.5 cost that makes
+  /// a blocked self-buff hurt.
+  ///
+  /// [_bareTerrainAt] is read BEFORE dispatch: an effect that places or
+  /// destroys terrain would otherwise change the answer under us.
+  static void _dispatch(ApplyContext ctx, SpellEffect effect) {
+    final bare = _bareTerrainAt(ctx);
+    _resolve(ctx, effect);
+    if (bare != null && !_appliesToTerrain(ctx.descriptor)) {
+      damageTerrain(ctx.state, bare, 1, ctx.descriptor.affinity, ctx.rng);
+    }
+  }
+
+  /// The (kind × affinity) flavors that genuinely act on a terrain tile
+  /// (WALL_LOS_PLAN.md §6 — 18 of 64). Everything else falls back to damage.
+  ///
+  /// Damage erodes it, Barrier imbues it, Terrain Sculpting repairs or paves
+  /// it, and a Cloud hangs above it. Illusions splits: Earth copies the
+  /// terrain to its neighbors and Air converts it to a 1 HP illusion, while
+  /// Fire (copy a minion) and Water (wizard decoys) have no terrain reading.
+  ///
+  /// Audit this alongside the table in the plan whenever a new effect kind or
+  /// flavor lands.
+  static bool _appliesToTerrain(EffectDescriptor d) => switch (d.effectKind) {
+        EffectKind.damage ||
+        EffectKind.barrier ||
+        EffectKind.tileModification ||
+        EffectKind.clouds =>
+          true,
+        EffectKind.illusions =>
+          d.affinity == SpellAffinity.earth || d.affinity == SpellAffinity.air,
+        _ => false,
+      };
+
+  /// [ctx.targetTile] when it carries destructible terrain and **nothing is
+  /// standing on it**; null otherwise.
+  ///
+  /// Both paths that reach terrain produce this: a blocker with no occupant
+  /// (LOS retargeting, §2.1) and a deliberately-targeted bare terrain tile
+  /// (§2.3). A tile with no terrain and no entity yields null and the effect
+  /// simply does nothing, as today — the fallback needs something to damage.
+  static HexCoord? _bareTerrainAt(ApplyContext ctx) {
+    final hex = ctx.targetTile;
+    if (!tileIsDestructibleTerrain(ctx.state.tileEffects[hex])) return null;
+    if (_avatarsAt(ctx.state, hex).isNotEmpty) return null;
+    if (_minionsAt(ctx.state, hex).isNotEmpty) return null;
+    return hex;
+  }
+
+  static void _resolve(ApplyContext ctx, SpellEffect effect) => switch (effect) {
         DamageEffect e => _applyDamage(ctx, e),
         BarrierEffect e => _applyBarrier(ctx, e),
         ReflectionEffect e => _applyReflections(ctx, e),
@@ -286,35 +357,31 @@ class EffectApplicator {
     }
     switch (e.kind) {
       case DamageKind.direct:
-        for (final av in _avatarsAt(ctx.state, ctx.targetTile)) {
-          _hitAvatar(av, e.amount, ctx);
-        }
-        for (final m in _minionsAt(ctx.state, ctx.targetTile)) {
-          _hitMinion(ctx, m, e.amount);
-        }
-        _destroyIllusionTerrainIfPresent(ctx, ctx.targetTile);
+        _damageTile(ctx, ctx.targetTile, e.amount);
 
       case DamageKind.traversal:
-        // Walk path from caster to target; stop at ImpassableTile.
-        final path = _hexLinePath(ctx.caster.position, ctx.targetTile);
-        for (final hex in path) {
-          if (ctx.state.tileEffects[hex] is ImpassableTile) break;
-          for (final av in _avatarsAt(ctx.state, hex)) {
-            _hitAvatar(av, e.amount, ctx);
+        // Walk the path from caster to target. A wall STOPS the blast: it
+        // takes the hit and nothing behind it does.
+        //
+        // This used to `break` out of the loop and then hit the final target
+        // unconditionally anyway — the wall suppressed the incidental en-route
+        // damage (Earthen Blast's whole upside) while the primary damage
+        // landed regardless, which is strictly worse than having no check at
+        // all (WALL_LOS_PLAN.md §1). TurnLoop._applySpell now retargets a
+        // blocked cast onto the blocker before this runs, so in the normal
+        // flow the wall IS ctx.targetTile and the path is clear; the guard
+        // below still matters for the paths that don't retarget (Rod of Wind
+        // per-tile spread, delayed casts).
+        var blocked = false;
+        for (final hex in hexLinePath(ctx.caster.position, ctx.targetTile)) {
+          if (ctx.state.tileEffects[hex] is ImpassableTile) {
+            _damageTile(ctx, hex, e.amount);
+            blocked = true;
+            break;
           }
-          for (final m in _minionsAt(ctx.state, hex)) {
-            _hitMinion(ctx, m, e.amount);
-          }
-          _destroyIllusionTerrainIfPresent(ctx, hex);
+          _damageTile(ctx, hex, e.amount);
         }
-        // Hit the final target (not already walked).
-        for (final av in _avatarsAt(ctx.state, ctx.targetTile)) {
-          _hitAvatar(av, e.amount, ctx);
-        }
-        for (final m in _minionsAt(ctx.state, ctx.targetTile)) {
-          _hitMinion(ctx, m, e.amount);
-        }
-        _destroyIllusionTerrainIfPresent(ctx, ctx.targetTile);
+        if (!blocked) _damageTile(ctx, ctx.targetTile, e.amount);
 
       case DamageKind.splash:
         final inRadius = _entitiesInRadius(ctx.state, ctx.targetTile, e.splashRadius);
@@ -324,51 +391,99 @@ class EffectApplicator {
         for (final m in inRadius.$2) {
           _hitMinion(ctx, m, e.amount);
         }
-        for (final hex in ctx.state.illusionTerrainTiles.keys.toList()) {
-          if (hexDistance(hex, ctx.targetTile) <= e.splashRadius) {
-            _destroyIllusionTerrainIfPresent(ctx, hex);
-          }
+        for (final hex in _terrainTilesInRadius(
+            ctx.state, ctx.targetTile, e.splashRadius)) {
+          damageTerrain(ctx.state, hex, e.amount, ctx.descriptor.affinity, ctx.rng);
         }
 
       case DamageKind.knockback:
-        for (final av in _avatarsAt(ctx.state, ctx.targetTile)) {
-          _hitAvatar(av, e.amount, ctx);
-          _knockback(av, ctx);
-        }
-        for (final m in _minionsAt(ctx.state, ctx.targetTile)) {
-          _hitMinion(ctx, m, e.amount);
-          _knockbackMinion(m, ctx);
-        }
-        _destroyIllusionTerrainIfPresent(ctx, ctx.targetTile);
+        // Knockback on terrain is meaningless, so the Airy flavor's push is
+        // simply dropped there — and deliberately NOT converted into a second
+        // point of fallback damage, because the damage half already landed
+        // (§3.5).
+        _damageTile(ctx, ctx.targetTile, e.amount, knockback: true);
     }
   }
 
-  /// Water-Air Illusions (Earth flavor): terrain copies have 1 HP -- any
-  /// damage that touches their tile destroys the copy (and its tileEffect).
-  static void _destroyIllusionTerrainIfPresent(ApplyContext ctx, HexCoord hex) {
-    if (ctx.state.illusionTerrainTiles.remove(hex) != null) {
-      ctx.state.tileEffects.remove(hex);
+  /// Deals [amount] of this effect's typed damage to everything on [hex] —
+  /// avatars, minions, AND terrain.
+  ///
+  /// Damage is the one effect that is never exclusive: it hits every recipient
+  /// present, the way illusory terrain already died alongside entity damage
+  /// (§3.6's corollary). Only the *non-damage* 1-point fallback is exclusive.
+  ///
+  /// Returns whether it found anything at all to damage.
+  static bool _damageTile(ApplyContext ctx, HexCoord hex, int amount,
+      {bool knockback = false}) {
+    var hit = false;
+    for (final av in _avatarsAt(ctx.state, hex)) {
+      _hitAvatar(av, amount, ctx);
+      if (knockback) _knockback(av, ctx);
+      hit = true;
     }
+    for (final m in _minionsAt(ctx.state, hex)) {
+      _hitMinion(ctx, m, amount);
+      if (knockback) _knockbackMinion(m, ctx);
+      hit = true;
+    }
+    final terrain =
+        damageTerrain(ctx.state, hex, amount, ctx.descriptor.affinity, ctx.rng);
+    return hit || terrain.hitSomething;
+  }
+
+  /// Coords carrying terrain within [radius] of [center], in (q, r) order.
+  /// Sorted because damaging one tile can knock entities around (an Airy
+  /// terrain barrier's collapse), so the order is observable and both peers
+  /// must walk it identically.
+  static List<HexCoord> _terrainTilesInRadius(
+      BattleState state, HexCoord center, int radius) {
+    final tiles = state.tileEffects.keys
+        .where((h) => hexDistance(h, center) <= radius)
+        .toList()
+      ..sort((a, b) {
+        final qc = a.q.compareTo(b.q);
+        return qc != 0 ? qc : a.r.compareTo(b.r);
+      });
+    return tiles;
   }
 
   // ── Barrier (Earth-Earth) ─────────────────────────────────────────────────
 
   static void _applyBarrier(ApplyContext ctx, BarrierEffect e) {
     final affinity = ctx.descriptor.affinity;
+    BarrierState build() => BarrierState(
+          element: affinity,
+          hp: e.hp,
+          maxHp: e.hp,
+          remainingTurns: e.durationTurns,
+          fireAura: e.fireAura,
+          manaRegenBonusPct: e.manaRegenBonusPct,
+          freeMoveOnCollapse: e.freeMoveOnCollapse,
+        );
+
     // Lands on whoever occupies the target tile -- self-target your own
     // tile to armor yourself; an ally's tile to armor them instead.
+    var found = false;
     for (final av in _avatarsAt(ctx.state, ctx.targetTile)) {
       if (_prepareForHit(av, ctx) == null) continue; // redirected onto an illusion decoy
-      av.barriers[affinity] = BarrierState(
-        element: affinity,
-        hp: e.hp,
-        maxHp: e.hp,
-        remainingTurns: e.durationTurns,
-        fireAura: e.fireAura,
-        manaRegenBonusPct: e.manaRegenBonusPct,
-        freeMoveOnCollapse: e.freeMoveOnCollapse,
-      );
+      av.barriers[affinity] = build();
+      found = true;
     }
+    // A Big creature is a full entity with its own barriers map, so a spell
+    // that resolves on one uses the normal entity path (§3.9).
+    for (final m in _minionsAt(ctx.state, ctx.targetTile)) {
+      m.barriers[affinity] = build();
+      found = true;
+    }
+    if (found) return;
+
+    // Nobody there: imbue the terrain instead (§2.3). Deliberate as well as
+    // forced — Barrier is the one self-targeting effect that reads the target
+    // tile's terrain, which is what makes the Watery flavor's mana-regen rider
+    // live: an ImpassableTile can never be occupied, but lava, slow, and
+    // conveyor tiles can. Adds the terrain HP on top of the tile's own pool,
+    // exactly like body armor on a creature.
+    addTerrainBarrier(ctx.state, ctx.targetTile, build());
   }
 
   // ── Reflections (Water-Water) ─────────────────────────────────────────────
@@ -415,20 +530,15 @@ class EffectApplicator {
       }
       return;
     }
-    // Speed delta always affects whoever occupies the target tile (both
-    // Earth's debuff and Air's buff already set affectsTarget: true in
-    // effect_resolver.dart); [ctx.caster] is unreachable dead-code fallback
-    // kept only because SpeedManipulationEffect's affectsTarget field is a
-    // general mechanism, not because any current flavor uses it.
-    final targets = e.affectsTarget
-        ? _avatarsAt(ctx.state, ctx.targetTile)
-        : [ctx.caster];
+    // Speed delta lands on whoever occupies the target tile — Earth's debuff
+    // and Air's buff alike. [e.affectsTarget] is no longer consulted: an
+    // effect only ever reaches a wizard standing on the tile it resolves on.
     final typeId = e.speedDelta > 0 ? StatusEffectId.speedUp : StatusEffectId.speedDown;
-    for (final av in targets) {
+    for (final av in _avatarsAt(ctx.state, ctx.targetTile)) {
       final half = _prepareForHit(av, ctx);
       if (half == null) continue; // redirected onto an illusion decoy
       final dur = _dur(e.durationTurns, half);
-      _addStatusWithDuration(av, typeId, {'speedDelta': e.speedDelta}, dur);
+      _addStatusWithDuration(av, typeId, {'speedDelta': e.speedDelta}, dur, ctx);
     }
   }
 
@@ -560,7 +670,23 @@ class EffectApplicator {
       final dir = ctx.chosenConveyorDirection ?? _randomDirection(ctx.rng);
       effect = effect.withDirection(dir);
     }
-    ctx.state.tileEffects[ctx.targetTile] = effect;
+    // Sculpting the SAME kind of terrain that is already here repairs it to
+    // full instead of being a pure no-op the caster just paid mana for
+    // (WALL_LOS_PLAN.md §3.2). That gives every flavor a maintenance use on
+    // its own terrain — and gives a terrain-spam build a real cost to defend,
+    // since repairing burns a whole effect slot. A conveyor counts as matching
+    // regardless of direction; re-sculpting it also re-aims it.
+    final existing = ctx.state.tileEffects[ctx.targetTile];
+    if (existing != null &&
+        existing.runtimeType == effect.runtimeType &&
+        !ctx.state.illusionTerrainTiles.containsKey(ctx.targetTile)) {
+      ctx.state.tileEffects[ctx.targetTile] = effect;
+      ctx.state.terrainHp[ctx.targetTile] = terrainMaxHpOf(effect);
+    } else {
+      // Differing type: replaces the tile outright — new affinity, new full
+      // HP, and the old tile's barriers are lost (§3.4).
+      ctx.state.placeTerrain(ctx.targetTile, effect);
+    }
     if (e.canPlaceSecond) {
       // TODO(ui): second tile placement requires caster to select an adjacent
       //   tile during effect resolution. Stub: no second tile placed.
@@ -599,16 +725,17 @@ class EffectApplicator {
       }
       return;
     }
-    // Range delta: Earth (affectsTarget=true) debuffs target; Air self-buffs.
-    final targets = e.affectsTarget
-        ? _avatarsAt(ctx.state, ctx.targetTile)
-        : [ctx.caster];
+    // Range delta lands on whoever occupies the target tile — Earth's debuff
+    // and Air's buff alike. Airy Inertia used to buff the caster regardless of
+    // where the spell was aimed, which the 2026-07-27 tile-targeting sweep
+    // missed; self-target your own tile to raise your own range.
+    // [e.affectsTarget] is no longer consulted.
     final typeId = e.rangeDelta > 0 ? StatusEffectId.rangeUp : StatusEffectId.rangeDown;
-    for (final av in targets) {
-      final half = e.affectsTarget ? _prepareForHit(av, ctx) : false;
+    for (final av in _avatarsAt(ctx.state, ctx.targetTile)) {
+      final half = _prepareForHit(av, ctx);
       if (half == null) continue; // redirected onto an illusion decoy
       _addStatusWithDuration(av, typeId, {'rangeDelta': e.rangeDelta},
-          _dur(e.durationTurns, half), e.affectsTarget ? null : ctx);
+          _dur(e.durationTurns, half), ctx);
     }
   }
 
@@ -842,11 +969,31 @@ class EffectApplicator {
     } else if (e.wizardDecoyCount > 0) {
       _applyIllusionWizardDecoys(ctx, e.wizardDecoyCount);
     } else if (e.convertToIllusion) {
+      var found = false;
       for (final m in _minionsAt(ctx.state, ctx.targetTile)) {
         m.hp = m.hp.clamp(0, 1);
         m.isIllusion = true;
+        found = true;
       }
+      // Air flavor on terrain: convert the real tile into a 1 HP illusion of
+      // itself (§6). The marking is all it takes — BattleState.terrainHpAt
+      // reads the illusion map first, and any damage at all destroys it.
+      if (!found) _convertTerrainToIllusion(ctx);
     }
+  }
+
+  /// Air flavor, terrain case: turn the real tile on the target hex into a
+  /// 1 HP illusion of itself, owned by the caster (so an enemy Earthen Scrying
+  /// Pool bearer pops it and their own team's doesn't). The tile keeps its
+  /// type and everything that reads type — a converted wall still blocks
+  /// movement and line of sight until someone spends a single point of damage
+  /// on it. Any barriers on it are lost with the real terrain they armored.
+  static void _convertTerrainToIllusion(ApplyContext ctx) {
+    final effect = ctx.state.tileEffects[ctx.targetTile];
+    if (!tileIsDestructibleTerrain(effect)) return;
+    if (ctx.state.illusionTerrainTiles.containsKey(ctx.targetTile)) return;
+    ctx.state.placeTerrain(ctx.targetTile, effect!,
+        illusionOwner: ctx.caster.playerId);
   }
 
   /// Fire flavor: clone the minion on the target tile for the caster at 1 HP,
@@ -905,8 +1052,7 @@ class EffectApplicator {
 
     if (source is! ConveyorTile) {
       for (final (tile, _) in eligible) {
-        ctx.state.tileEffects[tile] = source;
-        ctx.state.illusionTerrainTiles[tile] = ctx.caster.playerId;
+        ctx.state.placeTerrain(tile, source, illusionOwner: ctx.caster.playerId);
       }
       return;
     }
@@ -926,17 +1072,25 @@ class EffectApplicator {
       final dir = (ordered.length > 1 && ringAdjacent)
           ? HexCoord(nextTile.q - tile.q, nextTile.r - tile.r)
           : _randomDirection(ctx.rng);
-      ctx.state.tileEffects[tile] = ConveyorTile(direction: dir);
-      ctx.state.illusionTerrainTiles[tile] = ctx.caster.playerId;
+      ctx.state.placeTerrain(tile, ConveyorTile(direction: dir),
+          illusionOwner: ctx.caster.playerId);
     }
   }
 
-  /// Water flavor: surround the caster with [count] decoys spaced evenly
-  /// among open neighboring tiles. Replaces any decoy set the caster already
-  /// has active. See EffectApplicator._resolveIllusionRedirect for the
-  /// redirect-on-hit mechanic.
+  /// Water flavor: surround the wizard STANDING ON THE TARGET TILE with
+  /// [count] decoys spaced evenly among open neighboring tiles, owned by that
+  /// wizard (the decoys protect whoever they are wrapped around — see
+  /// EffectApplicator._resolveIllusionRedirect). Replaces any decoy set that
+  /// wizard already has active.
+  ///
+  /// Target your own tile to cloak yourself; an ally's tile to cloak them; and
+  /// as with every tile-targeted buff, an opponent who reaches that tile first
+  /// takes it instead. This used to wrap the caster no matter where the spell
+  /// was aimed, which the 2026-07-27 tile-targeting sweep missed.
   static void _applyIllusionWizardDecoys(ApplyContext ctx, int count) {
-    final neighbors = _hexNeighbors(ctx.caster.position)
+    final recipient = _avatarsAt(ctx.state, ctx.targetTile).firstOrNull;
+    if (recipient == null) return;
+    final neighbors = _hexNeighbors(recipient.position)
         .where((n) => ctx.state.battlefield.isInBounds(n) && _isTileOpen(ctx.state, n))
         .toList();
     if (neighbors.isEmpty) return;
@@ -946,9 +1100,9 @@ class EffectApplicator {
       decoys.add(neighbors[i]);
     }
     if (decoys.isEmpty) return;
-    ctx.state.wizardIllusions.removeWhere((s) => s.ownerId == ctx.caster.playerId);
+    ctx.state.wizardIllusions.removeWhere((s) => s.ownerId == recipient.playerId);
     ctx.state.wizardIllusions.add(
-      WizardIllusionSet(ownerId: ctx.caster.playerId, decoyPositions: decoys),
+      WizardIllusionSet(ownerId: recipient.playerId, decoyPositions: decoys),
     );
   }
 
@@ -1008,8 +1162,7 @@ class EffectApplicator {
       for (final entry in state.illusionTerrainTiles.entries.toList()) {
         if (!isHostile(entry.value)) continue;
         if (hexDistance(entry.key, scryer.position) > 1) continue;
-        state.illusionTerrainTiles.remove(entry.key);
-        state.tileEffects.remove(entry.key);
+        state.removeTerrain(entry.key);
       }
     }
   }
@@ -1065,9 +1218,18 @@ class EffectApplicator {
 
   static void _applyDivination(ApplyContext ctx, DivinationEffect e) {
     if (e.revealsCounterCharms) {
+      // Firey Scrying Pool. Lands on whoever occupies the target tile, like
+      // the Earth flavor below and like nearly every effect in this game --
+      // target your own tile to read counter charms yourself. It used to
+      // buff the caster no matter where the spell was aimed, which the
+      // 2026-07-27 tile-targeting sweep missed.
+      //
       // durationTurns=0 → rest-of-match; use 999 as "indefinite" sentinel.
-      _addStatusWithDuration(ctx.caster, StatusEffectId.revealCounterCharms, {},
-          e.durationTurns == 0 ? 999 : e.durationTurns, ctx);
+      for (final av in _avatarsAt(ctx.state, ctx.targetTile)) {
+        if (_prepareForHit(av, ctx) == null) continue; // redirected onto a decoy
+        _addStatusWithDuration(av, StatusEffectId.revealCounterCharms, {},
+            e.durationTurns == 0 ? 999 : e.durationTurns, ctx);
+      }
       return;
     }
     if (e.grantsScryingSight) {
@@ -1395,20 +1557,6 @@ class EffectApplicator {
         .where((m) => m.isAlive && m.distanceTo(center) <= radius)
         .toList();
     return (avs, mns);
-  }
-
-  /// Tiles strictly between [from] and [to] (exclusive of both endpoints).
-  static List<HexCoord> _hexLinePath(HexCoord from, HexCoord to) {
-    final n = hexDistance(from, to);
-    if (n <= 1) return [];
-    final path = <HexCoord>[];
-    for (var i = 1; i < n; i++) {
-      final t = i / n;
-      final q = (from.q * (1 - t) + to.q * t).round();
-      final r = (from.r * (1 - t) + to.r * t).round();
-      path.add(HexCoord(q, r));
-    }
-    return path;
   }
 
   static List<HexCoord> _hexNeighbors(HexCoord h) {

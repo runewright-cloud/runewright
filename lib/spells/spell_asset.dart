@@ -15,6 +15,7 @@ import 'dart:typed_data';
 import 'package:path_provider/path_provider.dart';
 
 import 'spell_art_pack.dart' show kPainterlyPack;
+import 'spell_identity.dart' show behaviouralKinKey, kKinshipMinElements;
 
 /// Where a spell's custom art (lib/spells/spell_art_store.dart) came from.
 /// P1 only ever writes [localImport]. [received]/[synced] are reserved for
@@ -94,8 +95,13 @@ class SpellAsset {
 
   /// `Poseidon2(packed_grid)` — the in-circuit grid commitment, extracted
   /// from the proof's public inputs (field index 3, CIRCUIT_IO.md CIRCUIT_IO 4).
-  /// Spells with the same commitmentHex are "Kin" (same grid, possibly
-  /// different T).
+  /// A GRID identity: one-to-one with the initial state, and still what
+  /// permissions, art sync and book membership key to.
+  ///
+  /// It is no longer what makes two spells "Kin" — see [kinKey]. That moved
+  /// to behaviour in docs/COUNTER_CHARM_KINSHIP_PLAN.md Phase 3, because a
+  /// throwaway dot that dies in generation 1 changes the commitment while
+  /// changing nothing about what the spell does.
   final String commitmentHex;
 
   /// `Poseidon2(commitment, T)` — computed off-circuit via FFI
@@ -168,6 +174,16 @@ class SpellAsset {
   /// use the spell locally, but never the grid itself. False for every
   /// spell this device inscribed or received via a full transfer.
   final bool gridWithheld;
+
+  /// This spell's behavioural kinship key, or null if it is kinship-exempt
+  /// (a trajectory under [kKinshipMinElements]).
+  ///
+  /// Derived, never persisted: it is a pure function of [formula] and
+  /// [manaCost], both of which are already stored, and both of which a peer
+  /// can recompute from certified proof outputs. See spell_identity.dart for
+  /// why this must never be used to authorize anything.
+  String? get kinKey =>
+      behaviouralKinKey(trajectory: formula, baseManaCost: manaCost);
 
   Map<String, dynamic> toJson() => {
         'id': id,

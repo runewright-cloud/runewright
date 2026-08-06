@@ -177,10 +177,19 @@ class SyncArtSession {
 
   /// For each entry in the peer's want-list, looks for a natively-owned
   /// spell of ours sharing that commitment with art to offer (preferring an
-  /// exact generation-count match; otherwise any Kin variant that has art),
-  /// skips it if we have nothing new to offer, and otherwise adds it to the
-  /// outgoing bundle. Sends the bundle once fully built (mirrors
+  /// exact generation-count match; otherwise any same-grid variant that has
+  /// art), skips it if we have nothing new to offer, and otherwise adds it to
+  /// the outgoing bundle. Sends the bundle once fully built (mirrors
   /// TradeSession.exchangeGrantsAndSave's single-send-at-the-end shape).
+  ///
+  /// Matching is by grid commitment — a per-spell identity — and deliberately
+  /// NOT by the behavioural kinship key introduced in
+  /// docs/COUNTER_CHARM_KINSHIP_PLAN.md Phase 3: art belongs to a spell, not
+  /// to a behaviour, and kin-keyed matching would hand out one spell's art
+  /// for a different player's coincidentally-matching one. Moves to
+  /// `spell_identity.dart`'s `uniqueSpellId` in Phase 4, along with
+  /// permissions. (This comment used to say "Kin variant", back when Kin
+  /// meant "same grid".)
   Future<List<SyncArtResultItem>> _fulfillWantlist(
     List<Map<String, dynamic>> theirItems,
     String ourOwnerPubkeyHex,

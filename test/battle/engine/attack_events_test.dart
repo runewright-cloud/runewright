@@ -85,7 +85,7 @@ _Ctx _setup({
     maxMana: 100,
     position: localPos,
     teamId: 'solo',
-    baseSpellRange: 3,
+    baseSpellRange: 6,
   );
   final dummy = WizardAvatar(
     playerId: dummyId,
@@ -95,7 +95,7 @@ _Ctx _setup({
     maxMana: 100,
     position: dummyPos,
     teamId: 'foe',
-    baseSpellRange: 3,
+    baseSpellRange: 6,
   );
 
   final state = BattleState(

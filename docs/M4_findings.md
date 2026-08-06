@@ -4374,3 +4374,467 @@ unrelated, not fixed here.
   `_hexEq(p.granteePubkeyHex, myOwnerHex) && localCommitments.contains(p.commitmentHex)`. The
   second is an exact string match; any case/padding difference silently drops a legitimate
   grant and produces this same forfeit. Not the cause here, not changed, worth normalising.
+
+---
+
+## 2026-08-05 — Wall line of sight, and the traversal-damage bug that hid behind a passing test
+
+Implemented `docs/WALL_LOS_PLAN.md` in full: line of sight, destructible terrain, and the
+per-effect resolution table. Two things are worth writing down.
+
+### The bug: a `break` that stopped the wrong half
+
+`EffectApplicator._applyDamage`'s `DamageKind.traversal` branch (Earthen Blast) looked like
+it respected walls. It walked `_hexLinePath` from caster to target and `break`ed at an
+`ImpassableTile`. Then, outside the loop, it hit the final target unconditionally anyway:
+
+```dart
+for (final hex in path) {
+  if (ctx.state.tileEffects[hex] is ImpassableTile) break;
+  ...hit everything at hex...
+}
+// Hit the final target (not already walked).
+...hit everything at ctx.targetTile...
+```
+
+So the wall suppressed the *incidental en-route damage* — which is Earthen Blast's entire
+upside over the other three Blast flavors — while the *primary* damage landed regardless.
+That is strictly worse than having no check at all: the wall cost the caster their bonus and
+cost the victim nothing. **A partial guard reads as a working feature.**
+
+**How it hid:** the only test touching this area
+(`test/battle/engine/target_tile_effects_test.dart`) asserted that Firey Inertia's
+`penetrating` status chip landed on the right avatar. It never asserted that `penetrating`
+changed an outcome — and it couldn't have, because the thing `penetrating` is supposed to
+bypass had never been built. A test that checks a field was set is not a test of the
+behaviour that field is supposed to cause. `test/battle/engine/line_of_sight_test.dart` now
+pins the behavioural version: *"an Earthen Blast at a target behind a wall damages the wall
+and not the target"*, which fails on the code that shipped.
+
+### The shape of the fix
+
+Retargeting happens **once, in `TurnLoop._applySpell`**, before the formula loop: compute
+`losBlockerTile(state, actor.position, targetHex)` and dispatch every formula at the blocker
+instead of the declared target. That is the authoritative path both peers run. The traversal
+branch keeps its own wall guard for the paths that don't retarget (Rod of Wind's per-tile
+spread, delayed casts) — but now the wall *takes* the hit and the trailing final-target hit
+only runs when the path was clear.
+
+Three things that cost time and are worth remembering:
+
+1. **`_hexLinePath` had to be lifted before anything else could use it.** Three subsystems
+   need the same line walk (cast resolution, ranged summon attacks, the battle_screen
+   targeting mirror), and a second copy would have been a desync waiting to happen. It is now
+   `hexLinePath` in `lib/battle/engine/line_of_sight.dart`, and `losBlockerTile` is the only
+   place that decides what blocks.
+2. **Chasms are the recurring trap.** `terrain.dart`'s `ChasmTile` comment asks every new
+   `ImpassableTile` consumer to decide about chasms explicitly. The LOS predicate is such a
+   consumer and the answer is *no* — which is exactly why it tests `is ImpassableTile`
+   directly rather than calling `tileBlocksMovement()`. Anything that calls the movement
+   predicate for a targeting question will silently make chasms block spells.
+3. **Terrain HP is a side-map, and destruction must clear all of them.** `terrainHp` and
+   `terrainBarriers` live on `BattleState` next to `expiringTiles`, not on `TileEffect`
+   (which is deliberately immutable). `placeTerrain` / `removeTerrain` are the only sanctioned
+   mutators precisely because a bare `tileEffects.remove(hex)` leaves ghost HP and ghost
+   barriers that the *next* tile on that coord inherits. Both maps are in
+   `toCanonicalBytes()`, outer sorted by (q, r) and the barrier map's inner sorted by
+   `SpellAffinity.index` — an unsorted inner map is the classic mismatch that only surfaces
+   on a two-device run.
+
+### Coverage
+
+1310 tests green (48 new across `line_of_sight_test.dart` and `terrain_hp_test.dart`). The
+pre-existing `test/ui/about_screen_test.dart` README-phrase failure is unchanged and unrelated.
+
+### Still open
+
+- **No two-device run yet.** Terrain HP changes mid-turn, so it crosses the state-hash
+  exchange point within the turn it changes — the same hazard `WILD_MAGIC_PLAN.md` A6 called
+  out. Per the verification hierarchy this is not done until a real two-device duel breaks a
+  wall on both sides and agrees on the hash.
+- **No on-screen pass** of the new UI: terrain HP pips, terrain barrier arcs, and the
+  vermilion "your spell lands *here*" highlight on the blocker. `flutter run -d linux` is the
+  cheap target for that.
+- ~~**Summons are deliberately not LOS-gated.**~~ *Resolved same day — see below.*
+
+### Follow-up, same day: three effects still buffed the caster regardless of aim
+
+Soren caught this reviewing the fallback rule. Three flavors ignored their target tile
+entirely and buffed `ctx.caster`:
+
+- **Airy Inertia** (Earth-Air, Air) — `rangeUp` on the caster
+- **Firey Scrying Pool** (Air-Water, Fire) — `revealCounterCharms` on the caster
+- **Watery Illusions** (Water-Air, Water) — decoys placed around `caster.position`
+
+They are leftovers the 2026-07-27 tile-targeting sweep missed (see
+`test/battle/engine/target_tile_effects_test.dart`, which exists for exactly this class of
+bug). **Ruling: every effect only reaches a wizard standing on the tile it resolves on.** All
+three now read `_avatarsAt(ctx.targetTile)`; the decoy set is owned by, and wrapped around,
+the wizard it lands on rather than the caster.
+
+Two things fell out of the fix, and both are improvements:
+
+1. **The `_onBareTerrain` guards became redundant and are gone.** I had added them so §2.5's
+   "a blocked self-buff is lost" would be real — a caster-directed effect would otherwise
+   always find its recipient and never fall back. With the effects tile-targeted, bare
+   terrain means `_avatarsAt` is empty, nothing lands, and the fallback fires on its own. The
+   rule collapses back to plain *"did the effect find a recipient on this tile?"*, which is
+   what it should have been.
+2. **`affectsTarget` was left dead and has been removed** from `SpeedManipulationEffect`,
+   `RangeModificationEffect`, and `SpellInteractionEffect` (that last one was already dead
+   before this — its slug/quick branches were swept in July and nothing re-read the flag).
+   A field named `affectsTarget` that no longer affects targeting is the same trap
+   `penetrating` was: written by the resolver, read by nobody, and read as documentation by
+   the next person. Eight resolver call sites dropped with it.
+
+**The generalisable lesson:** a self-targeting effect is invisible to any rule keyed on "what
+is on the target tile" — LOS retargeting, the terrain fallback, cloud adjacency, illusion
+redirect. That is now stated as a maintenance note on `_dispatch`. If a new effect needs to
+buff the caster unconditionally, it has to be exempted from those rules deliberately, not by
+accident of how it was written.
+
+### Follow-up: blocked summons land short of the wall
+
+I had left summons LOS-exempt because the plan's §5.2 named formula dispatch only. Soren's
+ruling closes it: **a summon blocked by a wall resolves on the last tile it was in before
+hitting it.**
+
+This is the one case that does *not* resolve on the blocker, and the reason is physical: an
+incantation effect can land on a wall, but a creature needs a tile it can stand on, and a
+wall is precisely the tile nothing can stand in. So `losBlockerTile` moved above the
+`isSummon` branch in `_applySpell`, and the summon branch anchors on
+`tileBeforeBlocker(caster, target, blocker)` — the last hex of the line before the blocker,
+or the caster's own tile when the wall is adjacent to them (`_castSummon`'s existing spawn
+search then steps outward from there, since bodies are exclusive).
+
+`tileBeforeBlocker` lives in `line_of_sight.dart` next to the predicate it pairs with, and
+`battle_screen._blockedLandingHex` branches on `spell.isSummon` so the vermilion
+"lands *here*" highlight keeps agreeing with the engine.
+
+**A test-fixture trap worth recording, because it cost a cycle:** the first version of the
+spawn test used `formula: ['earth','earth','earth','earth']` and asserted the creature
+appeared one hex short of the wall. It appeared at `HexCoord(3, -1)` instead. **EEEE is the
+`Big` ability** (`kSummonAbilityPattern`), so the creature had a 3-tile footprint,
+`_findCreatureSpawnTile` could not fit it against the wall, and it stepped sideways — nothing
+to do with line of sight. Any summon fixture that wants a plain one-tile creature must avoid
+all four 4-length ability patterns (AAAA/FFFF/EEEE/WWWW and the alternating ones). Three
+earths gives 3 maxHp, no abilities, and a stationary creature that stays where it spawned.
+
+---
+
+## M4.9 — Watery Inertia: turbulent range (2026-08-06)
+
+The second of the three unwired effects `WALL_LOS_PLAN.md` §"out of scope" listed alongside
+`penetrating`. Same shape as Firey Inertia before it: `EffectResolver` produced
+`turbulent: true`, `EffectApplicator` attached `StatusEffectId.turbulent` to whoever stood on
+the resolve tile, `battle_screen` drew a "Turbulent" chip — and nothing read any of it.
+`WizardAvatar.hasTurbulent` had zero callers. A status that costs its victim nothing while
+looking like it works is worse than an absent one; that is §9's lesson restated.
+
+### Two rulings, both Soren's (do not re-litigate)
+
+Design v4.0 §303 reads *"Turbulent: next spell fires in intended direction but range
+randomized 1–max, 4[5] turns"*, and the two halves of that sentence disagree.
+
+1. **It persists for the full 4[5] turns; it is NOT consumed by the first cast.** Every spell
+   in the window is randomized. "Next spell" is loose prose, and the sibling flavors
+   (Firey/Earthen/Airy) all persist.
+2. **"max" is the caster's own `effectiveSpellRange`, not the declared distance** — so a roll
+   above the declared distance sails *past* the target. Falling short and overshooting are
+   both real outcomes. A caster with an Airy Inertia stacked on top gets a *wider* spread,
+   not a cancellation.
+
+### Where it lives, and why it isn't in `_applySpell`
+
+`_turbulentTarget` is called from `_resolveActions`, **above** the `SpellCastEvent` emission
+— not inside `_applySpell` where `penetrating` is read. That placement is the whole reason
+the effect is legible in play: the orb visibly flies to where the spell actually went and
+the card reveal blooms there, instead of the orb flying at the declared tile while the
+damage lands somewhere else. `ResolvedSpellEvent.targetHex` carries the rolled hex too.
+
+Three consequences that are easy to get backwards:
+
+- **The cloud-adjacency legality check still reads the DECLARED hex.** The roll is not the
+  player's choice, so it must never be able to make their cast illegal. Same reasoning
+  applies to any future range-legality check.
+- **The line-of-sight walk runs against the rolled hex**, because that is where the spell is
+  physically flying. A short roll can therefore stop a spell in front of a wall that would
+  have blocked it anyway, and an overshoot can put a wall in the way that wasn't.
+- **Wild magic's forced free casts are deliberately exempt** — they reach `_applySpell`
+  directly (`resolveForcedCast`), and a cast the player never aimed has no "intended
+  direction" to be thrown off.
+
+### Determinism
+
+Rolled from commit-reveal entropy, phase-seed tag **0x0B**, with a per-turn `_turbulentNonce`
+so two casts in one turn don't fly the same distance (reset in `runTurn` next to
+`_wildMagicNonce`; the seed already carries the turn number). Design v4.0 §418 names
+"turbulent range" in its jointly-generated-randomness list for exactly this reason — a
+locally-rolled destination desyncs at the next state hash.
+
+Two details worth keeping:
+
+- **An off-board overshoot walks the roll back, it does not re-roll.** Re-rolling would
+  consume a second draw from a stream the other device advances in lockstep.
+- **The not-turbulent path must be side-effect free.** `_turbulentTarget` returns early
+  before touching the nonce, so an ordinary caster cannot perturb the stream.
+
+### Coverage
+
+`test/battle/engine/turbulent_range_test.dart` (10 tests, all behavioural — where damage
+lands, never "is the chip set"): declared-tile fidelity without the status, distance varies
+with it, direction preserved, overshoot, falling short, off-board roll walked back,
+self-target unchanged, still randomizing after the first cast (the persistence ruling), stops
+on expiry, and — the load-bearing one — a line of five wizards where **only the one on the
+rolled tile is hit**.
+
+Plus a lockstep test in `turn_loop_determinism_test.dart`: two independently-driven loops
+must roll the same landing hex. It pins the golden value (`fixedJointEntropy` ‖ turn 1 ‖ 0x0B
+‖ `player_a` ‖ nonce 0 → distance 1, so a cast declared 3 out lands 1 out) because the seed
+preimage is consensus-visible; two devices on builds that hash it differently would desync
+mid-duel. It also asserts the landing is *not* the declared tile, so the test cannot pass
+vacuously if the wiring is ever removed.
+
+### Still open
+
+- **No two-device run.** Same standing gap as the Wall LOS work.
+- **Plain spell range is still UI-gated only.** `effectiveSpellRange` is read by
+  `battle_screen._maxCastRange` and by wild magic's `_randomTileInRange` — `_applySpell`
+  never checks `hexDistance(caster, target) <= effectiveSpellRange`. Cloud adjacency has a
+  trusted-engine twin (`_cloudBoundToAdjacent`) precisely because a UI gate isn't enough for
+  peer casts and the Practice dummy; plain range has no such twin, so a peer's out-of-range
+  cast currently resolves. Not introduced by this change, but adjacent to it and worth
+  closing with the same B-1 reasoning.
+- **`WizardAvatar.hasPenetrating` / `penetrationDamage` are dead.** The engine reads
+  `TurnLoop._penetrationDamageFor` instead, and the two disagree on the default for a missing
+  modifier (1 vs 0). `hasTurbulent` is now live; those two are not. Delete them.
+- **Watery Energy Flows' copy-spell and Firey Scrying Pool's counter-charm reveal** are the
+  remaining two from the same audit, still unwired.
+
+---
+
+## M4.10 — Spell range is enforced by the engine, not the caster's UI (2026-08-06)
+
+Found while wiring turbulent (M4.9), closed the same day at Soren's direction. `_applySpell`
+never checked `hexDistance(caster, target) <= effectiveSpellRange`. The only range gate in
+the game was `battle_screen._maxCastRange`, which decides what a **human player's own client**
+lets them tap — so a modified client could declare a target clean across the field, and the
+Solo Practice dummy (which encodes its cast straight onto the wire and never touches that
+code) was equally unbounded. Same class as B-1's mana costs: the honest client enforces a
+rule the cheating one simply skips.
+
+A quieter consequence: **Earthen Inertia's −1 did nothing to a peer.** `effectiveSpellRange`
+was read by the caster's own UI and by wild magic's `_randomTileInRange`, and by nothing
+else, so laying a rangeDown on an opponent shortened only what their client *offered* them.
+An effect whose entire text is "reduce spell range by 1" was advisory.
+
+### The check, and the two things that make it non-obvious
+
+In `_resolveActions`, folded into the existing fizzle branch beside `ignoredCloudRestriction`
+— an out-of-range cast fails entirely, mana already spent, chain regressed. Deliberately the
+same failure mode as the cloud violation rather than a forfeit: a fizzle fully neutralises
+the exploit (the cheater gains nothing and still pays), and it is safe against a false
+positive in a way a forfeit is not.
+
+1. **It measures from `preMovPos`, not `actor.position`.** Movement resolves in Phase 3,
+   before action resolution, but the player declared their target in Phase 1 from where they
+   stood *then* — which is exactly what the UI gated against. Measuring from the post-move
+   tile would fizzle the legal cast of anyone who walked away from their target afterwards.
+   `preMovPos` is captured at Phase 2 for this class of question and was already threaded
+   into `_resolveActions` for `_endOfTurn`. A delayed (Mystery) fire uses its own
+   `delayedOriginHex`, the tile it was declared from turns ago.
+2. **Walking closer does not launder an illegal declaration** — otherwise the exploit just
+   becomes "declare far, then walk". Both directions are pinned by tests.
+
+### The governing ruling: *valid when the cast was completed*
+
+Soren's ruling, same day, after the first cut shipped with the origin snapshotted but the
+range read live: **targeting is valid so long as it was valid at the time the cast was
+completed.** Both halves of the test are now read as of that one moment, and the asymmetry
+that made the first cut wrong is gone.
+
+- **Same-turn casts:** `preMovRange`, a `playerId → effectiveSpellRange` map captured at
+  Phase 2 beside `preMovPos`. Nothing between the Phase 1 action commit and that line can
+  change a range — statuses tick at end of turn, spell effects do not resolve until Phase 4 —
+  so it is a faithful snapshot of the moment of choosing. Without it, an Earthen Inertia
+  resolving *earlier in the same action phase* clipped a cast that was legal when its caster
+  chose it.
+- **Delayed (Mystery) casts:** `PendingDelayedSpell.declaredRange`, captured alongside
+  `origin` at the declaration turn and carried to the fire through
+  `SpellCastAction.delayedRange`. The Mystery target tile is committed at declaration and
+  never revisited, so judging it against a range acquired while it sat pending would punish
+  the player for the passage of time. Neither field is in `toCanonicalBytes()` (neither is
+  `origin`) and neither crosses the wire: both peers rebuild the record from the same
+  resolution, so they stay in lockstep for free.
+
+**Keeping the pair self-consistent is the whole trick.** `(origin, range)` are captured at the
+same instant and answer one question together: *"could you legally have aimed there, from
+there, with that reach?"* Reading one at declaration and the other at resolution is what
+produced the retroactive clip in the first place. Any future gate on a declared choice should
+be built the same way.
+
+**A note on proving the same-phase test isn't vacuous:** it drives the dummy through
+`SoloBattleSession.dummyCastFormula: ['earth','earth','air']` so an Earthen Inertia lands on
+the caster during the very phase their own max-range cast resolves in. Whether that actually
+exercises the snapshot depends on resolution order, so it was verified by temporarily
+reverting `castRange` to `actor.effectiveSpellRange` and confirming the test fails. **A
+timing test you have not watched fail is a timing test you have not written.**
+
+The cloud check one line above still measures from `actor.position`. That asymmetry is
+pre-existing and left alone deliberately; if it is ever revisited, note that the two
+questions genuinely differ — cloud adjacency is about where the murk is *now*, range is
+about what the player could legally have declared.
+
+### What it cost, and what that tells us
+
+**24 existing tests failed on the first run** — every one a fixture that summoned or blasted
+past its own `baseSpellRange: 3`, across six files. None were testing range; they were
+testing creature AI, chain discounts, attack events, tile exclusivity. The fixtures were
+simply written in a world where range was not a rule.
+
+That is the finding worth keeping: **an unenforced invariant quietly becomes false everywhere,
+including in the tests that are supposed to describe the game.** The fix was to give those
+fixtures the reach their scenarios need (`baseSpellRange: 6`, and a `range:` knob on
+`summon_cast_test`'s `_setup` for the two scenarios that deliberately play out on a radius-8
+and radius-10 board). The real app was never affected: both the Spell Test Lab and Solo
+Practice aim the dummy at `dummyPos + (0, 2)`, two hexes from a range-3 caster.
+
+### Coverage
+
+`test/battle/engine/cast_range_test.dart`, 7 tests: past reach does nothing at all (and emits
+no `ResolvedSpellEvent`), exactly max range still resolves, one hex past is the first failure,
+rangeDown really shortens a cast, rangeUp really lengthens one, walking away does not
+invalidate a legal declaration, walking closer does not legalise an illegal one. They call
+`TurnLoop` directly with the action a cheating client would put on the wire — going through
+the UI gate would prove nothing.
+
+### Still open
+
+- **No two-device run**, same as M4.9.
+- **The UI's pending-cast orb still draws its range ring from the caster's live range**
+  (`_maxCastRange(caster, pending.origin)` in `battle_screen._pendingCastOrbs`), while the
+  engine now judges that same pending spell against `declaredRange`. Cosmetic — the ring is
+  a hint, not a gate — but the two now disagree by one hex whenever a rangeUp/rangeDown lands
+  while a Mystery spell is in flight. Point it at `pending.declaredRange` when the delayed-cast
+  UI is next touched.
+- **The cloud adjacency check one line above still measures from `actor.position`.**
+  Pre-existing, and arguably right — cloud adjacency is about where the murk is *now*, range
+  is about what the player could legally have declared — but the two neighbours reading
+  different positions deserves a comment at minimum, which it now has.
+
+---
+
+## M4.11 — Trajectory counter charms and behavioural kinship (2026-08-06)
+
+`docs/COUNTER_CHARM_KINSHIP_PLAN.md` phases 1–3, built out of order relative to the plan's
+own §7 (which said "not before the playtest"). Soren's call, with a reason that holds: the
+old charm had to be *bound to a spell you already owned*, which meant a playtest would have
+exercised a mechanic nobody could actually use on the day. §0 of the plan records the full
+status, the eight rulings made during the build, and what was deliberately left out. This
+entry is only the things that were surprising.
+
+### The partial counter is where all the risk was, and the fix was to not take it
+
+A charm now cancels a spell **formula by formula** while its trajectory and the spell's stay
+in lockstep. That is a genuinely new engine behaviour: today a countered cast never reaches
+`_applySpell` at all, and that accident is what makes wild-magic invariant A1 ("no wild
+magic on a countered cast") true — for free, with no flag, as the comment at the top of
+`_applySpell` says out loud.
+
+The temptation was to add a `fireWildMagic: false` for countered casts and let everything
+flow through one path. The better answer was to keep **two** paths:
+
+- **full counter** → the old code, unchanged, `_applySpell` never called. A1 still holds
+  for free.
+- **partial counter** → `_applySpell` with `suppressedFormulas: n`. Wild magic fires,
+  because the cast really happened.
+
+`ResolvedSpellEvent.wasCountered` therefore keeps its old meaning ("nothing happened") and
+a new `counteredFormulas` carries "a charm fired". Every existing consumer of
+`wasCountered` — the COUNTERED ribbon, the no-thumbnail rule, the chain regression — stayed
+correct without being touched. Splitting the *event* field was what let the *code* paths
+stay split.
+
+The generalisable bit: **when a new case makes an implicit invariant explicit, check whether
+you can leave the old case on the old code rather than merging both onto a new one.** The
+merge is where the invariant would have been lost.
+
+### Two identities, and the one place it would have been a security bug
+
+Kinship moving from grid to behaviour means "kin" stops being a single value. The plan (§3.3)
+warned about this; it is worth restating because the failure is silent.
+
+`commitmentHex` was answering four questions at once. Two of them want the *many-to-one*
+behavioural key (kin-stacking, heraldic arms). Two want a *one-to-one* per-spell key
+(loan/transfer permissions, art sync). Re-keying permissions to the kin key would have
+extended a grant to any spell that coincidentally does the same thing — including someone
+else's. That is privilege escalation from a one-line "make kinship consistent" refactor.
+
+`lib/spells/spell_identity.dart` names the two apart before anything uses them, and both
+`spell_permission.dart` and `sync_art_session.dart` now carry a comment saying *why* they
+are not moving. They stay on `commitmentHex`, which is a grid identity and still one-to-one,
+so they are sound today; Phase 4 re-keys them to `uniqueSpellId` when deleting the
+commitment forces it. Doing that early would have invalidated every outstanding grant's
+signature (`canonicalMessage` covers `commitmentHex`) two days before a playtest, for no
+security gain.
+
+**The book Merkle root did not move either**, for the same reason: it authenticates which
+card was cast from which hand slot, which needs one-to-one. Only the batch hash and the
+post-match reveal — the duplicate check — moved to salted kin leaves.
+
+### The salted reveal is strictly better than what it replaced, both ways
+
+`exchangeBookReveal` used to send the sorted commitment of **every spell in your book**, so
+an opponent got a stable, cross-match identifier for spells you never cast. Sending raw
+trajectories instead would have been *worse* — a trajectory says what a spell does.
+
+`SHA-256(salt ‖ kinKey)` under a fresh per-match salt fixes both: kin still collide (so
+kin-stacking is still detected), and the opponent learns neither the trajectory nor anything
+that correlates across matches. **The salt is never transmitted and the receiver never needs
+it** — the duplicate check only ever compares entries *within one player's own list*. That
+asymmetry is the whole reason this works without a salt-sharing protocol, and it is the
+thing to remember if anyone is tempted to "fix" the missing exchange.
+
+Kinship-exempt spells (trajectory under 9 elements) contribute a **random** leaf, so they
+can never collide. The exemption made concrete rather than special-cased at the check.
+
+### Phase 1's histogram says the ≥9 exemption is bigger than it looks
+
+`scripts/trajectory_histogram.dart` over the five shipped basics:
+
+```
+under 9 elements: 4 of 5 (80.0%) — freely kin-stackable
+```
+
+Four of the five basics are 3-element pure-element spells. That is a *biased* corpus — they
+are deliberately trivial — so it does not settle open question 1. But it does mean the
+question cannot be waved through: **run the script against a library export from the playtest
+before treating the short-spell exemption as harmless.** The script also reads library
+backup JSON directly for exactly that.
+
+`k` stays 10 for the same reason: five spells is not a distribution.
+
+### Smaller things
+
+- **`targetSpellName` was deleted rather than repurposed** as the plan suggested. A stored
+  display string for a trajectory is pure redundancy, and it is the same shape of bug the
+  old field already had (it went stale when a bound spell was renamed). `charmTrajectoryLabel`
+  derives it.
+- **A charm whose owner cannot pay does not fire and is not consumed.** Part-paying would
+  make §2.4's "full cost every trigger" a soft cost. Consequence worth knowing: a cheap
+  charm can fire in an expensive one's place on a low-mana turn.
+- **Longest match wins** when several charms match, ties breaking by the existing fixed
+  scan order. Pure function of state, so both devices agree — the same discipline the old
+  `_findCounteringCharm` already had, just with a comparison added.
+- **`_decrementArtifact`'s counter-charm special case is gone.** Every charm now gets its
+  own tile (attuned or not), because an unattuned charm needs somewhere visible to be
+  attuned *from* — it can never fire until it is.
+
+### Still open
+
+- **No two-device run.** The charm trajectory is inside `BattleState.toCanonicalBytes()` and
+  decides which formulas resolve, so a divergence here is a desync, not a display bug. Unit
+  tests pin the hash; only hardware proves the wire.
+- **No on-screen pass** of the attune dialog or the partial-counter banner.
+- **Phase 4 is untouched** and unchanged: still VK-breaking, still needs the full positive +
+  negative corpus.

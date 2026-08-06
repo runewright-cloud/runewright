@@ -61,6 +61,8 @@ does a proper BFS so a wall shadows the tiles behind it for AoE/cloud spread.
   and the decision is *no*.
 - `turbulent`, the Firey Scrying Pool counter-charm reveal, and Watery Energy Flows'
   copy-spell — three other unwired effects found in the same audit. Separate work.
+  *(`turbulent` was wired separately on 2026-08-06 — see `M4_findings.md` M4.9. The other
+  two are still open.)*
 - **No `RULESET_VERSION` bump.** That constant governs the CA rules the ZK circuit
   enforces at inscription; battle-engine rules are invisible to the circuit. Bumping it
   would invalidate every inscribed spell for nothing.

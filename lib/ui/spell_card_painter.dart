@@ -7,8 +7,10 @@
 // keyed here to the spell's grid commitment), surrounded by a ring of elemental
 // symbols.
 //
-//   • Central shield  — SigilPainter.paintShield, keyed to commitmentHex, so
-//     "Kin" spells (same grid) share the same arms.
+//   • Central shield  — SigilPainter.paintShield, keyed to the spell's
+//     TRAJECTORY (spell_identity.dart's heraldicArmsKey), so "Kin" spells —
+//     spells that do the same thing — share the same arms. This used to be
+//     keyed to the grid commitment, back when kinship meant "same grid".
 //   • Symbol ring     — one symbol per CA step the spell ran for (spell.t).
 //     Symbols are drawn from the spell's effect affinities: a flame (fire), a
 //     water drop (water), a whirlwind (air), a rock (earth). A spell of a
@@ -20,6 +22,23 @@
 // row, colored where SpellAsset.supremeTags was achieved and dimmed where not
 // — signaling which cast-time enhancement (Potency/Velocity/Efficiency/
 // Mystery) this spell is eligible for. See _DominanceTagsStrip.
+//
+// ── Wild magic ────────────────────────────────────────────────────────────────
+// A spell that carries wild magic (wild_magic_preview.dart) gets two extra
+// treatments, and only such spells get them:
+//
+//   • a foil luster (FoilSheen) over the whole card, at both sizes, so the
+//     wild ones are findable by eye in a library page or a hand tray, and
+//   • a rubric-red WILD MAGIC panel below the rules box naming each effect it
+//     fires, with the symmetric description ("all players") verbatim from
+//     kWildMagicEffectDescription.
+//
+// Wild magic is untelegraphed DURING a duel by design — the resolution reveal
+// is where an opponent learns it fired — but it is a fixed, public property of
+// the rune, and hiding it from the card's owner would just be a memory tax.
+// The panel previews under whichever leyline seed is in force
+// (activeLeylineSeed); see wild_magic_preview.dart on why that is not always
+// the player's own.
 
 import 'dart:async' show Timer;
 import 'dart:math' as math;
@@ -29,9 +48,13 @@ import 'package:flutter/material.dart';
 
 import '../battle/models/creature_spec.dart';
 import '../battle/models/effect_kind.dart';
+import '../battle/models/wild_magic_effect.dart';
 import '../engine/border_zone.dart';
 import '../spells/spell_art_resolver.dart';
+import '../spells/spell_identity.dart';
 import '../spells/spell_asset.dart';
+import '../spells/wild_magic_preview.dart';
+import 'foil_sheen.dart';
 import 'manuscript_theme.dart';
 import 'sigil_painter.dart';
 
@@ -579,8 +602,18 @@ Uint8List _hexToBytes(String hex) {
   return result;
 }
 
+/// The card's default art for [spell].
+///
+/// The shield is keyed to the spell's TRAJECTORY (heraldicArmsKey), not its
+/// grid commitment: kinship became behavioural in
+/// docs/COUNTER_CHARM_KINSHIP_PLAN.md Phase 3, and arms exist so kin are
+/// recognisable on sight — so the arms had to follow the new definition or
+/// stop meaning "kin" at all. A legacy asset with no recorded formula falls
+/// back to its commitment, keeping such cards distinct from one another.
 SpellCardPainter _painterFor(SpellAsset spell) => SpellCardPainter(
-  shieldBytes: _hexToBytes(spell.commitmentHex),
+  shieldBytes: _hexToBytes(
+    heraldicArmsKey(spell.formula, fallbackHex: spell.commitmentHex),
+  ),
   symbols: elementSymbolsFor(spell.formula, spell.t),
 );
 
@@ -633,10 +666,16 @@ const ColorFilter kPhantasmalFilter = ColorFilter.matrix(<double>[
 /// copied creature, which wears the original's art (see Minion
 /// .copiedFromMinionId).
 /// [countered] stamps a "COUNTERED" ribbon across the card and dims/desaturates
-/// it — battle_screen.dart's resolution reveal sets this for a cast a bound
-/// counter charm nullified (TurnLoop.ResolvedSpellEvent.wasCountered).
+/// it — battle_screen.dart's resolution reveal sets this for a cast a counter
+/// charm nullified ENTIRELY (TurnLoop.ResolvedSpellEvent.wasCountered).
 /// [counteredByLabel], shown under the ribbon, names whose charm blocked it
 /// (e.g. "Blocked by your ward" / "Blocked by the opponent's ward").
+///
+/// [partialCounterLabel] is the other half of the trajectory-charm redesign
+/// (docs/COUNTER_CHARM_KINSHIP_PLAN.md §2.3): a charm that matched only a
+/// PREFIX of the cast cancels those formulas and lets the rest resolve. That
+/// card must still read as a spell that happened, so it gets a small banner
+/// rather than the occluding ribbon — the two are mutually exclusive.
 Future<void> showSpellCardFullscreen(
   BuildContext context,
   SpellAsset spell, {
@@ -647,6 +686,7 @@ Future<void> showSpellCardFullscreen(
   Offset? shrinkTo,
   bool countered = false,
   String? counteredByLabel,
+  String? partialCounterLabel,
   bool phantasmal = false,
 }) {
   return showDialog<void>(
@@ -669,13 +709,14 @@ Future<void> showSpellCardFullscreen(
       shrinkTo: shrinkTo,
       countered: countered,
       counteredByLabel: counteredByLabel,
+      partialCounterLabel: countered ? null : partialCounterLabel,
       phantasmal: phantasmal,
     ),
   );
 }
 
 /// Full-screen overlay for a spell card. When the spell has custom art, this
-/// is a two-layer flip: art in front, the commitmentHex-derived coat of arms
+/// is a two-layer flip: art in front, the trajectory-derived coat of arms
 /// behind, reachable by a horizontal swipe. The true emblem must never be
 /// fully hidden (anti-spoof guarantee -- CLAUDE.md custom-art invariant 3),
 /// so the swipe-to-emblem gesture is always live whenever art is set. A tap
@@ -692,6 +733,7 @@ class _FullscreenSpellCard extends StatefulWidget {
     this.shrinkTo,
     this.countered = false,
     this.counteredByLabel,
+    this.partialCounterLabel,
     this.phantasmal = false,
   });
 
@@ -715,6 +757,7 @@ class _FullscreenSpellCard extends StatefulWidget {
   /// See [showSpellCardFullscreen]'s doc comment.
   final bool countered;
   final String? counteredByLabel;
+  final String? partialCounterLabel;
   final bool phantasmal;
 
   @override
@@ -885,18 +928,28 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
                           // overlays: a countered copy still needs its red
                           // ribbon to read as red.
                           _tinted(
-                            AnimatedBuilder(
-                              animation: _flip,
-                              builder: (_, _) => _CardFrame(
-                                spell: widget.spell,
-                                emblemPainter: widget.emblemPainter,
-                                showEmblem: _showEmblem,
-                                prevShowEmblem: _prevShowEmblem,
-                                flipT: _flip.value,
-                                hasArt: _hasArt,
-                                fullArtFuture: _fullArtFuture,
-                                liveHp: widget.liveHp,
-                                liveMaxHp: widget.liveMaxHp,
+                            // Rebuilds on a leyline-seed change so a card left
+                            // open across a settings edit can't keep claiming
+                            // wild magic it no longer has.
+                            ValueListenableBuilder<String>(
+                              valueListenable: activeLeylineSeed,
+                              builder: (_, seed, _) => AnimatedBuilder(
+                                animation: _flip,
+                                builder: (_, _) => _CardFrame(
+                                  spell: widget.spell,
+                                  emblemPainter: widget.emblemPainter,
+                                  showEmblem: _showEmblem,
+                                  prevShowEmblem: _prevShowEmblem,
+                                  flipT: _flip.value,
+                                  hasArt: _hasArt,
+                                  fullArtFuture: _fullArtFuture,
+                                  liveHp: widget.liveHp,
+                                  liveMaxHp: widget.liveMaxHp,
+                                  wildMagic: wildMagicPreviewFor(
+                                    widget.spell,
+                                    seed,
+                                  ),
+                                ),
                               ),
                             ),
                           ),
@@ -905,6 +958,13 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
                               child: _CounteredOverlay(
                                 sublabel: widget.counteredByLabel,
                               ),
+                            ),
+                          if (widget.partialCounterLabel case final label?)
+                            Positioned(
+                              left: 0,
+                              right: 0,
+                              top: 0,
+                              child: _PartialCounterBanner(label: label),
                             ),
                           if (widget.countered)
                             Positioned.fill(
@@ -964,6 +1024,42 @@ final Animatable<double> _kCounteredFlashCurve = TweenSequence<double>([
 /// across it — battle_screen.dart's resolution reveal shows this over a
 /// spell a bound counter charm nullified. [sublabel] (e.g. "Blocked by your
 /// ward") renders under the ribbon when given.
+/// The partial-counter treatment: a charm matched a prefix of this cast and
+/// cancelled those formulas, but the rest resolved.
+///
+/// Deliberately a thin banner rather than [_CounteredOverlay]'s full-card
+/// stamp — the art underneath still has to read, because the spell really did
+/// go off. A player who sees the occluding ribbon should be able to trust it
+/// means "nothing happened".
+class _PartialCounterBanner extends StatelessWidget {
+  const _PartialCounterBanner({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Container(
+        key: const Key('partial-counter-banner'),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+        color: kRubricRed.withValues(alpha: 0.88),
+        alignment: Alignment.center,
+        child: Text(
+          label,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontFamily: 'serif',
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 1.2,
+            color: kParchmentColor,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _CounteredOverlay extends StatelessWidget {
   const _CounteredOverlay({this.sublabel});
 
@@ -1118,10 +1214,16 @@ class _CardFrame extends StatelessWidget {
     required this.fullArtFuture,
     this.liveHp,
     this.liveMaxHp,
+    this.wildMagic = const [],
   });
 
   final SpellAsset spell;
   final SpellCardPainter emblemPainter;
+
+  /// The wild-magic effects this spell fires under the leyline seed currently
+  /// in force, empty for the great majority of spells. Non-empty turns on both
+  /// the foil luster and the [_WildMagicPanel] — see this file's header.
+  final List<WildMagicTrigger> wildMagic;
 
   /// True → the back (coat of arms) is the face this flip is settling on (or
   /// has already settled on, at rest). False → the front (custom art).
@@ -1169,28 +1271,53 @@ class _CardFrame extends StatelessWidget {
 
   /// The gradient border + parchment interior shared by both faces — the
   /// rigid "card" that rotates, regardless of which content it holds.
-  Widget _shell(Widget child) => Container(
-    padding: const EdgeInsets.all(7),
-    decoration: BoxDecoration(
-      gradient: cardFrameGradient(spell),
-      borderRadius: BorderRadius.circular(14),
-      boxShadow: [
-        BoxShadow(
-          color: Colors.black.withValues(alpha: 0.5),
-          blurRadius: 16,
-          offset: const Offset(0, 6),
+  ///
+  /// A wild-magic card additionally gets a gold bloom in its drop shadow and
+  /// the [FoilSheen] laid over everything inside the frame, clipped to the
+  /// same rounded rectangle so the luster stops exactly where the card does.
+  Widget _shell(Widget child) {
+    final foil = wildMagic.isNotEmpty;
+    final card = Container(
+      padding: const EdgeInsets.all(7),
+      decoration: BoxDecoration(
+        gradient: cardFrameGradient(spell),
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.5),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
+          ),
+          if (foil)
+            BoxShadow(
+              color: kIlluminationGold.withValues(alpha: 0.45),
+              blurRadius: 26,
+              spreadRadius: 1,
+            ),
+        ],
+      ),
+      child: Container(
+        decoration: BoxDecoration(
+          color: kParchmentColor,
+          borderRadius: BorderRadius.circular(9),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: child,
+      ),
+    );
+    if (!foil) return card;
+    return Stack(
+      children: [
+        card,
+        Positioned.fill(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(14),
+            child: const FoilSheen(),
+          ),
         ),
       ],
-    ),
-    child: Container(
-      decoration: BoxDecoration(
-        color: kParchmentColor,
-        borderRadius: BorderRadius.circular(9),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: child,
-    ),
-  );
+    );
+  }
 
   Widget _frontContent() => Column(
     children: [
@@ -1199,6 +1326,7 @@ class _CardFrame extends StatelessWidget {
       AspectRatio(aspectRatio: 1, child: _artWindow()),
       _typeLineBar(),
       Expanded(child: _rulesBox()),
+      if (wildMagic.isNotEmpty) _WildMagicPanel(triggers: wildMagic),
     ],
   );
 
@@ -1362,6 +1490,89 @@ class _CardFrame extends StatelessWidget {
   );
 }
 
+/// The card's wild-magic panel: a rubric-red band under the rules box naming
+/// every effect this spell fires, with the effect's own one-line description.
+///
+/// Visually separated from the rules box on purpose. A wild-magic effect is
+/// not one of the spell's effects: it is GLOBAL, SYMMETRIC and ignores tile
+/// targeting entirely (wild_magic_effect.dart), so it hits the caster too.
+/// Printing it in the same list as "Fireball: 3 damage to the target tile"
+/// would invite exactly the misreading the descriptions' "every wizard" voice
+/// is written to prevent.
+///
+/// A balanced spell can fire a whole row at once (up to four effects, one per
+/// element), so the panel is height-capped and scrolls rather than squeezing
+/// the rules box off the card.
+class _WildMagicPanel extends StatelessWidget {
+  const _WildMagicPanel({required this.triggers});
+
+  final List<WildMagicTrigger> triggers;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      decoration: const BoxDecoration(
+        color: kRubricRed,
+        border: Border(top: BorderSide(color: kIlluminationGold, width: 2)),
+      ),
+      padding: const EdgeInsets.fromLTRB(10, 6, 10, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '✦ WILD MAGIC ✦',
+            style: TextStyle(
+              fontFamily: 'serif',
+              fontWeight: FontWeight.w700,
+              fontSize: 11,
+              letterSpacing: 2,
+              color: kIlluminationGold.withValues(alpha: 0.95),
+            ),
+          ),
+          const SizedBox(height: 4),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 96),
+            child: ListView.separated(
+              shrinkWrap: true,
+              padding: EdgeInsets.zero,
+              itemCount: triggers.length,
+              separatorBuilder: (_, _) => const SizedBox(height: 6),
+              itemBuilder: (context, i) => _effectLine(triggers[i]),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _effectLine(WildMagicTrigger trigger) => RichText(
+    text: TextSpan(
+      style: const TextStyle(
+        fontFamily: 'serif',
+        fontSize: 12,
+        height: 1.25,
+        color: kParchmentColor,
+      ),
+      children: [
+        TextSpan(
+          text: kWildMagicEffectLabel[trigger.effect]!,
+          style: const TextStyle(
+            fontWeight: FontWeight.w700,
+            color: kIlluminationGold,
+          ),
+        ),
+        TextSpan(
+          text: ' (${_kSpellAffinityName[trigger.element]}) — ',
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
+        TextSpan(text: kWildMagicEffectDescription[trigger.effect]!),
+      ],
+    ),
+  );
+}
+
 /// The back of a flipped spell card: the true coat of arms (with its own
 /// gold frame + elemental ring, painted by [emblemPainter]), centered on the
 /// same parchment interior [_CardFrame] uses for its front. This is the
@@ -1388,7 +1599,7 @@ class _CardBack extends StatelessWidget {
 
 /// Default card art for a [SpellAsset].
 ///
-/// A heraldic coat of arms (keyed to [SpellAsset.commitmentHex], so Kin spells
+/// A heraldic coat of arms (keyed to the spell's trajectory, so Kin spells
 /// share it) ringed by one elemental symbol per CA step the spell ran for
 /// ([SpellAsset.t]), split across elements by the spell's effect affinities.
 ///
@@ -1449,13 +1660,27 @@ class _SpellCardWidgetState extends State<SpellCardWidget> {
     final art = SizedBox(
       width: widget.size,
       height: widget.size,
-      child: FutureBuilder<Uint8List?>(
-        future: _thumbFuture,
-        builder: (context, snap) {
-          final thumb = snap.data;
-          if (thumb == null) return CustomPaint(painter: painter);
-          return Image.memory(thumb, fit: BoxFit.cover, gaplessPlayback: true);
+      child: ValueListenableBuilder<String>(
+        valueListenable: activeLeylineSeed,
+        builder: (context, seed, child) {
+          if (wildMagicPreviewFor(widget.spell, seed).isEmpty) return child!;
+          // Thumbnails run as small as 36px in the battle hand tray, where the
+          // full-card intensity all but disappears — push it up so the luster
+          // still reads as "this one is wild" at a glance.
+          final boost = widget.size < 64 ? 1.5 : 1.15;
+          return Stack(
+            fit: StackFit.expand,
+            children: [child!, FoilSheen(intensity: boost)],
+          );
         },
+        child: FutureBuilder<Uint8List?>(
+          future: _thumbFuture,
+          builder: (context, snap) {
+            final thumb = snap.data;
+            if (thumb == null) return CustomPaint(painter: painter);
+            return Image.memory(thumb, fit: BoxFit.cover, gaplessPlayback: true);
+          },
+        ),
       ),
     );
     if (!widget.interactive) return art;

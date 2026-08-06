@@ -22,6 +22,7 @@ import 'package:flutter/material.dart';
 
 import '../identity/identity.dart';
 import '../spells/basic_spell_seed.dart';
+import '../spells/wild_magic_preview.dart';
 import 'manuscript_theme.dart';
 import 'menu_screen.dart';
 import 'onboarding/onboarding_landing_screen.dart';
@@ -31,6 +32,10 @@ class AppRoot extends StatelessWidget {
 
   Future<bool> _identityExistsAfterSeeding() async {
     unawaited(seedBasicSpells().catchError((_) => 0));
+    // Primes the leyline seed word every spell card previews its wild magic
+    // under. Same rationale as the seeding above: fire-and-forget, its own
+    // failure already swallowed, never a gate on routing.
+    unawaited(refreshActiveLeylineSeed());
     return Identity.exists();
   }
 

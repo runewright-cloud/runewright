@@ -83,10 +83,47 @@ class GestureEnrollment {
   /// attempt. Placeholder threshold; not yet calibrated against real holds.
   static const int minSamplesPerRep = 15;
 
-  /// Cap on stored reps per gesture/confusable — DTW matching is O(N·M) per
-  /// rep and per candidate, so unbounded accumulation would slow live
-  /// classification. 20 is comfortably above the >=10 the plan asks for to
-  /// measure intra-gesture variance (SOMATIC_GESTURE_PLAN.md §8).
+  /// Attunements per gesture suggested to a player, in-world terminology for
+  /// stored reps. Advisory — nothing refuses a cast below it.
+  ///
+  /// MEASURED, not asserted: `tool/gesture_rep_count_sweep.dart` runs the real
+  /// [GestureClassifier] over the Pixel 6 corpus, leave-one-out, at each
+  /// enrolled-set size. Genuine-accept rate by N:
+  ///
+  ///     N:  1      2      3      4      5      7      9
+  ///     %:  65.5   81.3   85.0   87.0   88.0   89.8   90.0
+  ///
+  /// Two things pick 4. First, the knee: 1→4 buys 21.5 points, 4→9 buys 3.
+  /// Second, and the reason this is a floor rather than a preference, **N=1 is
+  /// the only size that produced a wrong-gesture accept** (0.3%) — one rep has
+  /// no intra-gesture variance behind it, so a stray query can sit closer to
+  /// another gesture than to the single stored copy of its own. That breaks
+  /// SOMATIC_GESTURE_PLAN.md §0's never-false-advance bar, which is the one
+  /// property this pipeline is not allowed to trade away. Every N >= 2 held at
+  /// zero wrong accepts and zero confusable false accepts.
+  ///
+  /// Distinct from [corpusRepsForCalibration] — that is how much SOREN records
+  /// to *set* the thresholds; this is how much a PLAYER records to be scored
+  /// well against thresholds already set.
+  static const int suggestedReps = 4;
+
+  /// Reps per gesture the offline calibration harness wants before the corpus
+  /// says anything trustworthy about intra-gesture variance
+  /// (SOMATIC_GESTURE_PLAN.md §8). A bench-tool figure, not a player-facing
+  /// one — see [suggestedReps].
+  static const int corpusRepsForCalibration = 10;
+
+  /// Rolling window of stored reps per gesture/confusable. NOT a ceiling on
+  /// how much a player may attune: [_appendRep] drops the OLDEST rep past this
+  /// (FIFO), so recording more is always allowed and always refreshes the set
+  /// toward how you perform the gesture now.
+  ///
+  /// A window exists at all because of runtime cost, not quality — the sweep
+  /// above found accuracy monotone non-decreasing out to N=9 (89.8 → 89.8 →
+  /// 90.0), with no accuracy penalty for more reps anywhere in range. What
+  /// does grow is the per-cast path: classification is min-distance DTW over
+  /// every stored rep of every candidate, so a cast costs `5 * reps` DTW pairs
+  /// and 20 bounds that at 100.
   static const int maxRepsStored = 20;
 
   File _gestureFile(Gesture g) => File('${baseDir.path}/${g.name}.json');

@@ -53,6 +53,8 @@ import '../../identity/identity.dart';
 import '../../protocol/transport.dart';
 import '../../spells/chapter_asset.dart' show ChapterAsset;
 import '../../spells/spell_asset.dart' show SpellAsset;
+import '../../spells/spell_identity.dart'
+    show SpellKinEntry, kinStackingLeaves, newKinRevealSalt;
 import '../../spells/spell_permission.dart' show SpellPermission;
 import '../engine/book_commitment.dart';
 import '../models/battle_state.dart';
@@ -77,6 +79,8 @@ class DuelSetupResult {
     required this.peer,
     required this.peerBookRootHex,
     required this.peerBookLeafCount,
+    required this.localKinLeaves,
+    required this.peerBookHash,
     required this.peerPermissions,
     required this.localAvatarId,
     required this.peerAvatarId,
@@ -122,6 +126,17 @@ class DuelSetupResult {
   /// [localAvatarId]. Presentation only — an unrecognised id degrades to the
   /// default via `avatarArtById` returning null.
   final String peerAvatarId;
+
+  /// This device's sorted kin-stacking leaves — salted behavioural-kinship
+  /// hashes of the local chapter (COUNTER_CHARM_KINSHIP_PLAN.md §3.5). Held
+  /// so the post-match [BattleSession.exchangeBookReveal] can send exactly
+  /// what [localKinLeaves]' hash was committed to at setup. The salt itself
+  /// is discarded — nothing ever needs it again.
+  final List<String> localKinLeaves;
+
+  /// The peer's batch leaf hash from [BattleSession.exchangeBookHash] — the
+  /// `expectedPeerHash` their post-match reveal is checked against.
+  final Uint8List peerBookHash;
 }
 
 /// Runs the full LAN duel handshake over an already-connected [transport]
@@ -183,7 +198,8 @@ Future<DuelSetupResult> runDuelSetup({
   final peer = await session.exchangeIdentityAuth(localIdentity: localIdentity, matchId: matchId);
 
   final myOwnerHex = await localIdentity.ownerPubkeyHex();
-  final localCommitments = await _chapterCommitmentHexes(localChapter);
+  final localSpells = await _chapterSpells(localChapter);
+  final localCommitments = [for (final s in localSpells) s.commitmentHex];
 
   // Step 4b: wizard display name — unauthenticated, presentation only (see
   // exchangeWizardName's doc comment). Runs after identity auth so it isn't
@@ -214,10 +230,24 @@ Future<DuelSetupResult> runDuelSetup({
   );
 
   // Step 6: book commitment/hash — feeds peerBookRoot for Stage 2.
+  //
+  // Two different identities, deliberately (COUNTER_CHARM_KINSHIP_PLAN.md
+  // §3.3): the Merkle ROOT is over grid commitments, because it authenticates
+  // per-spell membership and hand position, which needs a one-to-one key. The
+  // batch HASH is over salted behavioural-kinship leaves, because what it
+  // commits to is the post-match kin-stacking check, which needs the
+  // many-to-one key — and must not hand the opponent a stable identifier for
+  // every spell in the book (§3.5).
   final localRootHex = BookCommitment.computeRoot(localCommitments);
   final peerRootBytes =
       await session.exchangeBookCommitment(BookCommitment.rootToBytes(localRootHex));
-  await session.exchangeBookHash(BookCommitment.hashLeaves(localCommitments));
+  final kinRevealSalt = newKinRevealSalt();
+  final localKinLeaves = kinStackingLeaves(
+    [for (final s in localSpells) SpellKinEntry(s.kinKey)],
+    salt: kinRevealSalt,
+  )..sort();
+  final peerBookHash =
+      await session.exchangeBookHash(BookCommitment.hashLeaves(localKinLeaves));
   final peerBookRootHex = _bytesToRootHex(peerRootBytes);
   final peerBookLeafCount =
       await session.exchangeBookLeafCount(localCommitments.length);
@@ -246,6 +276,8 @@ Future<DuelSetupResult> runDuelSetup({
     effectiveConfig: effectiveConfig,
     peer: peer,
     peerBookRootHex: peerBookRootHex,
+    localKinLeaves: localKinLeaves,
+    peerBookHash: peerBookHash,
     peerBookLeafCount: peerBookLeafCount,
     peerPermissions: peerPermissions,
     localAvatarId: myAvatarId,
@@ -279,12 +311,16 @@ int _compareBytes(Uint8List a, Uint8List b) {
 /// Resolves a Chapter's entries to their spells' commitmentHex values (a
 /// ChapterEntry only stores spellId — mirrors battle_screen.dart's
 /// `_loadSpells` id→SpellAsset lookup).
-Future<List<String>> _chapterCommitmentHexes(ChapterAsset chapter) async {
+/// The chapter's spells, in entry order, skipping entries whose spell is no
+/// longer in the library. Shared by the Merkle-root path (which needs
+/// commitments) and the kin-stacking path (which needs kin keys), so the two
+/// lists can never disagree about WHICH spells are in the book.
+Future<List<SpellAsset>> _chapterSpells(ChapterAsset chapter) async {
   final all = await SpellAsset.loadAll();
   final byId = {for (final s in all) s.id: s};
   return chapter.entries
-      .map((e) => byId[e.spellId]?.commitmentHex)
-      .whereType<String>()
+      .map((e) => byId[e.spellId])
+      .whereType<SpellAsset>()
       .toList();
 }
 

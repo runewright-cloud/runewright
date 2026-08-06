@@ -22,6 +22,7 @@ import 'package:rune_duel/battle/models/battle_state.dart';
 import 'package:rune_duel/battle/models/hex_battlefield.dart' show Battlefield;
 import 'package:rune_duel/battle/models/illusion.dart';
 import 'package:rune_duel/battle/models/match_config.dart';
+import 'package:rune_duel/battle/models/status_effect_ids.dart';
 import 'package:rune_duel/battle/models/wizard_avatar.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
@@ -332,6 +333,106 @@ void main() {
       expect(resolved.spell.commitmentHex, equals(spell.commitmentHex));
       expect(resolved.spell.formula, equals(spell.formula));
       expect(resolved.casterId, equals('player_a'));
+    });
+  });
+
+  // ── Watery Inertia rolls the same destination on both devices ────────────
+
+  group('turbulent range lockstep', () {
+    test('both loops roll the SAME landing hex for a turbulent cast', () async {
+      // StatusEffectId.turbulent re-rolls a cast's distance at resolution
+      // time, on both devices independently — a locally-seeded roll would put
+      // the spell on two different tiles and desync at the very next state
+      // hash. The design doc names "turbulent range" in its
+      // jointly-generated-randomness list for exactly this reason (v4.0 §418).
+      final state1 = _makeAdjacentState();
+      final state2 = _makeAdjacentState();
+      for (final s in [state1, state2]) {
+        s.avatars
+            .firstWhere((av) => av.playerId == 'player_a')
+            .activeStatusEffects
+            .add(StatusEffect(
+              effectTypeId: StatusEffectId.turbulent,
+              remainingTurns: 5,
+            ));
+      }
+
+      final pair = TurnSessionPair();
+      Future<bool> alwaysOk(Uint8List vk, Uint8List proof) async => true;
+      final loop1 = TurnLoop(
+        state: state1,
+        session: pair.sessionA,
+        localPlayerId: 'player_a',
+        verifyProof: alwaysOk,
+        vkBytes: Uint8List(0),
+      );
+      final loop2 = TurnLoop(
+        state: state2,
+        session: pair.sessionB,
+        localPlayerId: 'player_b',
+        verifyProof: alwaysOk,
+        vkBytes: Uint8List(0),
+      );
+
+      final commitmentBytes = Uint8List.fromList(List.filled(32, 0xcd));
+      final commitmentHex =
+          '0x${commitmentBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join()}';
+      final spell = SpellAsset(
+        id: 'turbulent-spell',
+        createdAt: DateTime.utc(2026, 8, 6),
+        tier: 24,
+        t: 1,
+        ownerPubkeyHex: '0x${'00' * 32}',
+        manaCost: 0,
+        segmentCount: 0,
+        dotCount: 0,
+        initialGrid: const [],
+        proofBytes: _syntheticProofFor(
+          tier: 24,
+          t: 1,
+          commitmentBytes: commitmentBytes,
+          segmentCount: 0,
+          dotCount: 0,
+        ),
+        name: 'Squall',
+        commitmentHex: commitmentHex,
+        spellHashHex: '',
+        formula: const [],
+      );
+      loop1.localChapterCommitments = [spell.commitmentHex];
+
+      await Future.wait([
+        loop1.runTurn(TurnInput(
+          action: SpellCastAction(spell: spell, targetHex: const HexCoord(3, 0)),
+        )),
+        loop2.runTurn(TurnInput(action: PassAction())),
+      ]);
+
+      expect(
+        state1.toCanonicalBytes(),
+        equals(state2.toCanonicalBytes()),
+        reason: 'Turbulent cast diverged between the two loops — check the '
+            '0x0B phase seed and the _turbulentNonce reset.',
+      );
+
+      final castersLanding = loop1.lastResolvedSpells.single.targetHex;
+      final peersLanding = loop2.lastResolvedSpells.single.targetHex;
+      expect(peersLanding, equals(castersLanding),
+          reason: 'the caster resolved on $castersLanding and the peer on '
+              '$peersLanding — a turbulent roll must be derived from joint '
+              'entropy, never a local Random');
+
+      // Golden: fixedJointEntropy (0x5A×32) ‖ turn 1 ‖ 0x0B ‖ 'player_a' ‖
+      // nonce 0 rolls a distance of 1, so a cast declared three tiles out
+      // lands one tile out. Pinned because the seed's preimage is
+      // consensus-visible — changing its shape silently would desync two
+      // devices running different builds, and this is the cheapest place to
+      // notice. Regenerate deliberately if the preimage ever changes.
+      expect(castersLanding, equals(const HexCoord(1, 0)),
+          reason: 'turbulent roll changed; if this was intentional, re-pin it');
+      expect(castersLanding, isNot(const HexCoord(3, 0)),
+          reason: 'the spell must not have simply landed where it was aimed — '
+              'this test would pass vacuously if turbulent were unwired');
     });
   });
 }

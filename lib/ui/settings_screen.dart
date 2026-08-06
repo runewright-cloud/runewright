@@ -29,6 +29,7 @@ import '../battle/models/wild_magic_effect.dart'
 import '../identity/identity.dart';
 import '../spells/library_backup_io.dart';
 import '../spells/spell_asset.dart';
+import '../spells/wild_magic_preview.dart' show activeLeylineSeed;
 import 'avatars/avatar_picker_screen.dart';
 import 'avatars/avatar_sprites.dart';
 import 'about_screen.dart';
@@ -154,6 +155,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     if (confirmed != true) return;
     await Identity.saveCommunitySeed(raw);
+    // Re-rolls every spell card's wild-magic preview and foil immediately —
+    // the dialog above just promised the player exactly that, and a library
+    // still showing the old tradition would make it look like nothing
+    // happened.
+    activeLeylineSeed.value = raw;
     if (!mounted) return;
     setState(() => _savedSeed = raw);
   }

@@ -13,7 +13,6 @@ import 'commune_screen.dart';
 import 'library_screen.dart';
 import 'manuscript_theme.dart' show kIlluminationGold, kRubricRed, kInkColor;
 import 'onboarding/onboarding_landing_screen.dart';
-import 'practice_screen.dart';
 import 'vocabulary_screen.dart';
 import 'settings_screen.dart';
 import 'sigil_painter.dart';
@@ -106,15 +105,11 @@ class MenuScreen extends StatelessWidget {
                     MaterialPageRoute(builder: (_) => const CommuneScreen()),
                   ),
                 ),
+                // No Practice entry here on purpose: practice is always a drill
+                // of ONE library spell, so it is reached from that spell's card
+                // (Library › Practice Incantation) and nowhere else.
                 _MenuButton(
-                  label: 'Practice',
-                  onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const PracticeScreen()),
-                  ),
-                ),
-                _MenuButton(
-                  label: 'Incantations',
+                  label: 'Attune Spell Components',
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const VocabularyScreen()),

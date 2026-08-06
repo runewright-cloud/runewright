@@ -485,41 +485,67 @@ class BattleSession implements BattleTurnSession {
         .toList();
   }
 
-  /// Post-match: both sides reveal their sorted commitmentHex list simultaneously.
+  /// Post-match: both sides reveal their sorted KIN-STACKING LEAF list
+  /// simultaneously, so each can check the other's book for internal
+  /// duplicates.
   ///
-  /// [ourSortedHexes] must be sorted (matching the order used in
-  /// [BookCommitment.computeRoot] and [BookCommitment.hashLeaves]).
+  /// The leaves are salted behavioural-kinship hashes (spell_identity.dart's
+  /// `kinStackingLeaves`), not grid commitments. Two changes at once, both
+  /// improvements (docs/COUNTER_CHARM_KINSHIP_PLAN.md §3.5):
+  ///
+  ///   * Kinship is behavioural now, so the duplicate check has to run over
+  ///     kin keys or it stops detecting what it exists to detect — a player
+  ///     carrying two "different" spells that do the same thing.
+  ///   * The old form revealed a stable, unsalted identifier for every spell
+  ///     in your book, including ones you never cast, usable to recognise
+  ///     that spell in any future match. Revealing raw trajectories would be
+  ///     worse still — a trajectory says what a spell DOES. A fresh per-match
+  ///     salt keeps duplicates colliding while leaking neither.
+  ///
+  /// The salt is per-player, never transmitted, and never needed by the
+  /// receiver: this check only ever compares entries within ONE player's own
+  /// list.
+  ///
+  /// The chapter Merkle root ([exchangeBookCommitment]) deliberately does NOT
+  /// move with this. That tree is per-spell membership — it authenticates
+  /// which card was cast from which hand slot — and membership needs a
+  /// one-to-one identity, which behavioural kinship is not.
+  ///
+  /// [ourSortedLeaves] must be sorted, matching the order
+  /// [BookCommitment.hashLeaves] was given at [exchangeBookHash].
   /// [expectedPeerHash] is the hash received during [exchangeBookHash].
   ///
-  /// Returns the peer's verified commitmentHex list, or null if:
+  /// Returns the peer's verified leaf list, or null if:
   ///   - The peer's revealed list's SHA-256 does not match [expectedPeerHash].
-  ///   - The list contains duplicate commitmentHex values (Kin-stacking).
+  ///   - The list contains duplicate leaves (Kin-stacking).
   ///
   /// Both sends happen simultaneously before verification so neither side can
   /// withhold based on the other's reveal.
   Future<List<String>?> exchangeBookReveal(
-    List<String> ourSortedHexes, {
+    List<String> ourSortedLeaves, {
     required Uint8List expectedPeerHash,
   }) async {
     final payload = Uint8List.fromList(
-      utf8.encode(jsonEncode(ourSortedHexes)),
+      utf8.encode(jsonEncode(ourSortedLeaves)),
     );
     send(BattleMsgType.bookReveal, payload);
     final frame = await framesOfType(BattleMsgType.bookReveal).first;
-    final theirHexes =
+    final theirLeaves =
         (jsonDecode(utf8.decode(frame.payload)) as List<dynamic>).cast<String>();
 
     // Verify hash matches the commitment made at session start.
-    final actualHash = BookCommitment.hashLeaves(theirHexes);
+    final actualHash = BookCommitment.hashLeaves(theirLeaves);
     if (!_constantTimeEqual(actualHash, expectedPeerHash)) return null;
 
-    // Verify no duplicate grid commitments (Kin-stacking detection).
+    // Verify no duplicate kin keys (Kin-stacking detection). A kinship-exempt
+    // spell contributed a random leaf and so can never trip this — that is
+    // the ≥9-element exemption (§2.6/§3.4) made concrete.
     final seen = <String>{};
-    for (final hex in theirHexes) {
-      if (!seen.add(hex)) return null;
+    for (final leaf in theirLeaves) {
+      if (!seen.add(leaf)) return null;
     }
 
-    return theirHexes;
+    return theirLeaves;
   }
 
   static bool _constantTimeEqual(Uint8List a, Uint8List b) {

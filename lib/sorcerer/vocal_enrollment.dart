@@ -64,12 +64,59 @@ class VocalEnrollment {
   /// Frames kept as padding on each side of the detected voiced span.
   static const int trimPaddingFrames = 3;
 
-  /// Maximum exemplar takes kept per word. Scoring is min-distance over this
-  /// set (IncantationRecallScorer); more takes capture more of the speaker's
-  /// natural variation, but past a handful the returns flatten and the
-  /// per-frame DTW cost grows linearly. Appending past the cap drops the
-  /// oldest take (FIFO), so "record another" always refreshes the set.
-  static const int maxTakes = 5;
+  /// Attunements per word suggested to a player, in-world terminology for
+  /// stored takes. Advisory — nothing refuses a cast below it, and the
+  /// practice gate stays at the lower [minTakesForPractice].
+  ///
+  /// INFERRED, not measured, and the distinction matters. The somatic side has
+  /// a real multi-rep corpus and a sweep behind its number
+  /// (GestureEnrollment.suggestedReps, 4). Vocal has no equivalent: the
+  /// fixtures under test/practice/fixtures/voices are one utterance per word
+  /// per synthetic voice, so there is nothing to sweep take count against. 4
+  /// carries over because the two sides are the *same* recognizer —
+  /// min-distance DTW against a set of per-user exemplars, accepted on a cap
+  /// and a runner-up margin — so the shape of the curve should be the shape of
+  /// the curve. Re-derive this against a real multi-take voice corpus when one
+  /// exists; until then treat it as a well-reasoned default, not a result.
+  ///
+  /// Record roughly the SAME number for every word. Min-distance argmin across
+  /// the vocabulary is biased toward whichever word has more exemplars — 8
+  /// takes of one word against 2 of another makes the first systematically
+  /// closer, which costs mana on a word the player said correctly.
+  static const int suggestedTakes = 4;
+
+  /// Rolling window of exemplar takes kept per word. NOT a ceiling on how much
+  /// a player may attune: appending past it drops the oldest take (FIFO), so
+  /// "record another" is always allowed and always refreshes the set toward
+  /// how they say the word now.
+  ///
+  /// Raised 5 → 8 (2026-08-06) so the window sits meaningfully above
+  /// [suggestedTakes] rather than one take above it — a player who keeps
+  /// practising should be able to accumulate, not immediately start evicting.
+  /// The bound is runtime, not quality: scoring is min-distance over this set,
+  /// so a recited formula costs `words * 6 slots * takes` DTW pairs — 192 at
+  /// the cap for a four-word incantation, against the somatic path's already-
+  /// accepted 100 per cast.
+  static const int maxTakes = 8;
+
+  /// Takes per word a player needs before a practice drill means anything.
+  ///
+  /// Below this the scorer falls back to (or leans on) the bundled Piper
+  /// voice, which can tell "an attempt happened" from "silence" but is weak at
+  /// telling the player's OWN words apart — so a drill run against it would
+  /// report mistakes the player did not make and hide ones they did. Two takes
+  /// is the point where min-distance scoring has some of the speaker's natural
+  /// variation to match against, and it is cheap to reach (two holds per word
+  /// on the Attune Spell Components page).
+  ///
+  /// The library's Practice entry point gates on [isPracticeReady] and diverts
+  /// to Attune Spell Components until this is met — see library_screen.dart's
+  /// `_openPracticeForSpell`.
+  static const int minTakesForPractice = 2;
+
+  /// Whether every slot has at least [minTakesForPractice] takes.
+  bool isPracticeReady() =>
+      VocalSlot.values.every((w) => takeCount(w) >= minTakesForPractice);
 
   /// Where [word]'s takes are WRITTEN — always the current slot key.
   File _fileFor(VocalSlot word) =>

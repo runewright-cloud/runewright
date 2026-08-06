@@ -26,6 +26,7 @@ class PendingDelayedSpell {
     required this.commitment,
     required this.castTurn,
     required this.origin,
+    required this.declaredRange,
     this.isPotent = false,
     this.isVelocity = false,
   });
@@ -50,6 +51,20 @@ class PendingDelayedSpell {
   /// render the pulsing "pending cast" orb, and as the true launch origin
   /// when the spell later fires, since the caster may have moved since.
   final HexCoord origin;
+
+  /// The caster's `effectiveSpellRange` at the moment of casting, captured
+  /// alongside [origin] so the pair stays self-consistent: *"you could legally
+  /// have aimed there, from there, with that reach."*
+  ///
+  /// Targeting is judged as of when the cast was completed (ruling
+  /// 2026-08-06), and for a Mystery spell that was the declaration turn — the
+  /// target tile is committed then and never revisited. Reading the caster's
+  /// range at *fire* time instead would let an Earthen Inertia landed two
+  /// turns later retroactively invalidate a cast that was legal when it was
+  /// made. Not in [BattleState.toCanonicalBytes] (neither is [origin]): both
+  /// peers construct this record independently from the same resolution, so
+  /// it stays in lockstep without being transmitted.
+  final int declaredRange;
 
   final bool isPotent;
   final bool isVelocity;

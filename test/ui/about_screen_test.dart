@@ -103,7 +103,7 @@ void main() {
     expect(find.text('README'), findsOneWidget);
     expect(find.text('Credits'), findsOneWidget);
     // A line straight out of README.md's opening paragraph.
-    expect(find.textContaining('zero-knowledge proof'), findsWidgets);
+    expect(find.textContaining('peer-to-peer'), findsWidgets);
 
     await tester.tap(find.text('Credits'));
     await tester.pumpAndSettle();

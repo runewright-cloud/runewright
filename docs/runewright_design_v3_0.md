@@ -269,6 +269,38 @@ The 16 base effect types, mapped to second-third element combinations (first ele
 | Air-Water | Divination |See target's counter charm alignment, will turn bookmarks marking those spells red for rest of the match|Earthen Scrying Pool, 2[3] turns: the target sees through the murk. They ignore clouds' adjacent-only targeting restriction entirely (whether the cloud arrived before or after the scrying, and including the Dust Cloud's lingering version), and any *enemy* illusion that ends up adjacent to them — wizard decoy, illusory creature, or terrain copy — is dispelled on sight. *(Rewritten 2026-08-03: the old "Identify Illusions" wording predated the Illusions row settling, and identification alone did nothing an engine could act on.)*| See Target's available spells 3[4] turns |See target's spell target tile 3[4] turns|
 
 
+> **Line of sight, and what a blocked spell does.** *(Implemented 2026-08-05 —
+> docs/WALL_LOS_PLAN.md.)* Earthen walls (the Earth-Water row's Earth column) and
+> `Big` (EEEE) creatures block spell line of sight. A blocked spell is **not**
+> rejected, fizzled, or resolved at the original target: it **resolves on the
+> blocker's tile instead** — the first blocking tile along the line from caster
+> to target. Chasms (wild magic) block movement but never targeting, and Firey
+> Inertia's *Penetrating* ignores blockers entirely while dealing its 1[2]
+> en-route damage to entities in the hexes it passes through.
+
+> **All spell-placed terrain is destructible.** *(Implemented 2026-08-05.)* Each
+> of the four Earth-Water tiles carries an HP pool and the elemental affinity of
+> the flavor that placed it, and takes damage through the same resistance wheel
+> creatures use (same element → half rounded up; opposite → double).
+>
+> | Tile | Affinity | HP | Resists | Vulnerable |
+> |---|---|---|---|---|
+> | Floor is Lava | Fire | 2 | Fire | Water |
+> | Impassable (wall) | Earth | 4 | Earth | Air |
+> | Slow | Water | 2 | Water | Fire |
+> | Conveyor | Air | 2 | Air | Earth |
+>
+> This exists so a lava- or slow-tile spam build has counterplay: terrain has no
+> turn limit, so without it nothing on the battlefield could ever remove one.
+> Barrier (Earth-Earth) may be aimed at any terrain tile to imbue it — the
+> Watery flavor's mana regen pays whoever *stands on* the tile, which is live on
+> lava/slow/conveyor and inert on a wall; the Airy flavor knocks back everything
+> adjacent when it collapses. Sculpting the same kind of terrain onto a damaged
+> tile repairs it to full; sculpting a different kind replaces it outright, with
+> a new affinity, a new full pool, and no inherited barriers. Effects that
+> cannot reasonably act on terrain deal 1 typed damage to it instead, per
+> effect, and only when nothing is standing on the tile for them to act on.
+
 > **Duration principle — buffs shorter than debuffs.** When setting durations, **self-buffs should run shorter than effects you land on an opponent.** Reason: under tile-targeting + commit-before-move, you can reliably place an effect on the tile you yourself occupy (or will), but landing one on an opponent means *cornering or accurately predicting them onto a targeted tile* against their dodging — much harder. Equal durations would overvalue the easy self-target case; shorter self-buff windows keep "buff your own feet" from being strictly better than fighting to control where the enemy stands. Apply this as a tie-breaker when filling in the bracketed/duration numbers across the table.
 
 ---

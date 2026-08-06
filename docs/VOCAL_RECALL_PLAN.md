@@ -162,6 +162,87 @@ The practice entry point only — no scoring change yet.
 - `AudioPlayer` in `PracticeScreen` is now lazy — it was spinning up a native audio
   session and per-player event channel on screen open.
 
+### 7.1 Consolidation (2026-08-06)
+
+Practice had grown three jobs — drill a spell, enrol your voice, capture calibration
+clips — reached from two places with different behaviour. Narrowed to one:
+
+- **`spell` is now required.** There is no random-formula mode, no formula-count chips,
+  no New Formula button, and no main-menu entry. `PracticeScreen` is reachable only from
+  a spell's card in the library. Start Over remains: it re-conceals the words and clears
+  the verdict, which is the only formula control a single-spell drill needs.
+- **Voice enrollment moved out**, to the Incantations page (`vocabulary_screen.dart`,
+  since renamed *Attune Spell Components* — §7.2),
+  which is where the words are chosen. Splitting "pick a word" from "record that word"
+  across two screens let them drift; §8.8's staged commit already handles both together.
+  As a consequence that page now commits **staged takes with no rename** —
+  topping up recordings for a word you are keeping is a real edit.
+- **Calibration capture (dev) is gone** from the UI. `lib/practice/vocal_diagnostics.dart`
+  and the offline harness stay in the tree; only the switch that fed them is removed.
+- **The drill is gated on enrollment.** `VocalEnrollment.minTakesForPractice` (2) per
+  slot, checked by `isPracticeReady()`. Under-enrolled players are diverted to that
+  page with the spell in hand (`VocabularyScreen.proceedToPracticeWith`);
+  its commit button reads **"Save and proceed to practice"** and `pushReplacement`s into
+  the drill, so Back from the drill returns to the library. Rationale: the drill scores a
+  recital exactly as a duel does — against the player's own takes — so run against the
+  Piper fallback it would report mistakes they did not make.
+- The gesture tab is untouched. It is enrollment too, but there is no other home for it
+  yet — see SOMATIC_GESTURE_PLAN.md. **Superseded by §7.2.**
+
+### 7.2 One home for attunement (2026-08-06)
+
+§7.1 left one loose end: gesture enrollment stayed on the drill because it had nowhere
+else to go. It does now.
+
+- The main menu's **Incantations** entry is now **Attune Spell Components**, and the
+  page it opens is two tabs — **Vocal** (the six words, unchanged: staged, atomic,
+  §8.8) and **Somatic** (the five gestures plus the three confusables).
+- `PracticeScreen` loses its tab bar and is a single drill view. Its gesture half moved
+  verbatim into `lib/ui/widgets/gesture_training_panel.dart`, which the Somatic tab
+  hosts. There is exactly one gesture-enrollment UI in the tree; a second one would
+  drift from it the same way the vocal one did.
+- This also fixes a reachability inversion: the calibration corpus you record *before*
+  you have spells sat behind a button on a spell's card, so a fresh player could not
+  reach it at all. It is now two taps from the main menu.
+- The tabs share a shape, not a mechanism. Words are named *and* recorded, so a rename
+  invalidates its audio and both must commit together; a gesture has nothing to name, so
+  each rep saves as it is captured. Only the Vocal tab carries staging.
+- Both tabs report a suggested attunement count and a shortfall against it — warn
+  plainly, never refuse. See §7.3 for where the numbers come from.
+
+### 7.3 Suggested attunements, and why there is no maximum (2026-08-06)
+
+"Attunement" is now the in-world word for one stored take (vocal) or rep (somatic), and
+both tabs show progress toward a suggested count per component.
+
+- **Somatic: 4**, MEASURED — `tool/gesture_rep_count_sweep.dart` over the Pixel 6 corpus.
+  Full table and reasoning in SOMATIC_GESTURE_PLAN.md §8.1. The load-bearing finding is
+  that a *single* enrolled rep is the only set size that produced a wrong-gesture accept,
+  so 4 is a safety floor with the knee of the accuracy curve just under it.
+- **Vocal: 4** (`VocalEnrollment.suggestedTakes`), **INFERRED, not measured** — and the
+  code comment says so. There is no multi-take voice corpus to sweep: the fixtures under
+  `test/practice/fixtures/voices/` are one utterance per word per synthetic voice. The
+  number carries over because both sides are the same recognizer (min-distance DTW over
+  per-user exemplars, accepted on a cap plus a runner-up margin), so the curve should have
+  the same shape. **Re-derive against a real multi-take voice corpus when one exists.**
+- The practice gate is unchanged and is a *different* number:
+  `VocalEnrollment.minTakesForPractice` (2) is the hard unlock for the drill; 4 is advisory
+  guidance for being scored well. Both are shown, in their own contexts.
+
+**No maximum.** The gesture sweep found accuracy monotone non-decreasing out to N=9, so
+more attunements never made recognition worse. Both caps are therefore rolling FIFO
+windows, not ceilings — recording past one evicts the oldest attunement, so what you are
+scored against is always how you speak or move now. The caps exist to bound the per-cast
+DTW work, and `VocalEnrollment.maxTakes` was raised **5 → 8** so the window sits
+meaningfully above the suggestion instead of one take above it (a four-word incantation
+costs `4 × 6 slots × takes` pairs — 192 at the new cap, against the somatic path's
+already-accepted 100).
+
+The one real "more gets worse": **imbalance**. Min-distance argmin favours whichever word
+or gesture holds more exemplars, so 8 takes of one word against 2 of its neighbour makes
+the first win ties it should lose — which costs mana on a word the player said correctly.
+Both tabs say to keep the counts roughly even.
+
 ### Open
 
 - The scoring rework itself (§3/§4/§6) — not started.

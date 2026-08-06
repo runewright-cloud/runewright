@@ -21,12 +21,16 @@
 import 'dart:convert' show utf8;
 import 'dart:typed_data';
 
+import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/battle/models/terrain.dart'
     show CloudObject, TileEffect, CloudKind,
          ToxicCloud, DustCloud, WaterCloud, MobileCloud,
          FloorIsLava, ImpassableTile, SlowTile, ConveyorTile,
-         IceTile, ChasmTile;
+         IceTile, ChasmTile,
+         tileIsDestructibleTerrain, terrainMaxHpOf;
+import 'package:rune_duel/battle/models/barrier.dart';
+import 'package:rune_duel/battle/models/effect_kind.dart' show SpellAffinity;
 
 import 'match_config.dart';
 import 'wild_magic_state.dart';
@@ -81,9 +85,13 @@ class BattleState {
     List<WizardIllusionSet>? wizardIllusions,
     Map<HexCoord, String>? illusionTerrainTiles,
     Map<HexCoord, int>? expiringTiles,
+    Map<HexCoord, int>? terrainHp,
+    Map<HexCoord, Map<SpellAffinity, BarrierState>>? terrainBarriers,
     WildMagicState? wildMagic,
   })  : minions = minions ?? [],
         expiringTiles = expiringTiles ?? {},
+        terrainHp = terrainHp ?? {},
+        terrainBarriers = terrainBarriers ?? {},
         wildMagic = wildMagic ?? WildMagicState(),
         tileEffects = tileEffects ?? {},
         clouds = clouds ?? [],
@@ -145,10 +153,81 @@ class BattleState {
   /// same coord; sweeping removes both.
   final Map<HexCoord, int> expiringTiles;
 
+  /// Current HP of every destructible terrain tile (docs/WALL_LOS_PLAN.md
+  /// §5.0). A side-map, not a field on [TileEffect]: that class is
+  /// deliberately immutable, which is why expiry already lives outside it in
+  /// [expiringTiles].
+  ///
+  /// Seeded at max by [placeTerrain]; an entry exists exactly while a
+  /// destructible tile does. Both affinity and max HP are pure functions of
+  /// the tile type (terrain.dart), so there is nothing else to store.
+  ///
+  /// Read through [terrainHpAt], never directly — an illusory copy overrides
+  /// the type's pool at 1 HP (§3.7).
+  final Map<HexCoord, int> terrainHp;
+
+  /// Barriers imbued into terrain by an Earth-Earth cast aimed at a terrain
+  /// tile (§2.3/§2.6), keyed by coord then by element exactly like
+  /// [Minion.barriers]. Absorbs before [terrainHp], so the elemental wheel
+  /// applies per layer.
+  final Map<HexCoord, Map<SpellAffinity, BarrierState>> terrainBarriers;
+
   /// Match-scoped wild-magic globals (Burning Hot's armed turn, Phoenix /
   /// Statuesque player sets, Rippling Reflections' drift, Scattered Gusts).
   /// All of it is consensus state — see [toCanonicalBytes].
   final WildMagicState wildMagic;
+
+  // ── Terrain HP (docs/WALL_LOS_PLAN.md §5.0) ───────────────────────────────
+
+  /// Current HP of the terrain on [hex], or 0 when there is none.
+  ///
+  /// Checks [illusionTerrainTiles] FIRST: an Earthen Illusions copy is 1 HP by
+  /// design, and letting it inherit the real type's pool would turn that spell
+  /// into a terrain-duplication engine (§3.7).
+  /// A tile with terrain but no [terrainHp] entry reads as FULL, not dead —
+  /// that is a fixture built by assigning `tileEffects` directly rather than
+  /// through [placeTerrain], and treating it as 0 HP would make it vanish on
+  /// the first scratch. [damageTerrain] makes the same assumption.
+  int terrainHpAt(HexCoord hex) {
+    if (illusionTerrainTiles.containsKey(hex)) return 1;
+    return terrainHp[hex] ?? terrainMaxHpOf(tileEffects[hex]);
+  }
+
+  /// Places [effect] on [hex], seeding a full HP pool and clearing anything
+  /// the previous tile left behind.
+  ///
+  /// **Use this rather than assigning `tileEffects[hex]` directly.** Terrain is
+  /// not re-elemented in place: a new tile means a new type, a new affinity,
+  /// full HP, and no inherited barriers (§3.4). Skipping the clear is how a
+  /// later tile silently inherits ghost HP and ghost barriers (§5.0/§7).
+  ///
+  /// [illusionOwner] marks the tile as an Earthen Illusions copy conjured by
+  /// that player: 1 HP regardless of type, so it gets no [terrainHp] entry at
+  /// all and [terrainHpAt] answers for it instead (§3.7).
+  void placeTerrain(HexCoord hex, TileEffect effect, {String? illusionOwner}) {
+    tileEffects[hex] = effect;
+    terrainBarriers.remove(hex);
+    if (illusionOwner != null) {
+      illusionTerrainTiles[hex] = illusionOwner;
+      terrainHp.remove(hex);
+      return;
+    }
+    illusionTerrainTiles.remove(hex);
+    if (tileIsDestructibleTerrain(effect)) {
+      terrainHp[hex] = terrainMaxHpOf(effect);
+    } else {
+      terrainHp.remove(hex);
+    }
+  }
+
+  /// Removes the terrain on [hex] and every trace of it. Destruction, expiry,
+  /// and dispel all funnel here so no side-map is ever left orphaned.
+  void removeTerrain(HexCoord hex) {
+    tileEffects.remove(hex);
+    terrainHp.remove(hex);
+    terrainBarriers.remove(hex);
+    illusionTerrainTiles.remove(hex);
+  }
 
   // TODO(battle): add SpellDrawState per player once SpellDraw is wired in.
   // TODO(battle): add CommitRevealState for the current turn's entropy.
@@ -247,12 +326,15 @@ class BattleState {
         buf.writeUtf8(acc.id);
         buf.writeUint8(acc.kind.index);
         buf.writeUint8(acc.counterCharmRevealed ? 1 : 0);
-        final target = acc.targetCommitmentHex;
-        if (target != null) {
-          buf.writeUint8(1);
-          buf.writeHex(target);
-        } else {
-          buf.writeUint8(0);
+        // Counter-charm trajectory (COUNTER_CHARM_KINSHIP_PLAN.md Phase 2).
+        // Hashed because it decides which formulas of a cast get cancelled: a
+        // divergence here changes resolution, not just display. Length-
+        // prefixed, one byte per element, so an unattuned charm (length 0)
+        // and a charm attuned to nothing-yet stay distinguishable.
+        final trajectory = acc.charmTrajectory;
+        buf.writeUint8(trajectory?.length ?? 0);
+        for (final z in trajectory ?? const <BorderZone>[]) {
+          buf.writeUint8(z.index);
         }
       }
 
@@ -476,6 +558,45 @@ class BattleState {
       buf.writeInt16(entry.key.q);
       buf.writeInt16(entry.key.r);
       buf.writeInt32(entry.value);
+    }
+
+    // ── Terrain HP + barriers (docs/WALL_LOS_PLAN.md §7) ─────────────────
+    // Terrain HP changes mid-turn, so it crosses the state-hash exchange
+    // point within the turn it changes — the same hazard WILD_MAGIC_PLAN.md
+    // A6 called out for pending latching state. Leaving either map out lets
+    // two clients agree on a hash while holding different terrain.
+    final sortedTerrainHp = terrainHp.entries.toList()
+      ..sort((a, b) {
+        final qc = a.key.q.compareTo(b.key.q);
+        return qc != 0 ? qc : a.key.r.compareTo(b.key.r);
+      });
+    buf.writeUint16(sortedTerrainHp.length);
+    for (final entry in sortedTerrainHp) {
+      buf.writeInt16(entry.key.q);
+      buf.writeInt16(entry.key.r);
+      buf.writeInt32(entry.value);
+    }
+
+    // Nested map: sort the outer by (q, r) AND the inner by
+    // SpellAffinity.index. An unsorted inner map is the easy way to produce a
+    // mismatch that only shows up on a two-device run.
+    final sortedTerrainBarriers = terrainBarriers.entries.toList()
+      ..sort((a, b) {
+        final qc = a.key.q.compareTo(b.key.q);
+        return qc != 0 ? qc : a.key.r.compareTo(b.key.r);
+      });
+    buf.writeUint16(sortedTerrainBarriers.length);
+    for (final entry in sortedTerrainBarriers) {
+      buf.writeInt16(entry.key.q);
+      buf.writeInt16(entry.key.r);
+      final inner = entry.value.entries.toList()
+        ..sort((x, y) => x.key.index.compareTo(y.key.index));
+      buf.writeUint8(inner.length);
+      for (final b in inner) {
+        buf.writeUint8(b.key.index);
+        buf.writeInt32(b.value.hp);
+        buf.writeInt32(b.value.remainingTurns);
+      }
     }
 
     return buf.toBytes();

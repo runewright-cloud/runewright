@@ -35,7 +35,7 @@ void main() {
       maxMana: 100,
       position: localPos,
       teamId: 'solo',
-      baseSpellRange: 3,
+      baseSpellRange: 6,
     );
     final dummy = WizardAvatar(
       playerId: dummyId,
@@ -45,7 +45,7 @@ void main() {
       maxMana: 100,
       position: dummyPos,
       teamId: 'foe',
-      baseSpellRange: 3,
+      baseSpellRange: 6,
     );
 
     final state = BattleState(
@@ -91,7 +91,7 @@ void main() {
       maxMana: 100,
       position: localPos,
       teamId: 'solo',
-      baseSpellRange: 3,
+      baseSpellRange: 6,
     );
     final dummy = WizardAvatar(
       playerId: dummyId,
@@ -101,7 +101,7 @@ void main() {
       maxMana: 100,
       position: dummyPos,
       teamId: 'foe',
-      baseSpellRange: 3,
+      baseSpellRange: 6,
     );
 
     final state = BattleState(

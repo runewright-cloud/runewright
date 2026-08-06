@@ -19,7 +19,8 @@ import 'package:rune_duel/battle/engine/effect_applicator.dart';
 import 'package:rune_duel/battle/models/battle_state.dart';
 import 'package:rune_duel/battle/models/effect_descriptor.dart';
 import 'package:rune_duel/battle/models/effect_kind.dart' show EffectKind;
-import 'package:rune_duel/battle/models/hex_battlefield.dart' show Battlefield;
+import 'package:rune_duel/battle/models/hex_battlefield.dart'
+    show Battlefield, hexDistance;
 import 'package:rune_duel/battle/models/match_config.dart';
 import 'package:rune_duel/battle/models/spell_effect.dart';
 import 'package:rune_duel/battle/models/status_effect_ids.dart';
@@ -316,6 +317,126 @@ void main() {
 
       expect(enemy.accoutrements.where((a) => a.kind == AccoutrementKind.bookmark).length, 2);
       expect(caster.accoutrements.where((a) => a.kind == AccoutrementKind.bookmark).length, 0);
+    });
+  });
+
+  // ── 2026-08-05 sweep: the three the 2026-07-27 pass missed ────────────────
+  //
+  // These buffed ctx.caster regardless of where the spell was aimed. Found
+  // while wiring line of sight (docs/WALL_LOS_PLAN.md): an effect that ignores
+  // its target tile also slips past the blocked-spell fallback, so it would
+  // keep paying out even when the spell resolved on a wall.
+
+  group('Range Modification (Earth-Air) Air flavor targets the tile', () {
+    test('the range buff lands on the enemy on the tile, not the caster', () {
+      final caster = _avatar('caster', const HexCoord(0, 0));
+      final enemy = _avatar('enemy', const HexCoord(1, 0));
+      final state = _state([caster, enemy]);
+
+      EffectApplicator.apply(_ctx(
+        state: state,
+        caster: caster,
+        effect: const RangeModificationEffect(
+            affinity: SpellAffinity.air, rangeDelta: 1, durationTurns: 3),
+        targetTile: enemy.position,
+        affinity: SpellAffinity.air,
+      ));
+
+      expect(enemy.effectiveSpellRange, greaterThan(caster.effectiveSpellRange));
+    });
+
+    test('aimed at an empty tile it reaches nobody at all', () {
+      final caster = _avatar('caster', const HexCoord(0, 0));
+      final before = caster.effectiveSpellRange;
+      final state = _state([caster]);
+
+      EffectApplicator.apply(_ctx(
+        state: state,
+        caster: caster,
+        effect: const RangeModificationEffect(
+            affinity: SpellAffinity.air, rangeDelta: 1, durationTurns: 3),
+        targetTile: const HexCoord(3, 0),
+        affinity: SpellAffinity.air,
+      ));
+
+      expect(caster.effectiveSpellRange, before);
+    });
+  });
+
+  group('Divination (Air-Water) Fire flavor targets the tile', () {
+    test('the counter-charm reveal lands on the enemy, not the caster', () {
+      final caster = _avatar('caster', const HexCoord(0, 0));
+      final enemy = _avatar('enemy', const HexCoord(1, 0));
+      final state = _state([caster, enemy]);
+
+      EffectApplicator.apply(_ctx(
+        state: state,
+        caster: caster,
+        effect: const DivinationEffect(
+            affinity: SpellAffinity.fire,
+            revealsCounterCharms: true,
+            durationTurns: 0),
+        targetTile: enemy.position,
+      ));
+
+      expect(enemy.canRevealCounterCharms, isTrue);
+      expect(caster.canRevealCounterCharms, isFalse);
+    });
+
+    test('self-target your own tile to read charms yourself', () {
+      final caster = _avatar('caster', const HexCoord(0, 0));
+      final state = _state([caster]);
+
+      EffectApplicator.apply(_ctx(
+        state: state,
+        caster: caster,
+        effect: const DivinationEffect(
+            affinity: SpellAffinity.fire,
+            revealsCounterCharms: true,
+            durationTurns: 0),
+        targetTile: caster.position,
+      ));
+
+      expect(caster.canRevealCounterCharms, isTrue);
+    });
+  });
+
+  group('Illusions (Water-Air) Water flavor targets the tile', () {
+    test('decoys wrap the wizard on the target tile and are owned by them', () {
+      final caster = _avatar('caster', const HexCoord(0, 0));
+      final ally = _avatar('ally', const HexCoord(3, 0));
+      final state = _state([caster, ally]);
+
+      EffectApplicator.apply(_ctx(
+        state: state,
+        caster: caster,
+        effect: const IllusionEffect(
+            affinity: SpellAffinity.water, wizardDecoyCount: 3),
+        targetTile: ally.position,
+      ));
+
+      expect(state.wizardIllusions, hasLength(1));
+      final set = state.wizardIllusions.single;
+      expect(set.ownerId, 'ally', reason: 'decoys protect who they surround');
+      // Every decoy is adjacent to the recipient, not to the caster.
+      for (final d in set.decoyPositions) {
+        expect(hexDistance(d, ally.position), 1);
+      }
+    });
+
+    test('aimed at an empty tile no decoys are created', () {
+      final caster = _avatar('caster', const HexCoord(0, 0));
+      final state = _state([caster]);
+
+      EffectApplicator.apply(_ctx(
+        state: state,
+        caster: caster,
+        effect: const IllusionEffect(
+            affinity: SpellAffinity.water, wizardDecoyCount: 3),
+        targetTile: const HexCoord(3, 0),
+      ));
+
+      expect(state.wizardIllusions, isEmpty);
     });
   });
 }

@@ -241,7 +241,10 @@ class WildMagicApplicator {
         if (!ctx.state.battlefield.isInBounds(n)) continue;
         if (ctx.state.tileEffects.containsKey(n)) continue;
         if (_isOccupied(ctx.state, n)) continue;
-        ctx.state.tileEffects[n] = const ImpassableTile();
+        // A Mountains wall is an ImpassableTile like any other: it blocks
+        // line of sight and carries the Earth-flavor HP pool, so it can be
+        // broken early even though it would also expire on its own.
+        ctx.state.placeTerrain(n, const ImpassableTile());
         ctx.state.expiringTiles[n] = expiry;
         placed.add(n);
       }
@@ -367,9 +370,8 @@ class WildMagicApplicator {
       // destroying a wall is the reading that matches "the ground splits";
       // the indestructibility clause protects the chasm FROM later effects
       // (see _blockedForTerrainPlacement), not the terrain from the chasm.
-      ctx.state.tileEffects[t] = const ChasmTile();
+      ctx.state.placeTerrain(t, const ChasmTile());
       ctx.state.expiringTiles[t] = expiry;
-      ctx.state.illusionTerrainTiles.remove(t);
       placed.add(t);
     }
     ctx.emit(
@@ -388,7 +390,7 @@ class WildMagicApplicator {
     final placed = <HexCoord>[];
     for (final t in ctx.sortedTiles) {
       if (ctx.state.tileEffects.containsKey(t)) continue;
-      ctx.state.tileEffects[t] = const IceTile();
+      ctx.state.placeTerrain(t, const IceTile());
       ctx.state.expiringTiles[t] = expiry;
       placed.add(t);
     }

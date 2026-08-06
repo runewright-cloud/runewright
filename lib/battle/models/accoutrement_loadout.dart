@@ -40,7 +40,7 @@ List<Accoutrement> accoutrementsFromArtifacts(
     accoutrements.add(Accoutrement(
       id: '${idPrefix}_$i',
       kind: _toAccoutrementKind(a.kind),
-      targetCommitmentHex: a.targetCommitmentHex,
+      charmTrajectory: a.trajectory,
     ));
   }
   return accoutrements;

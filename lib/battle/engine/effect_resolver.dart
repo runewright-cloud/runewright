@@ -83,7 +83,6 @@ class EffectResolver {
           affinity: SpellAffinity.earth,
           speedDelta: -1,
           durationTurns: p ? 5 : 4,
-          affectsTarget: true,
         ),
       (SpellAffinity.water, EffectKind.speedManipulation) =>
         SpeedManipulationEffect(
@@ -96,7 +95,6 @@ class EffectResolver {
           affinity: SpellAffinity.air,
           speedDelta: 1,
           durationTurns: p ? 4 : 3,
-          affectsTarget: true,
         ),
 
       // ── Status Effect Interaction (Fire-Earth) ────────────────────────────
@@ -159,26 +157,22 @@ class EffectResolver {
           nextSpellCostMultiplier: 2,
           hpPerManaMissed: p ? 2 : 1,
           manaPerHp: 10,
-          affectsTarget: true,
         ),
       (SpellAffinity.earth, EffectKind.spellInteraction) =>
         SpellInteractionEffect(
           affinity: SpellAffinity.earth,
           durationTurns: p ? 5 : 4,
-          affectsTarget: true,
           isSlugEffect: true,
         ),
       (SpellAffinity.water, EffectKind.spellInteraction) =>
         SpellInteractionEffect(
           affinity: SpellAffinity.water,
           copySpellCount: p ? 2 : 1,
-          affectsTarget: true,
         ),
       (SpellAffinity.air, EffectKind.spellInteraction) =>
         SpellInteractionEffect(
           affinity: SpellAffinity.air,
           durationTurns: p ? 4 : 3,
-          affectsTarget: false,
           isQuickEffect: true,
         ),
 
@@ -249,14 +243,12 @@ class EffectResolver {
           affinity: SpellAffinity.earth,
           rangeDelta: -1,
           durationTurns: p ? 5 : 4,
-          affectsTarget: true,
         ),
       (SpellAffinity.water, EffectKind.rangeModification) =>
         RangeModificationEffect(
           affinity: SpellAffinity.water,
           turbulent: true,
           durationTurns: p ? 5 : 4,
-          affectsTarget: true,
         ),
       (SpellAffinity.air, EffectKind.rangeModification) =>
         RangeModificationEffect(

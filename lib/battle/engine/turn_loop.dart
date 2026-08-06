@@ -129,6 +129,7 @@ import 'package:cryptography/cryptography.dart';
 import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/spells/basic_spells.dart' show isBasicGridAndT;
+import 'package:rune_duel/spells/counter_charm.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
 import 'package:rune_duel/spells/spell_authorization.dart';
 import 'package:rune_duel/spells/spell_permission.dart';
@@ -169,6 +170,8 @@ import 'draw_schedule.dart';
 import 'effect_applicator.dart';
 import 'hash_rng.dart';
 import 'effect_resolver.dart';
+import 'line_of_sight.dart';
+import 'terrain_ops.dart';
 import 'proof_intake.dart';
 import 'spell_draw.dart';
 import 'tile_entry_resolver.dart';
@@ -243,6 +246,7 @@ class SpellCastAction extends TurnAction {
     this.recall,
     this.conveyorDirection,
     this.delayedOriginHex,
+    this.delayedRange,
     this.handIndex,
   });
 
@@ -291,6 +295,18 @@ class SpellCastAction extends TurnAction {
   /// cast-animation launch origin instead of the caster's current position
   /// (which may have moved many turns since). Null for a same-turn cast.
   final HexCoord? delayedOriginHex;
+
+  /// Companion to [delayedOriginHex]: the caster's spell range on the turn
+  /// this Mystery cast was declared, carried through from
+  /// [PendingDelayedSpell.declaredRange]. The range check reads this instead
+  /// of the caster's range now, so a rangeDown landed while the spell was
+  /// pending cannot retroactively invalidate it. Null for a same-turn cast,
+  /// which uses the turn's pre-movement snapshot instead.
+  ///
+  /// Local-only, like [delayedOriginHex]: both peers rebuild this action from
+  /// their own copy of `state.pendingDelayedSpells`, so it never crosses the
+  /// wire.
+  final int? delayedRange;
 }
 
 /// Main-phase Dash: doubles the caster's movement budget for this turn's
@@ -431,12 +447,23 @@ class AttackEvent {
 /// [isSummon] is true and the summon actually spawned (null for a void/no-op
 /// summon cast — no thumbnail to place).
 ///
-/// [wasCountered] is true when a bound counter charm nullified this cast
-/// instead of letting it resolve — [counterCharmOwnerId] then names who
-/// owns the triggered charm, which may equal [casterId] (a charm counters
-/// the first cast of its bound grid by anyone, including its own owner; see
-/// CLAUDE.md counter-charm plan). A countered spell always has empty
-/// summon/created-effect fields, since it never actually applied.
+/// Counter charms are attuned to an elemental trajectory and cancel a cast
+/// FORMULA BY FORMULA while the charm's sequence and the spell's stay in
+/// lockstep (docs/COUNTER_CHARM_KINSHIP_PLAN.md §2.2/§2.3), so a counter is no
+/// longer all-or-nothing:
+///
+///   * [counteredFormulas] > 0 means a charm fired and cancelled that many
+///     leading formulas. [counterCharmOwnerId] then names who owns the
+///     triggered charm, which may equal [casterId] (a charm counters any
+///     matching cast, including its own owner's).
+///   * [wasCountered] is the FULL-counter case: the charm swallowed every
+///     formula, so the cast never resolved at all and this event has empty
+///     summon/created-effect fields.
+///
+/// A partially countered cast resolved for real — it has its created clouds,
+/// tiles and minions, and its wild magic fired — it just did less than it
+/// would have. UI that means "nothing happened" must test [wasCountered];
+/// UI that means "a charm fired" must test [counteredFormulas].
 class ResolvedSpellEvent {
   const ResolvedSpellEvent({
     required this.spell,
@@ -449,6 +476,7 @@ class ResolvedSpellEvent {
     this.createdTileHexes = const [],
     this.createdMinionIds = const [],
     this.wasCountered = false,
+    this.counteredFormulas = 0,
     this.counterCharmOwnerId,
   });
 
@@ -459,6 +487,11 @@ class ResolvedSpellEvent {
   final String? summonMinionId;
   final HexCoord? summonPosition;
   final bool wasCountered;
+
+  /// Leading formulas a counter charm cancelled — 0 when no charm fired.
+  /// Equal to the spell's whole formula count exactly when [wasCountered].
+  final int counteredFormulas;
+
   final String? counterCharmOwnerId;
 
   /// Battlefield effects this spell brought into being — purely for the UI's
@@ -1363,6 +1396,13 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// spells resolving in the same turn get independent flips.
   int _ripplingNonce = 0;
 
+  /// Per-turn counter folded into every 0x0B turbulent-range roll, so two
+  /// casts in the same turn don't fly the same rolled distance. Reset at the
+  /// start of each turn (the seed already carries the turn number), same
+  /// pattern as [_wildMagicNonce]. Both peers walk the sorted action list in
+  /// the same order, so the counter advances identically on both devices.
+  int _turbulentNonce = 0;
+
   /// Forced casts queued by [WildMagicApplicator] during the synchronous
   /// wild-magic sweep, drained (with their network round trip) before the
   /// triggering spell's own formula effects resolve. See [ForcedCast].
@@ -1958,6 +1998,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     lastWildMagicEvents = [];
     lastCertifiedBaseManaCosts = {};
     _wildMagicNonce = 0;
+    _turbulentNonce = 0;
 
     // Turn-scoped map from commitmentHex → certified ParsedFormulas derived from
     // the peer's verified proof. Populated by _verifyPeerSpellCast; consumed by
@@ -2019,6 +2060,17 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     // Phase 1 — movement decisions should not be influenced by RNG foreknowledge).
     final preMovPos = Map<String, HexCoord>.fromEntries(
       state.avatars.map((av) => MapEntry(av.playerId, av.position)),
+    );
+    // Spell range as it stood when this turn's actions were committed, for the
+    // range check in _resolveActions. Targeting is judged as of when the cast
+    // was completed (ruling 2026-08-06), and Phase 1 is when it was: nothing
+    // between that commit and this line can change a range, since statuses
+    // tick at end of turn and spell effects do not resolve until Phase 4.
+    // Reading effectiveSpellRange at resolution time instead would let an
+    // Earthen Inertia resolving EARLIER in the same action phase clip a cast
+    // that was legal when its caster chose it.
+    final preMovRange = Map<String, int>.fromEntries(
+      state.avatars.map((av) => MapEntry(av.playerId, av.effectiveSpellRange)),
     );
 
     // isDashing/meditateInMove ride along with the movement commit-reveal
@@ -2306,6 +2358,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       myAction,
       peerAction,
       preMovPos,
+      preMovRange,
       actionRng,
       entropy,
       traversedPaths: walked,
@@ -2631,7 +2684,12 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         // The lunge step is real movement, so Charger (FAFA) counts it.
         _creatureAttack(creature, target, rng, movedTiles: movedTiles + 1);
       }
-    } else if (creature.distanceTo(target.position) <= range) {
+    } else if (creature.distanceTo(target.position) <= range &&
+        _creatureHasLineTo(creature, target.position)) {
+      // A ranged summon used to be a bare distance test, so it would walk up
+      // to a wall and shoot straight through it (WALL_LOS_PLAN.md §1). Losing
+      // the line just costs it the shot — it has already moved this turn and
+      // will keep closing next turn.
       _recordAttack(creature, target.position, range);
       _creatureAttack(creature, target, rng, movedTiles: movedTiles);
     }
@@ -2647,14 +2705,30 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     }
   }
 
+  /// Whether [creature] can actually see [to] — from ANY of its tiles, since
+  /// "its range, and the range of things affecting it, applies from any of its
+  /// tiles" (design doc, Big). Its own footprint never blocks it, which
+  /// [losBlockerTile] already handles.
+  bool _creatureHasLineTo(Minion creature, HexCoord to) => creature.occupiedTiles
+      .any((t) => losBlockerTile(state, t, to) == null);
+
   /// Nearest living enemy of [teamId] to [from]: enemy players first, then
   /// (if none) enemy minions — Stealthy (AWAW) ones excluded unless [from]
   /// is already within 1 tile. Ties broken by [rng] (design doc: "Targets
   /// that are both equally close and equal priority chosen at random").
+  ///
+  /// Targets in clear line of sight are preferred over walled-off ones at the
+  /// same priority; if every candidate is blocked the whole set stays in play,
+  /// so a creature keeps advancing on somebody rather than freezing in front
+  /// of a wall (WALL_LOS_PLAN.md §5.2).
   _AiTarget? _nearestEnemyEntity(HexCoord from, String teamId, HashRng rng) {
-    final avatars = state.avatars
+    var avatars = state.avatars
         .where((av) => av.isAlive && av.teamId != teamId)
         .toList();
+    final visibleAvatars = avatars
+        .where((av) => losBlockerTile(state, from, av.position) == null)
+        .toList();
+    if (visibleAvatars.isNotEmpty) avatars = visibleAvatars;
     if (avatars.isNotEmpty) {
       final dists = [for (final av in avatars) hexDistance(av.position, from)];
       final bestDist = dists.reduce(min);
@@ -2665,7 +2739,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       final chosen = tied[rng.nextInt(tied.length)];
       return _AiTarget(position: chosen.position, avatar: chosen);
     }
-    final minions = state.minions
+    var minions = state.minions
         .where(
           (m) =>
               m.isAlive &&
@@ -2675,6 +2749,11 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         )
         .toList();
     if (minions.isEmpty) return null;
+    final visibleMinions = minions
+        .where((m) => m.occupiedTiles
+            .any((t) => losBlockerTile(state, from, t) == null))
+        .toList();
+    if (visibleMinions.isNotEmpty) minions = visibleMinions;
     final dists = [for (final m in minions) m.distanceTo(from)];
     final bestDist = dists.reduce(min);
     final tied = [
@@ -3275,6 +3354,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     TurnAction myAction,
     TurnAction peerAction,
     Map<String, HexCoord> preMovPos,
+    Map<String, int> preMovRange,
     HashRng rng,
     Uint8List entropy, {
     Map<String, List<HexCoord>> traversedPaths = const {},
@@ -3416,13 +3496,58 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           final ignoredCloudRestriction =
               _cloudBoundToAdjacent(actor, targetHex) &&
               hexDistance(actor.position, targetHex) > 1;
-          if (enhancements.fizzle || ignoredCloudRestriction) {
-            // Botched incantation, or an illegal cast that ignored the
-            // cloud's adjacent-only targeting restriction: spell fails
-            // entirely. Mana was already spent at commit time. Treated like
+          // Spell range, enforced by the trusted engine rather than trusted to
+          // the caster's UI. battle_screen's `_maxCastRange` only decides what
+          // a human player's own client lets them tap; a modified client — or
+          // the Solo Practice dummy, which encodes its cast straight onto the
+          // wire — never goes through it. Without this, `effectiveSpellRange`
+          // (and with it Earthen Inertia's whole −1) was advisory against a
+          // peer, and a peer could declare a target clean across the field.
+          // Exactly the reasoning that gave `_cloudBoundToAdjacent` its
+          // engine-side twin.
+          //
+          // **Targeting is valid so long as it was valid when the cast was
+          // completed** (ruling 2026-08-06). So BOTH halves of the test are
+          // read as of that moment, never as of resolution:
+          //
+          //   * the origin — where the caster stood when they declared, not
+          //     where they ended up. Movement resolves in Phase 3, before
+          //     this, and the UI gated the tap against their pre-move tile;
+          //     `actor.position` would fizzle the legal cast of anyone who
+          //     walked away from their target afterwards.
+          //   * the reach — [preMovRange], snapshotted at Phase 2. Reading
+          //     `actor.effectiveSpellRange` here would let an Earthen Inertia
+          //     resolving EARLIER in the same action phase retroactively clip
+          //     a cast that was legal when its caster chose it.
+          //
+          // A delayed (Mystery) fire carries both from the turn it was
+          // declared on — see [PendingDelayedSpell.declaredRange]. Its target
+          // was committed then and never revisited, so judging it against a
+          // range it acquired while sitting pending would punish the player
+          // for the passage of time.
+          final castOrigin = action.delayedOriginHex ??
+              preMovPos[actor.playerId] ??
+              actor.position;
+          final castRange = action.delayedRange ??
+              preMovRange[actor.playerId] ??
+              actor.effectiveSpellRange;
+          final outOfRange = hexDistance(castOrigin, targetHex) > castRange;
+          if (enhancements.fizzle || ignoredCloudRestriction || outOfRange) {
+            // Botched incantation, an illegal cast that ignored the cloud's
+            // adjacent-only targeting restriction, or one aimed past the
+            // caster's reach: spell fails entirely. Mana was already spent at
+            // commit time. Treated like
             // a Pass for chain purposes.
             _regressChain(actor);
           } else {
+            // Watery Inertia (Range Modification, Water): a turbulent caster
+            // keeps their aim but not their reach — the real destination is
+            // rolled here, ABOVE the orb event and everything downstream, so
+            // the orb visibly flies to where the spell went and the card
+            // reveal blooms there too. That placement is also why the cloud
+            // legality check above reads the DECLARED hex: the roll is not
+            // the player's choice, so it can't make their cast illegal.
+            final resolvedTarget = _turbulentTarget(actor, targetHex, entropy);
             // The orb still flies for a countered cast (it visibly happened
             // and drew a counter, unlike a fizzle) — emitted once here for
             // both outcomes below, then the two diverge.
@@ -3432,29 +3557,54 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
                 SpellCastEvent(
                   casterId: actor.playerId,
                   fromHex: action.delayedOriginHex ?? actor.position,
-                  toHex: targetHex,
+                  toHex: resolvedTarget,
                   affinity: affinity,
                 ),
               );
             }
-            final counterHit = _findCounteringCharm(spell.commitmentHex);
-            if (counterHit != null) {
-              // A bound counter charm intercepts this cast: consume the
-              // charm, record a countered ResolvedSpellEvent for the UI's
-              // card reveal (battle_screen.dart shows it, then dissolves it
-              // — no bloom, no thumbnail, since nothing was actually
-              // created), and skip application entirely. Mana was already
-              // spent at commit time, so this is otherwise treated like a
-              // Pass for chain purposes.
-              _triggerCounterCharm(counterHit);
+            // Counter charms match the cast's certified element sequence, so
+            // the trigger test reads exactly what _applySpell would resolve:
+            // the certified sequence for a verified peer cast, the local wire
+            // formula for our own spell (the same fallback every other
+            // consumer of this data uses — see _applySpell's certFormulas).
+            final castSequence =
+                certifiedPeerElementSequences[spell.commitmentHex] ??
+                    _elementSequence(spell);
+            final counterHit = _findCounteringCharm(castSequence);
+            // Whether the charm swallowed the WHOLE cast. Measured in
+            // formulas for an incantation and in elements for a summon,
+            // because a summon reads residuals too (CreatureSpec.fromElements
+            // counts every activation, _parsedFormulas drops the trailing 1–2).
+            final counteredFormulas = counterHit?.formulas ?? 0;
+            final fullyCountered = counterHit != null &&
+                (spell.isSummon
+                    ? counteredFormulas * kElementsPerFormula >=
+                        castSequence.length
+                    : counteredFormulas >= castSequence.length ~/ kElementsPerFormula);
+            if (counterHit != null) _triggerCounterCharm(counterHit);
+            if (fullyCountered) {
+              // Nothing of the cast survives: consume the charm, record a
+              // countered ResolvedSpellEvent for the UI's card reveal
+              // (battle_screen.dart shows it, then dissolves it — no bloom,
+              // no thumbnail, since nothing was actually created), and skip
+              // application entirely. Mana was already spent at commit time,
+              // so this is otherwise treated like a Pass for chain purposes.
+              //
+              // Keeping this path byte-for-byte the old one is deliberate: it
+              // is what preserves wild-magic invariant A1 ("no wild magic on a
+              // countered cast") for free, since _applySpell — the only place
+              // wild magic fires — is never reached. A PARTIAL counter is a
+              // cast that really happened, so it does resolve and its wild
+              // magic does fire; see the else branch.
               lastResolvedSpells.add(
                 ResolvedSpellEvent(
                   spell: spell,
                   casterId: actor.playerId,
-                  targetHex: targetHex,
+                  targetHex: resolvedTarget,
                   isSummon: spell.isSummon,
                   wasCountered: true,
-                  counterCharmOwnerId: counterHit.$1.playerId,
+                  counteredFormulas: counteredFormulas,
+                  counterCharmOwnerId: counterHit.owner.playerId,
                 ),
               );
               _regressChain(actor);
@@ -3484,7 +3634,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
               final summoned = await _applySpell(
                 actor,
                 spell,
-                targetHex,
+                resolvedTarget,
                 enhancements,
                 rng,
                 entropy,
@@ -3495,6 +3645,9 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
                 certWildMagic: certifiedPeerWildMagic[spell.commitmentHex],
                 conveyorDirection: conveyorDirection,
                 witherRng: witherRng,
+                // A charm matched a prefix of this cast but not all of it:
+                // the leading formulas are cancelled and the rest resolves.
+                suppressedFormulas: counteredFormulas,
                 // The rod is declared at Phase 0 now, not folded into the
                 // action commit — every other activation is declared on the
                 // turn it takes effect, and this keeps a delayed Mystery cast
@@ -3531,8 +3684,10 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
                 ResolvedSpellEvent(
                   spell: spell,
                   casterId: actor.playerId,
-                  targetHex: targetHex,
+                  targetHex: resolvedTarget,
                   isSummon: spell.isSummon,
+                  counteredFormulas: counteredFormulas,
+                  counterCharmOwnerId: counterHit?.owner.playerId,
                   summonMinionId: summoned?.id,
                   summonPosition: summoned?.position,
                   createdCloudIds: [
@@ -3569,6 +3724,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
               commitment: mysteryCommitment,
               castTurn: state.turnNumber,
               origin: actor.position,
+              declaredRange: actor.effectiveSpellRange,
               isPotent: isPotent,
               isVelocity: isVelocity,
             ),
@@ -3655,6 +3811,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           isPotent: pending.isPotent,
           isVelocity: pending.isVelocity,
           delayedOriginHex: pending.origin,
+          delayedRange: pending.declaredRange,
         ),
       ));
     }
@@ -3867,6 +4024,15 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// Spontaneous Combustion can fan out into an unbounded cast cascade, and a
   /// doubled spell fires its global effect twice. Do not remove it, and do not
   /// add a caller that leaves it true for a cast the player did not choose.
+  ///
+  /// [suppressedFormulas] is a trajectory counter charm's partial counter
+  /// (docs/COUNTER_CHARM_KINSHIP_PLAN.md Phase 2): that many LEADING formulas
+  /// are cancelled and the remainder of the cast resolves normally. For a
+  /// summon it cancels the corresponding leading stat contributors instead
+  /// (3 per formula), which can shrink the creature or, at the limit, produce
+  /// none. A cast whose formulas are ALL suppressed never gets here — the
+  /// caller takes the full-counter path and skips this method entirely, which
+  /// is what keeps wild-magic invariant A1 true without a flag.
   Future<Minion?> _applySpell(
     WizardAvatar actor,
     SpellAsset spell,
@@ -3884,6 +4050,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     bool fireWildMagic = true,
     bool subjectToRippling = true,
     bool skipChainUpdate = false,
+    int suppressedFormulas = 0,
   }) async {
     // ── Wild magic (docs/WILD_MAGIC_PLAN.md §4.5) ─────────────────────────
     // Design doc L746: "Within a single player's spell: wild magic first, then
@@ -3926,17 +4093,48 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       repeatWholeSpell = 2;
     }
 
+    // ── Line of sight (docs/WALL_LOS_PLAN.md §2.1, §5.2) ──────────────────
+    // An earthen wall or a Big creature standing between the caster and the
+    // declared target does NOT reject the cast — the spell resolves on the
+    // blocker instead. Computed once here, above the summon branch, because
+    // both cast modes need it (they just land differently: see below).
+    final penetration = _penetrationDamageFor(actor);
+    final blocker = losBlockerTile(
+      state,
+      actor.position,
+      targetHex,
+      penetrating: penetration != null,
+    );
+
     // design doc "Summons": a summon-mode spell's element sequence is read
     // as a creature instead of being resolved as incantation effects.
     // Bypasses EffectResolver/EffectApplicator entirely -- summoning is
     // "instead of creating spell effect incantations", not a 17th effect
     // kind. It still builds/spends the chain like any other spell (R4).
     if (spell.isSummon) {
+      // A blocked summon is the one case that does NOT resolve on the blocker:
+      // a creature needs a tile it can stand on, and a wall is exactly the tile
+      // nothing can stand in. It arrives at the last clear hex BEFORE the
+      // blocker instead — the summoning got as far as it could and the creature
+      // stepped out there. (_castSummon's own spawn search then walks outward
+      // from that anchor if it is occupied.)
       final sequence = certElementSequence ?? _elementSequence(spell);
+      // A counter charm cancels leading stat contributors, 3 per matched
+      // formula — the creature arrives smaller, or (all contributors gone)
+      // not at all. Chain state below still reads the FULL sequence: the
+      // caster channelled the whole spell; the charm interfered with what it
+      // produced, not with what they were building.
+      final survivingSequence = suppressedFormulas <= 0
+          ? sequence
+          : sequence
+              .skip(suppressedFormulas * kElementsPerFormula)
+              .toList(growable: false);
       final minion = _castSummon(
         actor,
-        targetHex,
-        sequence,
+        blocker == null
+            ? targetHex
+            : tileBeforeBlocker(actor.position, targetHex, blocker),
+        survivingSequence,
         spell.summonPersonality,
         enhancements,
         rng,
@@ -3952,12 +4150,31 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     // formula) or a peer delayed-fire (not yet on the certified path). When
     // the wiring pass enables full verification, a null entry for a
     // current-turn peer spell must forfeit rather than fall through here.
-    final formulas = certFormulas ?? _parsedFormulas(spell);
+    final allFormulas = certFormulas ?? _parsedFormulas(spell);
+    // Partial counter: the charm cancelled the leading formulas outright, so
+    // they never reach EffectResolver. Chain state below still reads the full
+    // [certFormulas] — see the summon branch's note.
+    final formulas = suppressedFormulas <= 0
+        ? allFormulas
+        : allFormulas.skip(suppressedFormulas).toList(growable: false);
     if (formulas.isEmpty) {
       // Wild-magic stub (zero formulas = void spell). Nothing resolves, so a
       // requested Rod of Wind is NOT consumed here (don't burn a rod on a
       // no-op cast).
       return null;
+    }
+
+    // Incantation effects resolve ON the blocker (§2.1) — unlike a summon,
+    // which needs somewhere to stand. Every formula below dispatches at
+    // [resolveHex], not at [targetHex]; this is the authoritative path both
+    // peers run, and it is what makes the per-effect terrain table (§6)
+    // reachable at all.
+    final resolveHex = blocker ?? targetHex;
+    if (penetration != null && penetration > 0) {
+      // Firey Inertia's other half, finally wired: "1 [2 potent] damage to
+      // entities in hexes en route". Fires once per cast, not once per
+      // formula — it is the spell's flight, not an effect.
+      _applyPenetrationEnRoute(actor, targetHex, penetration);
     }
 
     // Rod of Wind: consume one now (if requested and owned) — a real cast
@@ -3996,7 +4213,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         EffectApplicator.apply(
           ApplyContext(
             descriptor: descriptor,
-            targetTile: targetHex,
+            targetTile: resolveHex,
             caster: actor,
             state: state,
             rng: rng,
@@ -4020,6 +4237,104 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       _updateChainState(actor, spell, certFormulas: certFormulas);
     }
     return null;
+  }
+
+  // ── Line of sight (docs/WALL_LOS_PLAN.md) ─────────────────────────────────
+
+  /// Where [actor]'s spell actually lands, given Watery Inertia
+  /// (StatusEffectId.turbulent): the declared direction is kept, the distance
+  /// is re-rolled 1..`effectiveSpellRange`. Returns [declared] unchanged when
+  /// the caster isn't turbulent — every cast calls this, so the not-turbulent
+  /// path must be free of side effects (it must not burn a nonce).
+  ///
+  /// Design v4.0 §303: *"next spell fires in intended direction but range
+  /// randomized 1–max"*. Two rulings, 2026-08-06: the status is **not**
+  /// consumed by the cast — it randomises every spell for its full 4[5] turns
+  /// — and *max* is the caster's own range stat, so a roll higher than the
+  /// declared distance sails **past** the target rather than being clamped to
+  /// it. Falling short and overshooting are both real outcomes.
+  ///
+  /// Rolled from commit-reveal entropy (tag 0x0B), never `Random`: the design
+  /// doc names turbulent range in its jointly-generated-randomness list, and a
+  /// locally-rolled destination would desync the two devices on the very next
+  /// state hash.
+  HexCoord _turbulentTarget(
+    WizardAvatar actor,
+    HexCoord declared,
+    Uint8List entropy,
+  ) {
+    if (!actor.hasTurbulent) return declared;
+    final from = actor.position;
+    final n = hexDistance(from, declared);
+    // A cast on your own tile has no direction to be thrown off along.
+    if (n == 0) return declared;
+
+    final rng = HashRng(
+      _playerPhaseSeed(
+        entropy,
+        matchId,
+        state.turnNumber,
+        0x0B,
+        actor.playerId,
+        _turbulentNonce++,
+      ),
+    );
+    var rolled = rng.nextInt(actor.effectiveSpellRange) + 1; // 1..max
+
+    // Same axial lerp-and-round hexLinePath walks the line with, so a rolled
+    // distance shorter than the declared one lands exactly on a tile the
+    // spell would have flown through. t > 1 extrapolates past the target,
+    // which is the overshoot case.
+    while (rolled > 0) {
+      final t = rolled / n;
+      final hex = HexCoord(
+        (from.q * (1 - t) + declared.q * t).round(),
+        (from.r * (1 - t) + declared.r * t).round(),
+      );
+      // An overshoot can fly off the edge of the battlefield. Walk the roll
+      // back rather than re-rolling: re-rolling would consume a second draw
+      // from a stream the other device advances in lockstep.
+      if (state.battlefield.isInBounds(hex)) return hex;
+      rolled--;
+    }
+    return declared;
+  }
+
+  /// The `penetrationDamage` carried by [actor]'s active Firey Inertia
+  /// (StatusEffectId.penetrating), or null when they don't have it.
+  ///
+  /// Non-null is the LOS exemption itself: a penetrating caster's spells
+  /// ignore walls and Big creatures entirely. The value is the en-route tick
+  /// ([_applyPenetrationEnRoute]) — it can legitimately be 0, which is why
+  /// this returns a nullable int rather than using 0 as "absent".
+  int? _penetrationDamageFor(WizardAvatar actor) {
+    for (final fx in actor.activeStatusEffects) {
+      if (fx.isDormant) continue;
+      if (fx.effectTypeId != StatusEffectId.penetrating) continue;
+      return fx.modifiers['penetrationDamage'] ?? 0;
+    }
+    return null;
+  }
+
+  /// Deals [amount] damage to every entity in the hexes strictly between
+  /// [actor] and [targetHex] — the flight path of a penetrating spell.
+  ///
+  /// Untyped: this is the spell physically passing through, not an elemental
+  /// effect, so it runs no resistance wheel and leaves terrain alone (the
+  /// whole point of penetrating is that terrain isn't in the way).
+  void _applyPenetrationEnRoute(
+    WizardAvatar actor,
+    HexCoord targetHex,
+    int amount,
+  ) {
+    for (final hex in hexLinePath(actor.position, targetHex)) {
+      for (final av in state.avatars) {
+        if (av.isAlive && av.position == hex) av.absorbDamage(amount);
+      }
+      for (final m in state.minions) {
+        if (m.isAlive && m.occupiedTiles.contains(hex)) m.takeDamage(amount);
+      }
+    }
   }
 
   // ── Wild magic (docs/WILD_MAGIC_PLAN.md) ──────────────────────────────────
@@ -4546,53 +4861,86 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
   // ── Counter charms ────────────────────────────────────────────────────────
 
-  /// Returns the un-revealed counter charm (if any) bound to [commitmentHex],
-  /// searched in a fixed order — avatars by playerId, then that avatar's
-  /// accoutrements by id — so two devices resolving the same turn always
-  /// pick the same charm when more than one is bound to the same grid.
-  /// Charms trigger on the first cast of their bound grid by ANY wizard,
-  /// including the charm's own owner (design: counter-charm plan, "Trigger
-  /// source" — deliberately not opponent-only).
+  /// The un-revealed counter charm that intercepts a cast whose certified
+  /// element sequence is [sequence], and how many whole formulas it cancels.
   ///
-  /// A wizard who spent an artifact at Phase 0 has their charms down for the
-  /// turn (ARTIFACT_SYSTEM_PLAN.md §2.2) and is skipped entirely. The tension
-  /// is internal to the charm holder — *"do I want that 100 mana badly enough
-  /// to open a window this turn?"* — which is why the gate is on the CHARM
-  /// OWNER's own declaration and not the caster's. Because this method
-  /// deliberately searches every avatar including the caster, that one guard
-  /// correctly covers a wizard whose own activation opened a window onto their
-  /// own cast, with no second check needed.
-  (WizardAvatar, Accoutrement)? _findCounteringCharm(String commitmentHex) {
-    if (commitmentHex.isEmpty) return null;
+  /// Charms are attuned to a TRAJECTORY, not to one spell's grid
+  /// (docs/COUNTER_CHARM_KINSHIP_PLAN.md Phase 2): a charm fires against any
+  /// cast opening with its element sequence, and cancels formulas for as long
+  /// as the two sequences stay in lockstep ([counterCharmFormulaMatch]).
+  /// Charms trigger on such a cast by ANY wizard, including the charm's own
+  /// owner (design: counter-charm plan, "Trigger source" — deliberately not
+  /// opponent-only).
+  ///
+  /// Selection is a pure function of state, so both devices pick the same
+  /// charm: the LONGEST match wins — a player who paid for a longer charm
+  /// should get the deeper counter — and ties break by the pre-existing fixed
+  /// scan order, avatars by playerId then that avatar's accoutrements by id.
+  /// At most one charm fires per cast; charms do not stack.
+  ///
+  /// Two gates on the charm's OWNER:
+  ///
+  ///   * A wizard who spent an artifact at Phase 0 has their charms down for
+  ///     the turn (ARTIFACT_SYSTEM_PLAN.md §2.2) and is skipped entirely. The
+  ///     tension is internal to the charm holder — *"do I want that 100 mana
+  ///     badly enough to open a window this turn?"* — which is why the gate is
+  ///     on the charm owner's own declaration and not the caster's. Because
+  ///     this method deliberately searches every avatar including the caster,
+  ///     that one guard correctly covers a wizard whose own activation opened
+  ///     a window onto their own cast, with no second check needed.
+  ///   * They must be able to pay [counterCharmManaCost] in full (§2.4). A
+  ///     charm whose owner cannot afford it does not fire and is not consumed
+  ///     — it stays charged for a turn they can pay. Skipping rather than
+  ///     part-paying is what keeps "full cost on every trigger" a real cost
+  ///     rather than a soft one, and it lets a shorter, cheaper charm on the
+  ///     same wizard fire in its place.
+  ({WizardAvatar owner, Accoutrement charm, int formulas})? _findCounteringCharm(
+    List<BorderZone> sequence,
+  ) {
+    if (sequence.length < kElementsPerFormula) return null;
     final sortedAvatars = List<WizardAvatar>.from(state.avatars)
       ..sort((a, b) => a.playerId.compareTo(b.playerId));
+    ({WizardAvatar owner, Accoutrement charm, int formulas})? best;
     for (final av in sortedAvatars) {
       if (av.declaredActivation != null) continue;
       final sortedAcc = List<Accoutrement>.from(av.accoutrements)
         ..sort((a, b) => a.id.compareTo(b.id));
       for (final acc in sortedAcc) {
-        if (acc.kind == AccoutrementKind.counterCharm &&
-            !acc.counterCharmRevealed &&
-            acc.targetCommitmentHex == commitmentHex) {
-          return (av, acc);
+        if (acc.kind != AccoutrementKind.counterCharm) continue;
+        if (acc.counterCharmRevealed) continue;
+        final trajectory = acc.charmTrajectory;
+        if (trajectory == null) continue; // unattuned charm: never fires
+        final formulas = counterCharmFormulaMatch(trajectory, sequence);
+        if (formulas == 0) continue;
+        if (av.mana < counterCharmManaCost(trajectory)) continue;
+        // Strictly-greater keeps the scan order as the tiebreak.
+        if (best == null || formulas > best.formulas) {
+          best = (owner: av, charm: acc, formulas: formulas);
         }
       }
     }
-    return null;
+    return best;
   }
 
-  /// Marks [hit]'s charm revealed (consuming it — it never triggers again).
-  /// Does not apply the spell, touch mana, or record any event — the caller
-  /// (the sole call site, in [_resolveActions]) builds the countered
-  /// [ResolvedSpellEvent] itself and is responsible for skipping
-  /// [_applySpell] and regressing the chain, same as any other failed cast.
-  void _triggerCounterCharm((WizardAvatar, Accoutrement) hit) {
-    final (owner, charm) = hit;
-    final idx = owner.accoutrements.indexWhere((a) => a.id == charm.id);
+  /// Consumes [hit]'s charm: marks it revealed (it never triggers again) and
+  /// charges its owner the full [counterCharmManaCost], whatever fraction of
+  /// the cast actually got cancelled (§2.4).
+  ///
+  /// Does not apply or suppress the spell and records no event — the caller
+  /// (the sole call site, in [_resolveActions]) decides between the
+  /// full-counter path (skip [_applySpell] entirely) and the partial-counter
+  /// path (resolve with a suppressed prefix).
+  void _triggerCounterCharm(
+    ({WizardAvatar owner, Accoutrement charm, int formulas}) hit,
+  ) {
+    final owner = hit.owner;
+    final idx = owner.accoutrements.indexWhere((a) => a.id == hit.charm.id);
     if (idx >= 0) {
       owner.accoutrements[idx] =
           owner.accoutrements[idx].copyWith(counterCharmRevealed: true);
     }
+    final cost = counterCharmManaCost(hit.charm.charmTrajectory ?? const []);
+    owner.mana = (owner.mana - cost).clamp(0, owner.maxMana);
   }
 
   // ── Phase 5: End of turn ──────────────────────────────────────────────────
@@ -4759,6 +5107,14 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       _applyManaGain(av, regen);
     }
 
+    // Terrain-barrier riders (WALL_LOS_PLAN.md §2.6): a Firey barrier turns
+    // its tile into a burning wall that scorches every adjacent tile, and a
+    // Watery one pays mana to whoever is standing on the tile — live on lava,
+    // slow, and conveyor tiles, inert on a wall nobody can stand in. Runs
+    // alongside the avatar mana regen above so both use _applyManaGain and
+    // the same clamping.
+    tickTerrainBarrierAuras(state, rng, _applyManaGain);
+
     // Haymaker DoT tick: deal damage = remainingTurns per active haymakerDot.
     for (final av in state.avatars) {
       final dot = av.activeStatusEffects
@@ -4808,7 +5164,10 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         });
       for (final tile in expired) {
         state.expiringTiles.remove(tile);
-        state.tileEffects.remove(tile);
+        // removeTerrain, not tileEffects.remove: a Mountains wall carries an
+        // HP entry and possibly barriers, and leaving either behind would let
+        // the next tile on that coord inherit ghosts (WALL_LOS_PLAN.md §5.0).
+        state.removeTerrain(tile);
       }
     }
 
@@ -4821,6 +5180,10 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       }
       av.tickStatusEffects();
     }
+    // Terrain barriers age out the same way avatar barriers do; an Airy one
+    // that runs out of TIME still collapses, and §2.6's knockback says "on
+    // collapse", not "on burst".
+    tickTerrainBarriers(state, rng);
     state.tickClouds();
 
     // Rod of Wind's movement passive and the bookmark burn's hand redraw

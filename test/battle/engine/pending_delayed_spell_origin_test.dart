@@ -15,6 +15,7 @@ import 'package:rune_duel/battle/models/battle_state.dart';
 import 'package:rune_duel/battle/models/hex_battlefield.dart' show Battlefield;
 import 'package:rune_duel/battle/models/match_config.dart';
 import 'package:rune_duel/battle/models/pending_delayed_spell.dart';
+import 'package:rune_duel/battle/models/status_effect_ids.dart';
 import 'package:rune_duel/battle/models/wizard_avatar.dart';
 import 'package:rune_duel/battle/networking/solo_battle_session.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
@@ -128,5 +129,113 @@ void main() {
         reason: 'the cast animation must launch from the true cast-time tile, '
             'not the caster\'s current (post-move) position');
     expect(event.toHex, equals(targetTile));
+  });
+
+  // PendingDelayedSpell.declaredRange is origin's twin: targeting is judged as
+  // of when the cast was completed (ruling 2026-08-06), and for a Mystery
+  // spell that was the declaration turn — the target tile is committed then
+  // and never revisited. A range the caster gains or loses while the spell
+  // sits pending must not reach back and change whether it was legal.
+  group('declaredRange', () {
+    test('a rangeDown landed while the spell is pending does not invalidate it',
+        () async {
+      final state = _makeState(const HexCoord(0, 0));
+      final caster = state.avatars.single;
+      final loop = TurnLoop(
+        state: state,
+        session: SoloBattleSession(state: state),
+        localPlayerId: 'player_a',
+      );
+      const targetTile = HexCoord(3, 0); // exactly range 3
+      const delay = 1;
+      final nonce = Uint8List.fromList(List.generate(16, (i) => i + 1));
+      final commitment = await PendingDelayedSpell.commitmentHash(
+        target: targetTile,
+        delay: delay,
+        nonce: nonce,
+      );
+
+      await loop.runTurn(TurnInput(
+        action: MysterySpellCastAction(
+          spell: _testSpell(),
+          mysteryCommitment: commitment,
+        ),
+      ));
+      final pending = state.pendingDelayedSpells.single;
+      expect(pending.declaredRange, 3,
+          reason: 'captured alongside origin, at the moment of casting');
+
+      // Clipped AFTER declaring — the spell is already committed to its tile.
+      caster.activeStatusEffects.add(StatusEffect(
+        effectTypeId: StatusEffectId.rangeDown,
+        remainingTurns: 5,
+        modifiers: const {'rangeDelta': -1},
+      ));
+
+      await loop.runTurn(TurnInput(
+        action: PassAction(),
+        delayedSpellReveals: [
+          DelayedSpellReveal(
+            pendingSpellId: pending.id,
+            targetTile: targetTile,
+            delay: delay,
+            nonce: nonce,
+          ),
+        ],
+      ));
+
+      expect(loop.lastCastEvents, hasLength(1),
+          reason: 'range 3 when it was declared, so it fires; judging it '
+              'against the caster\'s range NOW (2) would punish the player '
+              'for the passage of time');
+    });
+
+    test('a rangeDown already up when the spell is declared DOES shorten it',
+        () async {
+      final state = _makeState(const HexCoord(0, 0));
+      state.avatars.single.activeStatusEffects.add(StatusEffect(
+        effectTypeId: StatusEffectId.rangeDown,
+        remainingTurns: 5,
+        modifiers: const {'rangeDelta': -1},
+      ));
+      final loop = TurnLoop(
+        state: state,
+        session: SoloBattleSession(state: state),
+        localPlayerId: 'player_a',
+      );
+      const targetTile = HexCoord(3, 0); // range is 2 now — one hex too far
+      const delay = 1;
+      final nonce = Uint8List.fromList(List.generate(16, (i) => i + 2));
+      final commitment = await PendingDelayedSpell.commitmentHash(
+        target: targetTile,
+        delay: delay,
+        nonce: nonce,
+      );
+
+      await loop.runTurn(TurnInput(
+        action: MysterySpellCastAction(
+          spell: _testSpell(),
+          mysteryCommitment: commitment,
+        ),
+      ));
+      final pending = state.pendingDelayedSpells.single;
+      expect(pending.declaredRange, 2);
+
+      await loop.runTurn(TurnInput(
+        action: PassAction(),
+        delayedSpellReveals: [
+          DelayedSpellReveal(
+            pendingSpellId: pending.id,
+            targetTile: targetTile,
+            delay: delay,
+            nonce: nonce,
+          ),
+        ],
+      ));
+
+      expect(loop.lastCastEvents, isEmpty,
+          reason: 'a Mystery cast is not a way to launder an illegal target: '
+              'the commitment hides the tile, it does not exempt it');
+    });
   });
 }

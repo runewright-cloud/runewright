@@ -31,6 +31,8 @@ import 'package:flutter/services.dart' show rootBundle;
 
 import '../battle/engine/tile_entry_resolver.dart'
     show MovePathPrediction, predictAvatarMove, tileOccupied;
+import '../battle/engine/line_of_sight.dart'
+    show losBlockerTile, tileBeforeBlocker;
 import '../battle/engine/turn_loop.dart';
 import '../battle/engine/wild_magic_applicator.dart' show WildMagicEvent;
 import '../battle/models/battle_state.dart';
@@ -65,6 +67,8 @@ import '../spells/sighting_asset.dart';
 import '../spells/spell_asset.dart';
 import '../spells/spell_permission.dart';
 import '../spells/supreme_tags.dart' show deriveSupremeTags;
+import '../spells/wild_magic_preview.dart'
+    show activeLeylineSeed, overrideLeylineSeed;
 import '../dev_flags.dart' show kAllowProoflessSpells;
 import 'avatars/avatar_sprites.dart' show AvatarAssignment, AvatarAtlas;
 import 'scenery/scenery_map.dart';
@@ -327,6 +331,11 @@ class _BattleScreenState extends State<BattleScreen>
   List<SpellAsset?> _spells = [];
   late TurnLoop _loop;
   late AnimationController _pulseController;
+
+  /// The library-wide leyline seed this duel displaces, restored on dispose.
+  /// Captured at construction rather than in initState so it is well-defined
+  /// on every path dispose can be reached by. See initState.
+  final String _leylineSeedBeforeDuel = activeLeylineSeed.value;
 
   // Stage 2 verifier init (see _initTurnLoop): true once _loop is safe to
   // read AND the battle-start opening deal has run (TurnLoop.startBattle), so
@@ -808,6 +817,12 @@ class _BattleScreenState extends State<BattleScreen>
       vsync: this,
       duration: _kAttackPlayback,
     );
+    // Cards opened during this duel must preview their wild magic under the
+    // duel's leyline seed, not the player's own — the host is authoritative
+    // over MatchConfig, so a guest fights under their host's tradition and
+    // their whole library finds different wild magic for the duration
+    // (WILD_MAGIC_PLAN.md §7.5). Restored in dispose().
+    overrideLeylineSeed(widget.state.config.communitySeed);
     _initScenery();
     unawaited(_loadAvatarAtlas());
     _seedPeerAvatarChoice();
@@ -1171,6 +1186,7 @@ class _BattleScreenState extends State<BattleScreen>
 
   @override
   void dispose() {
+    activeLeylineSeed.value = _leylineSeedBeforeDuel;
     _pulseController.dispose();
     _castAnimController.dispose();
     _effectBloomController.dispose();
@@ -1916,6 +1932,52 @@ class _BattleScreenState extends State<BattleScreen>
   /// Pool exemption — this only gates what the UI lets the local player tap,
   /// so letting it disagree would either hide legal casts or offer casts the
   /// engine then fizzles.
+  /// Where the currently-selected spell will actually land, when the line
+  /// from the local wizard to their declared target is blocked.
+  ///
+  /// Mirrors TurnLoop._applySpell's retarget exactly — including the
+  /// `penetrating` exemption — for the same reason [_maxCastRange] mirrors the
+  /// cloud rule: a UI that disagrees with the engine either hides legal casts
+  /// or offers ones that resolve somewhere else entirely. Null when the line
+  /// is clear (the common case) or nothing is selected.
+  HexCoord? _blockedLandingHex() {
+    final local = _local;
+    final target = _targetHex;
+    final spell = _selectedSpell;
+    if (local == null || target == null || spell == null) return null;
+    final penetrating = local.activeStatusEffects.any(
+      (fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.penetrating,
+    );
+    final blocker = losBlockerTile(
+      widget.state,
+      local.position,
+      target,
+      penetrating: penetrating,
+    );
+    if (blocker == null) return null;
+    // A summon lands one hex short of the blocker rather than on it — a
+    // creature needs a tile it can stand on. Mirrors _applySpell's split.
+    return spell.isSummon
+        ? tileBeforeBlocker(local.position, target, blocker)
+        : blocker;
+  }
+
+  /// Current HP of every terrain tile, read through [BattleState.terrainHpAt]
+  /// so an illusory copy shows its true 1 HP rather than the type's pool.
+  Map<HexCoord, int> _terrainHpForPainter() => {
+        for (final hex in widget.state.tileEffects.keys)
+          hex: widget.state.terrainHpAt(hex),
+      };
+
+  Map<HexCoord, List<SpellAffinity>> _terrainBarrierElements() => {
+        for (final entry in widget.state.terrainBarriers.entries)
+          if (entry.value.values.any((b) => b.isAlive))
+            entry.key: entry.value.entries
+                .where((e) => e.value.isAlive)
+                .map((e) => e.key)
+                .toList(),
+      };
+
   int _maxCastRange(WizardAvatar caster, HexCoord hex) {
     if (caster.activeStatusEffects.any(
       (fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.scryingSight,
@@ -2545,6 +2607,10 @@ class _BattleScreenState extends State<BattleScreen>
                   ? 'Blocked by your ward'
                   : "Blocked by the opponent's ward")
             : null,
+        // A charm that matched only a prefix cancels those formulas and lets
+        // the rest through — the card must still read as a spell that
+        // resolved, so it gets the banner, not the ribbon.
+        partialCounterLabel: _partialCounterLabel(ev),
       );
       if (!mounted) return;
       // A countered cast leaves no thumbnail anywhere — nothing was
@@ -2620,6 +2686,20 @@ class _BattleScreenState extends State<BattleScreen>
         _battlefieldKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize) return null;
     return box.localToGlobal(hexToPixel(hex, _fieldCenter, _hexSize));
+  }
+
+  /// Banner text for a PARTIALLY countered cast — a trajectory charm matched a
+  /// prefix of the spell and cancelled those formulas while the rest resolved
+  /// (docs/COUNTER_CHARM_KINSHIP_PLAN.md §2.3). Null when no charm fired, and
+  /// null for a full counter, which gets the COUNTERED ribbon instead.
+  String? _partialCounterLabel(ResolvedSpellEvent ev) {
+    if (ev.wasCountered || ev.counteredFormulas <= 0) return null;
+    final n = ev.counteredFormulas;
+    final whose = ev.counterCharmOwnerId == widget.localPlayerId
+        ? 'your ward'
+        : "the opponent's ward";
+    return 'PARTLY COUNTERED — $n formula${n == 1 ? "" : "s"} '
+        'cancelled by $whose';
   }
 
   /// Where [ev]'s card should reverse-bloom to as it resolves — the spot its
@@ -2947,6 +3027,10 @@ class _BattleScreenState extends State<BattleScreen>
                                   avatarAtlas: _avatarAtlas,
                                   avatarAssignment: _avatarAssignment,
                                   tileEffects: widget.state.tileEffects,
+                                  terrainHp: _terrainHpForPainter(),
+                                  terrainBarrierElements:
+                                      _terrainBarrierElements(),
+                                  blockedLandingHex: _blockedLandingHex(),
                                   clouds: widget.state.clouds,
                                   directionPickHexes:
                                       _phase == _InputPhase.pickingDirection &&

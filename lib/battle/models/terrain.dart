@@ -8,11 +8,18 @@
 //   SlowTile       — Water flavor: costs extra movement + mana drain on entry
 //   ConveyorTile   — Air flavor: force-moves occupants one tile per turn
 //
-// Tile effects placed by spells are permanent (no turn limit); they persist
-// until removed by another effect or match end. The two WILD-MAGIC variants
-// below (IceTile, ChasmTile) are the exception: they expire, and their expiry
-// turn lives in BattleState.expiringTiles rather than on the tile, so every
-// TileEffect stays immutable.
+// Tile effects placed by spells have no turn limit, but they are NOT
+// indestructible: each of the four carries an HP pool and an elemental
+// affinity (see [terrainMaxHpOf] / [terrainAffinityOf] below) and is destroyed
+// when damage exhausts it. Without that, a lava- or slow-tile spam build has
+// no counterplay at all (docs/WALL_LOS_PLAN.md §1/§4). The live HP and any
+// barriers imbued into a tile live in BattleState.terrainHp /
+// BattleState.terrainBarriers — side-maps, following the expiringTiles
+// precedent, so every TileEffect stays immutable.
+//
+// The two WILD-MAGIC variants below (IceTile, ChasmTile) are the exception:
+// they get no HP pool at all, and they expire on their own, with the expiry
+// turn in BattleState.expiringTiles.
 //
 //   IceTile   — Glacier (wild magic, row 2 Water): entering slides you on
 //   ChasmTile — Chasm   (wild magic, row 2 Earth): blocks movement, NOT
@@ -33,6 +40,7 @@
 //                 during the Summons step each turn (TurnLoop._moveClouds)
 
 import 'package:rune_duel/engine/hex_grid.dart';
+import 'package:rune_duel/battle/models/effect_kind.dart' show SpellAffinity;
 
 // ── Tile effects ──────────────────────────────────────────────────────────────
 
@@ -142,6 +150,53 @@ bool tileBlocksMovement(TileEffect? e) => e is ImpassableTile || e is ChasmTile;
 /// via BattleState.expiringTiles). Terrain-destruction effects and tile
 /// placements both check this.
 bool tileIsIndestructible(TileEffect? e) => e is ChasmTile;
+
+// ── Terrain HP model (docs/WALL_LOS_PLAN.md §2.2, §3.3, §5.0) ────────────────
+
+/// True when [e] is one of the four spell-placed tiles that carry an HP pool
+/// and can be damaged, barriered, and destroyed.
+///
+/// The wild-magic pair is deliberately excluded: [ChasmTile] is indestructible
+/// for its lifetime and [IceTile] expires on its own, so neither ever gets an
+/// entry in BattleState.terrainHp / .terrainBarriers.
+bool tileIsDestructibleTerrain(TileEffect? e) =>
+    e is FloorIsLava || e is ImpassableTile || e is SlowTile || e is ConveyorTile;
+
+/// A terrain tile's elemental affinity — the Terrain Sculpting flavor that
+/// places it. Null for the wild-magic tiles, which have no affinity because
+/// they have no HP to resist damage with.
+///
+/// Damage against terrain runs the same resistance wheel creatures use
+/// ([applyResistance]): same element halves (rounded up), opposite doubles.
+/// Dousing lava with water and eroding a wall with wind both read correctly,
+/// and Earth being the *worst* element for breaking an earthen wall is
+/// intended (§2.2).
+///
+/// Fixed at placement and never changed: paving lava with a wall replaces the
+/// tile outright — new type, new affinity, new full HP, old barriers lost
+/// (§3.4). That is what keeps this a pure function with nothing to serialize.
+SpellAffinity? terrainAffinityOf(TileEffect? e) => switch (e) {
+      FloorIsLava() => SpellAffinity.fire,
+      ImpassableTile() => SpellAffinity.earth,
+      SlowTile() => SpellAffinity.water,
+      ConveyorTile() => SpellAffinity.air,
+      _ => null,
+    };
+
+/// A terrain tile's full HP pool. 0 for anything without one.
+///
+/// Mirrors the barrier table players already know (Earthen 4, everything else
+/// 2): Earth is the tanky flavor (§3.3). It also answers terrain spam
+/// directly — the cheapest tiles to spam are exactly the flimsy ones.
+///
+/// Note this is the *type's* pool. An illusory copy overrides it at 1 HP by
+/// design (Earthen Illusions); BattleState.terrainHpAt checks the illusion map
+/// first, and callers should use that rather than this (§3.7).
+int terrainMaxHpOf(TileEffect? e) => switch (e) {
+      ImpassableTile() => 4,
+      FloorIsLava() || SlowTile() || ConveyorTile() => 2,
+      _ => 0,
+    };
 
 // ── Cloud object ──────────────────────────────────────────────────────────────
 

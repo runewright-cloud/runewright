@@ -155,6 +155,55 @@ void main() {
         reason: 'wrong-gesture false accepts: $falseAccepts');
   });
 
+  test('the suggested attunement count clears the gate on a player-sized set',
+      () {
+    // Every test above enrols the WHOLE corpus (9 reps after the hold-out).
+    // A player will not have that — the Somatic tab asks them for
+    // GestureEnrollment.suggestedReps, derived from the sweep in
+    // tool/gesture_rep_count_sweep.dart. The number that sweep picked rests on
+    // one finding: a single enrolled rep was the only set size that produced a
+    // wrong-gesture accept, and everything at or above 2 held clean. So the
+    // count the UI prints has to keep clearing the same gate as the corpus and
+    // the thresholds move — otherwise the page is quietly telling players to
+    // stop attuning before the classifier is safe.
+    final n = GestureEnrollment.suggestedReps;
+    final rng = math.Random(20260806);
+    final falseAccepts = <String>[];
+
+    for (var trial = 0; trial < 12; trial++) {
+      for (final target in _recognized) {
+        for (var q = 0; q < gestureReps[target]!.length; q++) {
+          final subset = <Gesture, List<List<List<double>>>>{
+            for (final g in _recognized)
+              g: ([
+                for (var i = 0; i < gestureReps[g]!.length; i++)
+                  if (!(g == target && i == q)) gestureReps[g]![i].frames,
+              ]..shuffle(rng))
+                  .take(n)
+                  .toList(),
+          };
+          final match =
+              _classifier.classify(_samplesOf(gestureReps[target]![q]), subset);
+          if (match.gesture != Gesture.neutral && match.gesture != target) {
+            falseAccepts.add('${target.name}[$q] -> ${match.gesture.name}');
+          }
+          // One confusable against the same player-sized set, so the reject
+          // side is exercised at N too and not just at full corpus size.
+          final c = GestureConfusable
+              .values[(trial + q) % GestureConfusable.values.length];
+          final cRep = confusableReps[c]![rng.nextInt(confusableReps[c]!.length)];
+          final cMatch = _classifier.classify(_samplesOf(cRep), subset);
+          if (cMatch.gesture != Gesture.neutral) {
+            falseAccepts.add('${c.name} -> ${cMatch.gesture.name}');
+          }
+        }
+      }
+    }
+
+    expect(falseAccepts, isEmpty,
+        reason: 'false accepts at $n enrolled reps: $falseAccepts');
+  });
+
   test('genuine reps are accepted often enough for the mode to be playable',
       () {
     // The counterweight to the gate above: a classifier that rejects

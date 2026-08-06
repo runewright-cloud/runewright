@@ -59,7 +59,9 @@ class DamageEffect extends SpellEffect {
 
 // ── Earth-Earth: Barrier ──────────────────────────────────────────────────────
 
-/// Body-armor HP buffer applied to the caster. Potency: duration 2→3 turns.
+/// Body-armor HP buffer applied to whoever occupies the target tile — or,
+/// when nothing does, to the terrain on it (WALL_LOS_PLAN.md §2.3).
+/// Potency: duration 2→3 turns.
 ///
 ///   Fire affinity:  hp=2; [fireAura]=true (1 fire dmg/turn to adjacent entities)
 ///   Earth affinity: hp=4; no special
@@ -116,7 +118,7 @@ class ReflectionEffect extends SpellEffect {
 ///   Earth affinity: [speedDelta]=−1 on target for [durationTurns] (3/4 potent)
 ///   Water affinity: [highLiquidity]=true; same as Fire but spends mana.
 ///                   Sorcerer seam: pedometer rate scales with tile count.
-///   Air affinity:   [speedDelta]=+1 on caster for [durationTurns] (2/3 potent)
+///   Air affinity:   [speedDelta]=+1 on target for [durationTurns] (2/3 potent)
 // TODO(sorcerer): high-mobility and high-liquidity extra tiles map to pedometer
 //   rate multipliers in real-time mode rather than discrete tile jumps.
 class SpeedManipulationEffect extends SpellEffect {
@@ -124,7 +126,6 @@ class SpeedManipulationEffect extends SpellEffect {
     required this.affinity,
     this.speedDelta = 0,
     this.durationTurns = 0,
-    this.affectsTarget = false,
     this.highMobility = false,
     this.highLiquidity = false,
     this.freeExtraTiles = 0,
@@ -135,10 +136,6 @@ class SpeedManipulationEffect extends SpellEffect {
   /// −1 for Earth (debuff), +1 for Air (buff), 0 for Fire/Water.
   final int speedDelta;
   final int durationTurns;
-
-  /// True when the effect applies to the entity on the target tile (Earth/Air).
-  /// False when it grants an option to the caster themselves (Fire/Water).
-  final bool affectsTarget;
 
   final bool highMobility;
   final bool highLiquidity;
@@ -238,7 +235,6 @@ class SpellInteractionEffect extends SpellEffect {
     this.hpPerManaMissed = 0,
     this.manaPerHp = 10,
     this.durationTurns = 0,
-    this.affectsTarget = false,
     this.isSlugEffect = false,
     this.isQuickEffect = false,
     this.copySpellCount = 0,
@@ -254,9 +250,6 @@ class SpellInteractionEffect extends SpellEffect {
   final int manaPerHp;
 
   final int durationTurns;
-
-  /// Earth: slug effect applies to opponent; Air: quick applies to self (false).
-  final bool affectsTarget;
 
   final bool isSlugEffect;
   final bool isQuickEffect;
@@ -354,13 +347,12 @@ class TileModificationEffect extends SpellEffect {
 ///   Earth affinity: target's range [rangeDelta]=−1 for [durationTurns] (3/4 potent)
 ///   Water affinity: target's next spell range randomised 1–max ([turbulent]=true)
 ///                   for [durationTurns] (3/4 potent)
-///   Air affinity:   caster's range [rangeDelta]=+1 for [durationTurns] (2/3 potent)
+///   Air affinity:   target's range [rangeDelta]=+1 for [durationTurns] (2/3 potent)
 class RangeModificationEffect extends SpellEffect {
   const RangeModificationEffect({
     required this.affinity,
     this.rangeDelta = 0,
     this.durationTurns = 0,
-    this.affectsTarget = false,
     this.penetrating = false,
     this.penetrationDamage = 0,
     this.turbulent = false,
@@ -371,10 +363,6 @@ class RangeModificationEffect extends SpellEffect {
   /// Earth: −1; Air: +1; others: 0.
   final int rangeDelta;
   final int durationTurns;
-
-  /// True for Earth (debuff on target) and Water (turbulent on target).
-  /// False for Fire (penetrating on caster) and Air (range buff on caster).
-  final bool affectsTarget;
 
   final bool penetrating;
   final int penetrationDamage;

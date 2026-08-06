@@ -80,8 +80,22 @@ class SpellPermission {
   final String id;
   final DateTime grantedAt;
 
-  /// Poseidon2(packed_grid) — identifies the loaned spell's grid (CIRCUIT_IO.md §4).
-  /// Covers all Kin spells sharing this grid commitment.
+  /// Poseidon2(packed_grid) — identifies the loaned spell's grid
+  /// (CIRCUIT_IO.md §4). A one-to-one GRID identity: this grant covers spells
+  /// built on exactly this initial state, and nothing else.
+  ///
+  /// **Never re-key this to a behavioural kinship key.** Since
+  /// docs/COUNTER_CHARM_KINSHIP_PLAN.md Phase 3, "Kin" means "does the same
+  /// thing", which is deliberately many-to-one — a grant keyed that way would
+  /// silently extend to spells with different grids, potentially someone
+  /// else's coincidentally-matching spell. That is privilege escalation, not
+  /// a display quirk. See spell_identity.dart for the two named concepts.
+  ///
+  /// This moves to `uniqueSpellId` (SHA-256 of the proof bytes, still
+  /// one-to-one) in Phase 4, when deleting the commitment from the circuit
+  /// forces it. It is deliberately NOT moving earlier: [canonicalMessage]
+  /// covers this field, so re-keying invalidates every outstanding grant's
+  /// signature.
   final String commitmentHex;
 
   /// Poseidon2(owner_key_hi, owner_key_lo) — must equal the spell proof's

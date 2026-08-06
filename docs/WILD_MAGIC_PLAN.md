@@ -973,9 +973,59 @@ Once the implementation is settled, update `docs/runewright_design_v3_0.md`:
 
 - Expanding the effects table beyond 12 cells.
 - Void wild magic, the void mana-cost formula, the tile-gated power cap.
-- Any inscribe-time "divine your wild magic" UI (a natural follow-up: the seed hash is
-  computable the moment a spell is saved, so the Rune Craft page *could* show a rune's
-  wild magic under the local community seed — but it is a separate feature, and it changes
-  what a player knows before a duel).
+- ~~Any inscribe-time "divine your wild magic" UI~~ — **un-deferred and built 2026-08-05
+  at Soren's request; see §15.**
 - Tournament seed announcement / seed-switching mid-session.
 - Sorcerer-mode interactions with any wild-magic effect.
+
+---
+
+## 15. Wild magic on the spell card (built 2026-08-05)
+
+§14 deferred this on the grounds that *"it changes what a player knows before a duel"*.
+Soren asked for it anyway, so here is what changed and what that consequence actually is.
+
+**What a card now shows.** A spell that fires wild magic gets two treatments, and only such
+a spell gets them:
+
+- a **WILD MAGIC panel** below the rules box on the fullscreen card, naming each effect it
+  fires with the effect's own symmetric description verbatim from
+  `kWildMagicEffectDescription`, and
+- a **foil luster** (`lib/ui/foil_sheen.dart`) over the whole card at every size — the
+  thumbnail in the library and the hand tray as well as the fullscreen card — so the wild
+  ones are findable by eye without reading a word.
+
+The panel is deliberately its own rubric-red band rather than another line in the rules
+box: a wild-magic effect is global, symmetric and ignores tile targeting, and listing it
+next to *"3 damage to the target tile"* would invite exactly the misreading the
+descriptions' "every wizard" voice exists to prevent.
+
+**The consequence §14 warned about, now that it's real.** Wild magic stays untelegraphed
+*during* a duel — the resolution banner is still the only place an opponent learns it fired
+— but its own caster now knows in advance, which they previously had to learn by playing
+the spell. That is a deliberate trade: wild magic is a fixed property of the rune (§2.1),
+so the old behaviour taxed memory rather than creating suspense. Nothing about an
+opponent's information changed.
+
+**Where the derivation lives.** `lib/spells/wild_magic_preview.dart`. It is **not** a second
+derivation path (§10 invariant 2): `WildMagic.seedHex`/`triggersFor` were split into
+`…FromParts` kernels that both the certified engine path and the card call, so the two can
+only ever disagree about where their inputs came from — the engine from certified proof
+outputs, the card from a stored `SpellAsset`. §4.6 / §10 invariant 6 is unchanged: nothing
+that can move battle state may read the preview. `test/spells/wild_magic_preview_test.dart`
+pins the agreement between them.
+
+**Which seed a card previews under.** `activeLeylineSeed`, a `ValueNotifier` the library
+primes from `Identity.loadCommunitySeed()` and `BattleScreen` overrides with
+`MatchConfig.communitySeed` for the duration of a duel (restored on dispose). This matters
+because the guest adopts the host's word (§7.5) — during a duel a player's own setting is
+simply not what their spells hash under, and a card that previewed under it would lie at
+exactly the moment it mattered. Rotating the seed in Settings pushes the new value through
+the notifier, so the whole library visibly re-rolls, which is the anti-grinder lever (§2.6)
+made legible.
+
+**One rendering trap, paid for once.** `Color.lerp` interpolates un-premultiplied, so a
+gradient stop of `0x00000000` drags the ramp through grey on its way to transparent. The
+first foil attempt used transparent-black stops between hues and laid a dirty grey cast
+over the parchment. Fading between low-alpha *hues* instead keeps the wash in-hue the whole
+way round.

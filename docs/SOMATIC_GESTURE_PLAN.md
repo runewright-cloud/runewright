@@ -225,12 +225,57 @@ Mirror `lib/practice/vocal_enrollment.dart` exactly:
 
 **Capture protocol (what the tool records):**
 - Each recognized gesture **≥ 10 reps** (enough to *measure* intra-gesture variance, which sets
-  `CAP`/`MARGIN`), not just 3–5.
+  `CAP`/`MARGIN`), not just 3–5. This is the **calibration** figure —
+  `GestureEnrollment.corpusRepsForCalibration` — i.e. how much Soren records to *set* the
+  thresholds. It is NOT what a player is asked for; see §8.1.
 - **Confusables, explicitly** — these define the reject side of the matrix: hold-steady/idle,
   walking, the melee wind-up, and free theatrical/garbage motion. Without these the threshold
   cannot be set (the vocal lesson: silence must be *measured* to be rejected).
 - All raw logs land in a committed corpus dir (twin of `test/practice/fixtures/`), doubling as
   the SORC.4 IMU fixture vectors.
+
+### 8.1 How many attunements to ask a PLAYER for (measured 2026-08-06)
+
+The §8 figure above answers "how big a corpus sets the thresholds?". It kept getting
+misread as "how many reps does a player need?", which is a different question with a
+different answer — a player is matched *against* thresholds already set, not helping set
+them. `tool/gesture_rep_count_sweep.dart` measures the second question directly: real
+`GestureClassifier`, real Pixel 6 corpus, leave-one-out, 12 random subsets per
+enrolled-set size N, shipped constants.
+
+| N | genuine accepted | **wrong gesture** | confusable false accepts | DTW pairs/cast |
+|---|---|---|---|---|
+| 1 | 65.5% | **0.3%** | 0% | 5 |
+| 2 | 81.3% | 0% | 0% | 10 |
+| 3 | 85.0% | 0% | 0% | 15 |
+| **4** | **87.0%** | **0%** | **0%** | **20** |
+| 5 | 88.0% | 0% | 0% | 25 |
+| 7 | 89.8% | 0% | 0% | 35 |
+| 9 | 90.0% | 0% | 0% | 45 |
+
+**Ratified: `GestureEnrollment.suggestedReps = 4`**, surfaced on the Somatic tab as
+"attunements". Two reasons, in order of weight:
+
+1. **N=1 is the only size that broke §0's never-false-advance bar** (0.3% wrong-gesture
+   accepts). A lone rep carries no intra-gesture variance, so a stray query can sit
+   closer to a *different* gesture than to the single stored copy of its own. Every
+   N ≥ 2 held at zero. This makes the suggestion a safety floor, not a preference — and
+   `gesture_confusion_e2e_test.dart` now pins it ("the suggested attunement count clears
+   the gate on a player-sized set") so it cannot drift as the corpus or constants move.
+2. **The knee is at 3–4.** 1→4 buys 21.5 points of accept rate; 4→9 buys 3. Asking for
+   more than 4 would trade real player effort for very little.
+
+**No maximum, on quality grounds.** Accuracy is monotone non-decreasing across the whole
+measured range (89.8 → 89.8 → 90.0 at the top) — more attunements never made recognition
+worse. `maxRepsStored = 20` is therefore reframed as a **rolling FIFO window, not a
+ceiling**: recording past it is always allowed and evicts the oldest rep, so the stored
+set tracks how the player moves *now*. The window exists only to bound the per-cast path,
+which is min-distance DTW over every stored rep of all five candidates — `5 × reps` pairs,
+capped at 100.
+
+The one thing that does degrade with more attunements is **imbalance between them**:
+min-distance argmin is biased toward whichever class holds more exemplars. Both tabs tell
+players to keep the counts roughly even.
 
 ---
 

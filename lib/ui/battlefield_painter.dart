@@ -504,6 +504,9 @@ class BattlefieldPainter extends CustomPainter {
     this.castAnimations = const [],
     this.castAnimation,
     this.tileEffects = const {},
+    this.terrainHp = const {},
+    this.terrainBarrierElements = const {},
+    this.blockedLandingHex,
     this.clouds = const [],
     this.directionPickHexes = const [],
     this.conveyorChainAnimations = const [],
@@ -632,6 +635,23 @@ class BattlefieldPainter extends CustomPainter {
   /// the minion/wizard tokens.
   final Map<HexCoord, TileEffect> tileEffects;
 
+  /// Current HP of each destructible terrain tile (BattleState.terrainHpAt),
+  /// drawn as pips along the bottom edge so the player can see how much more
+  /// it will take to break a wall. Absent means "no HP pool" (the wild-magic
+  /// tiles) and draws nothing.
+  final Map<HexCoord, int> terrainHp;
+
+  /// Elements of the barriers imbued into each terrain tile, drawn as a ring
+  /// of coloured arcs — the terrain equivalent of [barrierRings].
+  final Map<HexCoord, List<SpellAffinity>> terrainBarrierElements;
+
+  /// Where the currently-selected spell will ACTUALLY land, when a wall or a
+  /// Big creature stands between the caster and the tile they tapped. A
+  /// blocked spell is not rejected — it resolves on the blocker
+  /// (docs/WALL_LOS_PLAN.md §2.1) — so the player needs to see that before
+  /// committing, not discover it in the resolution log.
+  final HexCoord? blockedLandingHex;
+
   /// Active cloud effects placed by cloud spells. Drawn as a translucent
   /// overlay above tokens (radius from [CloudObject.position]).
   final List<CloudObject> clouds;
@@ -709,6 +729,7 @@ class BattlefieldPainter extends CustomPainter {
 
   static const _kScryReveal = Color(0xFF9B5FC0); // violet — third-eye glimpse
   static const _kMeleePick = Color(0xFF7A1F1F); // rubric red — melee prompt
+  static const _kBlockedLanding = Color(0xFFD1462F); // vermilion — LOS blocker
 
   static const _kTileLight = Color(0xFFD5CCB2); // stone tile fill
   static const _kTileDark = Color(0xFFC2B89A); // alternate tile (checkerboard)
@@ -860,6 +881,11 @@ class BattlefieldPainter extends CustomPainter {
     // Spell target (on top of range tint).
     if (highlightHex != null) {
       _drawHighlight(canvas, highlightHex!, center, const Color(0xFFB8860B));
+    }
+    // Where a blocked spell will actually land — drawn in warning red on top
+    // of the declared target so the two read as "aimed here, lands there".
+    if (blockedLandingHex != null) {
+      _drawHighlight(canvas, blockedLandingHex!, center, _kBlockedLanding);
     }
     // Airy Scrying Pool reveal — drawn after the local player's own target
     // highlight so it's never mistaken for it.
@@ -1370,6 +1396,75 @@ class BattlefieldPainter extends CustomPainter {
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2.5,
     );
+
+    _drawTerrainBarrierArcs(canvas, coord, pos);
+    _drawTerrainHpPips(canvas, coord, pos, effect, color);
+  }
+
+  /// HP pips along the bottom of a destructible tile: filled for HP the tile
+  /// still has, hollow for HP it has lost. Terrain is destructible
+  /// (docs/WALL_LOS_PLAN.md §2.2) and a player deciding whether one more
+  /// Airy Blast will finish a wall needs to be able to count, not guess.
+  void _drawTerrainHpPips(
+    Canvas canvas,
+    HexCoord coord,
+    Offset pos,
+    TileEffect effect,
+    Color color,
+  ) {
+    final maxHp = terrainMaxHpOf(effect);
+    if (maxHp <= 0) return;
+    final hp = terrainHp[coord] ?? maxHp;
+    final r = hexSize * 0.075;
+    final spacing = r * 2.6;
+    final y = pos.dy + hexSize * 0.62;
+    final x0 = pos.dx - spacing * (maxHp - 1) / 2;
+    for (var i = 0; i < maxHp; i++) {
+      final at = Offset(x0 + spacing * i, y);
+      if (i < hp) {
+        canvas.drawCircle(at, r, Paint()..color = Colors.white);
+        canvas.drawCircle(
+          at,
+          r,
+          Paint()
+            ..color = Colors.black.withValues(alpha: 0.55)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1,
+        );
+      } else {
+        canvas.drawCircle(
+          at,
+          r,
+          Paint()
+            ..color = Colors.white.withValues(alpha: 0.5)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1,
+        );
+      }
+    }
+  }
+
+  /// Barriers imbued into a terrain tile, as coloured arcs just inside its
+  /// edge — the same visual language [barrierRings] uses for a wizard's own
+  /// body armor, because it is the same mechanic (§3.8).
+  void _drawTerrainBarrierArcs(Canvas canvas, HexCoord coord, Offset pos) {
+    final elements = terrainBarrierElements[coord];
+    if (elements == null || elements.isEmpty) return;
+    final rect = Rect.fromCircle(center: pos, radius: hexSize * 0.82);
+    final sweep = (2 * pi) / elements.length;
+    for (var i = 0; i < elements.length; i++) {
+      canvas.drawArc(
+        rect,
+        -pi / 2 + sweep * i,
+        sweep * 0.86,
+        false,
+        Paint()
+          ..color = (_kElementColor[elements[i]] ?? Colors.white)
+              .withValues(alpha: 0.95)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.2,
+      );
+    }
   }
 
   void _drawLavaAccents(Canvas canvas, HexCoord coord, Offset pos) {
@@ -2045,6 +2140,9 @@ class BattlefieldPainter extends CustomPainter {
   Offset _hexToPixel(HexCoord coord, Offset center) =>
       hexToPixel(coord, center, hexSize);
 
+  static int _terrainHpTotal(Map<HexCoord, int> hp) =>
+      hp.values.fold(0, (a, b) => a + b);
+
   @override
   bool shouldRepaint(BattlefieldPainter old) =>
       old.radius != radius ||
@@ -2060,6 +2158,11 @@ class BattlefieldPainter extends CustomPainter {
       old.barrierRings.length != barrierRings.length ||
       old.castAnimations.length != castAnimations.length ||
       old.tileEffects.length != tileEffects.length ||
+      old.blockedLandingHex != blockedLandingHex ||
+      // Terrain HP changes without the tile count changing (a wall chipped
+      // but not broken), so compare the pip totals, not just the map size.
+      _terrainHpTotal(old.terrainHp) != _terrainHpTotal(terrainHp) ||
+      old.terrainBarrierElements.length != terrainBarrierElements.length ||
       !_cloudsMatch(old.clouds, clouds) ||
       old.directionPickHexes.length != directionPickHexes.length ||
       old.meleePickHexes.length != meleePickHexes.length ||

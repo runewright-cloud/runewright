@@ -52,7 +52,16 @@ SpellAsset _summonSpell({
     );
 
 ({BattleState state, TurnLoop loop, WizardAvatar local, WizardAvatar dummy})
-    _setup({HexCoord? localPos, HexCoord? dummyPos, int radius = 6}) {
+    // [range] is a fixture knob, not a game fact: TurnLoop now enforces spell
+    // range engine-side (cast_range_test.dart), so a scenario that deliberately
+    // summons across a big board has to give its caster the reach to do it
+    // legally. Tests about creature behaviour shouldn't trip over cast legality.
+    _setup({
+  HexCoord? localPos,
+  HexCoord? dummyPos,
+  int radius = 6,
+  int range = 6,
+}) {
   const localId = 'local';
   const dummyId = 'dummy';
   final lp = localPos ?? const HexCoord(0, 3);
@@ -70,7 +79,7 @@ SpellAsset _summonSpell({
     maxMana: 100,
     position: lp,
     teamId: 'solo',
-    baseSpellRange: 3,
+    baseSpellRange: range,
   );
   final dummy = WizardAvatar(
     playerId: dummyId,
@@ -80,7 +89,7 @@ SpellAsset _summonSpell({
     maxMana: 100,
     position: dp,
     teamId: 'foe',
-    baseSpellRange: 3,
+    baseSpellRange: range,
   );
 
   final state = BattleState(
@@ -227,6 +236,7 @@ void main() {
             localPos: const HexCoord(4, 0),
             dummyPos: const HexCoord(0, 6),
             radius: 8,
+            range: 8,
           );
 
       final potentCtx = ctx();
@@ -303,6 +313,7 @@ void main() {
         localPos: const HexCoord(0, 9),
         dummyPos: const HexCoord(0, 0),
         radius: 10,
+        range: 10,
       );
       await approachCtx.loop.runTurn(TurnInput(
         action: SpellCastAction(
@@ -328,6 +339,7 @@ void main() {
         localPos: const HexCoord(0, 9),
         dummyPos: const HexCoord(0, 0),
         radius: 10,
+        range: 10,
       );
       await retreatCtx.loop.runTurn(TurnInput(
         action: SpellCastAction(
@@ -572,7 +584,7 @@ void main() {
         maxMana: 100,
         position: HexCoord(attacker.position.q, attacker.position.r - 1),
         teamId: 'foe',
-        baseSpellRange: 3,
+        baseSpellRange: 6,
       );
       expect(target.effectiveMoveSpeed, 2);
       // Directly exercise the same status-effect path _creatureAttack uses.
