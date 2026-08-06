@@ -2370,26 +2370,31 @@ class _AddArtifactDialog extends StatelessWidget {
             _ArtifactOption(
               icon: Icons.diamond_outlined,
               label: 'Mana Gem',
-              description: '+100 mana pool · +10 regen per turn',
+              description: 'Passive: +100 mana pool · +10 regen per turn\n'
+                  'Activation: consume one gem for +100 mana instantly',
               onTap: () => Navigator.pop(context, ArtifactKind.manaGem),
             ),
             _ArtifactOption(
               icon: Icons.bookmark_outlined,
               label: 'Bookmark',
-              description: 'Expand hand size; auto-retargets on use',
+              description: 'Passive: +1 hand size, auto-retargets on use\n'
+                  'Activation: burn one to redraw your whole hand',
               onTap: () => Navigator.pop(context, ArtifactKind.bookmark),
             ),
             _ArtifactOption(
               icon: Icons.open_in_full,
               label: 'Rod of Wind',
-              description: 'Single use: +1 effect radius (or +1 minion size) on your next spell',
+              description: 'Passive: 10% chance per rod for +1 movement next turn\n'
+                  'Activation: +1 effect radius (or +1 minion size) on your next spell',
               onTap: () => Navigator.pop(context, ArtifactKind.rodOfSpreading),
             ),
             _ArtifactOption(
               icon: Icons.block,
               label: 'Counter Charm',
-              description:
-                  'Bind it to a spell later, from that spell\'s menu in your library',
+              description: 'Passive: each unspent charm gives 5% per successful melee '
+                  'hit to destroy a foe\'s mana gem or wither one of their in-hand spells\n'
+                  'Enter an elemental formula that counters a spell\'s effects as long '
+                  'as lock step is maintained — up to potentially the whole spell',
               onTap: () => Navigator.pop(context, ArtifactKind.counterCharm),
             ),
             const SizedBox(height: 4),

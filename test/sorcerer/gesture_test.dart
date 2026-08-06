@@ -4,6 +4,7 @@
 // neutral/melee both map to no enhancement zone, elemental zones unchanged.
 
 import 'package:test/test.dart';
+import 'package:rune_duel/battle/models/match_config.dart';
 import 'package:rune_duel/sorcerer/gesture.dart';
 
 void main() {
@@ -23,7 +24,17 @@ void main() {
     expect(Gesture.values, contains(Gesture.melee));
   });
 
-  test('kSomaticCaptureEnabled stays false pending a real-device pass', () {
-    expect(kSomaticCaptureEnabled, isFalse);
+  // The compile-time `kSomaticCaptureEnabled` gate this used to assert on is
+  // gone: somatic capture is switched on per match by the negotiated
+  // MatchConfig flag (docs/SPELL_COMPONENTS_PLAN.md §4.2), so "is it on?" is
+  // a question about a match, not about the binary. Off by default is the
+  // property still worth pinning.
+  test('somatic components are off unless a match asks for them', () {
+    expect(const MatchConfig().somaticComponents, isFalse);
+    expect(const MatchConfig().componentsEnabled, isFalse);
+    expect(
+      const MatchConfig(somaticComponents: true).componentsEnabled,
+      isTrue,
+    );
   });
 }

@@ -54,7 +54,7 @@ void main() {
 
   ({BattleState state, TurnLoop loop, WizardAvatar local}) setup({
     int mana = 200,
-    bool sorcererMode = true,
+    bool vocalComponents = true,
   }) {
     final bf = Battlefield(radius: 6);
     const id = 'local';
@@ -74,7 +74,7 @@ void main() {
         playerHp: 24,
         gridRadius: 6,
         maxPlayers: 1,
-        sorcererMode: sorcererMode,
+        vocalComponents: vocalComponents,
       ),
       avatars: [local],
       teams: [const Team(id: 'solo', playerIds: [id])],
@@ -86,7 +86,7 @@ void main() {
         state: state,
         session: SoloBattleSession(state: state),
         localPlayerId: id,
-        isSorcererMode: sorcererMode,
+        isVocalComponents: vocalComponents,
       ),
       local: local,
     );
@@ -193,10 +193,10 @@ void main() {
     });
 
     test('wizard mode ignores the recall entirely', () async {
-      final a = setup(sorcererMode: false);
+      final a = setup(vocalComponents: false);
       final withRecall = await manaSpent(a.loop, a.local, spell(), perfect);
 
-      final b = setup(sorcererMode: false);
+      final b = setup(vocalComponents: false);
       final without = await manaSpent(b.loop, b.local, spell(), null);
 
       expect(withRecall, without);
@@ -268,10 +268,10 @@ void main() {
     });
 
     test('an affordable wizard-mode cast is charged, not fizzled', () async {
-      final probe = setup(sorcererMode: false);
+      final probe = setup(vocalComponents: false);
       final base = probe.loop.previewSpellCost(spell());
 
-      final ctx = setup(mana: base, sorcererMode: false);
+      final ctx = setup(mana: base, vocalComponents: false);
       final action = SpellCastAction(
         spell: spell(),
         targetHex: ctx.local.position,
@@ -286,10 +286,10 @@ void main() {
     // desync rather than a cheat — and ending someone's match is a wildly
     // disproportionate answer to a move that wins its caster nothing.
     test('an unaffordable wizard-mode cast fizzles and refunds too', () async {
-      final probe = setup(sorcererMode: false);
+      final probe = setup(vocalComponents: false);
       final base = probe.loop.previewSpellCost(spell());
 
-      final ctx = setup(mana: base - 1, sorcererMode: false);
+      final ctx = setup(mana: base - 1, vocalComponents: false);
       final before = ctx.local.mana;
       final action = SpellCastAction(
         spell: spell(),
@@ -303,8 +303,8 @@ void main() {
 
   group('§4 previewSpellCost quotes the honest price', () {
     test('sorcerer and wizard mode quote the same base', () {
-      final sorcerer = setup(sorcererMode: true);
-      final wizard = setup(sorcererMode: false);
+      final sorcerer = setup(vocalComponents: true);
+      final wizard = setup(vocalComponents: false);
       expect(
         sorcerer.loop.previewSpellCost(spell()),
         wizard.loop.previewSpellCost(spell()),

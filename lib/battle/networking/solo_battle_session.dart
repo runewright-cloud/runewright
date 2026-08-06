@@ -110,6 +110,19 @@ class SoloBattleSession implements BattleTurnSession {
     return (theirNonce: nonce, theirCommit: commitBytes);
   }
 
+  // ── Spell-component pacing (SPELL_COMPONENTS_PLAN.md §5.3) ──────────────────
+  //
+  // The dummy performs no components — it has no microphone, no hand, and no
+  // choice to conceal — so there is nothing to announce and nothing to wait
+  // for. `buildSoloBattleState` seats only the real player for the same
+  // reason, which means the wait below is never even reached in practice.
+
+  @override
+  void sendComponentsDone(int turnNumber) {}
+
+  @override
+  Future<void> peerComponentsDone(int turnNumber) async {}
+
   // ── Action commit-reveal ─────────────────────────────────────────────────────
 
   @override

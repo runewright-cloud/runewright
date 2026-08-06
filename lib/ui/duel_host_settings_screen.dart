@@ -21,6 +21,7 @@ import '../identity/identity.dart';
 import '../spells/chapter_asset.dart';
 import 'manuscript_theme.dart';
 import 'widgets/chapter_picker.dart';
+import 'widgets/component_toggles.dart';
 import 'widgets/int_stepper_row.dart';
 
 /// What the host picked — chapter for its own artifact loadout, config for
@@ -39,7 +40,13 @@ class _DuelHostSettingsScreenState extends State<DuelHostSettingsScreen> {
 
   int _hp = 24;
   int _gridRadius = 4;
-  bool _sorcererMode = false;
+
+  // Spell components (docs/SPELL_COMPONENTS_PLAN.md §1). Three flags, not one
+  // — the two components have different trust properties and different
+  // hardware, so a player has real reason to want one without the other.
+  bool _vocalComponents = false;
+  bool _somaticComponents = false;
+  bool _simultaneousCasting = false;
 
   /// The leyline seed word this duel runs under. Prefilled from the device's
   /// own saved word (Settings) but editable here, because the host is
@@ -76,7 +83,9 @@ class _DuelHostSettingsScreenState extends State<DuelHostSettingsScreen> {
         playerHp: _hp,
         gridRadius: _gridRadius,
         maxPlayers: 2,
-        sorcererMode: _sorcererMode,
+        vocalComponents: _vocalComponents,
+        somaticComponents: _somaticComponents,
+        simultaneousCasting: _simultaneousCasting,
         communitySeed: _seedController.text.trim(),
       );
 
@@ -136,7 +145,7 @@ class _DuelHostSettingsScreenState extends State<DuelHostSettingsScreen> {
                 onChanged: (v) => setState(() => _gridRadius = v),
               ),
               const SizedBox(height: 28),
-              _buildSorcererModeToggle(),
+              _buildComponentToggles(),
               const SizedBox(height: 28),
               _buildSeedWordField(),
               const Spacer(),
@@ -206,29 +215,13 @@ class _DuelHostSettingsScreenState extends State<DuelHostSettingsScreen> {
     );
   }
 
-  Widget _buildSorcererModeToggle() {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('SORCERER MODE', style: manuscriptCaptionStyle()),
-              const SizedBox(height: 2),
-              Text(
-                'Speak the incantation aloud to cast',
-                style: manuscriptCaptionStyle(color: kInkMutedColor.withValues(alpha: 0.7)),
-              ),
-            ],
-          ),
-        ),
-        Switch(
-          value: _sorcererMode,
-          activeThumbColor: kIlluminationGold,
-          onChanged: (v) => setState(() => _sorcererMode = v),
-        ),
-      ],
-    );
-  }
+  Widget _buildComponentToggles() => ComponentToggles(
+        vocalComponents: _vocalComponents,
+        somaticComponents: _somaticComponents,
+        simultaneousCasting: _simultaneousCasting,
+        onVocalChanged: (v) => setState(() => _vocalComponents = v),
+        onSomaticChanged: (v) => setState(() => _somaticComponents = v),
+        onSimultaneousChanged: (v) =>
+            setState(() => _simultaneousCasting = v),
+      );
 }

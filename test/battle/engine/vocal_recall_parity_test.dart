@@ -82,7 +82,7 @@ BattleState _makeState() {
   battlefield.occupancy['player_a'] = posA;
   battlefield.occupancy['player_b'] = posB;
   return BattleState(
-    config: const MatchConfig(sorcererMode: true),
+    config: const MatchConfig(vocalComponents: true),
     avatars: [
       WizardAvatar(
         playerId: 'player_a',
@@ -165,7 +165,7 @@ Future<({Uint8List a, Uint8List b, int manaA, int manaB})> _runCast(
     state: stateA,
     session: pair.sessionA,
     localPlayerId: 'player_a',
-    isSorcererMode: true,
+    isVocalComponents: true,
     verifyProof: _alwaysOk,
     vkBytes: Uint8List(0),
   );
@@ -173,7 +173,7 @@ Future<({Uint8List a, Uint8List b, int manaA, int manaB})> _runCast(
     state: stateB,
     session: pair.sessionB,
     localPlayerId: 'player_b',
-    isSorcererMode: true,
+    isVocalComponents: true,
     verifyProof: _alwaysOk,
     vkBytes: Uint8List(0),
   );

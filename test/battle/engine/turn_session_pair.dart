@@ -50,6 +50,25 @@ class _ByteQueue {
   }
 }
 
+/// Latched record of which turns one side has announced its components done
+/// for. Twin of [BattleSession]'s `_peerComponentsDoneTurns` +
+/// `_componentsDoneWaiters`: a signal that arrives before anyone waits is
+/// remembered, never dropped.
+class _ComponentsDoneLatch {
+  final _seen = <int>{};
+  final _waiters = <int, Completer<void>>{};
+
+  void add(int turnNumber) {
+    _seen.add(turnNumber);
+    _waiters.remove(turnNumber)?.complete();
+  }
+
+  Future<void> wait(int turnNumber) {
+    if (_seen.contains(turnNumber)) return Future.value();
+    return (_waiters[turnNumber] ??= Completer<void>()).future;
+  }
+}
+
 /// Two coordinated [BattleTurnSession] implementations that simulate a real
 /// two-client commit-reveal exchange without any network I/O.
 ///
@@ -70,6 +89,17 @@ class TurnSessionPair {
 
   late final PairedSession sessionA;
   late final PairedSession sessionB;
+
+  // Match-scoped, NOT reset per turn: the pacing signal is keyed by turn
+  // number and outlives any single turn's exchanges, exactly as production's
+  // set-of-turns latch does.
+  final _aComponentsDone = _ComponentsDoneLatch();
+  final _bComponentsDone = _ComponentsDoneLatch();
+
+  /// [peer] true selects A's latch, false selects B's — i.e. "the side whose
+  /// announcements this latch holds".
+  _ComponentsDoneLatch _componentsDoneFor({required bool peer}) =>
+      peer ? _aComponentsDone : _bComponentsDone;
 
   // Per-turn completers. Call reset() before each new turn.
   var _aActionCommit = Completer<Uint8List>();
@@ -157,6 +187,21 @@ class PairedSession implements BattleTurnSession {
 
   final TurnSessionPair _pair;
   final bool isA;
+
+  // ── Spell-component pacing (docs/SPELL_COMPONENTS_PLAN.md §5.3) ─────────────
+  //
+  // Modelled with the same latch production uses: the signal is recorded per
+  // turn on the RECEIVING side, so a peer that finished performing before
+  // anyone asked still satisfies the wait. Getting this wrong in the fixture
+  // would hide exactly the bug the latch exists to prevent.
+
+  @override
+  void sendComponentsDone(int turnNumber) =>
+      _pair._componentsDoneFor(peer: !isA).add(turnNumber);
+
+  @override
+  Future<void> peerComponentsDone(int turnNumber) =>
+      _pair._componentsDoneFor(peer: isA).wait(turnNumber);
 
   // ── Identity authentication (BATTLE_AUTH_PLAN.md §3) ────────────────────────
   //

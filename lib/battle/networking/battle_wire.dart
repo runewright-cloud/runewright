@@ -119,7 +119,29 @@ enum BattleMsgType {
   // Allocated in the 0x4x block rather than alongside the other turn-loop
   // exchanges because the 0x30–0x3F block is full.
   artifactCommit(0x44),
-  artifactReveal(0x45);
+  artifactReveal(0x45),
+
+  // Sequential-casting pacing (docs/SPELL_COMPONENTS_PLAN.md §5.3) — "I have
+  // finished performing this turn's spell components and locked my action
+  // in." Payload: turnNumber as a big-endian uint32.
+  //
+  // Information-free by construction: it says only that the sender is done,
+  // which every player in the room can already hear. It is NOT a commitment
+  // and carries nothing about what was chosen — the action still crosses the
+  // wire as a salted split commitment via actionCommit (0x35).
+  //
+  // Deliberately its own frame rather than reusing actionCommit as the
+  // signal: actionCommit is sent from inside beginTurn, which first awaits
+  // the SIMULTANEOUS Phase-0 artifact exchange. A second player waiting on
+  // the first player's actionCommit would be waiting on a frame the first
+  // player cannot send until the second has committed — a deadlock. This
+  // frame is sent before any of the turn's exchanges are touched.
+  //
+  // Not a uniform every-turn slot: it is sent once per player per turn in
+  // sequential mode only, is never awaited by the engine's exchange
+  // sequence, and a client that never sends it merely leaves the next
+  // player's controls locked (a stall, not a desync).
+  componentsDone(0x46);
 
   const BattleMsgType(this.byte);
   final int byte;

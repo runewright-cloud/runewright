@@ -295,16 +295,28 @@ players to keep the counts roughly even.
 
 ## 10. Integration seams (exact touch-points)
 
-- `lib/sorcerer/gesture.dart` — **DONE**: `melee` added, `neutral` sentinel kept;
-  `kSomaticCaptureEnabled` flips **only** once GestureClassifier + a real-device harness pass
-  exist.
-- `lib/ui/battle_screen.dart:851-859` — real capture in the stubbed block; fold `Gesture` into
-  `CastingEnhancements` parallel to `vocalScore`. **Not yet wired** — comment updated to point
-  at the now-existing infra, capture itself still gated behind `kSomaticCaptureEnabled`.
-- `lib/battle/models/casting_enhancements.dart` / `vocal_score.dart` — the reserved somatic byte
-  (`0xFF` sentinel) is the wire slot; populate from the resolved (post-downgrade) gesture.
-- `lib/battle/engine/turn_loop.dart:3242-3270` — **unchanged**; verify the client-side downgrade
-  (§5.1) means honest clients never reach it.
+*Updated 2026-08-06 — the seam is wired. See `docs/SPELL_COMPONENTS_PLAN.md`, which
+supersedes this section for how somatic is switched on and what a failed gesture costs.*
+
+- `lib/sorcerer/gesture.dart` — **DONE**: `melee` added, `neutral` sentinel kept.
+  `kSomaticCaptureEnabled` is **gone**, not flipped: the gate is now the negotiated
+  `MatchConfig.somaticComponents`, chosen in the lobby, so "is somatic on?" is a question
+  about a match rather than about the binary.
+- `lib/ui/battle_screen.dart` — **DONE**: `_initSomaticComponents` loads the player's
+  enrolled reps once per match; `_onCastHoldStart`/`_endGestureCapture` stream IMU for the
+  whole CAST hold, and the resolved gesture sets `_selectedEnhancement` before the cast is
+  committed. The tap picker is hidden while somatic is on — the gesture is the only path.
+- **The wire slot was not needed.** No somatic byte is transmitted at all (the earlier plan
+  reserved `vocal_score.dart`'s `0xFF` sentinel for one). What crosses the wire is the
+  resulting *enhancement claim*, which is already certified against
+  `supreme_dominance_flags` exactly as a tapped one is. Transmitting the gesture itself
+  would have added a self-attested field that buys nothing the claim doesn't already carry.
+- `lib/battle/engine/turn_loop.dart` — **unchanged**, as planned. The
+  `unbacked_enhancement_claim` forfeit still stands; the client-side downgrade (§5.1) means
+  honest clients never reach it.
+- **New:** the free-style motion gate (`castMotionSatisfied` in `gesture_classifier.dart`)
+  asks whether the caster moved *throughout* the hold, which §6.1's stillness floor does
+  not. Failing it costs the enhancement and nothing else.
 - `spell.supremeTags` — the single source for the §5.1 downgrade (see §5's correction — not a
   re-verified `VerifiedSpellOutputs`, which doesn't exist locally at cast time).
 
@@ -328,10 +340,15 @@ players to keep the counts roughly even.
    acceptance. Constants were grid-searched via `tool/gesture_corpus_analysis.dart`, which is
    also where handedness, generalization and streaming-feedback studies live. See
    `docs/M4_findings.md` 2026-07-28 for the full write-up, including what did NOT work.
-6. **Wire the seam** (§10); flip `kSomaticCaptureEnabled`; **real-device pass** (the hardware
-   gate — a fixture harness calibrates, a real IMU + real hand validates, exactly as vocal
-   still awaits its real-mic pass). **Outstanding** — deliberately not done without real
-   hardware to validate against.
+6. **Wire the seam** (§10) — **DONE 2026-08-06** (docs/SPELL_COMPONENTS_PLAN.md). Somatic is
+   a negotiated lobby toggle; the gesture selects the enhancement; the eligibility downgrade
+   is wired against `spell.supremeTags`.
+   **Real-device pass — STILL OUTSTANDING.** A fixture harness calibrates, a real IMU + a
+   real hand validates. Two things have never met hardware: IMU streaming during a live
+   mid-battle hold, and the §4.1 coverage rule, whose window count and required-window count
+   have never been measured against real casting motion (they are reasoned, not
+   grid-searched — the one *energy* number they use is the measured one). Treat this the
+   same way vocal's real-mic pass is treated: not done until a hand has done it.
 
 ---
 

@@ -24,6 +24,7 @@ import 'package:rune_duel/engine/hex_grid.dart';
 import '../../spells/chapter_asset.dart' show ArtifactEntry;
 import 'accoutrement_loadout.dart';
 import 'battle_state.dart';
+import 'component_order.dart';
 import 'hex_battlefield.dart';
 import 'match_config.dart';
 import 'wizard_avatar.dart';
@@ -131,6 +132,11 @@ DuelBattleSetup buildDuelBattleState({
       Team(id: 'team_top', playerIds: [topHex]),
     ],
     battlefield: battlefield,
+    componentSeating: clockwiseComponentOrder(
+      playerIds: [bottomHex, topHex],
+      startPositions: [bottomPos, topPos],
+      radius: config.gridRadius,
+    ),
   );
 
   return DuelBattleSetup(state: state, localPlayerId: localOwnerHex);

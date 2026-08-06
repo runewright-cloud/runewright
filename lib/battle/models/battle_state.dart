@@ -88,7 +88,9 @@ class BattleState {
     Map<HexCoord, int>? terrainHp,
     Map<HexCoord, Map<SpellAffinity, BarrierState>>? terrainBarriers,
     WildMagicState? wildMagic,
-  })  : minions = minions ?? [],
+    List<String>? componentSeating,
+  })  : componentSeating = componentSeating ?? const [],
+        minions = minions ?? [],
         expiringTiles = expiringTiles ?? {},
         terrainHp = terrainHp ?? {},
         terrainBarriers = terrainBarriers ?? {},
@@ -106,6 +108,23 @@ class BattleState {
   final List<Team> teams;
   final Battlefield battlefield;
   int turnNumber;
+
+  /// Player ids ordered clockwise around the field by the vertex each one
+  /// SPAWNED on — the seating that decides who performs their spell components
+  /// first each turn (docs/SPELL_COMPONENTS_PLAN.md §5.2). Built by the setup
+  /// builders via [clockwiseComponentOrder], which is why this is stored
+  /// rather than derived: current positions change as wizards walk, and the
+  /// seating must not change with them.
+  ///
+  /// Empty for states built before this existed (and for headless test
+  /// fixtures) — callers fall back to [avatars] order, which is already
+  /// canonical, so an empty list degrades to a stable order rather than to
+  /// nothing.
+  ///
+  /// NOT part of [toCanonicalBytes]: it is a pure function of setup inputs
+  /// both devices already agree on, so hashing it would add a desync surface
+  /// without adding any check the setup builders don't already give.
+  final List<String> componentSeating;
 
   /// All living minions (spirits and hounds) in creation order.
   final List<Minion> minions;

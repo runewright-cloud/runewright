@@ -181,6 +181,30 @@ abstract class BattleTurnSession {
   /// spells. A modified client that refuses this exchange forfeits the match.
   Future<Uint8List> refreshEntropy(String reason);
 
+  /// Announces that the local player has finished performing this turn's
+  /// spell components and locked their action in — the sequential-casting
+  /// pacing signal (docs/SPELL_COMPONENTS_PLAN.md §5.3).
+  ///
+  /// Fire-and-forget, never awaited, and information-free: it says only "I am
+  /// done," which everyone in the room can already hear. Safe to call in
+  /// simultaneous mode too (nobody is listening for it), and safe to call
+  /// more than once for a turn.
+  ///
+  /// Default: a no-op, for the implementations with no peer to tell.
+  void sendComponentsDone(int turnNumber) {}
+
+  /// Completes once the peer has signalled [sendComponentsDone] for
+  /// [turnNumber].
+  ///
+  /// **Latched, not streamed.** A signal that arrived before this was called
+  /// still satisfies it — a live broadcast would drop a fast peer's signal
+  /// and hang the waiting player's controls for the rest of the turn.
+  ///
+  /// Default: completes immediately. That is the right answer for every
+  /// peerless implementation (solo, practice, test doubles): a target dummy
+  /// performs no components, so nobody ever waits on it.
+  Future<void> peerComponentsDone(int turnNumber) async {}
+
   void sendForfeit(String reason);
 
   /// Completes with the peer's forfeit reason the moment they send a
@@ -205,6 +229,10 @@ class BattleSession implements BattleTurnSession {
   BattleSession(this._transport, this.matchId) {
     _reader = BattleFrameReader();
     _sub = _transport.onReceive.listen(_reader.addChunk);
+    // Pumped from the constructor so no componentsDone frame can arrive
+    // before something is watching for it. This is the whole reason the
+    // signal is latched rather than streamed — see [peerComponentsDone].
+    _pumpComponentsDone();
   }
 
   final Transport _transport;
@@ -752,6 +780,56 @@ class BattleSession implements BattleTurnSession {
     send(BattleMsgType.stateHash, ourHash);
     final frame = await framesOfType(BattleMsgType.stateHash).first;
     return frame.payload;
+  }
+
+  // ── Sequential-casting pacing (SPELL_COMPONENTS_PLAN.md §5.3) ───────────────
+
+  /// Turn numbers the peer has already signalled. A set, not a "latest turn"
+  /// int, because the signal is not part of the lockstep sequence: it is sent
+  /// once per player per turn and never awaited by the engine, so there is no
+  /// exchange keeping the two sides' turn counters in step at the moment it
+  /// arrives. Recording exactly which turns were signalled means an early or
+  /// duplicate frame can never satisfy the wrong turn's wait.
+  final Set<int> _peerComponentsDoneTurns = {};
+
+  /// Waiters registered by [peerComponentsDone] before their turn's frame
+  /// arrived, keyed by turn number.
+  final Map<int, Completer<void>> _componentsDoneWaiters = {};
+
+  /// Re-subscribes after every frame: [framesOfType] hands back a
+  /// single-element stream that closes, so a continuous listener has to
+  /// re-arm itself. Runs for the life of the session.
+  ///
+  /// This pump CLAIMS every [BattleMsgType.componentsDone] frame —
+  /// [BattleFrameReader] delivers each frame to exactly one waiter — so
+  /// [peerComponentsDone] is the only way to observe the signal. Anything
+  /// else calling `framesOfType(componentsDone)` would simply wait forever.
+  void _pumpComponentsDone() {
+    framesOfType(BattleMsgType.componentsDone).first.then((frame) {
+      if (frame.payload.length >= 4) {
+        final turn = ByteData.sublistView(frame.payload, 0, 4)
+            .getUint32(0, Endian.big);
+        _peerComponentsDoneTurns.add(turn);
+        _componentsDoneWaiters.remove(turn)?.complete();
+      }
+      _pumpComponentsDone();
+    }).catchError((_) {
+      // Transport closed (match over, peer gone). Stop re-arming; anyone
+      // still waiting is released by the forfeit/match-end path instead.
+    });
+  }
+
+  @override
+  void sendComponentsDone(int turnNumber) {
+    final payload = Uint8List(4);
+    ByteData.sublistView(payload).setUint32(0, turnNumber, Endian.big);
+    send(BattleMsgType.componentsDone, payload);
+  }
+
+  @override
+  Future<void> peerComponentsDone(int turnNumber) {
+    if (_peerComponentsDoneTurns.contains(turnNumber)) return Future.value();
+    return (_componentsDoneWaiters[turnNumber] ??= Completer<void>()).future;
   }
 
   // ── Match control ───────────────────────────────────────────────────────────

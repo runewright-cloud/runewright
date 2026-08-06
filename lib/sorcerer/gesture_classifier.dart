@@ -169,3 +169,68 @@ class GestureClassifier {
 /// in a physically comparable scale.
 double energyFloorRms(GestureClassifier classifier) =>
     math.sqrt(classifier.energyFloor);
+
+// ── Free-style cast motion (docs/SPELL_COMPONENTS_PLAN.md §4.1) ──────────────
+//
+// The hold is a performance, not a trigger: a caster is expected to gesticulate
+// for its whole duration and land on the gesture they want at the end. This
+// gate asks the separate question "were you moving THROUGHOUT" — the
+// classifier's own stillness gate (§6.1) only asks "did anything happen at
+// all", which a single flourish inside an otherwise motionless hold satisfies.
+//
+// It deliberately introduces NO new calibrated threshold. SOMATIC_GESTURE_PLAN
+// §6.5 requires every constant to come out of the §9 harness rather than being
+// invented, and there is no corpus of free-style casting motion to grid-search
+// against. What makes this an independent check is the COVERAGE rule below,
+// evaluated against the one energy floor that has been measured.
+//
+// Failing it costs the caster their enhancement and nothing else — no mana
+// term, no refused cast, no wire field. It cannot be otherwise: whether a
+// phone moved is a self-attested sensor claim the peer can never recheck.
+
+/// Windows the hold is split into for the coverage test.
+const int kCastMotionWindows = 4;
+
+/// How many of those windows must clear the energy floor.
+///
+/// 3 of 4 rather than 4 of 4 so that the moment of settling into the final
+/// gesture — or a brief fumble — does not void an otherwise committed
+/// performance. Biased toward accepting the honest caster, which is the safe
+/// direction here: the failure mode is losing a buff, never losing a turn.
+const int kCastMotionWindowsRequired = 3;
+
+/// Minimum samples in the hold before the coverage test means anything.
+///
+/// At the ~55 Hz the Pixel 6 actually reports (SOMATIC_GESTURE_PLAN §12), 32
+/// samples is a hold of well under a second — short enough that a genuine
+/// cast never trips it, long enough that each of the four windows holds
+/// several samples rather than one.
+const int kMinCastMotionSamples = 32;
+
+/// True when [samples] show sustained motion across the whole hold.
+///
+/// Splits the capture into [kCastMotionWindows] equal windows by sample count
+/// and requires at least [kCastMotionWindowsRequired] of them to exceed
+/// [classifier]'s energy floor. A capture shorter than
+/// [kMinCastMotionSamples] fails — there is not enough of a performance there
+/// to judge.
+///
+/// Split by sample count, not by wall-clock time: the two IMU streams are
+/// merged by nearest timestamp (gesture_capture.dart) and the resulting rate
+/// is steady but not exact, so equal sample counts give equal statistical
+/// weight per window where equal time spans would not.
+bool castMotionSatisfied(
+  List<ImuSample> samples, {
+  GestureClassifier classifier = const GestureClassifier(),
+}) {
+  if (samples.length < kMinCastMotionSamples) return false;
+  final per = samples.length ~/ kCastMotionWindows;
+  var moving = 0;
+  for (var w = 0; w < kCastMotionWindows; w++) {
+    // The last window takes the remainder, so no sample goes unjudged.
+    final end = w == kCastMotionWindows - 1 ? samples.length : (w + 1) * per;
+    final window = samples.sublist(w * per, end);
+    if (windowEnergy(window) >= classifier.energyFloor) moving++;
+  }
+  return moving >= kCastMotionWindowsRequired;
+}

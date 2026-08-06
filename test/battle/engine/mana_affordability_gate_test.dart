@@ -65,7 +65,7 @@ void main() {
   ({BattleState state, TurnLoop loop, WizardAvatar local}) setup({
     int mana = 100,
     int hp = 24,
-    bool sorcererMode = false,
+    bool vocalComponents = false,
     bool allowProoflessSpells = false,
     List<StatusEffect> statusEffects = const [],
   }) {
@@ -88,7 +88,7 @@ void main() {
         playerHp: hp,
         gridRadius: 6,
         maxPlayers: 1,
-        sorcererMode: sorcererMode,
+        vocalComponents: vocalComponents,
       ),
       avatars: [local],
       teams: [const Team(id: 'solo', playerIds: [id])],
@@ -99,9 +99,9 @@ void main() {
       session: SoloBattleSession(state: state),
       localPlayerId: id,
       // Set on the loop, not read off MatchConfig — battle_screen.dart passes
-      // `state.config.sorcererMode` here at construction (battle_screen.dart
+      // `state.config.vocalComponents` here at construction (battle_screen.dart
       // :876), so mirror that wiring rather than assuming the loop infers it.
-      isSorcererMode: sorcererMode,
+      isVocalComponents: vocalComponents,
       allowProoflessSpells: allowProoflessSpells,
     );
     return (state: state, loop: loop, local: local);
@@ -261,7 +261,7 @@ void main() {
     // base cost — which is also what a clean recital actually charges.
     test('quotes the honest base cost, same as wizard mode', () {
       final wizard = setup(mana: 200);
-      final sorcerer = setup(mana: 200, sorcererMode: true);
+      final sorcerer = setup(mana: 200, vocalComponents: true);
       final s = spell(segmentCount: 12);
 
       expect(
@@ -275,7 +275,7 @@ void main() {
       // Recall never gates the loadout enhancement (§4: wrong words cost mana,
       // full stop), so Efficiency is live in the quote whenever the caster is
       // eligible for it.
-      final ctx = setup(mana: 200, sorcererMode: true);
+      final ctx = setup(mana: 200, vocalComponents: true);
       final s = spell(segmentCount: 12, supremeTags: const ['water']);
 
       expect(

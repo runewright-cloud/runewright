@@ -4838,3 +4838,116 @@ backup JSON directly for exactly that.
 - **No on-screen pass** of the attune dialog or the partial-counter banner.
 - **Phase 4 is untouched** and unchanged: still VK-breaking, still needs the full positive +
   negative corpus.
+
+---
+
+## M4.12 — Spell components split, and the deadlock that shaped the wire (2026-08-06)
+
+*Companion doc: `docs/SPELL_COMPONENTS_PLAN.md`, which is the contract. This records what
+was learned building it, including the thing that did not work.*
+
+### The deadlock is the interesting part
+
+Sequential casting needs one signal: "the player ahead of you has finished performing."
+The obvious way to get it is to watch for their `actionCommit` frame — the protocol
+already sends one per player per turn, and it is opaque, so it leaks nothing.
+
+**It deadlocks.** `actionCommit` goes out from inside `TurnLoop.beginTurn`, which first
+awaits `beginArtifactPhase()` — the Phase-0 artifact-activation exchange, which is
+*simultaneous* and completes only when both sides have declared. So the trailing player
+would be waiting on a frame the leading player cannot send until the trailing player has
+committed. Each waits for the other, forever.
+
+Three ways out were considered:
+
+1. **Force Phase 0 open at the start of the action phase for everyone.** Rejected: it
+   would take away the player's chance to declare an artifact during their turn, which is
+   the whole point of the corner-tile long-press.
+2. **Add an explicit "done declaring artifacts" step.** Rejected as scope: a new
+   confirmation beat in every turn, to serve a pacing feature.
+3. **A dedicated frame, sent before any of the turn's exchanges are touched.** Taken —
+   `componentsDone` (0x46), payload = turn number.
+
+The lesson generalises: **a pacing signal must not ride on a rendezvous exchange.** Any
+frame the engine *awaits* is, by construction, unavailable as a "the other side is ready"
+notification, because it is gated on the very readiness you are trying to observe. This
+is the same shape as the boundary bugs in the handoff notes — the math was fine, the
+*ordering* was where it lived.
+
+### Latch, don't stream
+
+`componentsDone` is recorded on arrival into a **set of turn numbers**, with waiters
+served from that set. The first implementation reached for a broadcast stream, which is
+wrong in the ordinary case rather than an edge case: the leading player finishes
+performing *before* the trailing player's screen asks whether it may act. A broadcast
+drops a signal that has no listener yet, so the trailing player would be locked out for
+the remainder of that turn — a hang, on the most common timeline. Same lesson
+`BattleFrameReader._pendingByType` already carries; it just had to be relearned one
+layer up.
+
+A set rather than a latest-turn counter, because this signal is *not* part of the
+lockstep sequence — nothing keeps the two sides' turn counters in step at the moment it
+arrives, so "greater than N" is not a safe test.
+
+### The constructor pump claims the frame
+
+`BattleSession` pumps `componentsDone` from its constructor (so nothing can arrive
+unwatched). `BattleFrameReader` hands each frame to exactly one waiter, so that pump is
+now the *only* way to observe the signal — a second `framesOfType(componentsDone)`
+listener waits forever. Found by writing a test that tried to read the payload directly;
+it hung for 30s. Documented at the pump, and the test now checks the encoding through the
+public latch instead.
+
+### Somatic: what the trust boundary forced
+
+The free-style motion gate ("were you gesticulating throughout, not just once?") was
+originally sketched with a mana penalty for failing it. That is unimplementable and was
+dropped: whether a phone moved is a **self-attested sensor claim the peer can never
+recheck** — precisely the B-1/B-8 shape the vocal redesign spent a milestone removing.
+The ratified behaviour is that failing it costs the enhancement and nothing else, which
+keeps somatic strictly self-limiting: it can lose you power, never grant it.
+
+The same reasoning killed the reserved somatic wire byte the earlier plan called for. It
+was never needed. What crosses the wire is the *enhancement claim*, already certified
+against `supreme_dominance_flags`; a gesture field alongside it would be a new untrusted
+input buying nothing.
+
+### The constant that was not invented
+
+`castMotionSatisfied` introduces **no new energy threshold** — SOMATIC_GESTURE_PLAN §6.5
+forbids invented constants and there is no corpus of free-style casting motion to
+grid-search against. It reuses `GestureClassifier.energyFloor` (the measured Pixel 6 idle
+ceiling) and gets its independence from a **coverage rule** instead: 3 of 4 equal windows
+must clear the floor. That distinguishes "moving throughout" from "one flourish in an
+otherwise still hold", which the overall-energy gate cannot. The window counts *are*
+reasoned rather than measured, and that is flagged as outstanding, not hidden.
+
+### Smaller things
+
+- **Clockwise seating is not spawn-array order.** `Battlefield.spawnPositions` returns
+  vertices in *player-count* order — 4 players sit on opposite pairs (`v3, v0, v2, v5`),
+  which is not a walk around the table. Seating had to be derived by sorting players by
+  their vertex's index in the clockwise list. Anyone reaching for `spawns[i]` as a seat
+  index will get a plausible-looking wrong answer for 4+ players.
+- **Seating is stored, not derived at read time**, because it keys on *starting*
+  positions and wizards move. It stays out of `toCanonicalBytes()`: it is a pure function
+  of setup inputs both devices already agree on, so hashing it would add a desync surface
+  without adding a check.
+- **`state.turnNumber` is the turn just finished** during the action phase (`runTurn`
+  increments at its top), so the signal is labelled `turnNumber + 1`. Getting this wrong
+  produces a gate that never opens, which looks exactly like a network fault.
+- **Solo seats only the real player.** The dummy performs no components, so it is not in
+  the order and nobody ever waits on it.
+
+### Still open
+
+- **No real-device pass on the somatic cast seam.** The classifier cleared its confusion
+  matrix on the committed corpus, but IMU streaming during a live mid-battle hold has
+  never run on hardware, and the coverage rule has never met real casting motion.
+- **No two-device LAN pass on the ordering gate.** It is a wire-timing behaviour; the
+  verification hierarchy puts hardware above the integration test that covers it now.
+- **`awaitComponentSlot` collapses to "the one peer"** because the transport is pairwise.
+  A mesh session with 3+ performers needs `componentsDone` to name its sender so a waiter
+  can count them off.
+- **No on-screen pass** of the components banner, the gesture-only cast, or the
+  post-release Mystery delay prompt.

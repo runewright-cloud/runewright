@@ -4,11 +4,10 @@
 // VocalScore. The capture pipeline now exists (gesture_capture.dart,
 // gesture_classifier.dart, lib/practice/gesture_enrollment.dart,
 // practice_screen.dart's Gesture tab) — see docs/SOMATIC_GESTURE_PLAN.md.
-// [kSomaticCaptureEnabled] stays false until that pipeline has cleared a
-// real-device confusion-matrix pass (SORC.5, plan §9/§11); until then this
-// file is still the stable seam battle_screen.dart's cast-time enhancement
-// picker builds against, mirroring how VocalSlot/VocalScore/
-// fromSorcererQuality were seamed in before VocalScorer existed.
+// As of docs/SPELL_COMPONENTS_PLAN.md the pipeline is wired into the live
+// cast seam: battle_screen.dart captures IMU for the whole CAST hold and this
+// enum's [enhancementZone] is what selects the enhancement, replacing the tap
+// picker whenever `MatchConfig.somaticComponents` is on.
 //
 // [melee] is captured into the enrollment/calibration corpus now (it's one
 // of the five gestures a player performs) but is not an enhancement — its
@@ -37,9 +36,13 @@ enum Gesture {
       };
 }
 
-/// Stub gate: real somatic-gesture capture (sensor + classifier) exists but
-/// has not cleared a real-device confusion-matrix pass. Always false. Flip
-/// only once GestureClassifier's harness (test/sorcerer/) passes against a
-/// real captured corpus — see VocalScore's 0xFF somatic-byte sentinel
-/// (vocal_score.dart, turn_loop.dart) this seam eventually feeds.
-const bool kSomaticCaptureEnabled = false;
+// `kSomaticCaptureEnabled` used to live here as a compile-time gate. It is
+// GONE, not flipped: somatic capture is now switched on per match by
+// `MatchConfig.somaticComponents` — chosen in the lobby, agreed by both sides,
+// and therefore askable at the point of use rather than baked into the binary
+// (docs/SPELL_COMPONENTS_PLAN.md §4.2).
+//
+// The hardware gate the constant held is not gone either, only moved out of
+// the type system: SOMATIC_GESTURE_PLAN.md §11 step 6's real-device pass over
+// the live cast seam is still outstanding, and is recorded as such in
+// SPELL_COMPONENTS_PLAN.md §7.

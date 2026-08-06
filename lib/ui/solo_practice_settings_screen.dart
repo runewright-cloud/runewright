@@ -16,6 +16,7 @@ import '../spells/chapter_asset.dart';
 import 'battle_screen.dart';
 import 'manuscript_theme.dart';
 import 'widgets/chapter_picker.dart';
+import 'widgets/component_toggles.dart';
 import 'widgets/int_stepper_row.dart';
 
 class SoloPracticeSettingsScreen extends StatefulWidget {
@@ -32,7 +33,12 @@ class _SoloPracticeSettingsScreenState
 
   int _hp = 24;
   int _gridRadius = 4;
-  bool _sorcererMode = false;
+
+  // Spell components (docs/SPELL_COMPONENTS_PLAN.md §1). The duel lobby's
+  // toggles, mirrored here so practice runs under the same rules a duel will.
+  // Simultaneous casting is deliberately absent — see the widget below.
+  bool _vocalComponents = false;
+  bool _somaticComponents = false;
 
   /// Solo practice runs under the device's own leyline seed word, so wild
   /// magic behaves here exactly as it will in a duel this player hosts.
@@ -58,7 +64,8 @@ class _SoloPracticeSettingsScreenState
         playerHp: _hp,
         gridRadius: _gridRadius,
         maxPlayers: 2,
-        sorcererMode: _sorcererMode,
+        vocalComponents: _vocalComponents,
+        somaticComponents: _somaticComponents,
         communitySeed: _communitySeed,
       );
 
@@ -89,7 +96,7 @@ class _SoloPracticeSettingsScreenState
               const SizedBox(height: 28),
               _buildGridRadiusStepper(),
               const SizedBox(height: 28),
-              _buildSorcererModeToggle(),
+              _buildComponentToggles(),
               const Spacer(),
               _buildBeginButton(context),
             ],
@@ -129,32 +136,19 @@ class _SoloPracticeSettingsScreenState
     );
   }
 
-  Widget _buildSorcererModeToggle() {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('SORCERER MODE', style: manuscriptCaptionStyle()),
-              const SizedBox(height: 2),
-              Text(
-                'Speak the incantation aloud to cast',
-                style: manuscriptCaptionStyle(
-                    color: kInkMutedColor.withValues(alpha: 0.7)),
-              ),
-            ],
-          ),
-        ),
-        Switch(
-          value: _sorcererMode,
-          activeThumbColor: kIlluminationGold,
-          onChanged: (v) => setState(() => _sorcererMode = v),
-        ),
-      ],
-    );
-  }
+  /// No simultaneous-casting switch: solo practice has exactly one caster, so
+  /// there is nobody to be simultaneous with and nobody to take turns after.
+  /// The config it builds leaves the flag at its default, which is harmless —
+  /// SoloBattleSession completes the pacing signal immediately either way.
+  Widget _buildComponentToggles() => ComponentToggles(
+        vocalComponents: _vocalComponents,
+        somaticComponents: _somaticComponents,
+        simultaneousCasting: false,
+        showSimultaneous: false,
+        onVocalChanged: (v) => setState(() => _vocalComponents = v),
+        onSomaticChanged: (v) => setState(() => _somaticComponents = v),
+        onSimultaneousChanged: (_) {},
+      );
 
   Widget _buildBeginButton(BuildContext context) {
     return SizedBox(

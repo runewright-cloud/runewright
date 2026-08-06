@@ -109,7 +109,7 @@ class MenuScreen extends StatelessWidget {
                 // of ONE library spell, so it is reached from that spell's card
                 // (Library › Practice Incantation) and nowhere else.
                 _MenuButton(
-                  label: 'Attune Spell Components',
+                  label: 'Attune Components',
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const VocabularyScreen()),

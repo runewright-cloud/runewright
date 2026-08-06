@@ -16,6 +16,7 @@ import 'dart:typed_data';
 
 import '../engine/hash_rng.dart';
 import 'battle_state.dart';
+import 'component_order.dart';
 import 'hex_battlefield.dart';
 import 'match_config.dart';
 import 'wizard_avatar.dart';
@@ -110,5 +111,14 @@ BattleState buildNetworkBattleState({
     avatars: avatars,
     teams: teams,
     battlefield: battlefield,
+    // Seating comes off the same canonical spawn assignment above, so every
+    // device derives the identical performing order without an exchange —
+    // including the 5-player case, whose skipped vertex was itself drawn from
+    // the shared joint entropy.
+    componentSeating: clockwiseComponentOrder(
+      playerIds: [for (final s in sortedRoster) s.playerId],
+      startPositions: spawns,
+      radius: config.gridRadius,
+    ),
   );
 }

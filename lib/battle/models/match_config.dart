@@ -42,7 +42,9 @@ class MatchConfig {
     this.winCondition = WinCondition.lastTeamStanding,
     this.maxPlayers = 2,
     this.experimentalMultiplayer = false,
-    this.sorcererMode = false,
+    this.vocalComponents = false,
+    this.somaticComponents = false,
+    this.simultaneousCasting = false,
     this.communitySeed = kDefaultCommunitySeed,
   })  : assert(tier == 12 || tier == 24 || tier == 48, 'tier must be 12, 24, or 48'),
         assert(maxPlayers >= 1, 'maxPlayers must be ≥ 1'),
@@ -102,10 +104,44 @@ class MatchConfig {
   /// Gates 3–6 player sessions. Never set by default; requires explicit opt-in.
   final bool experimentalMultiplayer;
 
-  /// When true, spell casts require a spoken incantation scored by [VocalScorer].
-  /// Both sides must agree on this flag (enforced by [matches]).
-  /// Wire format: adds a 3-byte sorcerer suffix to spell action payloads.
-  final bool sorcererMode;
+  // ── Spell components (docs/SPELL_COMPONENTS_PLAN.md) ──────────────────────
+  //
+  // These three replace the single `sorcererMode` boolean. The split is not
+  // cosmetic: vocal is peer-verifiable and moves the mana ledger, somatic is a
+  // self-attested sensor claim that can only ever reduce the caster to no
+  // enhancement (§1's trust table). A player has real reason to want one and
+  // not the other, and the two need different hardware.
+  //
+  // All three are compared field-by-field in [matches] — both sides must agree
+  // or the session aborts, exactly as with every other negotiated field.
+
+  /// When true, casting requires reciting the incantation into the microphone
+  /// while CAST is held; what was said is scored by [IncantationRecallScorer]
+  /// and priced by [RecallTally] against the certified trajectory.
+  /// Wire format: adds the recall suffix to spell action payloads.
+  final bool vocalComponents;
+
+  /// When true, casting requires gesticulating for the duration of the hold,
+  /// and the gesture performed selects the enhancement (replacing the tap
+  /// picker). Never transmits a score — see SPELL_COMPONENTS_PLAN.md §4.
+  final bool somaticComponents;
+
+  /// When true, every player performs their components at the same moment.
+  /// Off by default: the sequential order is easier to concentrate under and
+  /// far easier on the microphones (§5.1), and the turn-taking is itself a
+  /// mechanic — a later caster hears the earlier one and may change their pick.
+  final bool simultaneousCasting;
+
+  /// True when either component is in play, i.e. when casting is a performance
+  /// at all. Drives [GameMode.sorcerer] and the press-and-hold CAST control.
+  bool get componentsEnabled => vocalComponents || somaticComponents;
+
+  /// True when players must take turns performing components (§5.2).
+  ///
+  /// Gated on [componentsEnabled], not merely the negation of
+  /// [simultaneousCasting]: with no components to perform there is nothing to
+  /// take turns at, so ordering would be pure latency.
+  bool get sequentialCasting => componentsEnabled && !simultaneousCasting;
 
   /// The leyline seed word (design doc: "Community Seed Word") folded into
   /// every spell's wild-magic hash — see WildMagic.seedHex. Stored RAW as the
@@ -139,7 +175,9 @@ class MatchConfig {
       winCondition == other.winCondition &&
       maxPlayers == other.maxPlayers &&
       experimentalMultiplayer == other.experimentalMultiplayer &&
-      sorcererMode == other.sorcererMode &&
+      vocalComponents == other.vocalComponents &&
+      somaticComponents == other.somaticComponents &&
+      simultaneousCasting == other.simultaneousCasting &&
       // Compared NORMALIZED, so two duelists who typed "Rivendell!" and
       // "rivendell" agree exactly when their spells would hash identically.
       // A genuine mismatch here means they follow different traditions — the
@@ -162,7 +200,9 @@ class MatchConfig {
         'winCondition': winCondition.name,
         'maxPlayers': maxPlayers,
         'experimentalMultiplayer': experimentalMultiplayer,
-        'sorcererMode': sorcererMode,
+        'vocalComponents': vocalComponents,
+        'somaticComponents': somaticComponents,
+        'simultaneousCasting': simultaneousCasting,
         'communitySeed': communitySeed,
       };
 
@@ -182,7 +222,14 @@ class MatchConfig {
         ),
         maxPlayers: j['maxPlayers'] as int? ?? 2,
         experimentalMultiplayer: j['experimentalMultiplayer'] as bool? ?? false,
-        sorcererMode: j['sorcererMode'] as bool? ?? false,
+        // `sorcererMode` is the pre-split key (docs/SPELL_COMPONENTS_PLAN.md
+        // §1). It meant exactly what `vocalComponents` means now, so an older
+        // stored config still loads with the right component enabled rather
+        // than silently reading as "no components at all".
+        vocalComponents:
+            j['vocalComponents'] as bool? ?? j['sorcererMode'] as bool? ?? false,
+        somaticComponents: j['somaticComponents'] as bool? ?? false,
+        simultaneousCasting: j['simultaneousCasting'] as bool? ?? false,
         // A pre-wild-magic peer omits this field entirely and lands on
         // 'universal'. If they are actually running an unpatched client, the
         // rest of the handshake (toCanonicalBytes' new suffix) diverges anyway

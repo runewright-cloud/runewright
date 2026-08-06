@@ -182,6 +182,14 @@ class _TamperingSession implements BattleTurnSession {
   final BattleTurnSession _inner;
 
   @override
+  void sendComponentsDone(int turnNumber) =>
+      _inner.sendComponentsDone(turnNumber);
+
+  @override
+  Future<void> peerComponentsDone(int turnNumber) =>
+      _inner.peerComponentsDone(turnNumber);
+
+  @override
   Future<Uint8List> exchangeStateHash(Uint8List ourHash) async {
     final peerBytes = await _inner.exchangeStateHash(ourHash);
     if (peerBytes.length < 96) return peerBytes;

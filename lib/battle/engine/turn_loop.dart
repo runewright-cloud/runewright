@@ -136,6 +136,7 @@ import 'package:rune_duel/spells/spell_permission.dart';
 
 import '../models/battle_state.dart';
 import '../models/casting_enhancements.dart';
+import '../models/component_order.dart';
 import '../models/creature_spec.dart'
     show CreatureSpec, ResistanceTier, resistanceTierOf;
 import '../models/pending_delayed_spell.dart';
@@ -822,7 +823,8 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     this.peerOwnerPubkeyHex,
     this.peerPermissions = const [],
     this.tier = 24,
-    this.isSorcererMode = false,
+    this.isVocalComponents = false,
+    this.isSomaticComponents = false,
     this.meleeTargetPicker = _defaultNoMelee,
     this.freeMoveDirectionPicker = _defaultNoFreeMove,
     this.artifactActivationPicker = _defaultNoActivation,
@@ -944,10 +946,34 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// [ProofIntake.verifyAndParse] to parse public outputs correctly.
   final int tier;
 
-  /// When true, spell action payloads carry a 3-byte sorcerer suffix
-  /// (pronunciation_u8, volume_u8, somatic_u8) committed inside the action hash.
-  /// Must match [MatchConfig.sorcererMode] on both sides.
-  final bool isSorcererMode;
+  /// When true, spell action payloads carry the [IncantationRecall] suffix,
+  /// committed inside the action hash, and the peer prices the recital against
+  /// the certified trajectory. Must match [MatchConfig.vocalComponents] on both
+  /// sides.
+  ///
+  /// This is the ONLY component flag the wire format depends on. Somatic
+  /// components add no wire field at all — see [isSomaticComponents].
+  final bool isVocalComponents;
+
+  /// When true, the caster selects their enhancement by gesture rather than by
+  /// tapping. Must match [MatchConfig.somaticComponents] on both sides.
+  ///
+  /// The engine reads this for exactly one thing: [_componentsGameMode]. There
+  /// is deliberately no somatic field on the wire and no somatic term in the
+  /// mana chain, because a gesture is a self-attested sensor claim the peer can
+  /// never recheck (docs/SPELL_COMPONENTS_PLAN.md §6). What DOES cross the wire
+  /// is the resulting enhancement claim, which is certified against
+  /// `supreme_dominance_flags` exactly as a tapped one is — an unbacked claim
+  /// still forfeits, whichever way the caster selected it.
+  final bool isSomaticComponents;
+
+  /// [GameMode.sorcerer] whenever casting is a performance at all. Mirrors
+  /// [MatchConfig.componentsEnabled]; both components land here identically
+  /// because [CastingEnhancements.gameMode] asks "is this a performed cast",
+  /// not "which component was performed".
+  GameMode get _componentsGameMode => (isVocalComponents || isSomaticComponents)
+      ? GameMode.sorcerer
+      : GameMode.wizard;
 
   /// The local player's sorted chapter commitmentHex list — set after the
   /// spell library resolves (async after construction in the battle screen).
@@ -1048,7 +1074,72 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     if (_battleStarted) return;
     _battleStarted = true;
     final startEntropy = await _resolveEntropy();
+    _componentStartSeat =
+        componentStartSeat(startEntropy, componentSeating.length);
     _dealOpeningHandsIfNeeded(startEntropy);
+  }
+
+  // ── Spell-component order (docs/SPELL_COMPONENTS_PLAN.md §5.2) ──────────────
+  //
+  // Pacing only. Nothing here touches the mana ledger, the state hash, or any
+  // exchange the engine awaits — a client that ignores the whole mechanism
+  // stalls its opponent's controls and desyncs nothing.
+
+  /// Which seat leads on turn 1, drawn from the battle-start joint entropy so
+  /// neither device chooses it. Null until [startBattle] has run; callers fall
+  /// back to seat 0, which is stable and identical on both devices.
+  int? _componentStartSeat;
+
+  /// Player ids clockwise around the field by starting position. Falls back to
+  /// [BattleState.avatars] order for states built before seating existed —
+  /// already canonical, so the fallback is stable rather than arbitrary.
+  List<String> get componentSeating => state.componentSeating.isNotEmpty
+      ? state.componentSeating
+      : [for (final a in state.avatars) a.playerId];
+
+  /// The turn the components being performed right now belong to.
+  ///
+  /// [state.turnNumber] is only incremented at the top of [runTurn], so during
+  /// the action phase it still holds the turn just finished — the turn being
+  /// declared is the next one. Both devices are in lockstep on that value, so
+  /// both label the signal identically.
+  int get componentTurnNumber => state.turnNumber + 1;
+
+  /// The performing order for [turnNumber], leading player first.
+  List<String> componentOrder(int turnNumber) => componentOrderForTurn(
+        seating: componentSeating,
+        startSeat: _componentStartSeat ?? 0,
+        turnNumber: turnNumber,
+      );
+
+  /// Where the local player sits in [turnNumber]'s order, or -1 if they are
+  /// not in it.
+  int localComponentSlot(int turnNumber) =>
+      componentOrder(turnNumber).indexOf(localPlayerId);
+
+  /// Announces that the local player has finished performing and locked in.
+  ///
+  /// Called at the lock-in point for EVERY action type, not just spell casts:
+  /// a Dash consumes its slot exactly as a cast does, so that nothing about
+  /// what a player chose leaks from the timing of when they acted.
+  void signalComponentsDone() =>
+      session.sendComponentsDone(componentTurnNumber);
+
+  /// Completes when it is the local player's turn to perform.
+  ///
+  /// Returns immediately when this player leads, when ordering is off
+  /// (simultaneous casting, or no components at all), or when there is no peer
+  /// to wait on — [BattleTurnSession.peerComponentsDone] is already an
+  /// immediately-completed future in those cases.
+  ///
+  /// LIMITATION (2-player): the transport is pairwise, so "everyone ahead of
+  /// me" collapses to "the one peer". A mesh session with 3+ performers needs
+  /// the signal to name its sender so a waiter can count them off; see
+  /// MESH_ARCHITECTURE.md.
+  Future<void> awaitComponentSlot() async {
+    if (!state.config.sequentialCasting) return;
+    if (localComponentSlot(componentTurnNumber) <= 0) return;
+    await session.peerComponentsDone(componentTurnNumber);
   }
 
   /// Deals the opening hand/deck for both players, once, from [entropy].
@@ -1970,7 +2061,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
             isPotent: isPotent,
             isVelocity: isVelocity,
             isEfficiency: isEfficiency,
-            gameMode: isSorcererMode ? GameMode.sorcerer : GameMode.wizard,
+            gameMode: _componentsGameMode,
           ),
         MysterySpellCastAction(
           :final isPotent,
@@ -1979,7 +2070,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           CastingEnhancements(
             isPotent: isPotent,
             isVelocity: isVelocity,
-            gameMode: isSorcererMode ? GameMode.sorcerer : GameMode.wizard,
+            gameMode: _componentsGameMode,
           ),
         _ => null,
       };
@@ -2279,7 +2370,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     final (:action, :merkleProof) = _decodeAction(
       peerActionReveal.sublist(_kRevealNonceBytes * 2),
       withProof: verifyProof != null,
-      isSorcererMode: isSorcererMode,
+      isVocalComponents: isVocalComponents,
     );
 
     // Option 3: verify the peer's spell proof and Merkle book membership before
@@ -3482,7 +3573,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
             isPotent: isPotent,
             isVelocity: isVelocity,
             isEfficiency: isEfficiency,
-            gameMode: isSorcererMode ? GameMode.sorcerer : GameMode.wizard,
+            gameMode: _componentsGameMode,
             fizzle: action.fizzledForMana,
           );
           // Clouds (Water-Fire) base effect: an entity standing in a cloud's
@@ -5883,7 +5974,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         buf.addByte(conveyorDirection != null ? 1 : 0);
         if (conveyorDirection != null) buf.add(_encodeCoord(conveyorDirection));
         _appendSpellProofTail(buf, spell, handIndex);
-        if (isSorcererMode) _appendSorcererBytes(buf, recall);
+        if (isVocalComponents) _appendSorcererBytes(buf, recall);
 
       case DashAction():
         buf.addByte(0x04);
@@ -5921,7 +6012,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         buf.addByte(isPotent ? 1 : 0);
         buf.addByte(isVelocity ? 1 : 0);
         _appendSpellProofTail(buf, spell, handIndex);
-        if (isSorcererMode) _appendSorcererBytes(buf, recall);
+        if (isVocalComponents) _appendSorcererBytes(buf, recall);
     }
     return buf.toBytes();
   }
@@ -5980,8 +6071,8 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// WRONG, so a corrupt recall can only cost the caster mana — there is
   /// nothing here worth forfeiting a match over.
   static IncantationRecall? _decodeSorcererSuffix(
-      Uint8List bytes, bool isSorcererMode) {
-    if (!isSorcererMode || bytes.isEmpty) return null;
+      Uint8List bytes, bool isVocalComponents) {
+    if (!isVocalComponents || bytes.isEmpty) return null;
     final suffixLen = bytes[bytes.length - 1];
     final start = bytes.length - 1 - suffixLen;
     if (suffixLen < 2 || start < 0) return IncantationRecall.silent;
@@ -5998,7 +6089,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   static ({TurnAction action, MembershipProof? merkleProof}) _decodeAction(
     Uint8List bytes, {
     bool withProof = false,
-    bool isSorcererMode = false,
+    bool isVocalComponents = false,
   }) {
     // BUG FIX (found via SPELL_DRAW_WIRING_PLAN.md §10 item 4's test — a
     // pre-existing bug, dormant because every prior test used a single-spell
@@ -6130,7 +6221,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         // whole of the recall model: the claim is the caster's, the check is
         // ours. Pronunciation quality could never be checked this way, which is
         // why it was replaced.
-        final recall01 = _decodeSorcererSuffix(bytes, isSorcererMode);
+        final recall01 = _decodeSorcererSuffix(bytes, isVocalComponents);
         return (
           action: SpellCastAction(
             spell: spell,
@@ -6216,7 +6307,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         );
         final merkle3 = parseProofTail(bytes, pos3, commitmentHex3);
         // Same no-local-recalculation constraint as case 0x01 above.
-        final recall03 = _decodeSorcererSuffix(bytes, isSorcererMode);
+        final recall03 = _decodeSorcererSuffix(bytes, isVocalComponents);
         return (
           action: MysterySpellCastAction(
             spell: spell3,
@@ -6597,7 +6688,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     // it — see _deductManaForCommittedSpell. Null reaches this only from
     // previewSpellCost, which must quote the honest base price because no
     // incantation has been spoken yet.
-    if (isSorcererMode && recall != null) {
+    if (isVocalComponents && recall != null) {
       cost = recall
           .tallyAgainst(
             expectedIsSummon: isSummon,
@@ -6746,7 +6837,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     // Null means "not spoken yet" here, and prices at base — that is
     // previewSpellCost's path. The charging path never passes null; see
     // _deductManaForCommittedSpell.
-    if (isSorcererMode && recall != null) {
+    if (isVocalComponents && recall != null) {
       cost = recall
           .tallyAgainst(
             expectedIsSummon: spell.isSummon,
@@ -6819,7 +6910,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       isPotent: isPotent,
       isVelocity: isVelocity,
       isEfficiency: isEfficiency,
-      gameMode: isSorcererMode ? GameMode.sorcerer : GameMode.wizard,
+      gameMode: _componentsGameMode,
     );
     return _spellCostBreakdown(
       spell,

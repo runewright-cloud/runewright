@@ -94,6 +94,10 @@ SoloBattleSetup buildSoloBattleState(
       Team(id: 'foe', playerIds: [dummyId]),
     ],
     battlefield: battlefield,
+    // The dummy performs no components — it has no microphone, no hand, and
+    // no choice to conceal — so the only seat at the table is the player's,
+    // and they never wait on anyone (docs/SPELL_COMPONENTS_PLAN.md §5.3).
+    componentSeating: [localId],
   );
 
   return SoloBattleSetup(state: battleState, dummyPosition: dummyPos);

@@ -85,6 +85,12 @@ import '../sorcerer/incantation_recall_scorer.dart';
 import '../sorcerer/vocabulary_profile.dart';
 import '../sorcerer/vocal_enrollment.dart';
 import '../sorcerer/vocal_template_source.dart';
+import '../sorcerer/gesture.dart';
+import '../sorcerer/gesture_capture.dart';
+import '../sorcerer/gesture_classifier.dart';
+import '../sorcerer/imu_sample.dart' show ImuSample;
+import '../practice/gesture_enrollment.dart';
+import '../practice/gesture_template_source.dart';
 
 // ── Sightings capture (docs/SIGHTINGS_PLAN.md) ──────────────────────────────
 //
@@ -770,9 +776,22 @@ class _BattleScreenState extends State<BattleScreen>
   // thumbnail will land in — even for the turn's first incantation.
   bool _revealReservesTray = false;
 
-  // ── Sorcerer mode ──────────────────────────────────────────────────────────
+  // ── Spell components (docs/SPELL_COMPONENTS_PLAN.md) ───────────────────────
+  //
+  // Vocal and somatic share ONE capture window — the CAST press-and-hold —
+  // because segmentation is part of both sensor paths and enrollment is
+  // press-delimited for both. Whichever components the match enabled open on
+  // the same press and close on the same release.
   VocalScorer? _vocalScorer;
   bool _isCapturingVoice = false;
+
+  /// True while the CAST hold is open — either component. Drives the
+  /// performing banner and blocks the action bar.
+  bool get _isPerformingComponents => _isCapturingVoice || _isCapturingGesture;
+
+  bool get _vocalOn => widget.state.config.vocalComponents;
+  bool get _somaticOn => widget.state.config.somaticComponents;
+  bool get _componentsOn => widget.state.config.componentsEnabled;
 
   /// Decides which slot was spoken at each position of a held incantation.
   IncantationRecallScorer? _recallScorer;
@@ -787,6 +806,37 @@ class _BattleScreenState extends State<BattleScreen>
 
   /// What the caster just recited, waiting to be attached to the cast.
   IncantationRecall? _pendingRecall;
+
+  // ── Somatic components ─────────────────────────────────────────────────────
+
+  /// IMU capture for one held cast. Same press-delimited window as the mic
+  /// above and as gesture enrollment — SOMATIC_GESTURE_PLAN.md §7 requires
+  /// exactly one segmentation mechanism, since templates cut differently from
+  /// live queries skew every DTW distance.
+  GestureCapture? _gestureCapture;
+  bool _isCapturingGesture = false;
+
+  /// The player's enrolled reps, loaded once per match. Null until loaded (and
+  /// after a failed load): with no templates every gesture resolves to
+  /// neutral, which is the correct un-calibrated default — a cast with no
+  /// enhancement, never a guessed one.
+  Map<Gesture, List<List<List<double>>>>? _gestureTemplates;
+
+  /// Shipped constants — grid-searched through
+  /// test/sorcerer/gesture_confusion_e2e_test.dart, never hand-tuned here.
+  static const _gestureClassifier = GestureClassifier();
+
+  // ── Sequential casting (SPELL_COMPONENTS_PLAN.md §5.2) ─────────────────────
+
+  /// False while an earlier player in this turn's order is still performing.
+  /// Gates the LOCK-IN only: selecting a spell, picking a target and browsing
+  /// the hand stay live throughout, which is what lets a player hear their
+  /// opponent's incantation and change their mind before committing.
+  bool _componentSlotOpen = true;
+
+  /// Guards against arming the same turn's wait twice (the action phase is
+  /// re-entered on every rebuild path that resets the turn).
+  int? _componentSlotArmedForTurn;
 
   @override
   void initState() {
@@ -828,9 +878,8 @@ class _BattleScreenState extends State<BattleScreen>
     _seedPeerAvatarChoice();
     unawaited(_loadLocalAvatarChoice());
     _loadSpells();
-    if (widget.state.config.sorcererMode) {
-      _initSorcererMode();
-    }
+    if (_vocalOn) unawaited(_initVocalComponents());
+    if (_somaticOn) unawaited(_initSomaticComponents());
     _initTurnLoop();
     _listenForPeerForfeit();
   }
@@ -1021,7 +1070,8 @@ class _BattleScreenState extends State<BattleScreen>
       peerPermissions: widget.peerPermissions ?? const [],
       signMessage: signMessage,
       peerRawPubkey: widget.peerRawPubkey,
-      isSorcererMode: widget.state.config.sorcererMode,
+      isVocalComponents: widget.state.config.vocalComponents,
+      isSomaticComponents: widget.state.config.somaticComponents,
       meleeTargetPicker: _pickMeleeTarget,
       freeMoveDirectionPicker: _pickFreeMoveDirection,
       artifactActivationPicker: _pickArtifactActivation,
@@ -1076,16 +1126,21 @@ class _BattleScreenState extends State<BattleScreen>
     // declaration itself is NOT started here — see _onArtifactCornerLongPress
     // / _commitAction.
     unawaited(_beginArtifactEntropyForTurn());
+    // Turn 1's performing order. Deliberately after startBattle(), which is
+    // what draws the leading seat from the joint entropy — arming earlier
+    // would order turn 1 off the fallback seat 0 on both devices and only
+    // start rotating from turn 2.
+    _armComponentSlot();
   }
 
-  /// Builds the active scorer for sorcerer mode.
+  /// Builds the active scorer for vocal components.
   ///
   /// The once-per-match ambient noise-floor calibration is GONE with the move
   /// to recall scoring: volume is no longer scored at all. It was only ever
   /// used to normalise a loudness component, and the design doc (§944) already
   /// flagged that volume-scaling penalises players who can't project, in
   /// venues that are loud by design. Recall asks WHICH word, not how loudly.
-  Future<void> _initSorcererMode() async {
+  Future<void> _initVocalComponents() async {
     _vocalScorer = VocalScorerFactory.create();
     final enrollment = await VocalEnrollment.open();
     // The profile is passed so a slot whose enrolled audio is for a word the
@@ -1103,6 +1158,31 @@ class _BattleScreenState extends State<BattleScreen>
     setState(() => _recallScorer = scorer);
   }
 
+  /// Loads the player's enrolled gesture reps and opens the IMU seam.
+  ///
+  /// Fail-soft, unlike the vocal path's scorer: a player who enabled somatic
+  /// components but never enrolled (or whose enrollment fails to read) still
+  /// gets a playable match — every gesture resolves to neutral, so they cast
+  /// without enhancements rather than being unable to cast at all.
+  Future<void> _initSomaticComponents() async {
+    _gestureCapture = SensorsGestureCapture();
+    try {
+      final enrollment = await GestureEnrollment.open();
+      final templates = await loadGestureTemplates(
+        EnrolledGestureTemplateSource(enrollment),
+        // Melee is enrolled and lives in the corpus, but is an action rather
+        // than an enhancement (SOMATIC_GESTURE_PLAN.md §3) — offering it as a
+        // cast-time candidate could only ever steal a match away from one of
+        // the four that mean something here.
+        const [Gesture.fire, Gesture.air, Gesture.water, Gesture.earth],
+      );
+      if (!mounted) return;
+      setState(() => _gestureTemplates = templates);
+    } catch (e) {
+      debugPrint('somatic: gesture template load failed — $e');
+    }
+  }
+
   /// How many element words this spell's incantation asks for — its complete
   /// triplets, matching PracticeFormula.fromSpellFormula and the engine's
   /// expected recital. Residual activations resolve to no effect, so they are
@@ -1110,9 +1190,29 @@ class _BattleScreenState extends State<BattleScreen>
   int _expectedElementCount(SpellAsset spell) =>
       (spell.formula.length ~/ 3) * 3;
 
-  /// Opens the mic when the caster presses and holds CAST.
+  /// Opens the mic and the IMU when the caster presses and holds CAST.
+  ///
+  /// Both components share this one window. Either may be off, and the vocal
+  /// half may fail on a denied mic permission, without disturbing the other —
+  /// they are independent sensor paths that happen to be segmented together.
   Future<void> _onCastHoldStart() async {
-    if (!widget.state.config.sorcererMode) return;
+    if (!_componentsOn) return;
+    if (_somaticOn && !_isCapturingGesture) {
+      final capture = _gestureCapture;
+      if (capture != null) {
+        // Fail-soft: `flutter run -d linux` is the cheap UI target and has no
+        // IMU, so subscribing throws there. A device with no motion sensor
+        // should still be able to cast — it just never earns an enhancement,
+        // which is the same place every other somatic failure lands.
+        try {
+          capture.beginCapture();
+          setState(() => _isCapturingGesture = true);
+        } catch (e) {
+          debugPrint('somatic: IMU capture unavailable — $e');
+        }
+      }
+    }
+    if (!_vocalOn) return;
     if (_castRecorder != null) return;
     final recorder = AudioRecorder();
     try {
@@ -1175,13 +1275,106 @@ class _BattleScreenState extends State<BattleScreen>
     );
   }
 
+  /// Closes the IMU window on release and resolves what was performed.
+  ///
+  /// Returns [Gesture.neutral] for every rejection path — no capture, too
+  /// short, not enough sustained motion, no confident match, or an
+  /// enhancement this spell has not certified. Neutral is the universal safe
+  /// sink (SOMATIC_GESTURE_PLAN.md §0): the worst a misread can do is cast
+  /// without an enhancement, never with the wrong one.
+  _SomaticOutcome _endGestureCapture({bool cancelled = false}) {
+    final capture = _gestureCapture;
+    if (capture == null || !_isCapturingGesture) {
+      return const _SomaticOutcome(Gesture.neutral, _SomaticVerdict.notCaptured);
+    }
+    List<ImuSample> samples;
+    try {
+      samples = capture.endCapture();
+    } catch (e) {
+      debugPrint('somatic: IMU capture ended badly — $e');
+      samples = const [];
+    }
+    if (mounted) setState(() => _isCapturingGesture = false);
+    if (cancelled) {
+      return const _SomaticOutcome(Gesture.neutral, _SomaticVerdict.notCaptured);
+    }
+
+    // §4.1's free-style gate, ahead of classification: the hold is a
+    // performance and a caster who stood still through most of it has not
+    // given one. Costs the enhancement and nothing else — a phone's motion is
+    // a self-attested claim, so it can never be allowed to move mana.
+    if (!castMotionSatisfied(samples, classifier: _gestureClassifier)) {
+      return const _SomaticOutcome(Gesture.neutral, _SomaticVerdict.tooStill);
+    }
+
+    final templates = _gestureTemplates;
+    if (templates == null || templates.isEmpty) {
+      return const _SomaticOutcome(Gesture.neutral, _SomaticVerdict.notEnrolled);
+    }
+    final match = _gestureClassifier.classify(samples, templates);
+    if (match.gesture == Gesture.neutral) {
+      return const _SomaticOutcome(
+        Gesture.neutral,
+        _SomaticVerdict.unrecognized,
+      );
+    }
+
+    // §5.1's client-side eligibility downgrade. Gated on spell.supremeTags —
+    // the same field the tap picker gates on, backfilled by deriveSupremeTags()
+    // from the very stepper run the proof attests, so it cannot disagree with
+    // what the peer will certify. An honest client therefore never trips the
+    // peer's `unbacked_enhancement_claim` forfeit; that check remains as the
+    // backstop for clients that skip this one.
+    final zone = match.gesture.enhancementZone;
+    final spell = _selectedSpell;
+    if (zone == null || spell == null || !spell.supremeTags.contains(zone)) {
+      return _SomaticOutcome(Gesture.neutral, _SomaticVerdict.ineligible,
+          attempted: match.gesture);
+    }
+    return _SomaticOutcome(match.gesture, _SomaticVerdict.applied);
+  }
+
   Future<void> _onCastHoldEnd() async {
     _pendingRecall = await _endCastCapture();
+    if (_somaticOn) {
+      final outcome = _endGestureCapture();
+      if (!mounted) return;
+      // The gesture IS the enhancement choice while somatic is on — the tap
+      // picker is hidden (§4.2), so nothing else can have set this.
+      setState(() {
+        _selectedEnhancement = outcome.gesture.enhancementZone;
+        if (_selectedEnhancement != 'earth') _mysteryDelay = 0;
+      });
+      // Always says something, success included: with the picker hidden the
+      // player has no other confirmation of what their hands just bought
+      // them. And on failure it says WHICH way it fell short — move-more,
+      // gesture-more-clearly and this-spell-can't-take-that are three
+      // different corrections, which one "no enhancement" would teach none of.
+      final message = outcome.message;
+      if (message != null) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(message)));
+      }
+      // Mystery needs a delay, and a delay cannot be gestured. Prompt for it
+      // now, after the hold, before anything is committed — cancelling here
+      // abandons the cast without spending the turn.
+      if (_selectedEnhancement == 'earth') {
+        final delay = await _pickMysteryDelay();
+        if (!mounted) return;
+        if (delay == null) {
+          setState(() => _selectedEnhancement = null);
+          return;
+        }
+        setState(() => _mysteryDelay = delay);
+      }
+    }
     await _onCast();
   }
 
   Future<void> _onCastHoldCancel() async {
     await _endCastCapture(cancelled: true);
+    if (_somaticOn) _endGestureCapture(cancelled: true);
   }
 
   @override
@@ -1193,6 +1386,7 @@ class _BattleScreenState extends State<BattleScreen>
     _moveAnimController.dispose();
     _attackAnimController.dispose();
     _vocalScorer?.dispose();
+    _gestureCapture?.dispose();
     super.dispose();
   }
 
@@ -1368,6 +1562,65 @@ class _BattleScreenState extends State<BattleScreen>
     _artifactEntropyStarted = false;
     _artifactPhaseInFlight = false;
     _artifactPhaseResolved = false;
+  }
+
+  // ── Spell components: order + banner (SPELL_COMPONENTS_PLAN.md §5.2) ────────
+
+  /// Opens the local player's lock-in when everyone ahead of them in this
+  /// turn's order has performed.
+  ///
+  /// Idempotent per turn — the action phase is re-entered on several paths
+  /// and re-arming would drop a signal already consumed. Called wherever a
+  /// fresh action phase begins.
+  void _armComponentSlot() {
+    if (!widget.state.config.sequentialCasting) return;
+    final turn = _loop.componentTurnNumber;
+    if (_componentSlotArmedForTurn == turn) return;
+    _componentSlotArmedForTurn = turn;
+
+    final leading = _loop.localComponentSlot(turn) <= 0;
+    setState(() => _componentSlotOpen = leading);
+    if (leading) return;
+    unawaited(
+      _loop.awaitComponentSlot().then((_) {
+        // Guard on the turn: a signal that lands after the turn moved on
+        // must not reopen a slot that belongs to a different order.
+        if (!mounted || _componentSlotArmedForTurn != turn) return;
+        setState(() => _componentSlotOpen = true);
+      }),
+    );
+  }
+
+  /// Display name for whoever leads this turn's performing order.
+  String _componentPerformerName() {
+    final order = _loop.componentOrder(_loop.componentTurnNumber);
+    if (order.isEmpty) return 'your opponent';
+    final id = order.first;
+    if (id == widget.localPlayerId) return 'you';
+    final name = widget.state.avatars
+        .where((a) => a.playerId == id)
+        .map((a) => a.wizardName)
+        .firstOrNull;
+    return (name == null || name.isEmpty) ? 'your opponent' : name;
+  }
+
+  /// The one components banner: what to do right now, or who to wait for.
+  /// Null when there is nothing to say (components off, or not the action
+  /// phase).
+  String? get _componentBannerText {
+    if (_isPerformingComponents) {
+      // Deliberately no words: recalling them IS the exercise, and a
+      // sight-reading mode (at a mana premium) is a later pass.
+      if (_vocalOn && _somaticOn) return 'SPEAK AND GESTURE THE INCANTATION';
+      if (_vocalOn) return 'SPEAK THE INCANTATION';
+      return 'GESTURE THE INCANTATION';
+    }
+    if (!_componentsOn || _phase != _InputPhase.action) return null;
+    if (!_componentSlotOpen) {
+      return '${_componentPerformerName().toUpperCase()} IS CASTING — LISTEN';
+    }
+    if (widget.state.config.sequentialCasting) return 'YOUR COMPONENTS';
+    return null;
   }
 
   // ── Phase banner / engine phase notifications ─────────────────────────────────
@@ -1697,6 +1950,16 @@ class _BattleScreenState extends State<BattleScreen>
 
   /// Confirm the action and advance to the movement phase.
   void _commitAction(TurnAction action) {
+    // Lock-in. Told to the peer FIRST, before any of the turn's exchanges are
+    // touched, so the next player's controls open the moment this player stops
+    // performing rather than waiting on the Phase-0 round trip below — which
+    // cannot complete until that same next player has declared, and so would
+    // deadlock the pair (SPELL_COMPONENTS_PLAN.md §5.3).
+    //
+    // Sent for EVERY action type, not just casts: a Dash consumes its slot
+    // exactly as a cast does, so nothing about what was chosen leaks from the
+    // timing of when someone acted.
+    _loop.signalComponentsDone();
     // Safety net: if the player never long-pressed a corner tile, this is
     // where Phase 0 actually opens (declaring nothing) — beginTurn() below
     // awaits the same memoized exchange either way, so this just makes sure
@@ -1814,6 +2077,40 @@ class _BattleScreenState extends State<BattleScreen>
       ),
     );
   }
+
+  /// Asks how long an Earth/Mystery cast should lie hidden, 0–3 turns.
+  ///
+  /// Only reached under somatic components: a delay is a number, and a number
+  /// cannot be gestured. With the tap picker hidden (§4.2) this is the one
+  /// place the gesture-only flow hands a decision back to the screen.
+  /// Returns null if dismissed, which abandons the cast — nothing has been
+  /// committed at this point, so no turn is spent.
+  Future<int?> _pickMysteryDelay() => showDialog<int>(
+        context: context,
+        barrierDismissible: true,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: kParchmentColor,
+          title: Text('MYSTERY DELAY', style: manuscriptHeaderStyle(fontSize: 16)),
+          content: Text(
+            'How many turns should the spell lie hidden before it fires?',
+            style: manuscriptCaptionStyle(),
+          ),
+          actions: [
+            for (var d = 0; d <= 3; d++)
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, d),
+                child: Text(
+                  d == 0 ? 'NOW' : '$d',
+                  style: const TextStyle(
+                    fontFamily: 'serif',
+                    letterSpacing: 2,
+                    color: kIlluminationGold,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      );
 
   /// Prompts the caster to choose a push direction for the ConveyorTile
   /// about to be created at [origin], by tapping one of its 6 highlighted
@@ -2292,6 +2589,10 @@ class _BattleScreenState extends State<BattleScreen>
       // action commit — see _beginArtifactPhaseForTurn. No-ops once the
       // match is over.
       unawaited(_beginArtifactEntropyForTurn());
+      // The next turn's performing order — one seat further round the table
+      // than this one's. Must run after runTurn returned, since that is what
+      // advanced state.turnNumber and so what the order is keyed on.
+      _armComponentSlot();
       if (win != null && win.isOver) {
         unawaited(_handleMatchEnd(win));
       }
@@ -3183,7 +3484,14 @@ class _BattleScreenState extends State<BattleScreen>
 
           // Cast-time enhancement picker — only when the selected spell
           // achieved supreme dominance in at least one zone.
+          //
+          // HIDDEN under somatic components (SPELL_COMPONENTS_PLAN.md §4.2):
+          // the gesture performed during the hold is what selects the
+          // enhancement there, and leaving a tap path alongside it would mean
+          // two sources of truth for one choice — with the tap winning
+          // whenever the player forgot to release last.
           if (_phase == _InputPhase.action &&
+              !_somaticOn &&
               _selectedSpell != null &&
               _selectedSpell!.supremeTags.isNotEmpty)
             _EnhancementPicker(
@@ -3199,22 +3507,42 @@ class _BattleScreenState extends State<BattleScreen>
               onDelayChanged: (d) => setState(() => _mysteryDelay = d),
             ),
 
+          // …and what stands in its place under somatic. The picker was the
+          // only thing telling a player which enhancements a spell had
+          // actually certified; hiding it without this would leave them
+          // guessing which gesture is even worth attempting.
+          if (_phase == _InputPhase.action &&
+              _somaticOn &&
+              _selectedSpell != null &&
+              _selectedSpell!.supremeTags.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: Text(
+                'Gesture to enhance: '
+                '${_selectedSpell!.supremeTags.map((z) => kEnhancementLabel[z] ?? z).join(' · ')}',
+                textAlign: TextAlign.center,
+                style: manuscriptCaptionStyle(color: kIlluminationGold),
+              ),
+            ),
+
           // Phase-0 read-out is corner-tile-only now (2026-07-31): "mine" is
           // the outlined tile, "charms down" is the dimmed counter-charm
           // tile, and the opponent's declaration is a one-shot toast fired
           // from _beginArtifactPhaseForTurn the moment it's revealed, rather
           // than a banner that lingers for the rest of the turn.
 
-          // Sorcerer mode: vocal capture indicator
-          if (_isCapturingVoice)
+          // Components: whose turn it is to perform, and what to do while the
+          // hold is open. One banner rather than two — vocal and somatic share
+          // the window, so a player performing both wants one instruction.
+          if (_componentBannerText != null)
             Container(
               width: double.infinity,
-              color: const Color(0xFF6B1F1F),
+              color: _isPerformingComponents
+                  ? const Color(0xFF6B1F1F)
+                  : kInkColor,
               padding: const EdgeInsets.symmetric(vertical: 8),
               child: Text(
-                // Deliberately no words: recalling them IS the exercise, and
-                // a sight-reading mode (at a mana premium) is a later pass.
-                'SPEAK THE INCANTATION',
+                _componentBannerText!,
                 textAlign: TextAlign.center,
                 style: manuscriptHeaderStyle(
                   fontSize: 16,
@@ -3236,10 +3564,20 @@ class _BattleScreenState extends State<BattleScreen>
                     enhancementZone: _selectedEnhancement,
                   )
                 : null,
+            // Under somatic the enhancement is not known until release, so the
+            // exact figure above is only the no-enhancement price. This is the
+            // cheapest it could turn out to be, and the button shows the pair
+            // as a range. Affordability still gates on the DEARER of the two
+            // (see _ActionBar): offering a cast the caster might not be able
+            // to pay for would make the PEER forfeit, not merely inconvenience
+            // this device.
+            selectedSpellCostFloor: _somaticOn && _selectedSpell != null
+                ? _bestCaseSpellCost(_selectedSpell!)
+                : null,
             availableMana: _local?.mana,
             hasTarget: _targetHex != null,
             movePathLength: _movePath.length,
-            isBusy: _isBusy || _isCapturingVoice,
+            isBusy: _isBusy || _isPerformingComponents || !_componentSlotOpen,
             pickingMelee: _pickingMelee,
             pickingFreeMove: _pickingFreeMove,
             freeMoveGrant: _freeMoveGrant,
@@ -3250,7 +3588,7 @@ class _BattleScreenState extends State<BattleScreen>
             onDash: _onDash,
             onMeditateMain: _onMeditateMain,
             onCast: _onCast,
-            sorcererMode: widget.state.config.sorcererMode,
+            componentsEnabled: _componentsOn,
             onCastHoldStart: _onCastHoldStart,
             onCastHoldEnd: _onCastHoldEnd,
             onCastHoldCancel: _onCastHoldCancel,
@@ -3699,7 +4037,8 @@ class _ActionBar extends StatelessWidget {
     required this.onDash,
     required this.onMeditateMain,
     required this.onCast,
-    this.sorcererMode = false,
+    this.componentsEnabled = false,
+    this.selectedSpellCostFloor,
     this.onCastHoldStart,
     this.onCastHoldEnd,
     this.onCastHoldCancel,
@@ -3755,9 +4094,20 @@ class _ActionBar extends StatelessWidget {
   final VoidCallback onMeditateMain;
   final VoidCallback onCast;
 
-  /// Sorcerer mode replaces the CAST tap with a press-and-hold that doubles as
-  /// the incantation's capture window (VOCAL_RECALL_PLAN.md §9.4).
-  final bool sorcererMode;
+  /// With either spell component in play, CAST becomes a press-and-hold that
+  /// doubles as the capture window for both (VOCAL_RECALL_PLAN.md §9.4,
+  /// SPELL_COMPONENTS_PLAN.md §2).
+  final bool componentsEnabled;
+
+  /// Cheapest [selectedSpell] could end up costing, when the enhancement is
+  /// not yet decided (somatic components — the gesture resolves at release).
+  /// Null whenever the price is exact, which is every other case.
+  ///
+  /// [selectedSpellCost] is the DEARER end when this is set, and is what
+  /// affordability gates on. Quoting the cheap end and letting the player
+  /// commit would put the cost of being wrong on the peer: an unaffordable
+  /// cast forfeits THEIR match, not ours.
+  final int? selectedSpellCostFloor;
   final VoidCallback? onCastHoldStart;
   final VoidCallback? onCastHoldEnd;
   final VoidCallback? onCastHoldCancel;
@@ -4027,7 +4377,14 @@ class _ActionBar extends StatelessWidget {
                   if (cost != null) ...[
                     const SizedBox(height: 1),
                     Text(
-                      '$cost mana',
+                      // A range while the enhancement is still unresolved —
+                      // see [selectedSpellCostFloor]. Collapses to a single
+                      // figure when the gesture cannot change the price
+                      // (no Water/Efficiency tag on this spell).
+                      selectedSpellCostFloor != null &&
+                              selectedSpellCostFloor != cost
+                          ? '$selectedSpellCostFloor–$cost mana'
+                          : '$cost mana',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontFamily: 'serif',
@@ -4044,13 +4401,14 @@ class _ActionBar extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          // Sorcerer mode casts by PRESS AND HOLD: the window opens on press,
-          // the caster chants OPENER + the trajectory, and release both ends
-          // the capture and commits the cast. Same control enrollment uses —
+          // With components on, casting is PRESS AND HOLD: the window opens on
+          // press, the caster chants OPENER + the trajectory and gesticulates
+          // through it, and release both ends the capture and commits the
+          // cast. Same control enrollment uses —
           // hold_to_record_control.dart's header requires exactly one
           // capture-window mechanism, because enrollment and live capture must
           // segment identically or every DTW distance is skewed.
-          if (sorcererMode)
+          if (componentsEnabled)
             HoldToRecordButton(
               label: 'CAST',
               enabled: selecting && hasTarget && !isBusy && affordable,
@@ -4175,6 +4533,65 @@ class _IncantationTray extends StatelessWidget {
       ),
     );
   }
+}
+
+// ── Somatic cast outcome ─────────────────────────────────────────────────────
+
+/// Why the last hold resolved to the enhancement it did.
+///
+/// Every value except [applied] resolves to [Gesture.neutral]. They are kept
+/// distinct only so the player is told which of several very different
+/// problems they have — "move more", "that isn't a gesture I know", and "this
+/// spell can't take that enhancement" call for three different corrections,
+/// and a single "no enhancement" message teaches none of them.
+enum _SomaticVerdict {
+  /// No capture ran (component off, sensor unavailable, or hold cancelled).
+  notCaptured,
+
+  /// Free-style motion gate failed — the caster was mostly still (§4.1).
+  tooStill,
+
+  /// No enrolled reps to match against. The player never attuned.
+  notEnrolled,
+
+  /// Motion happened but matched no gesture confidently (§6.3).
+  unrecognized,
+
+  /// A gesture was recognized, but this spell has not certified that zone.
+  ineligible,
+
+  /// Recognized and certified — the enhancement is on.
+  applied,
+}
+
+class _SomaticOutcome {
+  const _SomaticOutcome(this.gesture, this.verdict, {this.attempted});
+
+  /// What the cast will actually use. [Gesture.neutral] unless
+  /// [verdict] is [_SomaticVerdict.applied].
+  final Gesture gesture;
+  final _SomaticVerdict verdict;
+
+  /// For [_SomaticVerdict.ineligible]: what was recognized before the
+  /// eligibility downgrade threw it away, so the message can name it.
+  final Gesture? attempted;
+
+  /// Player-facing one-liner, or null when there is nothing worth saying.
+  String? get message => switch (verdict) {
+        _SomaticVerdict.notCaptured => null,
+        _SomaticVerdict.applied =>
+          '${kEnhancementLabel[gesture.enhancementZone] ?? 'Enhanced'} — '
+              'the gesture held.',
+        _SomaticVerdict.tooStill =>
+          'Your gesticulation faltered — no enhancement.',
+        _SomaticVerdict.notEnrolled =>
+          'No attuned gestures. Attune them in Practice to cast enhanced.',
+        _SomaticVerdict.unrecognized =>
+          'The gesture did not read clearly — no enhancement.',
+        _SomaticVerdict.ineligible =>
+          'This spell has no supreme ${attempted?.name ?? ''} dominance — '
+              'no enhancement.',
+      };
 }
 
 // ── Cast-time enhancement picker ─────────────────────────────────────────────
