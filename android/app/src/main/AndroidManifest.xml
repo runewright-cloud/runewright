@@ -13,7 +13,7 @@
          per-cast burst recording (< 5 s per window). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <application
-        android:label="rune_duel"
+        android:label="Runewright"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

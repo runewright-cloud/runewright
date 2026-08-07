@@ -431,4 +431,13 @@ class SoloBattleSession implements BattleTurnSession {
   /// here, so no forfeit can ever arrive.
   @override
   final Future<String> peerForfeit = Completer<String>().future;
+
+  /// Never completes, for the same reason: there is no connection here to
+  /// lose. See [BattleTurnSession.peerConnectionLost].
+  @override
+  final Future<String> peerConnectionLost = Completer<String>().future;
+
+  /// Nothing to release: no transport, no subscription, no peer.
+  @override
+  Future<void> close() async {}
 }

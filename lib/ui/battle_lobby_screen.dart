@@ -21,6 +21,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 
 import '../battle/networking/duel_setup.dart';
 import '../battle/models/match_config.dart';
@@ -28,6 +29,8 @@ import '../battle/models/wild_magic_effect.dart'
     show kDefaultCommunitySeed, normalizeCommunitySeed;
 import '../battle/networking/match_discovery.dart';
 import '../dev_flags.dart' show kShowDevSurfaces;
+import '../ffi/prover.dart' as prover;
+import '../ffi/srs_cache.dart';
 import '../identity/identity.dart';
 import '../protocol/lan_socket_transport.dart';
 import '../protocol/transport.dart';
@@ -82,6 +85,59 @@ class _BattleLobbyScreenState extends State<BattleLobbyScreen> {
   String? _autoDiscoveryError; // set when startDiscovering() itself fails.
   final _manualConnectController = TextEditingController();
   bool _manualConnecting = false;
+
+  // One-time SRS readiness (see lib/ffi/srs_cache.dart). Null while the check
+  // is still in flight, so the warning never flashes up before we know.
+  bool? _srsReady;
+  bool _preparingSrs = false;
+  String? _prepareError;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_checkSrsReady());
+  }
+
+  Future<void> _checkSrsReady() async {
+    final ready = await srsCacheReady();
+    if (!mounted) return;
+    setState(() => _srsReady = ready);
+  }
+
+  /// Runs the one-time SRS download now, on purpose, while the player still
+  /// has whatever internet they are going to get.
+  ///
+  /// This is the same call the first duel makes anyway
+  /// (`BattleScreen._initTurnLoop`) — the point is only that it happens HERE,
+  /// where failing is a warning the player can act on, rather than at the
+  /// venue, where failing is a blocking error mid-handshake.
+  ///
+  /// Uses tier 12's bytecode deliberately: the download is sized to the
+  /// tier-48 floor regardless of which tier asks for it, so this fetches the
+  /// same bytes as tier 48 would while loading far less of it into memory.
+  Future<void> _prepareDevice() async {
+    setState(() {
+      _preparingSrs = true;
+      _prepareError = null;
+    });
+    try {
+      final circuitJson =
+          await rootBundle.loadString('assets/circuits/ca_v2_4_tier12.json');
+      final bytecode = await prover.extractBytecode(circuitJson);
+      await prover.initSrsCached(bytecode, cachePath: await srsCachePath());
+      if (!mounted) return;
+      setState(() {
+        _srsReady = true;
+        _preparingSrs = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _preparingSrs = false;
+        _prepareError = '$e';
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -367,6 +423,10 @@ class _BattleLobbyScreenState extends State<BattleLobbyScreen> {
           onJoinTap: _onJoinTap,
           onSoloPracticeTap: _onSoloPracticeTap,
           onSpellTestLabTap: _onSpellTestLabTap,
+          srsReady: _srsReady,
+          preparingSrs: _preparingSrs,
+          prepareError: _prepareError,
+          onPrepareTap: _prepareDevice,
         ),
       _LobbyMode.hosting => _HostingSection(
           addressHint: _hostAddressHint,
@@ -395,6 +455,10 @@ class _IdleSection extends StatelessWidget {
     required this.onJoinTap,
     required this.onSoloPracticeTap,
     required this.onSpellTestLabTap,
+    required this.srsReady,
+    required this.preparingSrs,
+    required this.prepareError,
+    required this.onPrepareTap,
   });
 
   final VoidCallback onHostTap;
@@ -402,12 +466,27 @@ class _IdleSection extends StatelessWidget {
   final VoidCallback onSoloPracticeTap;
   final VoidCallback onSpellTestLabTap;
 
+  /// Null while the check is in flight — the warning must not flash up and
+  /// then vanish on a device that was ready all along.
+  final bool? srsReady;
+  final bool preparingSrs;
+  final String? prepareError;
+  final VoidCallback onPrepareTap;
+
   @override
   Widget build(BuildContext context) {
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (srsReady == false) ...[
+          _PrepareDeviceCard(
+            preparing: preparingSrs,
+            error: prepareError,
+            onPrepareTap: onPrepareTap,
+          ),
+          const SizedBox(height: 24),
+        ],
         _LobbyButton(label: 'HOST A DUEL', onTap: onHostTap),
         const SizedBox(height: 12),
         _LobbyButton(label: 'JOIN A DUEL', onTap: onJoinTap),
@@ -424,6 +503,84 @@ class _IdleSection extends StatelessWidget {
           _LobbyButton(label: 'SPELL TEST LAB', onTap: onSpellTestLabTap),
         ],
       ],
+    );
+  }
+}
+
+/// Warns that this device has never fetched its proving data, and offers to
+/// do it now.
+///
+/// Every duel verifies the opponent's proofs, which needs the SRS on disk —
+/// and a device that has never inscribed a spell does not have it. The first
+/// duel would fetch it silently, except that duels happen in person, on
+/// whatever network the venue has, and a failure there is a blocking error
+/// with nothing the player can do about it. Saying so in the lobby moves that
+/// discovery to somewhere it is still fixable.
+///
+/// Deliberately not an automatic background download: [kSrsDownloadSizeApprox]
+/// is far too much to spend of someone's mobile data without asking.
+class _PrepareDeviceCard extends StatelessWidget {
+  const _PrepareDeviceCard({
+    required this.preparing,
+    required this.error,
+    required this.onPrepareTap,
+  });
+
+  final bool preparing;
+  final String? error;
+  final VoidCallback onPrepareTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final err = error;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        border: Border.all(color: kInkColor.withValues(alpha: 0.35)),
+        color: kInkColor.withValues(alpha: 0.04),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'THIS DEVICE IS NOT READY TO DUEL',
+            style: manuscriptHeaderStyle(fontSize: 14),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            'Before its first duel, a device fetches the proving data it '
+            'needs to check an opponent\'s spells — about '
+            '$kSrsDownloadSizeApprox, downloaded once and kept. Do it now, '
+            'on a connection you trust: duelling itself works offline, but '
+            'this step cannot.',
+            style: TextStyle(fontSize: 13, height: 1.4),
+          ),
+          if (err != null) ...[
+            const SizedBox(height: 10),
+            Text(
+              'That did not work:\n$err',
+              style: const TextStyle(fontSize: 12, color: Color(0xFF8C2F2F)),
+            ),
+          ],
+          const SizedBox(height: 14),
+          if (preparing)
+            const Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                SizedBox(width: 12),
+                Text('Fetching — this takes a few minutes.'),
+              ],
+            )
+          else
+            _LobbyButton(label: 'PREPARE THIS DEVICE', onTap: onPrepareTap),
+        ],
+      ),
     );
   }
 }

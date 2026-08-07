@@ -289,4 +289,10 @@ class _TamperingSession implements BattleTurnSession {
 
   @override
   Future<String> get peerForfeit => _inner.peerForfeit;
+
+  @override
+  Future<String> get peerConnectionLost => _inner.peerConnectionLost;
+
+  @override
+  Future<void> close() => _inner.close();
 }

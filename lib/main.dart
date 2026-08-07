@@ -53,7 +53,7 @@ class RuneDuelApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Rune Wright',
+      title: 'Runewright',
       debugShowCheckedModeBanner: false,
       scrollBehavior: _AppScrollBehavior(),
       theme: ThemeData.light().copyWith(
@@ -549,7 +549,7 @@ class _GameScreenState extends State<GameScreen>
     return Scaffold(
       appBar: AppBar(
         title: const Text(
-          'Rune Wright',
+          'Runewright',
           style: TextStyle(color: Color(0xFFF5F0E8), letterSpacing: 3),
         ),
         backgroundColor: const Color(0xFF2C1810),

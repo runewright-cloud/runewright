@@ -11,7 +11,7 @@ void main() {
     // to navigate the full app shell just to assert on the game screen.
     await tester.pumpWidget(const MaterialApp(home: GameScreen()));
     await tester.pump();
-    expect(find.text('Rune Wright'), findsOneWidget);
+    expect(find.text('Runewright'), findsOneWidget);
     expect(find.text('Step'), findsOneWidget);
     expect(find.text('Fire'), findsOneWidget);
   });

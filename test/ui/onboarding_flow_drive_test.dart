@@ -97,7 +97,7 @@ void main() {
     await tester.tap(find.text('CONTINUE'));
     await tester.pumpAndSettle();
 
-    expect(find.text('RUNE WRIGHT'), findsOneWidget);
+    expect(find.text('RUNEWRIGHT'), findsOneWidget);
     expect(find.text('Rune Craft'), findsOneWidget);
   });
 

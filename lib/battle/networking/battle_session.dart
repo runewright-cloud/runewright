@@ -221,6 +221,37 @@ abstract class BattleTurnSession {
   /// peer to hear from (solo/practice, test doubles). Only [BattleSession]
   /// overrides it.
   Future<String> get peerForfeit => Completer<String>().future;
+
+  /// Completes when the peer's connection drops without a forfeit — the
+  /// socket closed, or the read stream errored.
+  ///
+  /// [peerForfeit] only covers the case where the peer's device is alive,
+  /// noticed a problem, and had time to say so. It cannot cover the far more
+  /// ordinary way a duel dies in the field: the app is backgrounded, the
+  /// screen locks long enough for the TCP connection to reset, the phone
+  /// walks out of Wi-Fi range, or the process is killed. No forfeit frame is
+  /// ever sent in any of those, so without this the surviving device sits
+  /// blocked on an exchange whose answer is never coming — no error, no
+  /// message, no way out but force-quitting. Exactly the "one dead device and
+  /// one live one" shape [peerForfeit] was added to fix, arriving through the
+  /// other door.
+  ///
+  /// Completes with a short human-readable reason, for the same purpose as
+  /// [peerForfeit]'s: the player is owed a sentence about why their duel
+  /// stopped.
+  ///
+  /// Default: a future that never completes, for the implementations with no
+  /// peer whose connection could drop (solo/practice, test doubles). Only
+  /// [BattleSession] overrides it.
+  Future<String> get peerConnectionLost => Completer<String>().future;
+
+  /// Releases the session and whatever it sits on. Called when the battle
+  /// screen goes away, however it goes away — a finished duel, the "leave
+  /// battle" button, or the route being popped.
+  ///
+  /// Default: a no-op, correct for every peerless implementation. Only
+  /// [BattleSession] has anything to release.
+  Future<void> close() async {}
 }
 
 // ── Network session ───────────────────────────────────────────────────────────
@@ -228,7 +259,17 @@ abstract class BattleTurnSession {
 class BattleSession implements BattleTurnSession {
   BattleSession(this._transport, this.matchId) {
     _reader = BattleFrameReader();
-    _sub = _transport.onReceive.listen(_reader.addChunk);
+    // onDone/onError are the only notice this layer ever gets that the peer
+    // is gone when they did not forfeit — see [peerConnectionLost]. Note
+    // [close] *cancels* this subscription, and cancelling never fires
+    // onDone, so tearing down our own session at match end cannot raise a
+    // false alarm.
+    _sub = _transport.onReceive.listen(
+      _reader.addChunk,
+      onDone: () => _noteConnectionLost('the connection closed'),
+      onError: (Object e) => _noteConnectionLost('$e'),
+      cancelOnError: false,
+    );
     // Pumped from the constructor so no componentsDone frame can arrive
     // before something is watching for it. This is the whole reason the
     // signal is latched rather than streamed — see [peerComponentsDone].
@@ -251,6 +292,30 @@ class BattleSession implements BattleTurnSession {
   late final Future<String> peerForfeit = framesOfType(BattleMsgType.forfeit)
       .first
       .then((frame) => utf8.decode(frame.payload));
+
+  /// See [BattleTurnSession.peerConnectionLost]. Eagerly created (not
+  /// `late`), because the drop it reports can happen before anything reads
+  /// the future — a lazily-built completer would miss it.
+  final Completer<String> _connectionLost = Completer<String>();
+
+  @override
+  Future<String> get peerConnectionLost => _connectionLost.future;
+
+  /// Records the drop, once. Guarded because onError-then-onDone is a normal
+  /// socket teardown sequence, and completing twice throws.
+  void _noteConnectionLost(String reason) {
+    if (_connectionLost.isCompleted) return;
+    _connectionLost.complete(reason);
+    // Release anyone blocked on the sequential-components gate. Their signal
+    // rides the same dead socket, so waiting on it now means waiting forever;
+    // the screen is about to show the connection-lost error over the top
+    // regardless. Without this the trailing player's controls stay locked
+    // even after they know the duel is over.
+    for (final waiter in _componentsDoneWaiters.values) {
+      if (!waiter.isCompleted) waiter.complete();
+    }
+    _componentsDoneWaiters.clear();
+  }
 
   /// All incoming battle frames, broadcast. Only used directly by
   /// [exchangeMatchConfig]'s ack/reject dual-type wait — everything else
@@ -868,8 +933,18 @@ class BattleSession implements BattleTurnSession {
     );
   }
 
+  /// Tears down the session AND the transport under it.
+  ///
+  /// The transport is disconnected here because this session owns it from the
+  /// moment the lobby hands off (see battle_lobby_screen.dart's `_handedOff`),
+  /// and because leaving the socket open is what the peer experiences as a
+  /// hang: they stay blocked on an exchange from a device that has walked
+  /// away but never closed the connection. Closing it is what turns their
+  /// silent freeze into [peerConnectionLost].
+  @override
   Future<void> close() async {
     await _sub.cancel();
     await _reader.close();
+    await _transport.disconnect();
   }
 }

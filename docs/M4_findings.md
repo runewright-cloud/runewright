@@ -4951,3 +4951,151 @@ reasoned rather than measured, and that is flagged as outstanding, not hidden.
   can count them off.
 - **No on-screen pass** of the components banner, the gesture-only cast, or the
   post-release Mystery delay prompt.
+
+---
+
+## M4.13 — Pre-playtest sweep: the duel had no way to end badly (2026-08-06)
+
+*A general house-cleaning pass ahead of the first playtest build. Most of it was
+confirmation that things are fine; one finding was a genuine blocker, and it was not
+the kind a test suite was ever going to catch.*
+
+### The blocker: nothing detected a peer that simply left
+
+`BattleSession` subscribed to its transport with `onReceive.listen(_reader.addChunk)` —
+no `onDone`, no `onError`. So the layer had **no notion of the connection ending**. Every
+exchange in `runTurn` waits on `framesOfType(...)`, and those futures simply never
+complete once the peer is gone. The surviving device sat blocked with no error, no
+message, and no way out but force-quitting.
+
+`peerForfeit` already existed and its doc comment describes exactly this failure shape
+("one dead device and one live one") — but it only covers the case where the peer's
+device is *alive, diagnosed a problem, and had time to send a frame about it*. That is
+the rare case. The common ones at a playtest are all the other door: app backgrounded,
+screen locked until TCP resets, wizard walks out of Wi-Fi range, process killed. None of
+those sends a forfeit.
+
+The fix is the same seam one more time — `peerConnectionLost`, a future completed from
+`onDone`/`onError`, rendered as its own blocking error ranked *below* forfeit and
+lockstep-break (both of those also end with the socket closing, and both say something
+more specific about why).
+
+### The half of it that mattered more
+
+Detecting the drop was only half. `BattleScreen.dispose()` **never closed the session or
+the transport at all** — despite the lobby explicitly handing ownership over
+(`battle_lobby_screen.dart`'s `_handedOff`, whose comment says "BattleScreen now owns the
+session/transport lifecycle"). `BattleSession.close()` existed and had zero callers
+anywhere in `lib/`.
+
+So the single most likely playtest exit — *a player taps "Leave battle"* — left the
+socket wide open. An open socket is precisely what the peer reads as "still there", so
+the leaver's opponent hung indefinitely with no signal, which the new `onDone` handler
+would never have fired for either. Closing the session on dispose is what converts that
+into a clean socket close, and therefore into the opponent's "Lost contact" screen.
+
+The general lesson: **a hang-detection mechanism is only as good as the teardown that
+triggers it.** Wiring `onDone` without also guaranteeing somebody calls `close()` would
+have shipped a fix that never fires on the path that needed it most.
+
+### Cancelling is not closing (the thing that makes this safe)
+
+`close()` does `_sub.cancel()` before disconnecting, and **a cancelled subscription never
+fires `onDone`**. That is load-bearing: it is why tearing down our own session at a normal
+match end cannot raise a false connection-lost error over the top of the result screen.
+The `_matchEnded` guard in the screen is the second belt on the same trousers, for the
+ordering where the peer's socket closes first. There is a test for each.
+
+### The components gate needed releasing by hand
+
+`_componentsDoneWaiters` are plain completers, not frame waiters, so the transport dying
+does not touch them. A trailing player blocked on the sequential-components gate would
+stay locked even after the connection-lost screen was up. `_noteConnectionLost` completes
+them explicitly. Any *future* completer keyed to a wire signal needs the same treatment —
+the frame-reader teardown will not find it.
+
+### Smaller things fixed in the same pass
+
+- **`test/ui/vocabulary_screen_test.dart` was failing on `main`** (1 of 1463). Not a real
+  defect: the Somatic tab labels its cells by the *enhancement* they buy
+  (Potency/Velocity/Efficiency/Mystery, via `kEnhancementLabel`) while the test, written
+  in the same commit, asserted element names. The test now reads the labels from the same
+  map the panel does, so a rename cannot pass here and diverge live.
+- **Launcher label was `rune_duel`** — the Flutter template default, which is what a
+  playtester would have seen on their home screen. Now `Runewright`. Linux window title
+  likewise.
+- **Sync Art's received-art size cap** (OUTSTANDING_ITEMS.md §7, open since the art-pack
+  work). Capped on the base64 *string* length before `base64Decode`, because decoding
+  first is the allocation being refused. The integrity check is no defence here — the
+  peer hashes their own bytes, so any size passes it. Negative test added.
+- **SRS hint on the verifier-init error.** A device that has never inscribed has no SRS
+  cached and downloads it on first duel — including a pure-verifier device (Bug-Avoidance
+  #4). At a venue with no internet that is a blocking error whose raw text ("SRS download
+  failed", a reqwest timeout) tells a player nothing. Appended, never substituted.
+
+### Confirmed fine (so nobody re-checks them)
+
+Dev flags (`kAllowProoflessSpells`, `kShowDevSurfaces`) both `false`. `key.properties`
+present, so release builds are really signed. `check_ffi_fresh.sh` clean. Release APK
+builds: 82 MB, arm64-only. The SRS cache is already sized for tier-48 on first download,
+so a player who inscribes at tier 12 does not need a second download to duel at 48.
+Avatar CC BY 3.0 attribution is surfaced in-app. Component toggles all default off.
+
+### Still open
+
+- **No two-device pass on any of this.** The connection-lost path is a wire-timing
+  behaviour; the verification hierarchy puts hardware above the socket-level test that
+  covers it now. The cheap version: start a duel, kill one app from the task switcher,
+  confirm the other shows "Lost contact" rather than freezing.
+- **"Leave battle" has no confirmation dialog.** It is a bare `Navigator.pop` in the app
+  bar, and it now genuinely ends the duel for both players (before, it just leaked the
+  socket). One mis-tap on a touch screen mid-duel is a lost match. Flagged, not fixed —
+  it is a design call.
+- **`assets/audio/` is 47 MB in the tree, unregistered in `pubspec.yaml`** and referenced
+  by no code, so it does not reach the APK. `SPELL_SOUND_PACK_PLAN.md` is still blocked on
+  §2 decisions D-1…D-7.
+
+### Follow-ups, same sweep (2026-08-07)
+
+Four items from the M4.13 flag list, taken up after review.
+
+- **"Leave battle" now confirms.** It had to cover the Android back gesture too, not
+  just the app-bar button — back-swipe is the *easier* of the two to hit by accident
+  mid-duel, so guarding only the button would have been half a guard. Both call sites
+  read one predicate, `leavingNeedsConfirmation`, precisely so they cannot drift apart.
+  Lifted once the match ends: at that point the close button is just "go back".
+- **Branding unified on one word.** `RUNE WRIGHT` → `RUNEWRIGHT` (menu), `Rune Wright` →
+  `Runewright` (app title, Rune Craft app bar), matching README, CREDITS and the design
+  docs, which were already one word. Two tests asserted the old string.
+- **SRS readiness is now visible in the lobby, not discovered at the venue.** A device
+  that has never inscribed has no SRS, and the first duel fetches ~130 MB — which fails
+  as a blocking error mid-handshake on a bad venue network. The lobby now checks for the
+  cache file on entry and, when missing, offers an explicit "prepare this device" step.
+  **Deliberately not an automatic background download:** 130 MB is far too much of
+  someone's mobile data to spend without asking. The prepare path uses tier 12's
+  bytecode on purpose — `get_srs_cached` sizes *every* download to the tier-48 floor
+  regardless of caller, so this fetches identical bytes while loading far less into
+  memory. That same floor policy, plus the atomic publish, is what makes a bare
+  file-exists check a sound readiness signal; `srsCacheReady`'s doc says so, because if
+  the policy changes the check silently stops being right.
+- **Version is `1.0.1+2`.** The `+N` is the Android versionCode and is the half that
+  matters mechanically — monotonic, never reusable on Play. Bump it per handout build so
+  a bug report can name which build it came from.
+
+#### The test-harness trap this cost an hour to
+
+`test/ui/lobby_srs_readiness_test.dart` hung for the full 10-minute timeout rather than
+failing. Cause: real file I/O (`File.writeAsBytes`) awaited directly in a `testWidgets`
+body. A real Future never completes inside the fake-async zone, so the test does not
+fail — it *hangs*, which reads like an infinite loop in the widget. It belongs in
+`tester.runAsync`, same as the image-decode case already in the notes. Worth recognising
+on sight: **a widget test that times out rather than failing is nearly always real async
+work outside `runAsync`.**
+
+#### Still open after this pass
+
+- `BattleScreen` has no widget-test harness at all — nothing in the suite builds one, so
+  the leave-confirmation *dialog* (that it renders, reads right, that "Keep duelling"
+  cancels) is unverified. Only the predicate behind it is pinned. Same for the lobby's
+  prepare button: the card's presence is tested, the download path is not.
+- The two-device pass on connection-loss is still the real gate, and still outstanding.

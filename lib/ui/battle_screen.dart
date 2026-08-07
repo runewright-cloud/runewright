@@ -197,6 +197,26 @@ bool spellNeedsConveyorDirection(SpellAsset spell) =>
           e.affinity == SpellAffinity.air,
     );
 
+/// Whether leaving the battle screen should ask first.
+///
+/// Only a **live** duel against a **real peer** is worth guarding. Leaving one
+/// closes the session and its socket (see `_BattleScreenState.dispose`), the
+/// opponent is shown "lost contact", and there is no rejoin — so a mis-tap on
+/// the app-bar close button, or a stray Android back-swipe, throws away a
+/// match. Once the match has ended there is nothing left to abandon, and in
+/// solo/practice there is no one on the other side, so both leave with a
+/// single gesture as before.
+///
+/// Pulled out as a pure function because it governs two call sites that must
+/// not drift apart — the close button and `PopScope.canPop` — and because
+/// nothing in the test suite builds a full [BattleScreen], so this is the
+/// layer at which the decision can actually be pinned.
+bool leavingNeedsConfirmation({
+  required bool isRealDuel,
+  required bool matchEnded,
+}) =>
+    isRealDuel && !matchEnded;
+
 /// 0x-prefixed lowercase hex — matches duel_setup.dart's `_bytesToRootHex`
 /// convention, needed here for MatchOutcome's hex-string fields.
 String _bytesToHex(Uint8List bytes) =>
@@ -380,6 +400,13 @@ class _BattleScreenState extends State<BattleScreen>
   // so the message can say whose device ended the match — "you cheated" and
   // "they think you cheated" are very different things to read at 2am.
   String? _peerForfeitReason;
+
+  // Set when the peer's connection drops with no forfeit
+  // (BattleSession.peerConnectionLost) — backgrounded app, locked screen,
+  // Wi-Fi range, killed process. Distinct from [_peerForfeitReason] because
+  // nobody diagnosed anything here: the duel just lost its other half, and
+  // the honest message is "we can't reach them", not "their device ended it".
+  String? _connectionLostReason;
 
   // Cast animation — glowing orb(s) for the spell(s) resolved on the most
   // recent turn. Fixed for one playback of _castAnimController; replaced
@@ -899,6 +926,16 @@ class _BattleScreenState extends State<BattleScreen>
         setState(() => _peerForfeitReason = reason);
       }),
     );
+    // Same subscription shape, the other way a duel loses its peer. Gated on
+    // [_matchEnded]: at a normal finish both sides tear their sockets down,
+    // and whichever closes second would otherwise raise a connection-lost
+    // error over the top of the result screen.
+    unawaited(
+      session.peerConnectionLost.then((reason) {
+        if (!mounted || _matchEnded) return;
+        setState(() => _connectionLostReason = reason);
+      }),
+    );
   }
 
   /// Picks this battle's backdrop seed and kicks off the atlas decode.
@@ -1387,6 +1424,16 @@ class _BattleScreenState extends State<BattleScreen>
     _attackAnimController.dispose();
     _vocalScorer?.dispose();
     _gestureCapture?.dispose();
+    // This screen owns the session and its transport from the moment the
+    // lobby hands off (battle_lobby_screen.dart's `_handedOff`), and nothing
+    // else ever released them — so leaving a duel by any route left the
+    // socket open for the life of the process. That is not just a leak: an
+    // open socket is exactly what the peer reads as "still there", leaving
+    // them blocked on an exchange from a player who has walked away. Closing
+    // it is what turns their silent freeze into a "lost contact" message.
+    // Not awaited — dispose() cannot be async, and the teardown has no
+    // failure mode this screen could act on.
+    unawaited(widget.session?.close() ?? Future<void>.value());
     super.dispose();
   }
 
@@ -3059,6 +3106,70 @@ class _BattleScreenState extends State<BattleScreen>
 
   // ── Build ───────────────────────────────────────────────────────────────────
 
+  /// Confirms before abandoning a duel in progress.
+  ///
+  /// Leaving now closes the session and its socket (see [dispose]), which the
+  /// opponent sees as "lost contact" — the duel really is over for both
+  /// players, and there is no rejoin. That makes a bare mis-tap on a phone
+  /// app bar expensive, which is what this guards.
+  ///
+  /// Skipped once the match has ended: at that point the close button is just
+  /// "go back", and there is nothing left to abandon.
+  Future<void> _confirmLeaveBattle() async {
+    if (!leavingNeedsConfirmation(
+      isRealDuel: _isRealDuel,
+      matchEnded: _matchEnded,
+    )) {
+      if (mounted) Navigator.of(context).pop();
+      return;
+    }
+    final leave = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Leave this duel?'),
+        content: const Text(
+          'The duel ends here for both of you — your opponent is told you '
+          'lost contact, and there is no way back into this match.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Keep duelling'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Leave'),
+          ),
+        ],
+      ),
+    );
+    if (leave == true && mounted) Navigator.of(context).pop();
+  }
+
+  /// Extra guidance appended to a verifier-init failure when it looks like
+  /// the one-time SRS download, rather than a genuine fault.
+  ///
+  /// A device that has never inscribed a spell has no SRS cached, and
+  /// `initSrsCached` fetches it over the network on first use — including on
+  /// a device that only ever *verifies* (CLAUDE.md Bug-Avoidance #4). At a
+  /// venue with no usable internet that is a blocking error whose raw text
+  /// ("SRS download failed", a reqwest timeout) gives a player no idea that
+  /// the fix is "do this once at home". The check is a substring sniff on an
+  /// error string, so it is deliberately additive — it never replaces the
+  /// underlying message, only appends to it.
+  String _srsHint(String error) {
+    final e = error.toLowerCase();
+    final looksLikeSrs = e.contains('srs') ||
+        e.contains('download') ||
+        e.contains('timedout') ||
+        e.contains('timed out');
+    if (!looksLikeSrs) return '';
+    return '\n\nThis device downloads its proving data once, the first time '
+        'it duels or inscribes a spell, and needs an internet connection to '
+        'do it. Connect to the internet and inscribe a spell once; after '
+        'that, duelling works offline.';
+  }
+
   /// Plain-English gloss for a peer forfeit tag (the strings passed to
   /// `BattleTurnSession.sendForfeit`). The raw tag is always shown alongside
   /// this — it is what makes a bug report actionable — but the tags read as
@@ -3154,7 +3265,8 @@ class _BattleScreenState extends State<BattleScreen>
     final initError = _verifierInitError;
     if (initError != null) {
       return _blockingError(
-        'Could not prepare this duel for play:\n$initError',
+        'Could not prepare this duel for play:\n$initError'
+        '${_srsHint(initError)}',
       );
     }
     // Same gate for a mid-turn lockstep break (see _submitTurn's catch): the
@@ -3175,6 +3287,19 @@ class _BattleScreenState extends State<BattleScreen>
       return _blockingError(
         "The other wizard's device ended this duel:\n\n"
         '${_forfeitExplanation(forfeit)}\n\n($forfeit)',
+      );
+    }
+    // Ranked last of the three: a forfeit or a local desync says WHY the duel
+    // stopped, and both of those also end with the socket closing. This is
+    // what is left when neither device diagnosed anything — the peer simply
+    // went away.
+    final lost = _connectionLostReason;
+    if (lost != null) {
+      return _blockingError(
+        'Lost contact with the other wizard.\n\n'
+        'Their device stopped answering — the app was closed or '
+        'backgrounded, the screen locked, or they moved out of range of the '
+        'network. The duel cannot continue from here.\n\n($lost)',
       );
     }
     if (!_loopReady) {
@@ -3199,7 +3324,7 @@ class _BattleScreenState extends State<BattleScreen>
         leading: IconButton(
           icon: const Icon(Icons.close),
           tooltip: 'Leave battle',
-          onPressed: () => Navigator.of(context).pop(),
+          onPressed: _confirmLeaveBattle,
         ),
         title: Text(
           widget.state.turnNumber == 0
@@ -3659,15 +3784,32 @@ class _BattleScreenState extends State<BattleScreen>
     );
 
     final summary = _matchEndSummary;
-    if (summary == null) return scaffold;
-    return Stack(
-      children: [
-        scaffold,
-        _MatchEndOverlay(
-          summary: summary,
-          onLeave: () => Navigator.of(context).pop(),
-        ),
-      ],
+    final body = summary == null
+        ? scaffold
+        : Stack(
+            children: [
+              scaffold,
+              _MatchEndOverlay(
+                summary: summary,
+                onLeave: () => Navigator.of(context).pop(),
+              ),
+            ],
+          );
+
+    // The same guard the close button gets, for the system back gesture —
+    // which on Android is the *easier* of the two to trigger by accident
+    // mid-duel. `canPop: false` intercepts; the callback re-asks and pops for
+    // real only on confirmation. Lifted once the match ends, so the result
+    // screen still leaves with one gesture.
+    return PopScope(
+      canPop: !leavingNeedsConfirmation(
+        isRealDuel: _isRealDuel,
+        matchEnded: _matchEnded,
+      ),
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) unawaited(_confirmLeaveBattle());
+      },
+      child: body,
     );
   }
 }

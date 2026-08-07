@@ -12,9 +12,17 @@
 // every inscription after that on the same device reads from this file
 // instead, so the second and subsequent inscriptions work offline.
 
+import 'dart:io';
+
 import 'package:path_provider/path_provider.dart';
 
 const String kSrsCacheFileName = 'runewright_srs.local';
+
+/// Roughly how large the one-time SRS download is, for telling a player what
+/// they are about to spend. Measured from a real cache file (129 MB); stated
+/// as an approximation because it tracks the tier-48 point floor, not a
+/// fixed constant.
+const String kSrsDownloadSizeApprox = '130 MB';
 
 /// The on-disk path for the cached SRS file --
 /// `<application support directory>/runewright_srs.local`.
@@ -24,4 +32,28 @@ const String kSrsCacheFileName = 'runewright_srs.local';
 Future<String> srsCachePath() async {
   final dir = await getApplicationSupportDirectory();
   return '${dir.path}/$kSrsCacheFileName';
+}
+
+/// Whether this device can prove or verify offline — i.e. whether the SRS is
+/// already on disk.
+///
+/// A plain existence check is sufficient, and that rests on a property of the
+/// Rust side worth stating: `get_srs_cached` sizes **every** download to at
+/// least `TIER48_SRS_FLOOR`, whichever tier triggered it, and publishes the
+/// file atomically (temp file + rename). So a file that exists is always
+/// large enough for all three tiers and is never half-written. If that policy
+/// ever changes, this check stops being sound.
+///
+/// Used to warn a player *before* they are standing in front of an opponent
+/// with no internet: the first duel or inscription on a fresh device
+/// downloads ~[kSrsDownloadSizeApprox], and there is no offline path to it.
+Future<bool> srsCacheReady() async {
+  try {
+    return File(await srsCachePath()).existsSync();
+  } catch (_) {
+    // No application-support directory yet (or no path_provider, in a test
+    // harness that hasn't faked it). Report not-ready rather than throwing:
+    // the caller's only use for this is deciding whether to show a warning.
+    return false;
+  }
 }

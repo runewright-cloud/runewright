@@ -27,6 +27,7 @@ import 'package:cryptography/cryptography.dart';
 import '../identity/identity.dart';
 import '../protocol/transport.dart';
 import '../spells/sighting_asset.dart';
+import '../spells/spell_art_import.dart' show kSpellArtMaxImportBytes;
 import '../spells/spell_art_resolver.dart';
 import '../spells/spell_art_store.dart';
 import '../spells/spell_asset.dart';
@@ -275,11 +276,31 @@ class SyncArtSession {
         continue;
       }
 
+      // Size-cap BEFORE decoding, mirroring spell_art_import.dart's local
+      // import path (OUTSTANDING_ITEMS.md §7). The integrity check below is
+      // no defence here: the peer computes the hash over their own bytes, so
+      // an arbitrarily large payload passes it. Measuring the base64 string
+      // rather than the decoded bytes is the whole point — decoding first is
+      // the allocation we are trying to refuse. Base64 encodes 3 bytes as 4
+      // characters, so the encoded length bounds the decoded one at 3/4.
+      final fullB64 = item['fullBase64'] as String? ?? '';
+      final thumbB64 = item['thumbBase64'] as String? ?? '';
+      final claimedBytes = ((fullB64.length + thumbB64.length) * 3) ~/ 4;
+      if (claimedBytes > kSpellArtMaxImportBytes) {
+        received.add(SyncArtResultItem(
+          commitmentHex: commitmentHex,
+          spellName: spellName,
+          success: false,
+          error: 'art payload too large',
+        ));
+        continue;
+      }
+
       final Uint8List full;
       final Uint8List thumb;
       try {
-        full = base64Decode(item['fullBase64'] as String);
-        thumb = base64Decode(item['thumbBase64'] as String);
+        full = base64Decode(fullB64);
+        thumb = base64Decode(thumbB64);
       } catch (_) {
         received.add(SyncArtResultItem(
           commitmentHex: commitmentHex,

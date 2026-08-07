@@ -157,6 +157,11 @@ it doesn't get lost.
 
 ## 7. Sync Art's `_receiveAndSaveBundle` has no size cap on received art
 
+**Status: FIXED 2026-08-06** (pre-playtest sweep — see `M4_findings.md` M4.13). Capped on
+the base64 string length *before* `base64Decode`, mirroring `kSpellArtMaxImportBytes`;
+negative test `an oversized art payload is refused before it is decoded` in
+`test/trade/sync_art_session_test.dart`. Original report below.
+
 **File:** `lib/trade/sync_art_session.dart`.
 
 Found while wiring the built-in spell art pack through Sync Art

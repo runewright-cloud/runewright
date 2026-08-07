@@ -470,4 +470,12 @@ class PairedSession implements BattleTurnSession {
   @override
   Future<String> get peerForfeit =>
       (isA ? _pair._aForfeit : _pair._bForfeit).future;
+
+  /// Never completes: the paired sessions are wired to each other directly,
+  /// with no transport underneath that could drop.
+  @override
+  final Future<String> peerConnectionLost = Completer<String>().future;
+
+  @override
+  Future<void> close() async {}
 }

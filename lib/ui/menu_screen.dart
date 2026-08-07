@@ -32,7 +32,7 @@ class MenuScreen extends StatelessWidget {
               children: [
                 const SizedBox(height: 32),
                 const Text(
-                  'RUNE WRIGHT',
+                  'RUNEWRIGHT',
                   style: TextStyle(
                     color: Color(0xFF2C1810),
                     fontSize: 48,

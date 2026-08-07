@@ -16,6 +16,7 @@ import 'package:rune_duel/identity/identity.dart';
 import 'package:rune_duel/protocol/in_memory_transport.dart';
 import 'package:rune_duel/protocol/transport.dart';
 import 'package:rune_duel/spells/sighting_asset.dart';
+import 'package:rune_duel/spells/spell_art_import.dart' show kSpellArtMaxImportBytes;
 import 'package:rune_duel/spells/spell_art_pack.dart';
 import 'package:rune_duel/spells/spell_art_store.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
@@ -386,5 +387,62 @@ void main() {
 
     final reloaded = (await SightingAsset.loadAll()).single;
     expect(reloaded.artHash, isNull, reason: 'a failed integrity check must not save anything');
+  });
+
+  test('an oversized art payload is refused before it is decoded', () async {
+    // OUTSTANDING_ITEMS.md §7. The integrity check above cannot cover this:
+    // the sender hashes their own bytes, so a huge payload passes it. Only a
+    // size cap ahead of base64Decode stops a peer forcing an unbounded
+    // allocation on this device.
+    final alice = await Identity.ephemeral();
+    final bob = await Identity.ephemeral();
+    final bobPubkeyHex = await bob.ownerPubkeyHex();
+
+    await SightingAsset.record(
+      opponentPubkeyHex: bobPubkeyHex,
+      commitmentHex: commitmentHex,
+      spellName: 'Ember Wake',
+      t: 5,
+      tier: 12,
+      manaCost: 10,
+    );
+
+    final (aliceSession, bobSession, _, tBob) = await pairedSessionsWithTransports(alice, bob);
+
+    final aliceWantlistFuture = bobSession.framesOfType(SyncArtMsgType.wantlist).first;
+    final aliceResultFuture = aliceSession.sync(ourIdentity: alice);
+
+    await aliceWantlistFuture;
+    tBob.send(
+      SyncArtFrame(SyncArtMsgType.wantlist, Uint8List.fromList(utf8.encode(jsonEncode({'items': []}))))
+          .encode(),
+    );
+
+    // A base64 string that decodes to more than kSpellArtMaxImportBytes. Built
+    // as a repeated character rather than real bytes: the point is that this
+    // is refused on its LENGTH, without ever being decoded, so its content is
+    // irrelevant — and materialising 8 MB of real image bytes in a unit test
+    // would be exactly the allocation under discussion.
+    final oversized = 'A' * ((kSpellArtMaxImportBytes ~/ 3) * 4 + 8);
+    final huge = jsonEncode({
+      'items': [
+        {
+          'commitmentHex': commitmentHex,
+          'artHash': '0x00',
+          'spellName': 'Too Big',
+          'fullBase64': oversized,
+          'thumbBase64': base64Encode(Uint8List.fromList([9, 9])),
+        }
+      ],
+    });
+    tBob.send(SyncArtFrame(SyncArtMsgType.artBundle, Uint8List.fromList(utf8.encode(huge))).encode());
+
+    final aliceResult = await aliceResultFuture;
+    expect(aliceResult.received, hasLength(1));
+    expect(aliceResult.received.single.success, isFalse);
+    expect(aliceResult.received.single.error, contains('too large'));
+
+    final reloaded = (await SightingAsset.loadAll()).single;
+    expect(reloaded.artHash, isNull, reason: 'a refused payload must not save anything');
   });
 }

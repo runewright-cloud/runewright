@@ -23,6 +23,7 @@ import 'package:rune_duel/practice/gesture_enrollment.dart';
 import 'package:rune_duel/sorcerer/vocabulary_profile.dart';
 import 'package:rune_duel/sorcerer/vocal_enrollment.dart';
 import 'package:rune_duel/sorcerer/vocal_slot.dart';
+import 'package:rune_duel/spells/enhancement_zone.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
 import 'package:rune_duel/ui/vocabulary_screen.dart';
 import 'package:rune_duel/ui/widgets/hold_to_record_control.dart';
@@ -124,7 +125,15 @@ void main() {
     });
     await tester.pumpAndSettle();
 
-    for (final label in ['Fire', 'Air', 'Water', 'Earth', 'Melee']) {
+    // The four elemental cells are labelled by the *enhancement* they buy
+    // (Potency/Velocity/Efficiency/Mystery), not by their element — that is
+    // the name the player meets again on the cast-time picker, so the two
+    // pages have to agree. Read the labels from the same map the panel does
+    // rather than restating them, or a rename passes here and diverges live.
+    for (final label in [
+      ...kEnhancementZones.map((z) => kEnhancementLabel[z]!),
+      'Melee',
+    ]) {
       expect(find.widgetWithText(HoldToRecordButton, label), findsOneWidget,
           reason: '$label should have a hold-to-record control');
     }
