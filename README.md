@@ -174,19 +174,31 @@ accepts one bad witness is strictly worse than the slow one.
 The proof pipeline is the foundation; the game built on it currently includes:
 
 - **Battle mode** — turn-based duels with lockstep state hashing and commit-reveal
-  entropy, so neither client controls the dice.
+  entropy, so neither client controls the dice. Spell range and blocked-target rules are
+  enforced by the engine itself, not just the local UI, so a modified client can't cheat
+  either one.
 - **LAN networking** — a pluggable transport layer (`lib/protocol/`) with a TCP socket
   adapter and mDNS discovery. Gate-validated on two real devices: handshake → prove →
   transmit → verify → challenge → signature check, in both directions.
-- **Spellbook & library** — persistent local spellbook, spell art packs, heraldic sigils
-  generated from your identity key.
+- **Destructible terrain & line of sight** — spell-placed walls, lava, and conveyor tiles
+  carry HP and an elemental affinity; a spell blocked by a wall resolves on the wall
+  instead of fizzling.
+- **Spellbook & library** — persistent local spellbook, spell art and sound packs,
+  heraldic sigils generated from your identity key.
+- **Counter charms & kinship** — counter charms bind to an elemental *trajectory prefix*
+  rather than one specific spell, so a mid-battle-minted charm can still fire and a
+  matching spell can be *partially* countered, formula by formula. Kinship (the
+  anti-duplicate-spell forfeit) keys off the same certified trajectory.
 - **Master / Apprentice** — cryptographically-scoped spell *loans* that expire without a
   server, and graduation battles on the apprentice's terms.
 - **Commune & trade** — deliberate ownership transfer of spells, and scroll-based
   one-shot casting.
 - **Wild magic & artifacts** — forced casts, chaotic effects, and rod/bookmark items.
-- **Sorcerer mode (scaffolding)** — voice and gesture recognition for casting without
-  touching the screen, with an on-device enrollment/practice trainer.
+- **Vocal & somatic components (Sorcerer Mode)** — two independently-togglable casting
+  layers: spoken Latin element sequences recalled from memory (peer-verified against the
+  proof's certified trajectory) and accelerometer/gyroscope gestures that select a
+  casting enhancement. A third toggle controls whether players perform them
+  simultaneously or in a clockwise sequence.
 
 ---
 
@@ -194,11 +206,12 @@ The proof pipeline is the foundation; the game built on it currently includes:
 
 ```
 lib/engine/        the CA stepper — canonical definition of rule behaviour
-lib/spells/        inscription, spell assets, art packs, permissions
+lib/spells/        inscription, spell assets, art + sound packs, permissions
 lib/battle/        turn loop, effect resolution, battle networking
 lib/protocol/      transport interface, LAN sockets, mDNS discovery, wire format
 lib/identity/      Ed25519 keypair, onboarding rite
 lib/practice/      lib/sorcerer/   voice + gesture recognition
+lib/audio/         spell sound playback, import, and settings
 lib/ui/            Flutter screens and painters
 circuits/          Noir crates (CA tiers 12/24/48, book-sortedness) + grid ordering spec
 ffi/               Rust ↔ Dart proving bridge (noir_rs + flutter_rust_bridge)
@@ -252,13 +265,15 @@ verified, challenged, and signed — has been run end to end.
 Active work is on the game layer built above that foundation. The CA ruleset is at
 version 3 and still subject to change; **no public release has happened, so
 verification-key-breaking changes are still cheap and are being taken deliberately while
-they are.**
+they are.** (One such change — deleting the grid commitment from the circuit now that
+counter charms no longer need it — is designed but explicitly not started; see the design
+doc.) The first playtest is scheduled for 2026-08-08.
 
 ---
 
 ## Documentation
 
-- [`docs/runewright_design_v3_0.md`](docs/runewright_design_v3_0.md) — the game design document
+- [`docs/runewright_design_v4_0.md`](docs/runewright_design_v4_0.md) — the game design document (canonical; supersedes v3.0/v2.4/v2.1, kept in-repo as historical snapshots)
 - [`docs/CIRCUIT_IO.md`](docs/CIRCUIT_IO.md) — byte-level circuit ↔ client I/O contract
 - [`docs/GOLDEN_VECTORS.md`](docs/GOLDEN_VECTORS.md) — the vector corpus and how it's generated
 - [`circuits/GRID_ORDERING_v2.md`](circuits/GRID_ORDERING_v2.md) — canonical cell ordering

@@ -38,6 +38,54 @@ supersedes them as the canonical design-intent doc. As before: **authoritative f
 the game is, not for implementation specifics** — `stepper.dart` and the code remain
 canonical for exact CA/circuit behavior per `CLAUDE.md`.
 
+### Update — 2026-08-07
+
+Three more systems shipped in the two days after the note above was written, and the
+first playtest is scheduled for 2026-08-08. In order of how much they change what's
+written below:
+
+- **Counter charms and kinship were redesigned from grid-bound to trajectory-bound**
+  (`docs/COUNTER_CHARM_KINSHIP_PLAN.md`, Phases 1–3, 2026-08-06). This is a genuine
+  mechanic replacement, the same category as the Vocal Recall rewrite: a counter charm no
+  longer binds to one specific spell's commitment hash (which required having lost to it
+  first) — it binds to an **elemental trajectory prefix**, matched against any spell's
+  certified `dominance_trajectory`, and can now cancel a spell **partially**, formula by
+  formula, rather than only all-or-nothing. Kinship (the anti-optimization forfeit for
+  bringing near-duplicate spells to one duel) moved from "same grid" to "same certified
+  trajectory + per-step mana cost." See the rewritten Counter Charms section under
+  Loadout System / artifacts below. **Phase 4 (deleting the grid commitment from the
+  circuit — VK-breaking) is explicitly not started**; the commitment is still live and
+  `commitment = Poseidon2(grid)` is unchanged (`CLAUDE.md` invariant 2 is untouched by
+  this — nothing about the circuit's public inputs changed in Phases 1–3, only which
+  fields the *game layer* keys its matching logic on).
+- **Destructible terrain + line of sight (Wall/LOS) shipped** (2026-08-05, same day it was
+  ratified — the doc below still said `[DESIGNED — not yet built]`, which was accurate for
+  a few hours). All spell-placed terrain now has HP, an elemental affinity, and blocks
+  line of sight; a blocked spell resolves on the blocker instead of fizzling. Two
+  previously-inert status effects got wired in the same window: **Firey Inertia
+  (`penetrating`)** — spells ignore wall-blocking and deal 1 damage along their path — and
+  **Watery Inertia (`turbulent`)** — a spell's direction is kept but its range is
+  randomized. A real bug (spell range was never engine-enforced against a peer — only the
+  caster's own UI politely declined to let them tap out of range) was found and fixed in
+  the same pass; see the Targeting section below for what a caster displaced out of range
+  now does (fizzles — this also closes an `[DECISION — needs Soren]` item below).
+- **"Sorcerer Mode" split into three independent toggles**
+  (`docs/SPELL_COMPONENTS_PLAN.md`, ratified 2026-08-06): `vocalComponents`,
+  `somaticComponents`, and `simultaneousCasting`, replacing one boolean. Somatic
+  components now actually gate the enhancement picker (gesture-only, no tap fallback) and
+  sequential casting order — clockwise by starting position, rotating each turn — is a
+  real, wired mechanic rather than unaddressed prose. See Battle Modes below.
+- **A curated spell-sound pack shipped** (2026-08-07): built-in casting/impact sounds
+  alongside the existing spell-art packs, with the same import/sync/attribution model art
+  already had. Mechanically inert — flavor, not a rules change — so it isn't broken out
+  into its own section below, but it's in the Implementation Status table.
+- Also closed in the same window, worth knowing about even though it isn't a design
+  change: a real bug where a peer disconnecting mid-duel (backgrounded app, walked out of
+  radio range, force-quit) left the other device frozen with no error was found and fixed
+  ahead of the first playtest (`docs/M4_findings.md` M4.13) — "Leave Battle" now confirms
+  and genuinely ends the match for both players, where before it silently leaked the
+  socket.
+
 ---
 
 ## Vision & Design Philosophy
@@ -306,12 +354,12 @@ The 16 base effect types, mapped to second-third element combinations (first ele
 | Water-Air | Illusions |Copy target summon, it attacks aggressively and only has 1 hitpoint| Copy Terrain and expand it to all adjacent tiles without terrain already, the copies have 1 hitpoint.| Create 3 Illusions of the wizard spaced evenly in the surrounding radius. If the wizard is subjected to a spell or attack, on a chance equal to 1/number of illusions remaining, the wizard is hit with the effect, otherwise destroy a random illusion and move the wizard to that tile.| Non wizard entity becomes an illusion with 1 hit point.|
 | Air-Fire | Multiplier cycles | Your next air effect is twice [thrice] as powerful |Your next fire effect is twice[thrice] as powerful| Your next earth effect is twice [thrice] as powerful | Your next water effect is twice [thrice] as powerful|
 | Air-Earth | melee attack Interaction, 3[4] turns | Stacking fire DoT, damage = turns remaining, 3 turns at a time | Target move speed reduced by 1 | Target status effects lose a turn | Bonus damage equal to spaces moved toward target |
-| Air-Water | Divination |See target's counter charm alignment, will turn bookmarks marking those spells red for rest of the match|Earthen Scrying Pool, 2[3] turns: the target sees through the murk. They ignore clouds' adjacent-only targeting restriction entirely (whether the cloud arrived before or after the scrying, and including the Dust Cloud's lingering version), and any *enemy* illusion that ends up adjacent to them — wizard decoy, illusory creature, or terrain copy — is dispelled on sight. *(Rewritten 2026-08-03: the old "Identify Illusions" wording predated the Illusions row settling, and identification alone did nothing an engine could act on.)*| See Target's available spells 3[4] turns |See target's spell target tile 3[4] turns|
+| Air-Water | Divination |See target's counter charm alignment *(as of 2026-08-06 this means the target's attuned **trajectory prefixes**, not a bound spell — see the rewritten Counter Charms section — not yet wired to this effect)*, will turn bookmarks marking those spells red for rest of the match|Earthen Scrying Pool, 2[3] turns: the target sees through the murk. They ignore clouds' adjacent-only targeting restriction entirely (whether the cloud arrived before or after the scrying, and including the Dust Cloud's lingering version), and any *enemy* illusion that ends up adjacent to them — wizard decoy, illusory creature, or terrain copy — is dispelled on sight. *(Rewritten 2026-08-03: the old "Identify Illusions" wording predated the Illusions row settling, and identification alone did nothing an engine could act on.)*| See Target's available spells 3[4] turns |See target's spell target tile 3[4] turns|
 
 
 > **Duration principle — buffs shorter than debuffs.** When setting durations, **self-buffs should run shorter than effects you land on an opponent.** Reason: under tile-targeting + commit-before-move, you can reliably place an effect on the tile you yourself occupy (or will), but landing one on an opponent means *cornering or accurately predicting them onto a targeted tile* against their dodging — much harder. Equal durations would overvalue the easy self-target case; shorter self-buff windows keep "buff your own feet" from being strictly better than fighting to control where the enemy stands. Apply this as a tie-breaker when filling in the bracketed/duration numbers across the table.
 
-> **`[DESIGNED — not yet built]` The Earth-Water row's wall/lava/conveyor terrain is about to gain HP and become destructible** — see the new **Destructible Terrain & Line of Sight** subsection under Battlefield below. That design also changes what "blocks spells from passing through for line of sight" (Earth-Water's Earth flavor, above) concretely means: a blocked spell now **resolves on the blocking tile** rather than being stopped short or fizzling. Not yet implemented, but settled enough to design against.
+> **`[SHIPPED — 2026-08-05]` The Earth-Water row's wall/lava/conveyor terrain has HP and is destructible** — see the **Destructible Terrain & Line of Sight** subsection under Battlefield below. "Blocks spells from passing through for line of sight" (Earth-Water's Earth flavor, above) concretely means: a blocked spell **resolves on the blocking tile** rather than being stopped short or fizzling.
 
 ---
 
@@ -391,6 +439,18 @@ The grid pattern itself is the source of variance. **T is bound by the proof as 
 > - the bestiary can cryptographically group "sub-versions encountered at different step counts," exactly as that section claims;
 > - re-inscribing the same grid yields the same commitment, so counter-spells continue to apply.
 > This resolves the v2.1 inconsistency (the doc previously said both `Poseidon2(grid)` and `Poseidon2(grid || T)` in different paragraphs). If you ever want step-count-specific counters, that's the `grid || T` world instead — but it contradicts your stated intent, so I've committed to grid-only.
+>
+> **`[UPDATE — 2026-08-06]` The active counter-charm mechanism no longer reads this
+> commitment at all** — see the redesigned Fire — Counter Charms section under Loadout
+> System / artifacts, which matches on certified *trajectory* instead. Everything above
+> remains the correct rationale for why the **commitment itself** is grid-only: that
+> property is still load-bearing for spell permissions, Master/Apprentice loans, and art
+> sync, which deliberately stayed keyed to the commitment (a security boundary — see the
+> Kinship note in the artifacts section). The commitment is unchanged and still exists in
+> the circuit; only the counter-charm *game logic* stopped consuming it. A later,
+> not-yet-started phase of the same redesign plans to remove the commitment from the
+> circuit entirely once nothing reads it — that would be a `RULESET_VERSION`-bumping,
+> VK-breaking change, tracked separately (see Implementation Status).
 
 ### Owner Binding (anti-theft) `[SHIPPED]`
 
@@ -544,7 +604,7 @@ original design section, annotated with the concrete shape that actually shipped
 
 ### Taking on an Apprentice — Loaned Spells
 - A master may **lend spells** to an apprentice by signing a **delegation certificate** that lets the apprentice's signature validate the spell, for a master-set period.
-- **Loaned spells preserve the master's commitment** `[APPLIED — confirm]`. The apprentice's signature merely *authorizes use*; the spell is still mechanically the master's. Consequence (intended and flavorful): anyone holding a counter charm against the master's spell can snuff it in the apprentice's hands. This is consistent with grid-only commitments and your "same grid hash regardless of loan/custody" rule.
+- **Loaned spells preserve the master's commitment** `[APPLIED — confirm]`. The apprentice's signature merely *authorizes use*; the spell is still mechanically the master's — permissions and loans stay keyed to the commitment even after the 2026-08-06 counter-charm redesign (see the Kinship note under artifacts). Consequence (intended and flavorful): anyone holding a counter charm attuned to a trajectory that matches the master's spell can still snuff it in the apprentice's hands, same as before — trajectory being a pure function of the grid, this holds regardless of which key the matching logic actually reads.
 - Loans may be **extended any number of times** — an extension is just the master signing a fresh certificate.
 - **Borrowed-but-not-inherited spells carry their own flag** `[APPLIED — confirm]`, distinct from owned and from inherited spells.
 
@@ -760,13 +820,76 @@ Two properties do the design work, and everything below serves them:
 - **Water — Mana Gems:** each gem provides 10 mana/turn and +100 max mana pool. Every gem is destructible.
   - **`[RESOLVED — 2026-07-30]` The mana pool is innate; there is no core gem.** Every wizard starts with an innate **100 max mana** whether or not they carry a gem, so no artifact slot is spent on the privilege of having a pool at all — a gemless wizard is a legal (if slow) build, and all 12 slots are genuinely free. The old "first gem is the indestructible core gem" rule is gone: burn effects can now take a wizard's *last* gem. **Regen is still gem-only** — the innate pool comes with **no passive regeneration**. A gemless wizard refills by **meditating** (+25 per phase, up to +50/turn), which is the deliberate trade: capacity is free, throughput is bought with gems or with your turn.
   - **Activation:** spend a gem for an instant **+100 mana**. The pool shrinks *first*, then the mana is granted inside it — so the burst is worthless when you are already near full. It is an emergency button, not free value. **Every gem is activatable, including the last one**, for the same reason burn can take it: there is no indestructible instance left to carve out. Spending your last gem drops you to the innate pool with zero regen — a real cost, self-inflicted, which is exactly the trade.
-- **Fire — Counter Charms:** name a known spell (by its Poseidon hash = its initial grid state). If that spell is cast during the battle it fizzles — action wasted, mana returned. The countered spell isn't publicly revealed until it activates.
-  - **`[RESOLVED]` Targeting rule:** a counter charm fires against **any spell sharing the same initial grid-state hash**, regardless of owner, T, loan status, or custody chain. Requires commit-reveal with salt (above).
-  - a counter charm keyed to the original commitment also fizzles a *copied* cast of it.
-  - **Passive — the anti-caster melee proc.** Each **unspent** charm gives **5%** (linear, so `n` charms = `n × 5%`) for a successful melee attack to destroy one of the victim's mana gems *or* wither one of their in-hand spells. This exists to make an **Eldritch Knight / Mage Slayer** archetype real: dump all 12 slots into charms, run on the innate 100 pool with no gems at all (meditating when you need a refill), spend your limited casting on cheap self-buffs, and force mages into a kiting game. `[TODO — playtest]` 5% per charm — twelve charms is a 60% proc, which is only balanced if melee is hard to land against a kiting mage. That is a play question, not a math question.
+- **Fire — Counter Charms `[SHIPPED — redesigned 2026-08-06, mechanic replaced]`:** the
+  targeting model below is a genuine mechanic replacement, not just an implementation —
+  `docs/COUNTER_CHARM_KINSHIP_PLAN.md` (Phases 1–3 built, 2026-08-06) replaced
+  spell-binding with **trajectory binding**. This section describes the new mechanic; the
+  old one no longer exists in code.
+  - **A charm is attuned to an elemental trajectory prefix, typed in at creation** — a
+    sequence of 3, 6, 9, or 12 elements (`kMaxCharmFormulas = 4` formulas), always a
+    multiple of 3 since one formula is exactly 3 committed elements. Neutral/tied
+    generations never appear in a certified trajectory, so matching runs over the
+    4-symbol alphabet {fire, air, water, earth} — a 3-element charm is 1 of 64 possible
+    prefixes.
+  - **`[RESOLVED]` Targeting rule:** the charm fires against **any spell whose certified
+    `dominance_trajectory` matches the charm's prefix**, checked via the same
+    proof-derived `certifiedElementSequence` the peer already uses for mana cost — no new
+    trusted input, no circuit change. This drops the old requirement that you must have
+    lost to a spell (or manually bound one out of combat) before you could counter it: a
+    charm minted mid-battle by an artifact effect can fire the same match, which was dead
+    weight under the old binding.
+  - **Countering is now partial, not all-or-nothing.** The charm cancels formulas — the
+    caster's and the charm's leading elements — for as long as the two sequences stay in
+    lockstep, then stops at the first divergence. A 3-element charm cancels only the
+    leading formula of a longer spell; a 12-element charm can cancel an entire 4-formula
+    spell if the whole trajectory matches. **Full mana cost is charged on every trigger**
+    regardless of how many effects actually got cancelled — the balance lever against
+    absurdly long, maximally-covering charms. `[TODO — playtest]` the exact cost constant
+    (`k` in `cost = k · F(F+1)/2`, triangular in formula-count `F`; `k = 10` gives
+    10/30/60/100 mana at F = 1..4) is provisional pending playtest data.
+  - **A cast that is only partially countered still resolves and still triggers wild
+    magic and chain advancement** — a real cast happened. A cast that is *fully*
+    countered takes the exact old code path (never reaches spell application), so "no
+    wild magic on a fully-countered cast" still holds. **At most one charm fires per
+    cast**, longest matching prefix wins, and a charm whose owner can't afford the
+    trigger cost does not fire and is not consumed (a shorter, affordable charm on the
+    same wizard can fire in its place).
+  - **A charm attuned before this redesign loads as unattuned** — a grid commitment says
+    nothing about behavior, so there's nothing to migrate it to; the player re-types a
+    trajectory.
+  - **Passive — the anti-caster melee proc — unchanged.** Each **unspent** charm gives
+    **5%** (linear, so `n` charms = `n × 5%`) for a successful melee attack to destroy one
+    of the victim's mana gems *or* wither one of their in-hand spells. This exists to make
+    an **Eldritch Knight / Mage Slayer** archetype real: dump all 12 slots into charms,
+    run on the innate 100 pool with no gems at all (meditating when you need a refill),
+    spend your limited casting on cheap self-buffs, and force mages into a kiting game.
+    `[TODO — playtest]` 5% per charm — twelve charms is a 60% proc, which is only balanced
+    if melee is hard to land against a kiting mage. That is a play question, not a math
+    question.
   - **A charm that fires its counter is spent and stops feeding the proc** (60% → 55% → 50%). Without this the 12-charm build gets full counter coverage *and* a full proc rate for free; with it, the archetype self-limits.
   - **A melee proc withers a spell; it does not destroy the bookmark.** Withering lasts until reactivated (Earth's existing "reactivate 1 withered spell" undoes it). Gems die permanently, hand slots do not — the asymmetry is deliberate: gems are the engine, hand disruption is tempo.
   - **The mage slayer is never off-guard**, since an all-charm loadout has no voluntary activation available. This is a feature, not a gap — the bluffing game is a mage's minigame.
+
+> **`[SHIPPED — redefined 2026-08-06]` Kinship moved from "same grid" to "same certified
+> trajectory + per-step mana cost," for spells with ≥ 9 trajectory elements.** Kinship
+> exists to force players to keep genuinely designing rather than settle on one optimum —
+> it's the anti-farming forfeit for bringing near-duplicate spells to one duel. Keyed to
+> the grid, it failed at exactly that job: a player who found an efficient engine could
+> add one throwaway dot that dies in generation 1, nudge it a cell over whenever they
+> wanted a "new" spell, and pay nothing — the trajectory was unchanged, the commitment
+> was different, kinship never triggered. Keyed to trajectory, that exploit is dead: to
+> escape kinship a player has to change what the spell actually *does*. **Spells under 9
+> elements are exempt** (9 is 4⁹ ≈ 262,000 combinations, versus 64 at 3 elements, where
+> short spells would otherwise collide constantly and forfeit players for casting two
+> genuinely different cheap spells) — which means short spells are freely kin-stackable;
+> flagged as an open question below, not yet confirmed as fine. **Heraldic arms stay keyed
+> to trajectory too**, preserving "kin spells share arms" as a visual tell. **Spell
+> permissions, loans, and art-sync deliberately did NOT move** — they stay keyed to the
+> grid commitment (a security boundary: a permission that covered "all kin spells" under
+> trajectory kinship would silently extend to someone else's coincidentally-matching
+> spell, a privilege-escalation bug rather than a display quirk) — so the "Loaned spells
+> preserve the master's commitment" consequence a few sections up is unaffected by any of
+> this.
 - **Air — Rod of Wind:** A rod of wind may be activated to increase the spell effect radius by 1 for each effect in the next spell. This consumes the rod. Only one rod may be used per spell. Earth while tiles still prevent spell effects from traveling past them through this AoE.
   - **Declared at Phase 0, on the turn the spell fires** — including for a Mystery (delayed) cast, which declares its rod on the *firing* turn rather than reserving one at commit time. Every activation is declared on the turn it takes effect.
   - **Passive:** **one** roll per turn at `min(rods × 10, 100)%` for **+1 movement, usable that same turn**. One roll, not one per rod — "each adds a chance" reads as cumulative probability of a single extra tile, not a chance at several. `[RESOLVED — 2026-07-31]` Rolled at the top of the turn, from a dedicated commit-reveal exchange kept separate from the turn's main entropy (which is still deliberately revealed only after the action/move commits) — so the roll is knowable before *this* turn's own movement decision, not next turn's. Was previously rolled at end of turn for the following turn only; see `docs/ARTIFACT_SYSTEM_PLAN.md` §13 for why that constraint no longer applies. `[TODO — playtest]` 10% per rod, and whether the 100% cap at 10+ rods is the archetype it should be.
@@ -776,7 +899,7 @@ Two properties do the design work, and everything below serves them:
 
 > **`[RESOLVED — v2.3 review §1 + your ruling]` No dedicated artifact-defense, by choice; Burn-artifacts interactions specified.** The rod's redefinition (from "neutralizes spells that interact with artifacts" to "nullifies one turn of a status effect") removed the only answer to artifact attacks — at the same revision that added Water-Earth's **Burn Random Player artifacts**. **This is intentional:** a single attack vector on artifacts isn't worth dedicating a quarter of all artifact slots to defending them, and the burn is fine *unguarded* because its random targeting (EV ≈ 1/12 against any specific artifact) makes it **diffuse attrition that punishes hoarding twelve eggs in one basket**, not a "deny my opponent all mana" denial strategy. Its real role is letting a drawn-out game eventually grind through a killer counter charm. Required interaction spec:
 > - **Every artifact is a legal target**, including a wizard's last mana gem — the core gem carve-out was removed 2026-07-30 along with the core gem itself. Losing your last gem costs 100 max pool and all passive regen, but never the innate 100 pool.
-> - **Burning a counter charm reveals what spell it was countering** — a great consolation prize and information leak.
+> - **Burning a counter charm reveals what trajectory it was attuned to** *(was: "what spell it was countering," before the 2026-08-06 trajectory redesign)* — a great consolation prize and information leak.
 > - **Burn target is drawn from joint commit-reveal entropy** — otherwise the victim's client quietly picks its own least-valuable artifact.
 > - **`[RESOLVED-IN-CODE — 2026-07-31, confirm]` "Absorption totem"** was undefined here, but the implementation already settled it and this prose was simply stale. `AccoutrementKind.deflectionTotem` is **mechanically identical to an Absorption Rod** — when its bearer is hit by an enemy spell, every time-based effect from that spell has its duration halved (rounded up), consuming one totem per spell hit — and the Water-Earth/Earth cell summons those. Neither is a loadout artifact: both are **summon-only**, have no artifact-slot presence, and are deliberately **excluded from the passive/activation split** above. The only thing left open is naming: the cell says "totem," the code says `deflectionTotem`, and the design prose says "rod." **Soren to confirm one name; still genuinely unresolved as of this writing** — nothing found in any subsequent plan doc suggests a name was picked.
 
@@ -1043,19 +1166,22 @@ Players may throw an awkward, inefficient punch at an adjacent hex for 1 damage 
 - Higher-speed player claims a contested tile; the other remains on their previous position along their path
 - Equal speed: both bounce back to previous positions
 
-### Terrain `[SHIPPED — basic tiles; DESIGNED, not built — destruction/LOS]`
+### Terrain `[SHIPPED]`
 Several spell-placed terrain types exist and are live in battle (floor-is-lava, impassable
 walls, movement-and-mana-draining tiles, force-move conveyor tiles — see the Earth-Water
-effect-table row). The paragraph below is new since v3.0: a ratified design to make that
-terrain destructible and give it real line-of-sight consequences, which has **not yet been
-implemented**.
+effect-table row). The subsection below was a same-day ratify-then-ship: written up as
+`[DESIGNED — not yet built]`, it shipped a few hours later on 2026-08-05.
 
-#### Destructible Terrain & Line of Sight `[DESIGNED — not yet built, docs/WALL_LOS_PLAN.md]`
+#### Destructible Terrain & Line of Sight `[SHIPPED — 2026-08-05, docs/WALL_LOS_PLAN.md]`
 
 Ratified by Soren 2026-08-05 (§2 of the plan doc, settled; §3 are the plan-writer's own
-rulings made on Soren's behalf, flagged for review before building rather than
-independently re-litigated here). Ships as a pure battle-engine change — **no
-`RULESET_VERSION` bump**, invisible to the ZK circuit.
+rulings made on Soren's behalf, and remain unreviewed by Soren specifically even though the
+code implementing them now exists — see Open Decisions below). Shipped as a pure
+battle-engine change — **no `RULESET_VERSION` bump**, invisible to the ZK circuit. A real
+bug was found and fixed during the build: incidental traversal damage (e.g. Floor-is-Lava)
+was silently dropped by a `break` that stopped it while the primary hit went through
+regardless — a test that only checked the status chip, not the HP delta, had missed it
+(`docs/M4_findings.md`, the entry logged alongside this work).
 
 - **Blocked spells resolve on the blocker's tile.** If line of sight from caster to the
   committed target hex is obstructed by an `ImpassableTile` (a wall) or a `Big` creature,
@@ -1086,7 +1212,19 @@ The plan doc states no open questions remain in its own ratified §2, but its §
 (terrain-affinity-fixed-at-placement, the 1-damage fallback's exact firing condition,
 Illusory terrain keeping 1 HP regardless of type, and others) are explicitly the
 plan-writer's best guess on Soren's behalf and have not been independently confirmed —
-treat §3 as "probably right, reviewed at build time," not settled the way §2 is.
+treat §3 as "probably right, reviewed at build time," not settled the way §2 is, even
+though the code now implements §3 exactly as written.
+
+**Still open:** no two-device LAN pass and no on-screen (`flutter run -d linux`) pass have
+been run against this build. Two previously-inert status effects rode in on the same
+window and are also unverified on hardware: **Firey Inertia** (`StatusEffectId
+.penetrating` — a spell ignores wall-blocking for line of sight and deals 1 damage to
+anything in its path) and **Watery Inertia** (`StatusEffectId.turbulent` — a spell keeps
+its declared direction but its range is re-rolled 1..max via joint entropy each cast, for
+the full buff duration rather than being consumed by the first cast — a `[RESOLVED]`
+reading of the ambiguous "next spell" wording in the Earth-Air effect-table row below).
+Both are now genuinely wired (`EffectApplicator` sets the status, `TurnLoop` reads it),
+where previously the status chip rendered in the UI but nothing consumed it.
 
 ### Targeting
 - **You target tiles, never players** (the sole exception is wild magic — see below). A spell places its effect on a hex; whether it *hits* the opponent depends entirely on whether they're standing on (or within the AoE of) that hex when it resolves.
@@ -1096,7 +1234,7 @@ treat §3 as "probably right, reviewed at build time," not settled the way §2 i
 
 > **Why range 3 with tile-targeting (revisits the base-3 decision).** Since you place effects on tiles and commit before movement resolves, landing a hit is a *cornering and prediction* problem, not an aiming one: you target the tile you expect the opponent to be forced onto, using your own movement, terrain modifiers, and summons to shrink their escape options — while they try to read and dodge you, and you bluff your own movement to bait them. Range 3 is deliberately short enough that this positional pressure matters (you can't blanket the board from a corner) while Air/Velocity (+2) and Earth-Air range effects buy real reach when you've earned it. Base **3 stays.**
 >
-> **`[DECISION — needs Soren]` sub-question this exposes:** if your committed target tile ends up **out of range** because movement displaced *you* (e.g. a collision bounce), does the spell (a) fizzle (action + mana lost), (b) fire at max range along the caster→tile line, or (c) whiff? I lean (b). *(Note: the opponent moving never affects range — range is caster→tile only — so this is purely about your own displacement.)*
+> **`[RESOLVED — 2026-08-06, engine-enforced]` sub-question this exposed:** if your committed target tile ends up **out of range** because movement displaced *you* (e.g. a collision bounce), the spell **fizzles** (action + mana lost, chain regresses like a Pass) — not (b) fire-at-max-range, which is what this doc previously leaned toward. Two things forced the answer: this was also the point where the engine discovered spell range had never actually been enforced against a peer — only the caster's own UI declined to let them tap out of range, which a modified client or the Solo Practice dummy (which encodes its cast straight onto the wire) could simply ignore — so a real fizzle/fire/whiff choice had to be made, not a display nicety. And the range and origin used for the check are **snapshotted at the moment the cast was declared** (pre-movement position, pre-movement `effectiveSpellRange`), not at resolution — so a status effect landing earlier in the same action phase can't retroactively invalidate a cast that was legal when the player committed to it. *(The opponent moving never affects range — range is caster→tile only — so this remains purely about your own displacement.)*
 >
 > **`[DECISION — needs Soren]` Illusions vs. visible-positions baseline (review §4).** Illusions that fake player position conflict with "both players' locations are visible." Reconcile: do illusions create *decoy* tokens (positions still truthful) or actually spoof the position readout? Pick one. *(With tile-targeting, decoys that bait a misplaced target tile are especially on-theme for the cornering game.)*
 
@@ -1182,11 +1320,26 @@ successor architecture for supporting up to 6 players without a central host —
 
 Four togglable options moving casting between traditional-fantasy ritual and tactical board game. Choosing the "Sorcerer" side trades strategic deliberation for speed and physical acuity; each toggles independently.
 
+> **`[SHIPPED — 2026-08-06]` "Sorcerer Mode" is no longer one toggle.**
+> `docs/SPELL_COMPONENTS_PLAN.md` split the single boolean into three independently
+> negotiated `MatchConfig` flags — `vocalComponents`, `somaticComponents`, and
+> `simultaneousCasting` (new, default **off**) — because Verbal and Somatic Components
+> turn out to have genuinely different trust properties (recall is peer-verifiable against
+> the certified trajectory and can move mana cost up or down in exact integers; a gesture
+> is a self-attested sensor claim that can only ever downgrade to neutral, never grant
+> unearned power), different hardware requirements, and different failure modes — real
+> reasons a player might want one without the other. All three fields still gate the
+> session the same way every other negotiated `MatchConfig` field does: both sides must
+> agree or the match doesn't start. The table below still describes the two Verbal/Somatic
+> rows as a pair for readability, but they toggle independently in the lobby. The third
+> flag, `simultaneousCasting`, controls **casting order** — see the new subsection below
+> the component write-ups.
+
 | Option | Wizard | Sorcerer |
 |---|---|---|
 | Game Speed | Turn-based | Free real-time movement/casting; status effects, minions, and mana regen tick every 15s `[TODO — playtest]` |
 | Verbal Components | Waived (auto-cast) | Latin element names **recalled from memory** and typed/spoken to declare them; mana discount/penalty scales with **recall accuracy**, not pronunciation. See the full rewrite below — this mechanic changed since v3.0. |
-| Somatic Components | Waived (target by choosing a hex) | Two accelerometer gestures (distance + direction), performed **simultaneously with the final formula's vocalization**; optional haptic feedback. **Requires standing still — see Casting Stillness below.** `[SHIPPED]` real sensor code (`sensors_plus`, accelerometer + gyroscope), working classifier. |
+| Somatic Components | Waived (target by choosing a hex) | Two accelerometer gestures (distance + direction), performed **simultaneously with the final formula's vocalization**; optional haptic feedback. **Requires standing still — see Casting Stillness below.** `[SHIPPED]` real sensor code (`sensors_plus`, accelerometer + gyroscope), working classifier. **`[SHIPPED — 2026-08-06]`** with `somaticComponents` on, the gesture **is** the enhancement picker — the tap-based picker is hidden, not just offered alongside it. See the rewritten Somatic Components section below. |
 | Movement | Select tiles on the battle grid | Physical movement via **step-count + compass-bearing** (leaning; see note); separated in time from casting. `[RESOLVED — see Sorcerer real-time mode below]` |
 
 ### Vocal Components `[SHIPPED — 2026-08-04/05, mechanic replaced since v3.0]`
@@ -1242,6 +1395,27 @@ Potency - An upheld hand twitching back and forth, as if struggling to contain t
 Velocity -
 Efficiency - Moving in a vertical circle in front of the caster, like Doctor Strange making portals.
 Mystery - 
+
+> **`[SHIPPED — ratified 2026-08-06]` Gesture selects the enhancement, and is now the
+> *only* thing that does.** With `somaticComponents` on, the tap-based enhancement picker
+> is hidden entirely — the enhancement is whatever gesture the caster performs during the
+> hold, resolved at release. Two consequences: **Earth/Mystery's 0–3 delay can't be chosen
+> mid-gesture**, so a recognized Earth gesture pops the delay prompt after release, before
+> the action commits (cancelling the prompt cancels the cast for free — nothing was
+> committed yet); and **the cost preview becomes a range** (`min…max`) while somatic is
+> on, since Water/Efficiency's −1/3 isn't known until release — the affordability gate
+> uses the *maximum*, because an unaffordable cast forfeits against the peer, and the CAST
+> button must never offer a cast it might not be able to pay for.
+> - **The free-style motion gate.** The hold is a performance, not a single-twitch
+>   trigger: it's split into four equal time windows, and at least three of them must
+>   individually exceed the same calibrated idle-motion floor already used elsewhere
+>   (`energyFloor`) — a single flourish inside an otherwise-still hold clears the older
+>   stillness check but fails this coverage rule. **Failing it costs nothing but the
+>   enhancement** — the cast still fires at neutral, never a mana penalty and never a
+>   refused cast, since the alternative would price or block a turn off a self-reported
+>   sensor claim (see the trust table these two components share, in Vocal Components
+>   above and `docs/SPELL_COMPONENTS_PLAN.md` §6).
+
 > **Casting Stillness (`[APPLIED — confirm]`) — a constraint turned into a mechanic.** A pedometer and a somatic-gesture recognizer both read the accelerometer, so walking while gesturing would corrupt both. Rather than engineer around this, **casting requires the player to stand still** (the two somatic gestures are performed stationary). This:
 > - **resolves the conflict for free** by temporally separating movement from casting (you never walk and gesture at once), which is what makes **step-count + compass-bearing movement viable** (the earlier hesitation);
 > - leans into the strong trope of the **wizard rooted and relatively defenseless mid-incantation** — committing to a cast is a real positional exposure, which feeds directly into the tile-targeting cornering/prediction pillar (a stationary caster is a predictable presence during the channel);
@@ -1263,6 +1437,42 @@ Mystery -
 
 > **`[RESOLVED — was DECISION, see Sorcerer real-time mode below]` step-count + compass-bearing is the confirmed lean for sorcerer movement** (Casting Stillness removes the pedometer/gesture conflict that was the main objection, and it keeps the footprint small) — `docs/SORCERER_REALTIME_PLAN.md` settles this explicitly (~2 steps/tile default, with an approved re-anchor mechanic). Need to reconcile or create alternatives for forced movement effects in Sorceror mode real time actual movement.
 > - **Accessibility passes:** verbal components need a path for players who can't speak or be heard (noisy venues are your *home* venue) — Vocal Recall's move to recall-accuracy scoring (rather than volume/clarity) is itself a step toward this, since a typed or silently-mouthed recall no longer sacrifices a loudness bonus that no longer exists — but a dedicated non-vocal input path is still `[TODO]`. Somatic gestures still need calibration + a seated alternative. These double as graceful degradation when a phone's mic/accelerometer is poor.
+
+### Casting Order `[SHIPPED — 2026-08-06]`
+
+When either Vocal or Somatic Components is on, someone has to physically perform theirs
+before or alongside the others — a third, independent toggle, `simultaneousCasting`
+(default **off**), decides how.
+
+- **Simultaneous (opt-in).** All players perform their components at once. The lobby
+  shows a warning before you can turn it on: *"When using this mode all players will be
+  saying weird things and doing weird things simultaneously. Not recommended unless you
+  are wizards of singular focus, have plenty of room to spread out, and are wearing
+  headsets."* The problem is acoustic, not mechanical — two people chanting a metre apart
+  put each other's words into each other's microphones.
+- **Sequential (the default).** One player performs and locks in; everyone else waits.
+  **Seating is clockwise around the battlefield by starting position** (not current
+  position — seating never reshuffles as wizards walk around, since it's derived from the
+  same six-vertex table `Battlefield.spawnPositions()` already uses). **Who leads is
+  drawn from the joint commit-reveal entropy at battle start** (neither device picks it),
+  then **rotates by one seat every turn**. **Only the lock-in is gated** — selecting a
+  spell, picking a target, browsing your hand, and inspecting the battlefield stay live
+  for everyone at all times; the CAST hold (and DASH/MEDITATE/PASS, which also consume a
+  turn slot) unlock only when it's your turn to go. That is the deliberate information
+  asymmetry: a later player hears an earlier player's incantation *with their own ears*
+  and may change their pick before locking in — the same reading-your-opponent instinct
+  the diegetic telegraph (above) already rewards, extended across players instead of just
+  across the two duelists. **Pacing is automatic, no timer** — the next player's controls
+  unlock the instant the previous player signals done; stalling is a social problem, same
+  as everywhere else in this shouting-distance trust model. The "done" signal itself
+  carries zero information — it says only "I have finished performing," which the room
+  can already hear — and exists as its own dedicated wire message rather than piggybacking
+  on the action commit, specifically to avoid a deadlock: the action commit already waits
+  on a simultaneous artifact-declaration exchange (Phase 0) that a second player's own
+  turn depends on.
+- **Solo/Practice mode never waits** — the target dummy has no components to perform.
+
+**Still open:** no two-device LAN pass has run against sequential ordering's wire timing.
 
 ### Sorcerer real-time mode `[DESIGNED — mostly not yet built]`
 
@@ -1405,7 +1615,11 @@ shipping code yet.
 | Vocal Recall (recall-from-memory verbal casting) | `[SHIPPED — partial]` | Slot model, cost formula, wire v4, capture all shipped 2026-08-04/05. Vocabulary-choice UI, separation-warning meter, two-device pass all unbuilt. |
 | Practice Mode | `[SHIPPED]` | Repointed to the Vocal Recall scorer; old pronunciation-quality scorer retired. |
 | Avatar picker | `[SHIPPED]` | Cosmetic only — no engine code reads an avatar id; bumped `kBattleProtocolVersion` 2→3 for the wire field. |
-| Destructible terrain + line of sight (Wall/LOS) | `[DESIGNED — not built]` | Ratified 2026-08-05. Code does not exist yet. |
+| Destructible terrain + line of sight (Wall/LOS) | `[SHIPPED — partial]` | Ratified and shipped same-day, 2026-08-05. `penetrating` and `turbulent` statuses wired live in the same window. Two-device LAN pass and on-screen pass both outstanding. |
+| Engine-side spell range enforcement | `[SHIPPED]` | 2026-08-06. Closed a real trust-boundary gap (range was only ever enforced by the caster's own UI, not the engine, so a modified client could ignore it) found while wiring Watery Inertia. Also resolves the out-of-range-target `[DECISION]` — see Targeting above. |
+| Counter charm / kinship redesign (grid-bound → trajectory-bound) | `[SHIPPED — partial]` | Phases 1–3 of `docs/COUNTER_CHARM_KINSHIP_PLAN.md`, 2026-08-06. Trajectory-prefix matching, partial counters, and trajectory-keyed kinship (≥9 elements) all built. Two-device LAN pass and on-screen pass outstanding. **Phase 4 (deleting the grid commitment from the circuit) is `[DESIGNED — not built]`** — VK-breaking, explicitly not started. |
+| Spell Components (vocal/somatic/simultaneous split + casting order) | `[SHIPPED — partial]` | `docs/SPELL_COMPONENTS_PLAN.md`, ratified and built 2026-08-06. Real-device pass for somatic capture during a real cast hold, and a two-device LAN pass for sequential ordering's wire timing, both outstanding. |
+| Spell sound pack | `[SHIPPED]` | 2026-08-07. Built-in casting/impact sounds with the same import/sync/attribution model the spell-art packs already had. Purely flavor — no rules consume it. |
 | N-player mesh networking | `[DESIGNED — not built]` | Ratified 2026-07-15. Current networking is 2-player only. |
 | Sorcerer real-time mode (whole mode) | `[DESIGNED — mostly not built]` | Proposal, not ratified as a whole; several sub-decisions settled (see Battle Modes above). Depends on the unbuilt mesh for N>2. |
 | ELO computation | `[DESIGNED — not built]` | Formula specified above; no code. |
@@ -1416,14 +1630,14 @@ shipping code yet.
 
 ## Open Decisions (consolidated — remaining items flagged `[DECISION — needs Soren]`)
 
-**Resolved so far:** grid size (469, green) · pressure/decay (floored-at-0, dominant-only) · mana cost (free-4-then-`1.25^(T−4)`; exponential affirmed as effect-count throttle; chains buy T) · **T-architecture: three circuit tiers `T_max ∈ {12,24,48}`, handshake picks smallest covering the declared T (12/24 green everyday, 48 yellow spectacle tier)** · **void mana cost (`10×1.25^(tiles−1)`) PLUS a tile-gated power cap (the cost curve alone doesn't tax grinders)** · player HP (24) · base range (3) · Fire-Air conversion (1 HP / 10 mana) · owner-independent counter charms (same grid hash, any factor) · `owner_pubkey = Poseidon2(key)`, Ed25519 off-circuit · scrolls bound to a named opponent *(superseded in practice by Trade's Loan/Transfer, which shipped without per-scroll opponent-binding — see Spell Transfer)* · difficulty gradient reversed (repeats easiest) · chain break-vs-regress (action breaks, inaction regresses) · burn-artifacts ruling (diffuse 1/12 attrition; no dedicated defense) · **artifact rework: every artifact is passive + one consumable activation, declared publicly in Phase 0 before the action commit; spending one drops your own counter charms for the turn (2026-07-30, 8 decisions — see `docs/ARTIFACT_SYSTEM_PLAN.md` §2)** · inter-player resolution order (lower T first, tiebreak smaller hash) · targeting committed before movement · tile-targeting core loop · wild magic as global double-edged · melee attack action cost + resolution + tiebreak · buff-shorter-than-debuff duration principle · **sorcerer movement mechanism: step-count + compass-bearing, confirmed via `SORCERER_REALTIME_PLAN.md`** · **verbal components: pronunciation-quality replaced with recall-from-memory scoring, `VOCAL_RECALL_PLAN.md`**.
+**Resolved so far:** grid size (469, green) · pressure/decay (floored-at-0, dominant-only) · mana cost (free-4-then-`1.25^(T−4)`; exponential affirmed as effect-count throttle; chains buy T) · **T-architecture: three circuit tiers `T_max ∈ {12,24,48}`, handshake picks smallest covering the declared T (12/24 green everyday, 48 yellow spectacle tier)** · **void mana cost (`10×1.25^(tiles−1)`) PLUS a tile-gated power cap (the cost curve alone doesn't tax grinders)** · player HP (24) · base range (3) · Fire-Air conversion (1 HP / 10 mana) · counter charms rebound from grid-hash targeting to **certified-trajectory-prefix targeting, partial counters** (2026-08-06, superseding the older "same grid hash, any factor" rule below — see the redesigned Fire — Counter Charms section) · `owner_pubkey = Poseidon2(key)`, Ed25519 off-circuit · scrolls bound to a named opponent *(superseded in practice by Trade's Loan/Transfer, which shipped without per-scroll opponent-binding — see Spell Transfer)* · difficulty gradient reversed (repeats easiest) · chain break-vs-regress (action breaks, inaction regresses) · burn-artifacts ruling (diffuse 1/12 attrition; no dedicated defense) · **artifact rework: every artifact is passive + one consumable activation, declared publicly in Phase 0 before the action commit; spending one drops your own counter charms for the turn (2026-07-30, 8 decisions — see `docs/ARTIFACT_SYSTEM_PLAN.md` §2)** · inter-player resolution order (lower T first, tiebreak smaller hash) · targeting committed before movement · tile-targeting core loop · **out-of-range committed target: fizzles (2026-08-06, engine-enforced — see item 4's old text below)** · wild magic as global double-edged · melee attack action cost + resolution + tiebreak · buff-shorter-than-debuff duration principle · **sorcerer movement mechanism: step-count + compass-bearing, confirmed via `SORCERER_REALTIME_PLAN.md`** · **verbal components: pronunciation-quality replaced with recall-from-memory scoring, `VOCAL_RECALL_PLAN.md`** · **"Sorcerer Mode" split into three independent toggles (vocal/somatic/simultaneous-casting) plus a clockwise sequential casting order, `SPELL_COMPONENTS_PLAN.md`, 2026-08-06** · **destructible terrain + line of sight, `WALL_LOS_PLAN.md` §2, shipped 2026-08-05**.
 
 Still open, priority-ordered:
 
 1. **Divination family:** recipe-table (A) or wild-magic-only (B). *(Effect Table / Wild Magic.)* — unchanged since v3.0, no new information found.
 2. **Effect-table power audit** *(named playtest goal)* — re-tune so power rises with difficulty under the reversed gradient (opposite-pair strongest, same-pair most modest); the table was filled under the old philosophy. *(Supreme Dominance / Effect Table.)*
 3. **"Absorption totem"** naming — mechanically resolved in code (identical to an Absorption Rod, summon-only, no loadout slot, excluded from the passive/activation split); **only the name is open** — "totem" (effect table) vs `deflectionTotem` (code) vs "rod" (prose). **Confirmed still unresolved** — nothing in any subsequent plan doc names a choice. *(artifacts / Effect Table.)*
-4. **Out-of-range committed target** (caster displaced off range): fizzle, fire-at-max-range-along-line, or whiff. *(Targeting — I lean fire-at-max-range.)*
+4. ~~**Out-of-range committed target**~~ **`[RESOLVED — 2026-08-06]`** — fizzles; see Targeting above. *(Was: fizzle, fire-at-max-range-along-line, or whiff — this doc previously leaned fire-at-max-range; the engine-enforced answer shipped as fizzle instead.)*
 5. **Effect-table specifics:** Earth-Water/Air conveyor direction rule; Fire-Water/Air "whose chains"; Copy-Spell vs. counter-charm ruling; Illusions vs. visible-positions reconciliation.
 6. **Summon details:** confirm sprite-vs-hound base identities and tune stat scaffold; decide persistence/lifespan, simultaneous-summon cap, tile-occupancy (exclusive-tile-occupancy shipped for the general battlefield, but the summon-specific formula-parsing pipeline itself is still narrow — see Summons), and friendly-fire.
 7. **Effect names:** fill the Effect Naming Worksheet (16 in-world names) — and re-sync it to the rearranged table. *(Effect Naming Worksheet.)*
@@ -1432,9 +1646,11 @@ Still open, priority-ordered:
 10. **Multi-player (>2):** wizard-mode scaling resolved (simultaneous commit, resolution sort + same-spell dice roll, same-tile principle, lenticular speed asymmetry); the **mesh architecture is ratified as a target but not built**. Remaining future-session work: **win/elimination condition** (partially answered for cheat/disconnect cases by the mesh's ratified eject/pause rules, but not for ordinary victory), **free-for-all vs. teams**, **ELO + N-signer match-record format** (still unbuilt — see ELO & Match Records). *(Multi-Player section.)*
 11. **`[NEW]` Ed25519 `key_hi`/`key_lo` byte order** (`CIRCUIT_IO.md` §5) — the one item never checked off in the M1 ratification pass, deferred pending the identity module. The identity module, Master/Apprentice, and Trade have all since shipped on top of Ed25519 key handling without this being explicitly confirmed; worth closing out rather than assuming it's fine by omission. *(Cryptographic System / Owner Binding.)*
 12. **`[NEW]` Named-opponent-bound scroll vs. Trade's Loan/Transfer** — Trade shipped covering the same design intent as the "scroll" primitive without the per-scroll `(commitment, recipient, opponent)` binding. Worth a conscious call on whether that binding is still wanted as a distinct mechanism, or whether Trade already serves the purpose. *(Spell Transfer.)*
-13. **`[NEW]` Wall/LOS §3 rulings** — nine "made on Soren's behalf" defaults in `docs/WALL_LOS_PLAN.md` (terrain-affinity-fixed-at-placement, the 1-damage fallback's exact firing condition, Illusory terrain's fixed 1 HP, etc.) are unreviewed by Soren specifically, distinct from the doc's own ratified §2. *(Battlefield / Destructible Terrain.)*
+13. **`[NEW]` Wall/LOS §3 rulings** — nine "made on Soren's behalf" defaults in `docs/WALL_LOS_PLAN.md` (terrain-affinity-fixed-at-placement, the 1-damage fallback's exact firing condition, Illusory terrain's fixed 1 HP, etc.) are unreviewed by Soren specifically, distinct from the doc's own ratified §2 — **the code now implements these rulings**, so a later reversal would be a behavior change, not a documentation fix. *(Battlefield / Destructible Terrain.)*
+14. **`[NEW]` Counter-charm cost constant `k`** (`cost = k · F(F+1)/2`, currently `k = 10`) — set from a histogram of real spells' opening-formula distribution, which doesn't exist yet (the five Basic Spells are too small a sample). `[TODO — playtest]`, same treatment as every other artifact constant. *(artifacts / Fire — Counter Charms.)*
+15. **`[NEW]` Short-spell kin-stacking exemption** — spells under 9 trajectory elements are exempt from kinship entirely, which was the right fix for prefix-collision false positives but means they're now freely stackable. There's precedent (Basic Spells already carry a scoped exemption) and short spells are weak, so this may simply be fine — but it hasn't been confirmed as a deliberate choice rather than an inherited side effect. *(artifacts / Kinship.)*
 
-> **Resolved this pass (was open):** chain reset-vs-regress (action breaks, inaction regresses) · supreme-dominance triviality (dissolved by the reversed difficulty gradient — repeats *should* be easy) · void wild-magic gate (tier cap by tiles, since the cost curve alone doesn't tax grinders) · scroll single-use *(superseded — see item 12 above, a new open question replaces the old one)* · `owner_pubkey` representation (`Poseidon2(key)`, Ed25519 off-circuit) · HP (24, swept) · burn-artifacts (kept; diffuse 1/12 attrition; no dedicated defense) · Chaos wild-magic column (deleted) · mana free-threshold (set to `T − 4`) · **sorcerer movement mechanism** (step-count + compass-bearing, confirmed) · **CA elemental-dispatch trigger** (supreme dominance specifically, not mere dominance — a correction, not a new decision, but one that changes how the CA Rules section reads).
+> **Resolved this pass (was open):** chain reset-vs-regress (action breaks, inaction regresses) · supreme-dominance triviality (dissolved by the reversed difficulty gradient — repeats *should* be easy) · void wild-magic gate (tier cap by tiles, since the cost curve alone doesn't tax grinders) · scroll single-use *(superseded — see item 12 above, a new open question replaces the old one)* · `owner_pubkey` representation (`Poseidon2(key)`, Ed25519 off-circuit) · HP (24, swept) · burn-artifacts (kept; diffuse 1/12 attrition; no dedicated defense) · Chaos wild-magic column (deleted) · mana free-threshold (set to `T − 4`) · **sorcerer movement mechanism** (step-count + compass-bearing, confirmed) · **CA elemental-dispatch trigger** (supreme dominance specifically, not mere dominance — a correction, not a new decision, but one that changes how the CA Rules section reads) · **out-of-range committed target** (fizzles, engine-enforced, 2026-08-06 — see item 4 above) · **destructible terrain / LOS** (shipped 2026-08-05) · **counter-charm targeting** (grid hash → certified trajectory prefix, partial counters, 2026-08-06) · **kinship key** (grid → certified trajectory + per-step cost, ≥9 elements, 2026-08-06) · **"Sorcerer Mode" toggle split + casting order** (vocal/somatic/simultaneous, clockwise sequential order, 2026-08-06).
 
 > **`[TODO — Phase 2 / protocol spec]` Carried-forward technical items:** (a) **golden test vectors** — a fixed `(grid, T) → (trajectory, activations, flags)` corpus the Dart stepper and Noir circuit must both pass; this **shipped** (`test_vectors/`, 19/18/18 vectors across the 3 tiers, passing) — kept here only to note it's resolved, not still open. (b) **Commit-reveal salt** for Mystery spells and counter charms is stated in-doc and shipped in the artifact/battle engine. (c) **Measure peak proving memory on a 4 GB device** — **shipped**, see the Mobile FFI section (T12 717MB, T24 1175MB, T48 2104MB peak RSS, all measured on real Pixel 6 hardware). (d) **Sorcerer real-time mode has no discrete turns** — the lockstep state hash must run on the **15 s tick**, not per-turn; `SORCERER_REALTIME_PLAN.md` specs this as the macro-tick (60 × 250ms micro-ticks), still `[DESIGNED — not built]` as a whole mode.
 
