@@ -489,7 +489,7 @@ void main() {
       }
     });
 
-    test('bracket steps extend the duration and re-firing does not stack', () {
+    test('bracket steps extend the duration; re-firing stacks it', () {
       final me = _avatar('a', const HexCoord(0, 0));
       final state = _state(avatars: [me]);
       _fire(state, me, WildMagicRow.repeatOne, SpellAffinity.air,
@@ -499,8 +499,11 @@ void main() {
       final flying = me.activeStatusEffects
           .where((f) => f.effectTypeId == StatusEffectId.flying)
           .toList();
+      // Still ONE entry — re-applying a status merges into the effect already
+      // there (StatusEffect.applyTo) — but its duration is the sum of both
+      // 4-turn grants, per the 2026-08-07 stacking rule.
       expect(flying.length, 1);
-      expect(flying.single.remainingTurns, 4);
+      expect(flying.single.remainingTurns, 8);
     });
   });
 

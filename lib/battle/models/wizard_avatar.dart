@@ -153,6 +153,48 @@ class StatusEffect {
     if (remainingTurns > 0) remainingTurns--;
     return remainingTurns > 0;
   }
+
+  /// Places [turns] turns of [effectTypeId] on [effects] — an entity's
+  /// [WizardAvatar.activeStatusEffects] or [Minion.activeStatusEffects].
+  ///
+  /// **Duration stacks** (ruling 2026-08-07): if the entity already carries
+  /// this effect, the new duration is *added* to what remains rather than
+  /// replacing it. Land a 3-turn slow on someone who has 2 turns of slow left
+  /// and they now have 5. This is the single entry point for putting a status
+  /// on anything — [EffectApplicator], [TurnLoop] and the wild-magic
+  /// applicator all route through it so the rule holds everywhere.
+  ///
+  /// **Magnitude does not stack.** The surviving entry carries [modifiers]
+  /// from the newest application, so a −1 slow re-applied over a −2 slow is
+  /// −1 for the summed duration. One entry per id stays an invariant of this
+  /// list, and the derived-stat getters depend on it —
+  /// [WizardAvatar.effectiveMoveSpeed] sums every speedDelta it finds, so a
+  /// second speedDown entry would double the debuff, not extend it.
+  ///
+  /// The entry is re-appended at the end, so "most recently applied wins"
+  /// still holds for the getters that scan the list in reverse (see
+  /// [WizardAvatar.chainAccumulationMultiplier]). A refreshed effect starts
+  /// non-dormant even if the entry it replaced was suppressed; the next
+  /// [WizardAvatar.tickStatusEffects] re-derives dormancy from a live
+  /// [StatusEffectId.statusDormant], exactly as it did when this path
+  /// replaced outright.
+  static void applyTo(
+    List<StatusEffect> effects,
+    String effectTypeId,
+    Map<String, int> modifiers,
+    int turns,
+  ) {
+    var total = turns;
+    for (final fx in effects) {
+      if (fx.effectTypeId == effectTypeId) total += fx.remainingTurns;
+    }
+    effects.removeWhere((fx) => fx.effectTypeId == effectTypeId);
+    effects.add(StatusEffect(
+      effectTypeId: effectTypeId,
+      remainingTurns: total,
+      modifiers: modifiers,
+    ));
+  }
 }
 
 // ── PendingMultiplier (Air-Fire Bellows) ───────────────────────────────────────

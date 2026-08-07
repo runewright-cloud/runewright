@@ -1728,6 +1728,37 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
     widget.onChapterChanged();
   }
 
+  /// Deletes the whole chapter and pops back to the list. Blocked for a
+  /// master's loaned chapter — same doctrine as every other mutation on this
+  /// screen (see [_readOnly]'s doc comment): it's a snapshot the next
+  /// renewal rewrites wholesale, not something the apprentice owns.
+  Future<void> _deleteChapter() async {
+    if (_readOnly) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Delete Chapter'),
+        content: Text('Delete "${_chapter.name}"? This cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: kRubricRed),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    await _chapter.delete();
+    if (_isActive) await ChapterAsset.saveActiveChapterId(null);
+    widget.onChapterChanged();
+    if (mounted) Navigator.pop(context);
+  }
+
   Future<void> _removeCounterCharm(int index) async {
     if (_readOnly) return;
     final charm = _chapter.artifacts[index];
@@ -1883,6 +1914,14 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
                   letterSpacing: 0.5,
                 ),
               ),
+            ),
+          if (!_readOnly)
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.more_vert),
+              onSelected: (_) => _deleteChapter(),
+              itemBuilder: (_) => const [
+                PopupMenuItem(value: 'delete', child: Text('Delete Chapter')),
+              ],
             ),
         ],
       ),
@@ -2870,6 +2909,16 @@ class _SightingsTabState extends State<_SightingsTab> with AutomaticKeepAliveCli
     _sightingsFuture = SightingAsset.loadAll();
   });
 
+  Future<void> _deleteSighting(SightingAsset sighting) async {
+    await sighting.delete();
+    _reload();
+  }
+
+  Future<void> _forgetOpponent(String opponentPubkeyHex) async {
+    await SightingAsset.deleteAllForOpponent(opponentPubkeyHex);
+    _reload();
+  }
+
   /// Groups by opponent, each opponent's spells sorted most-recent first.
   Map<String, List<SightingAsset>> _groupByOpponent(List<SightingAsset> all) {
     final grouped = <String, List<SightingAsset>>{};
@@ -2925,6 +2974,8 @@ class _SightingsTabState extends State<_SightingsTab> with AutomaticKeepAliveCli
               return _OpponentSection(
                 opponentPubkeyHex: opponentPubkeyHex,
                 sightings: grouped[opponentPubkeyHex]!,
+                onDeleteSighting: _deleteSighting,
+                onForgetOpponent: () => _forgetOpponent(opponentPubkeyHex),
               );
             },
           ),
@@ -2935,10 +2986,66 @@ class _SightingsTabState extends State<_SightingsTab> with AutomaticKeepAliveCli
 }
 
 class _OpponentSection extends StatelessWidget {
-  const _OpponentSection({required this.opponentPubkeyHex, required this.sightings});
+  const _OpponentSection({
+    required this.opponentPubkeyHex,
+    required this.sightings,
+    required this.onDeleteSighting,
+    required this.onForgetOpponent,
+  });
 
   final String opponentPubkeyHex;
   final List<SightingAsset> sightings;
+  final ValueChanged<SightingAsset> onDeleteSighting;
+  final VoidCallback onForgetOpponent;
+
+  Future<void> _confirmForget(BuildContext context) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Forget This Rival'),
+        content: Text(
+          'Delete all ${sightings.length} sighted spell'
+          '${sightings.length == 1 ? '' : 's'} recorded from this wizard? '
+          'This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: kRubricRed),
+            child: const Text('Forget'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) onForgetOpponent();
+  }
+
+  Future<void> _confirmDelete(BuildContext context, SightingAsset sighting) async {
+    final name = sighting.spellName.isNotEmpty ? sighting.spellName : 'this sighting';
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Delete Sighting'),
+        content: Text('Delete "$name"? This cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: kRubricRed),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) onDeleteSighting(sighting);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2951,9 +3058,14 @@ class _OpponentSection extends StatelessWidget {
             opponentPubkeyHex: opponentPubkeyHex,
             opponentName: sightings.first.opponentName,
             spellCount: sightings.length,
+            onForget: () => _confirmForget(context),
           ),
           const SizedBox(height: 8),
-          for (final sighting in sightings) _SightingCard(sighting: sighting),
+          for (final sighting in sightings)
+            _SightingCard(
+              sighting: sighting,
+              onDelete: () => _confirmDelete(context, sighting),
+            ),
         ],
       ),
     );
@@ -2971,11 +3083,13 @@ class _OpponentHeader extends StatelessWidget {
     required this.opponentPubkeyHex,
     required this.opponentName,
     required this.spellCount,
+    required this.onForget,
   });
 
   final String opponentPubkeyHex;
   final String? opponentName;
   final int spellCount;
+  final VoidCallback onForget;
 
   String get _fingerprint {
     final trimmed =
@@ -3030,21 +3144,27 @@ class _OpponentHeader extends StatelessWidget {
             ],
           ),
         ),
+        IconButton(
+          icon: Icon(Icons.delete_outline, size: 18, color: kInkColor.withValues(alpha: 0.45)),
+          tooltip: 'Forget this rival',
+          onPressed: onForget,
+        ),
       ],
     );
   }
 }
 
-/// Compact, read-only spell card (SIGHTINGS_PLAN.md §5) — no menu, no
-/// delete/add-to-chapter/art actions. Reuses [SpellCardWidget] and
-/// [formulaEffectLabels] via [SightingAsset.toDisplaySpell] so it renders
-/// identically to an owned [_SpellCard] apart from those actions. Shows
-/// mana cost (the certified BASE cost, §2/§3) alongside the generation
-/// count, same `♦` convention as [_SpellCard]/[_LoanTile].
+/// Read-only apart from deletion (SIGHTINGS_PLAN.md §5): no add-to-chapter or
+/// art actions, since a sighting is never a spell the player owns. Reuses
+/// [SpellCardWidget] and [formulaEffectLabels] via [SightingAsset.toDisplaySpell]
+/// so it renders identically to an owned [_SpellCard] apart from those
+/// actions. Shows mana cost (the certified BASE cost, §2/§3) alongside the
+/// generation count, same `♦` convention as [_SpellCard]/[_LoanTile].
 class _SightingCard extends StatelessWidget {
-  const _SightingCard({required this.sighting});
+  const _SightingCard({required this.sighting, required this.onDelete});
 
   final SightingAsset sighting;
+  final VoidCallback onDelete;
 
   String get _displayName =>
       sighting.spellName.isNotEmpty ? sighting.spellName : 'Unnamed Spell';
@@ -3094,15 +3214,29 @@ class _SightingCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      _displayName,
-                      style: const TextStyle(
-                        fontFamily: 'serif',
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                        color: kInkColor,
-                        letterSpacing: 0.5,
-                      ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            _displayName,
+                            style: const TextStyle(
+                              fontFamily: 'serif',
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                              color: kInkColor,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                        ),
+                        InkWell(
+                          onTap: onDelete,
+                          child: Icon(
+                            Icons.close,
+                            size: 16,
+                            color: kInkColor.withValues(alpha: 0.35),
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 2),
                     Text(

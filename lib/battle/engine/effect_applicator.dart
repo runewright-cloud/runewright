@@ -129,16 +129,35 @@ class EffectApplicator {
   ///
   ///   1. Radius-carrying effects (splash damage, clouds) grow their own
   ///      radius field by the bonus — one application, wider disc.
-  ///   2. Tile-local effects that hit whatever is on the target tile (direct/
-  ///      knockback damage, status-effect interactions, terrain summons) are
-  ///      re-applied once per tile of the wall-blocked disc around the target
-  ///      (Earth ImpassableTile walls block the spread; design v3.0 §Artifacts).
-  ///   3. Everything else is left single-target: caster self-buffs (barrier,
-  ///      quick, penetrating…) and meta effects that land on whoever occupies
-  ///      the one target tile (chain, haymaker priming, Bellows…) have no
-  ///      spatial radius, and re-running them per tile would wrongly multiply
-  ///      a single-recipient effect. [_isSpreadableAtTiles] names exactly the
-  ///      case-2 set — audit it when a new effect kind lands.
+  ///   2. Everything else is re-applied once per tile of the wall-blocked disc
+  ///      around the target (Earth ImpassableTile walls block the spread;
+  ///      design v3.0 §Artifacts), resolving independently in each cell.
+  ///   3. A short, named exception list stays single-target — see
+  ///      [_isSpreadableAtTiles].
+  ///
+  /// Case 2 is the *default* as of 2026-08-07. It used to be a four-entry
+  /// allowlist, justified by "caster self-buffs (barrier, quick, penetrating…)
+  /// would wrongly multiply if looped" — a claim the 2026-07-27 tile-targeting
+  /// sweep had already made false. That sweep converted every handler in this
+  /// file to resolve against whoever occupies [ApplyContext.targetTile] (see
+  /// [_dispatch]'s doc comment, which states it as a complete rule), so a
+  /// per-tile loop is a true AoE for almost everything. Two further properties
+  /// are what make it safe rather than merely plausible, and both are load-
+  /// bearing — check them before adding an effect:
+  ///
+  ///   - Writes that land on a *recipient* are idempotent under re-application:
+  ///     `av.barriers[affinity] =`, `pendingEffectMultipliers[…] =` and the
+  ///     wizard-decoy set all overwrite. Status effects are the exception since
+  ///     2026-08-07 — [_addStatusWithDuration] now STACKS duration (see
+  ///     [StatusEffect.applyTo]), so a status applied twice to one recipient
+  ///     lasts twice as long. Nothing here does that, but only because of the
+  ///     next bullet: it is the property to check, not to assume.
+  ///   - [_avatarsAt] matches an exact position, so a wizard is hit exactly
+  ///     once however large the disc. ([_minionsAt] matches any occupied tile,
+  ///     so a Big or rod-enlarged creature IS hit once per tile of its
+  ///     footprint that falls inside the disc — pre-existing behaviour for
+  ///     direct damage, and read as "more of the blast lands on a bigger
+  ///     target" rather than a bug.)
   static void apply(ApplyContext ctx) {
     final bonus = ctx.effectiveRadiusBonus;
     final effect = ctx.descriptor.spellEffect;
@@ -271,17 +290,60 @@ class EffectApplicator {
         _ => null,
       };
 
-  /// Effects that resolve against whatever occupies a single target tile, so
-  /// re-running them once per tile of an enlarged disc is a true AoE (case 2).
-  /// Deliberately excludes: splash/cloud (handled by [_withRadiusBonus]),
-  /// traversal damage (already a caster→target line), self-buffs, and
-  /// caster-mutating meta effects (which would multiply if looped).
+  /// Whether [effect] re-runs once per tile of the enlarged disc (case 2).
+  ///
+  /// Spreading is the default; this switch exists to name the exceptions. It
+  /// is deliberately **exhaustive over the sealed [SpellEffect] hierarchy** —
+  /// no `_` wildcard — so a new effect kind is a compile error here and has to
+  /// be classified by hand. The old wildcard silently defaulted new kinds to
+  /// "never spreads", which is how the stale allowlist survived the
+  /// tile-targeting sweep unnoticed.
   static bool _isSpreadableAtTiles(SpellEffect effect) => switch (effect) {
-        DamageEffect e =>
-          e.kind == DamageKind.direct || e.kind == DamageKind.knockback,
-        StatusEffectInteractionEffect _ => true,
+        // Splash never reaches here — [_withRadiusBonus] grew its own radius
+        // and [apply] returned first. Traversal is the caster→target flight
+        // line ("damage to entities in hexes en route"), not a tile-local
+        // effect: a line has no meaningful disc form, and it is already
+        // applied once per cast by TurnLoop._applyPenetrationEnRoute.
+        DamageEffect e => e.kind != DamageKind.traversal,
+
+        // Earth's flavor ([_applyIllusionTerrainCopy]) already clones the
+        // source terrain onto all six neighbours. Spreading THAT across a
+        // 7-tile disc paints up to ~24 tiles from one cast — an order of
+        // magnitude past every other flavor, and the one illusion case where
+        // the disc compounds with a fan-out the effect does on its own. The
+        // decoy (Water) and creature-copy (Fire/Air) flavors spread normally;
+        // decoys are replace-per-recipient, so they yield one decoy set per
+        // distinct wizard caught in the blast.
+        IllusionEffect e => !e.copyTerrainExpand,
+
+        // Water's flavor is the single handler in this file that writes to
+        // ctx.CASTER rather than the tile's occupant, so it is excluded from
+        // the per-tile loop — but it is NOT excluded from the rod. It widens
+        // the disc itself, inside [_strongestChainTarget], and robs the best
+        // chain in that disc (ruled 2026-08-07). Looping it here instead would
+        // be worse than useless: [_applyChainInteraction] clears and
+        // re-derives the caster's chain on every pass, so the last tile of
+        // [_spreadTiles]' BFS order would silently win. Every other flavor
+        // lands on the occupant and spreads normally.
+        ChainInteractionEffect e => !e.transferChainFromTarget,
+
+        // Unreachable — [_withRadiusBonus] grows the cloud's own radius, so
+        // one wide cloud rather than seven overlapping ones. Listed rather
+        // than omitted so the switch stays exhaustive.
+        CloudEffect _ => false,
+
+        BarrierEffect _ => true,
+        ReflectionEffect _ => true,
+        SpeedManipulationEffect _ => true,
+        SpellInteractionEffect _ => true,
         TileModificationEffect _ => true,
-        _ => false,
+        RangeModificationEffect _ => true,
+        FuelTransmutationEffect _ => true,
+        ArtifactsInteractionEffect _ => true,
+        StatusEffectInteractionEffect _ => true,
+        MultiplierCyclesEffect _ => true,
+        HaymakerInteractionEffect _ => true,
+        DivinationEffect _ => true,
       };
 
   /// Tiles reachable from [center] within [radius] steps without passing
@@ -559,9 +621,8 @@ class EffectApplicator {
 
   static void _applyChainInteraction(ApplyContext ctx, ChainInteractionEffect e) {
     if (e.transferChainFromTarget) {
-      final targets = _avatarsAt(ctx.state, ctx.targetTile);
-      if (targets.isNotEmpty) {
-        final target = targets.first;
+      final target = _strongestChainTarget(ctx);
+      if (target != null) {
         // Water flavor explicitly reads FROM the target and writes TO the
         // caster ("you gain all chain status of the affected target") --
         // the one flavor that doesn't affect the target tile's occupant.
@@ -611,6 +672,45 @@ class EffectApplicator {
         ? StatusEffectId.chainFast
         : StatusEffectId.chainSlow;
     _addStatusWithDuration(affected, typeId, {'chainAccMultiplierPct': pct}, e.durationTurns, ctx);
+  }
+
+  /// Who the Watery chain steal actually robs.
+  ///
+  /// Without a rod this is just the target tile's occupant. Under a rod the
+  /// steal does NOT run once per tile — it writes to the caster, so looping it
+  /// would simply let the last tile of [_spreadTiles]' BFS order overwrite
+  /// every earlier one, handing the caster a bystander's chain by an accident
+  /// of iteration order. Instead the disc widens the *candidate set* and the
+  /// **strongest chain takes precedence** (ruled 2026-08-07): aim into a
+  /// crowd and you rob its best-built duellist, not its nearest one.
+  ///
+  /// Strength is the half-credits banked on the chain that is actually active
+  /// — an avatar with no active chain scores 0 and is only ever chosen when
+  /// nobody in the disc has one, which preserves the old "steal from an
+  /// unchained target and wipe your own" behaviour. Ties break on playerId,
+  /// the same deterministic convention [TurnLoop] uses for counter-charm
+  /// matching and the melee round, so both devices pick the same victim and
+  /// stay in lockstep.
+  static WizardAvatar? _strongestChainTarget(ApplyContext ctx) {
+    final tiles = ctx.effectiveRadiusBonus > 0
+        ? _spreadTiles(ctx.state, ctx.targetTile, ctx.effectiveRadiusBonus)
+        : <HexCoord>[ctx.targetTile];
+    final candidates = [
+      for (final tile in tiles) ..._avatarsAt(ctx.state, tile),
+    ];
+    if (candidates.isEmpty) return null;
+    candidates.sort((a, b) {
+      final byStrength = _chainStrength(b).compareTo(_chainStrength(a));
+      return byStrength != 0 ? byStrength : a.playerId.compareTo(b.playerId);
+    });
+    return candidates.first;
+  }
+
+  /// Half-credits banked on [av]'s currently active chain element, or 0 if it
+  /// has none. See [_strongestChainTarget].
+  static int _chainStrength(WizardAvatar av) {
+    final el = av.activeChainElement;
+    return el == null ? 0 : (av.chainLengths[el] ?? 0);
   }
 
   // ── Spell Interaction (Fire-Air) ──────────────────────────────────────────
@@ -1485,24 +1585,17 @@ class EffectApplicator {
           .where((a) => a.playerId == link.casterId && a.isAlive)
           .firstOrNull;
       if (mirror == null) continue;
-      mirror.activeStatusEffects.removeWhere((fx) => fx.effectTypeId == typeId);
-      mirror.activeStatusEffects.add(StatusEffect(
-        effectTypeId: typeId,
-        remainingTurns: turns,
-        modifiers: mods,
-      ));
+      StatusEffect.applyTo(mirror.activeStatusEffects, typeId, mods, turns);
     }
   }
 
+  /// Puts [turns] turns of [typeId] on [av]. Stacks onto an existing effect of
+  /// the same id rather than replacing it — see [StatusEffect.applyTo] for the
+  /// rule and what it does with [mods].
   static void _addStatusWithDuration(
       WizardAvatar av, String typeId, Map<String, int> mods, int turns,
       [ApplyContext? ctx]) {
-    av.activeStatusEffects.removeWhere((fx) => fx.effectTypeId == typeId);
-    av.activeStatusEffects.add(StatusEffect(
-      effectTypeId: typeId,
-      remainingTurns: turns,
-      modifiers: mods,
-    ));
+    StatusEffect.applyTo(av.activeStatusEffects, typeId, mods, turns);
     // statusMirror: only fires for self-buffs (caster == recipient).
     if (ctx != null && av.playerId == ctx.caster.playerId) {
       _mirrorStatus(ctx.state, av.playerId, typeId, mods, turns);

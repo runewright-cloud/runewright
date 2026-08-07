@@ -3116,16 +3116,8 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         attacker.takeDamage(1, attackType: SpellAffinity.fire);
       }
       if (muddy) {
-        m.activeStatusEffects.removeWhere(
-          (fx) => fx.effectTypeId == StatusEffectId.speedDown,
-        );
-        m.activeStatusEffects.add(
-          StatusEffect(
-            effectTypeId: StatusEffectId.speedDown,
-            remainingTurns: 1,
-            modifiers: const {'speedDelta': -1},
-          ),
-        );
+        StatusEffect.applyTo(m.activeStatusEffects, StatusEffectId.speedDown,
+            const {'speedDelta': -1}, 1);
       }
     }
 
@@ -4003,18 +3995,14 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     }
 
     // Fire haymaker DoT: add stacks to each hit avatar — but skip anyone
-    // redirected above; their punch never landed.
+    // redirected above; their punch never landed. This stacked by hand long
+    // before durations stacked in general; it now just rides the shared rule
+    // (see StatusEffect.applyTo), which adds the same 3 turns to an existing
+    // DoT and starts a fresh one otherwise.
     if (actor.hasHaymakerDot) {
       for (final av in _avatarsAt(targetTile)) {
         if (redirected.contains(av.playerId)) continue;
-        final existing = av.activeStatusEffects
-            .where((fx) => fx.effectTypeId == StatusEffectId.haymakerDot)
-            .firstOrNull;
-        if (existing != null) {
-          existing.remainingTurns += 3;
-        } else {
-          _addStatus(av, StatusEffectId.haymakerDot, {'damagePerTick': 1}, 3);
-        }
+        _addStatus(av, StatusEffectId.haymakerDot, {'damagePerTick': 1}, 3);
       }
     }
 
@@ -7292,14 +7280,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     Map<String, int> mods,
     int turns,
   ) {
-    av.activeStatusEffects.removeWhere((fx) => fx.effectTypeId == typeId);
-    av.activeStatusEffects.add(
-      StatusEffect(
-        effectTypeId: typeId,
-        remainingTurns: turns,
-        modifiers: mods,
-      ),
-    );
+    StatusEffect.applyTo(av.activeStatusEffects, typeId, mods, turns);
   }
 
   // ── Formula helpers ───────────────────────────────────────────────────────

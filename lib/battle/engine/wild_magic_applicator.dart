@@ -404,15 +404,8 @@ class WildMagicApplicator {
     final turns = 2 + ctx.bracketSteps;
     final touched = <String>[];
     for (final av in ctx.livingAvatars) {
-      av.activeStatusEffects
-          .removeWhere((fx) => fx.effectTypeId == StatusEffectId.flying);
-      av.activeStatusEffects.add(
-        StatusEffect(
-          effectTypeId: StatusEffectId.flying,
-          remainingTurns: turns,
-          modifiers: const {},
-        ),
-      );
+      StatusEffect.applyTo(
+          av.activeStatusEffects, StatusEffectId.flying, const {}, turns);
       touched.add(av.playerId);
     }
     ctx.emit(WildMagicEffectKind.updraft, players: touched);

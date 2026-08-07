@@ -16,10 +16,18 @@ abstract final class StatusEffectId {
 
   // Rod of Wind passive (docs/ARTIFACT_SYSTEM_PLAN.md §2.8): +1 movement
   // for one turn, rolled at Phase 6 for the FOLLOWING turn. Its own ID rather
-  // than reusing [speedUp] because TurnLoop._addStatus replaces any existing
-  // effect of the same ID — a rod roll must not silently clobber a spell's
-  // speed buff, or vice versa. Read by WizardAvatar.effectiveMoveSpeed
-  // alongside speedUp/speedDown, so the two stack additively.
+  // than reusing [speedUp] because same-ID applications share one entry — a
+  // rod roll must not clobber a spell's speed buff's magnitude, nor (since
+  // durations stack, see StatusEffect.applyTo) quietly extend it a turn every
+  // time the rod fires. Read by WizardAvatar.effectiveMoveSpeed alongside
+  // speedUp/speedDown, so the two stack additively.
+  //
+  // The roll is one-shot by construction and so never stacks with itself: it
+  // is applied and ticked away inside the same turn (see
+  // TurnLoop._artifactEntropyImpl), so the next turn's roll always finds a
+  // clean slate. The one exception is a bearer under [statusDormant], whose
+  // effects do not tick — there the rolls pile up turns until dormancy lifts,
+  // the same way any other status applied during dormancy does.
   // modifiers: {'speedDelta': +int}
   static const rodMobility = 'rodMobility';
 

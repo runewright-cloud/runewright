@@ -5099,3 +5099,160 @@ work outside `runAsync`.**
   cancels) is unverified. Only the predicate behind it is pinned. Same for the lobby's
   prepare button: the card's presence is tested, the download path is not.
 - The two-device pass on connection-loss is still the real gate, and still outstanding.
+
+---
+
+## M4.x — Rod of Wind: "the boost didn't work" (2026-08-07)
+
+A play-test reported that spending a Rod of Wind produced no visible effect. The
+mechanic was wired correctly end to end; the *coverage* was the bug.
+
+#### What was actually wrong
+
+`EffectApplicator.apply`'s case-2 set was a four-entry allowlist — direct/knockback
+damage, status-effect interaction, tile modification — plus case 1 for splash and
+clouds. Everything else fell through to "apply once, unchanged". That is **15 of 64**
+(affinity × effect-kind) combinations responding to the rod, and the rod was consumed on
+every cast with at least one formula regardless. Reproduced across six formulas: barrier,
+reflections, speed, traversal damage and divination all spent the rod and widened
+nothing.
+
+The allowlist's stated justification was already false when it was read:
+
+> *Everything else is left single-target: caster self-buffs (barrier, quick,
+> penetrating…) … re-running them per tile would wrongly multiply a single-recipient
+> effect.*
+
+The **2026-07-27 tile-targeting sweep** had converted every handler in the file to
+resolve against whoever occupies `ctx.targetTile`. The comment survived the sweep; the
+allowlist it justified survived with it. Two independent properties make the per-tile
+loop safe, and both are now written into `apply`'s doc comment because a future change to
+either silently breaks the model: `_addStatusWithDuration` **replaces rather than
+stacks**, and `_avatarsAt` matches an **exact position** so a wizard is hit once however
+large the disc.
+
+Spreading is now the default. `_isSpreadableAtTiles` names only the exceptions and is
+**exhaustive over the sealed `SpellEffect` hierarchy** — the old `_ => false` wildcard is
+exactly what let a new effect kind default to "never spreads" without anyone deciding.
+
+#### Two things this cost, both worth remembering
+
+1. **A negative vector that passes under mutation is not a negative vector.** Two drafts
+   of the chain-steal tests passed with the constraint deleted. The first asserted the
+   wrong invariant entirely (see below); the second was carried by an unrelated tie-break
+   because the victims' `playerId`s happened to sort the same way strength did. Every
+   exception here was verified by *removing it and watching the paired test fail*. Do
+   that — reading the test is not enough.
+2. **Read the handler before claiming what a loop would do to it.** The Watery chain
+   steal was written up as a multiplication hazard (`chainLengths[el] += bonus * 2` once
+   per occupied tile). It is not: `_applyChainInteraction` calls `clear()` and re-derives
+   from the target on every pass, so looping it is idempotent in the bonus. The real
+   hazard was *whose* chain you get — last tile of `_spreadTiles`' BFS order wins.
+
+#### Rulings (Soren, 2026-08-07)
+
+- Illusions spread for the decoy and creature-copy flavors; **Earth's terrain copy does
+  not** — it already fans out onto all six neighbours, so a 7-tile disc would paint ~24
+  tiles from one cast. It is the one illusion case where the disc compounds with a
+  fan-out the effect performs on its own.
+- Traversal damage does not spread: it is the caster→target flight line, applied once per
+  cast by `TurnLoop._applyPenetrationEnRoute`, and a line has no disc form.
+- The chain steal is excluded from the per-tile loop but **not** from the rod. The disc
+  widens its candidate set inside `_strongestChainTarget` and the **strongest chain wins**
+  — aim into a crowd, rob its best-built duellist. Ties break on `playerId`, the
+  convention `_findCounteringCharm` and the melee round already use, so both devices pick
+  the same victim.
+
+#### Why it reached a play-test
+
+The summon branch had an end-to-end vector through `runTurn`; the incantation branch had
+none. Every incantation test handed `effectiveRadiusBonus` straight to
+`EffectApplicator`, which cannot catch a break anywhere in *Phase-0 declaration →
+`declaredActivation` → `rodRequested` → `_applySpell` → `_consumeRodOfSpreading`*. Both
+modes now have one. **A feature with a UI declaration step and an engine consumption step
+needs a vector that spans both, or the seam between them is untested by construction.**
+
+#### Still open
+
+- Consensus-visible between peers: both devices need the same build or their state hashes
+  diverge on the first spread cast. Not a `RULESET_VERSION` bump (that gates CA/circuit
+  rules, and nothing here touches the circuit), but it is a two-device gate.
+- Unchanged and worth a later look: a Big or rod-enlarged creature is matched by
+  `_minionsAt` once per occupied tile, so it takes a spread effect once per footprint
+  tile inside the disc. Pre-existing for direct damage; now reaches more effects. Read as
+  "more of the blast lands on a bigger target" rather than a bug, but it was never
+  explicitly ruled on.
+- No UI feedback confirms the bonus applied. The corner tile's outline reflects the
+  *declaration* only, and in a LAN duel it does not light up until the opponent reaches
+  Phase 0, because `_beginArtifactPhaseForTurn` blocks on the commit-reveal exchange.
+
+---
+
+## M4.x — Status effect durations stack (2026-08-07)
+
+Rule change, Soren's call: applying a status effect to an entity that already carries
+that effect now **extends it by the new application's duration** instead of replacing
+it. Land a 3-turn slow on someone with 2 turns of slow left and they have 5.
+
+#### One entry point, and why it is one entry point
+
+`StatusEffect.applyTo(effects, id, mods, turns)` in `wizard_avatar.dart` is now the only
+way a status reaches an entity. Five sites used to hand-roll `removeWhere(id)` +
+`add(StatusEffect(...))`: `EffectApplicator._addStatusWithDuration` and `_mirrorStatus`,
+`TurnLoop._addStatus`, the muddy-melee minion debuff, and wild magic's Updraft. Each was
+one edit away from disagreeing with the others about a rule that has to be identical on
+both peers, so the rule moved into the model beside `StatusEffect` and they all call it.
+`TurnLoop._applyHaymaker`'s Fire DoT, which stacked `+= 3` by hand long before any of
+this, now rides the same path — it was the only place that already had the new behaviour.
+
+Two properties it deliberately keeps:
+
+- **Magnitude does not stack, only duration.** One entry per effect id stays an invariant
+  of `activeStatusEffects`, because `effectiveMoveSpeed` / `effectiveSpellRange` *sum*
+  every matching modifier they find — a second `speedDown` entry would double the debuff
+  rather than extend it. The surviving entry carries the newest application's modifiers.
+- **The refreshed entry is re-appended at the end.** `chainAccumulationMultiplier` reads
+  the list in reverse and takes the first chain effect it finds, so "most recently applied
+  wins" is positional. Refreshing in place would have let a stale `chainSlow` outrank a
+  `chainFast` cast after it.
+
+#### The comment that had to be corrected
+
+`EffectApplicator.apply`'s doc comment (from the Rod of Wind entry above) named
+"`_addStatusWithDuration` **replaces** rather than stacks" as one of two load-bearing
+properties making the per-tile spread safe. That half is now false. The spread is still
+safe, but on the *other* property alone: `_avatarsAt` matches an exact position, so each
+wizard falls in exactly one tile of the disc and is hit once however large it gets. The
+comment now says so, and says it is the property to check rather than assume. (Minions
+are not affected: nothing in `EffectApplicator` puts a status on a minion — the only
+minion status write is the muddy melee debuff, which is not a spread path. If that ever
+changes, note `_minionsAt` matches *any* occupied tile, so a Big creature would stack a
+spread status once per footprint tile.)
+
+#### Where it does not silently accumulate
+
+`rodMobility` is applied and ticked away inside the same turn (`_artifactEntropyImpl`
+rolls it, Phase 6 expires it), so the next turn's roll always finds a clean slate and the
+per-turn passive never piles up. The exception is a bearer under `statusDormant`, whose
+effects do not tick at all — rolls accumulate turns there until dormancy lifts, the same
+as any other status applied during dormancy. Documented at the id in
+`status_effect_ids.dart` rather than special-cased in code.
+
+#### Tests
+
+`test/battle/engine/status_effect_stacking_test.dart` pins the primitive (fresh add,
+extend-what-remains, single entry, newest modifiers win, re-append position) and the spell
+path through `EffectApplicator.apply`. One existing test changed meaning: wild magic's
+*"bracket steps extend the duration and re-firing does not stack"* asserted the old rule
+directly — Updraft fired twice at 4 turns is now 8, still in one entry. Full suite green.
+
+#### Still open
+
+- Consensus-visible between peers, like every battle-engine rule: both devices need the
+  same build or their state hashes diverge the first time a status is re-applied. Not a
+  `RULESET_VERSION` bump (that gates CA/circuit rules; nothing here touches the circuit),
+  but it is a two-device gate.
+- Balance is untested at the table. Duration stacking is strictly a buff to repeated
+  casts of the same debuff — the "rest of match" sentinel (`revealCounterCharms` = 999)
+  is harmless, but a spammed slow or `nextSpellCostDouble` now compounds where it used
+  to plateau. Worth watching in the first play-test that has two casts of one status.
