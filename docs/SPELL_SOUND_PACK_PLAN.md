@@ -1,495 +1,358 @@
 # Spell Sound Pack — plan
 
-*Proposed 2026-08-03, on `feature/practice-mode`, immediately after commit `4908565`
-("Sound effects imported"). Ships a curated built-in **sound** pack — the audio sibling of
-docs/SPELL_ART_PACK_PLAN.md — plus the playback layer the game currently lacks, and the
-licensing/attribution scaffolding the pack legally requires.*
+*Proposed 2026-08-07, on `main`. Ships a curated built-in spell-sound pack plus a
+player-imported custom-sound path, played when a spell resolves in battle, synced
+peer-to-peer alongside custom art. Deliberately mirrors `docs/SPELL_ART_PACK_PLAN.md`
+structure-for-structure — the two features share a data-model shape, a store shape, and a
+sync path — and calls out by name every place where the analogy **breaks**, because those
+are where the work actually is.*
 
-Status: **§2 decisions OPEN — needs Soren.** Provenance verified (§1). Do not start
-Phase A until D-1 … D-7 are ratified.
+Status: **§2 D-1 through D-6 all ratified (D-1 confirmed by Soren 2026-08-07: BY-SA 3.0 in,
+BY-SA 4.0 out). Implementation starting.**
 
 ---
 
 ## 1. What is actually in `assets/audio/spells/` right now
 
-75 files, **47 MB**, committed wholesale in `4908565` (already pushed to `origin`).
+75 files, 21 MB, committed to git in `4908565 Sound effects imported` (note: unlike
+`assets/art/`, the raw sources are already in history — see A-2). Not currently listed in
+`pubspec.yaml`'s asset section, so **nothing ships today**.
 
-### The files are not what their extension says
+### Provenance and licence — **verified 2026-08-07**
 
-**65 of the 75 `.ogg` files are actually RIFF/WAVE, 16-bit stereo PCM at 44.1 kHz.**
-Only 10 are genuine Ogg Vorbis. Verified with `file` + `ffprobe` across all 75:
+**Spell Sounds Starter Pack** by **p0ss**, from
+https://opengameart.org/content/spell-sounds-starter-pack.
 
-| Container | Count | Notes |
+| Archive | Bytes | SHA-256 |
 |---|---|---|
-| RIFF/WAVE PCM s16le stereo 44100 | 65 | mislabeled `.ogg` |
-| Ogg Vorbis stereo 44100 | 10 | genuine (`forcepush`, `zap2a`–`zap2g`, …) |
+| `spells.zip` | 9,781,493 | `194004ab3d74875d6aed6390ef061e51fa506cae0f5f0c55508e355b30670831` |
 
-That is the whole 47 MB: the file sizes are conspicuously quantised (605 228 / 907 308 /
-1 210 412 / 1 512 492 bytes — 3.43 s / 5.14 s / 6.86 s / 8.57 s of stereo PCM), which is
-the tell. Flutter's `audioplayers` sniffs container by content on Android and Linux so
-these *do* play, but the extension lie is a trap for any tooling that trusts it, and it
-is not something to ship.
+Downloaded from `https://opengameart.org/sites/default/files/spells.zip` and verified
+2026-08-07. All **75 extracted files are byte-for-byte identical (SHA-256) to the 75 files
+already in this repo's working tree** — not a filename match, a content match, with no
+extras on either side. The page's own inventory corroborates independently: "22 assorted
+zap type spell sounds" matches exactly (`zap`, `zap2`, `zap2a–g`, `zap4a–9a`, `zap10–16`
+= 22), as do 3 blessings, 2 cheers, 5 curses, 1 heal, 1 teleport.
 
-### They are heavily silence-padded
+Licences stated on the source page: **CC BY-SA 3.0, GPL 3.0, GPL 2.0**. Note what is
+*not* offered, since it differs from the painterly icons: **no attribution-only option,
+and no 4.0-vintage option.** Attribution guidance on the page is the OGA default — credit
+the asset and its creator.
 
-The quantised durations are padding, not content. Measured trailing-silence trim at −50 dB:
+Creation note from the page, worth keeping in the attribution record: *"All of these
+sounds were created in Linux MultiMedia Studio and Audactity on Ubuntu 10.10"*.
 
-| File | Source duration | Actual content |
-|---|---|---|
-| `zap.ogg` | 3.43 s | **0.57 s** |
-| `heal.ogg` | 5.14 s | 2.13 s |
-| `blessing.ogg` | 5.14 s | 2.56 s |
-| `explode.ogg` | 5.14 s | 3.43 s |
-| `wind.ogg` | 6.86 s | 5.15 s |
-| `freeze.ogg` | 8.57 s | 6.87 s |
+### Why ShareAlike is not a problem here (the D-1 crux)
 
-This matters beyond bytes: an `AudioPlayer` completion callback on `zap.ogg` fires **3
-seconds** after the sound is over. Any "play the cast sound, then advance the animation"
-sequencing built on the raw files would be wrong by that margin.
+`SPELL_ART_PACK_PLAN.md` §1 could argue ShareAlike away entirely: CC BY-SA 4.0 §2(a)(4)
+says a format transcode "never produces Adapted Material," so §3(b) never fires. **Neither
+half of that reasoning survives the move to this pack.** 4.0 is not on offer, and our
+processing (mono downmix, loudness normalization, silence trim — see D-2) goes past the
+"modifications as are technically necessary" that BY-SA 3.0 §3 permits. The derived pack
+is an **Adaptation**, and ShareAlike attaches to it.
 
-### Content inventory
+That costs this project nothing, for four reasons:
 
-75 sounds, 306 s total, mean 4.1 s. **No duplicate content** (75 distinct SHA-256s).
-Families:
+1. **BY-SA 3.0 §4(b) explicitly permits licensing an Adaptation under "a later version of
+   this License with the same License Elements."** So the derived pack ships as **CC BY-SA
+   4.0** — which is already what `LICENSE-ASSETS` declares for Runewright's creative
+   assets. Same destination as the art pack, reached by a different route.
+2. **SA is file-scoped.** It reaches the derived `.ogg` files, not the GPL-3.0 app that
+   plays them (no derivative relationship), not the CC0 terrain, not the CC BY 3.0
+   avatars. The APK is a collection, not an adaptation of its parts.
+3. **The project is already in this position.** The painterly icons ship under CC BY-SA
+   4.0 in this same APK through this same credits machinery, and it has cost nothing.
+4. **SA is the *cheaper* copyleft of the two on offer.** The GPL 3.0 option would arguably
+   drag in GPL's source-form obligation — "the preferred form for making modifications" —
+   pointing at shipping the pre-transcode 21 MB of WAVs alongside every release. CC BY-SA
+   has no source-form obligation at all.
 
-| Family | n | Members |
-|---|---|---|
-| `zap` | 22 | `zap`, `zap2`, `zap2a`–`zap2g`, `zap4a`–`zap16` |
-| `explode` | 5 | `explode`, `explode1`–`explode5` |
-| `curse` | 5 | `curse`, `curse2`–`curse5` |
-| `blessing` | 3 | `blessing`, `blessing2`, `blessing3` |
-| `interlude` | 3 | `interlude`, `interlude2`, `interlude2a` |
-| `warp` | 3 | `warp`, `warp2`, `warp3` |
-| `enchant` / `freeze` / `shot` / `wind` / `cheer` / `magicfail` / `forcepush` | 2 each | |
-| singletons | 20 | `spell`, `steam`, `sand`, `water`, `heal`, `teleport`, `magicshield`, `flamethrower`, `confusion`, `disenchant`, `transmision`, `pestilence`, `insect`, `magicdrop`, `magicerase`, `forcepulse`, `spring`, `moving`, `entrance`, `cheer-crowd` |
-
-The 22-strong `zap` family is the useful one: it makes **deterministic per-spell variation**
-possible (§5 C-4) — the same spell always sounds the same, different spells don't.
-
-### Provenance and licence — **verified 2026-08-03**
-
-The pack is **"Spell Sounds Starter Pack" by `p0ss`**, OpenGameArt, archive `spells.zip`
-(9.8 MB). Identification is not a guess: the listing's own breakdown ("22 zap effects,
-5 explosions, 5 curse spells, 3 blessing spells, 2 cheering sounds, 2 enchant spells,
-2 freeze spells, 2 shot spells, 2 wind spell sounds, 3 interlude sounds, 3 warp sounds")
-matches our family counts **exactly**, family for family. The files' mtimes are 2011-03-03,
-consistent with the listing's vintage.
-
-- Source page: https://opengameart.org/content/spell-sounds-starter-pack
-- LPC mirror: https://lpc.opengameart.org/content/spell-sounds-starter-pack
-
-**Licences offered on the page: CC BY-SA 3.0, GPL 3.0, GPL 2.0.**
-
-Note what is *not* on offer, because it differs from the art pack in the way that matters:
-
-- **No attribution-only option.** Unlike the Painterly icons (CC BY 3.0 available), every
-  licence here is copyleft. There is no "just credit us" path.
-- **No CC BY-SA 4.0 direct.** 4.0 is reachable only via the 3.0 upgrade clause — see D-1.
-
-The listing states **79 sounds**; we have **75**. Reconciling that gap is A-1 — most likely
-the count includes a readme and/or the four `zapNa` variants got dropped in transit, but
-it must be *checked* against a fresh `spells.zip`, not assumed.
-
-### Why ShareAlike *does* bite here (unlike the art pack)
-
-SPELL_ART_PACK_PLAN.md §1 argued ShareAlike never attaches because a PNG→WebP transcode is
-definitionally not Adapted Material under CC BY-SA **4.0** §2(a)(4). **That argument does
-not transfer**, for two independent reasons:
-
-1. **We are doing more than transcoding.** The pipeline this plan proposes downmixes
-   stereo→mono, trims silence, and loudness-normalises (§4 B-2). Downmix and gain staging
-   are editorial choices, not "technical modifications necessary" to change format. That is
-   an Adaptation on any reading.
-2. **3.0 has no equivalent safe harbour.** CC BY-SA 3.0 §3's closing sentence permits
-   "such modifications in any technical medium as are technically necessary to exercise the
-   Rights in other media and formats" but — unlike 4.0 §2(a)(4) — it does **not** say those
-   modifications never produce an Adaptation. The 4.0 escape hatch simply isn't in the 3.0 text.
-
-So plan on shipping the derived pack as Adapted Material under a ShareAlike licence. **This
-costs us nothing**: CLAUDE.md already licenses Runewright's creative assets CC BY-SA 4.0,
-and ShareAlike attaches to the *sound files*, not to the GPL-3.0 Dart code that merely plays
-them (playback is no more a derivative work than displaying an icon is).
-
-The one live consequence: **never bake a pack sound together with an original Runewright
-sound into a single shipped file.** Layering at playback time (two players, two files) is
-fine and is what §6 specifies anyway. Baking a composite `.ogg` would make that file
-CC BY-SA — again a no-op given CLAUDE.md, but worth knowing before someone "optimises" the
-cast+impact layering into pre-mixed files.
+The obligations we actually take on: publish the derived files under BY-SA 4.0, credit
+p0ss with a licence URI and an indication that the files were modified, and impose no
+DRM or additional restrictions on the audio. All three are `ATTRIBUTION.md` + a credits
+screen entry + a `manifest.json` block — machinery `build_art_pack.py` already
+established.
 
 *Not legal advice — but the operative clauses are named rather than paraphrased, so the
 reasoning is checkable.*
 
+### What the files actually are — three findings that shape the pipeline
+
+**Finding 1 — 65 of the 75 "`.ogg`" files are RIFF WAV.** Only 10 are real Ogg Vorbis
+(`forcepush`, `warp2`, `zap2`, `zap2a`–`zap2g`). The WAVs are 44.1 kHz **stereo 16-bit
+PCM** at 1411 kbps. This is upstream — p0ss's own archive ships them this way, confirmed
+by the byte-identical hash comparison above. **Consequence: nothing in this feature may
+dispatch on file extension.** Sniff magic bytes (`RIFF`/`OggS`), always.
+
+**Finding 2 — the pack is not level-matched, by a wide margin.** Measured with
+`ffmpeg -af volumedetect` across all 75:
+
+| | Quietest | Loudest | Spread |
+|---|---|---|---|
+| mean volume | `curse5.ogg` −54.3 dB | `zap2g.ogg` −16.1 dB | **38 dB** |
+
+38 dB is roughly an 80× difference in amplitude. Seven files already peak at 0.0 dBFS
+(clipping). **This is why D-4's volume cap cannot be implemented as a playback-gain
+setting alone** — one gain value cannot make `curse5` audible without making `zap2g`
+painful. Loudness has to be fixed at build time, which forces D-2.
+
+**Finding 3 — durations run 0.4 s to 8.57 s** (`freeze.ogg` longest). The battle reveal
+sequence holds a spell card for 2 s (`battle_screen.dart`'s
+`_playResolvedSpellSequence`), so long clips will outlive their moment — see E-3.
+
+### Measured transcode result
+
+Pipeline from D-2, run over the whole pack as a spike:
+
+| Encode | Total | Largest clip |
+|---|---|---|
+| source (44.1k stereo PCM) | 21 MB | 1,512,492 B |
+| 44.1 kHz mono, Vorbis `-q:a 2`, loudnorm | **1.4 MB** | 60,866 B |
+| 22.05 kHz mono, Vorbis `-q:a 1`, loudnorm | 908 KB | 30,295 B |
+
+`ffmpeg` is present on the dev machine (`/usr/bin/ffmpeg`).
+
 ---
 
-## 2. Decisions — **OPEN, needs Soren**
+## 2. Decisions
 
-Each carries a recommendation. The art plan's D-numbers are cited where the answer should
-or should not mirror it.
+**D-1 — Which licence do we take the sounds under? → CC BY-SA 3.0 in, derived pack out
+under CC BY-SA 4.0.** *Recommended; needs an explicit yes from Soren before Phase A
+lands.* Reasoning in §1's crux subsection. The alternative (GPL 3.0) is available and
+would moot the SA analysis, but would make the audio the only creative asset in the repo
+outside the CC BY-SA chain and drags in a source-form obligation CC does not have.
 
-**D-1 — Which of p0ss's licences do we take the pack under? → Recommend CC BY-SA 4.0, via
-the 3.0 upgrade clause.**
+**D-2 — Ship transcoded, or ship the files as-is? → Transcode.** *Settled 2026-08-07 by
+delegation.* 44.1 kHz **mono**, Vorbis `-q:a 2`, two-pass `loudnorm` to **I = −16 LUFS,
+TP = −1.5 dBTP, LRA = 11**, leading-silence trim. Four independent reasons, any two of
+which would be sufficient:
 
-CC BY-SA 3.0 §4(b) says an Adaptation may be distributed under "(ii) a later version of
-this License with the same License Elements". BY-SA 4.0 is exactly that. Since §1 concludes
-we *are* producing an Adaptation, the upgrade path is open to us, and taking it:
+- **Loudness.** Finding 2 is the load-bearing one. Soren's D-4 ruling — "volume capped at
+  some reasonable level" — is *only implementable* if the clips are level-matched first.
+  Build time is the only place we can normalize, because the app has no audio decoder
+  (see D-3).
+- **Size.** 21 MB → 1.4 MB, on a release APK already at 79 MB with 53 MB of circuits.
+- **Uniformity.** Finding 1's 65-WAV/10-Vorbis split becomes one format, so the app has
+  one decode path and Phase D writes **one** header parser instead of two.
+- **Fitness.** 44.1 kHz stereo PCM for a 0.6 s zap is waste; mono is correct for game SFX
+  regardless, since any future spatialization happens at playback.
 
-- **unifies the asset chain** — same licence as the Painterly pack (art D-1) and as
-  CLAUDE.md's stated licence for Runewright creative assets. One licence, one credits row.
-- **gets 4.0's improvements** — no jurisdiction ports, 30-day cure for inadvertent breach
-  (3.0 terminates permanently and automatically), and §3(a)(2)'s explicit blessing of
-  satisfying attribution by hyperlink, which is what the credits screen already does.
+Chose 44.1 kHz/`q:a 2` (1.4 MB) over 22.05 kHz/`q:a 1` (908 KB): the 500 KB saved is not
+worth halving the bandwidth on a pack whose most-used sounds are the 22 crisp, HF-heavy
+zaps. Cost of this decision: a build step someone must be able to re-run — mitigated by
+pinning the exact `ffmpeg` invocation in the script and recording the archive hash, so the
+pack is reproducible from the verified source.
 
-The alternative worth naming: **GPL 3.0**, which would unify with the *code* licence
-instead of the asset licence. Rejected as the default because it makes the sound files
-subject to GPL's source-distribution machinery (what is "source" for a `.ogg`?), a question
-CC BY-SA simply doesn't raise. Recommend CC BY-SA 4.0.
+**D-3 — What may a player import? → Ogg Vorbis only.** *Settled 2026-08-07 by
+delegation.* This is the decision where the art analogy breaks hardest, so the reasoning
+is spelled out:
 
-*Fallback if Soren prefers minimum legal surface:* do a pure transcode only (no mono
-downmix, no normalisation), argue it is not an Adaptation, and ship under CC BY-SA 3.0
-unchanged. This costs ~2× the bytes and gives up loudness consistency. Not recommended.
+The art path's entire safety argument is *decode hostile bytes on a background isolate,
+re-encode to canonical JPEG, hash the canonical form* (`spell_art_import.dart`). **There
+is no Dart audio encoder**, so that argument has no audio equivalent — imported bytes
+reach a platform codec (Android `MediaPlayer`, gstreamer on Linux) essentially as
+supplied. The substitute is to make the *validation* gate carry the weight the
+*canonicalization* step carries for art:
 
-**D-2 — The 47 MB of raw sources are already committed and pushed. What now? → Recommend
-keep them tracked, move them aside, ship only the derived pack.**
+- **One container means one parser** to write, fuzz, and reason about. Ogg's page
+  structure plus the Vorbis identification header yields sample rate and channel count,
+  and the final page's granule position yields exact duration — all **without decoding a
+  single sample**. That is a complete validation gate in pure Dart, in maybe 150 lines.
+- **WAV would be a second parser** *and* an uncompressed format: 5 s of 44.1 kHz stereo
+  WAV is ~880 KB versus ~40 KB of Vorbis, which fights the F-2 sync caps directly.
+- **Honest downside:** players exporting from Audacity land on WAV or MP3 by default, so
+  "convert it first" is real friction for a non-technical player. Mitigations: the error
+  message names the fix explicitly, and the 75-sound built-in pack means most players
+  never open the importer at all. **This is the decision most likely to need revisiting
+  once real players hit it** — the escape hatch, if it does, is a decoder in the existing
+  Rust FFI bridge (`ffi/`, e.g. `symphonia`), which is a real chunk of work and should not
+  be built pre-emptively.
 
-Art D-2 kept 33 MB of source PNGs out of git. That ship has sailed here — `4908565` is on
-`origin`, so the blobs are in history permanently whatever we do next, and a history rewrite
-means a force-push on a shared branch for no real benefit (47 MB of an already-187 MB
-`.git`).
+**D-4 — Do synced opponent sounds play by default? → Yes, with a capped volume.**
+*Ratified by Soren 2026-08-07.* Implementation is E-4. Note the asymmetry this creates,
+because it is the one place D-3's lack of a decoder actually hurts: pack clips are
+normalized at build time and are mutually consistent, but **imported and synced clips
+cannot be loudness-normalized at all** — measuring loudness requires decoding, and we
+have no decoder. So peer audio gets a conservative fixed gain, a hard duration cap, and a
+one-tap mute, rather than true normalization. Stated plainly here because it is a
+limitation, not a design choice.
 
-Given the cost is sunk, **keeping the raws tracked is strictly better than deleting them**:
-it makes `scripts/build_sound_pack.py` reproducible from a fresh clone, which the art
-pipeline is *not* (art requires re-downloading four archives by hand). Concretely:
+**D-5 — Built-in pack sounds travel over the wire as an *id*, never as bytes.** Sync Art
+today sends built-in pack **bytes**: `_fulfillWantlist` calls `resolveSpellArtFull`, which
+for `SpellArtSource.builtIn` returns the pack WebP, base64s it into the bundle, and the
+peer saves a duplicate of a file already in their own APK. That is deliberate — see
+`spell_asset.dart:345`, "artHash is copied from the pack's sha256, so Sync Art's integrity
+check needs no special case" — and defensible for a 6 KB icon. It is the wrong shape for a
+60 KB audio clip inside a single un-capped JSON frame. Sound sends `soundPackId` when the
+source is built-in and bytes only for player imports. **Apply the same fix to art while
+we're in there** (F-3), which also shrinks the project's SA distribution surface to
+exactly one thing: the APK.
 
-- `git mv assets/audio/spells → assets/audio_src/spells` — a rename reuses the existing
-  blobs, so this adds ~0 bytes to the repo.
-- derived pack lands at `assets/audio_pack/spells/`, mirroring `art/` → `art_pack/`.
-- **only `assets/audio_pack/` goes in `pubspec.yaml`.** The raws never reach the APK.
-
-Net effect on ship size: **+1.4 MB, not +47 MB.**
-
-**D-3 — How does a spell get its sound: derived, chosen, or both? → Recommend both, derived
-default + optional player override.**
-
-Three options:
-
-| | Storage | Opponent/basic spells | UI |
-|---|---|---|---|
-| (a) derived from formula only | none | works automatically | none |
-| (b) player-picked, like art | `SpellAsset.soundPackId` | silent / needs fallback | picker |
-| (c) derived default + override | optional field | works automatically | picker |
-
-The art pack is (b), but art has a fallback — the commitment-derived coat of arms — that
-sound has no equivalent of. A spell with no chosen sound must not be *silent*. So (a) is
-load-bearing regardless, and (c) is (a) plus the art-like picker Soren asked for. It also
-means the 75 shipped basic spells and every opponent spell sound correct on day one with
-no migration and no wire change.
-
-Recommend building (a) first (Phases D+E), then the override (Phase F) — so there is a
-playable, audible game before any new persisted field exists.
-
-**D-4 — Do opponents hear the sound *you* chose for your spell? → Recommend no. No sound
-data on the wire in v1.**
-
-Art has a sync path (art D-6 / Sync Art). Sound should not, in v1: each device plays from
-its own local derivation, so a cast sounds right on both screens without a single new byte
-in `battle_wire.dart`. If per-spell overrides should propagate later, the correct shape is
-a **bounded catalogue id** (a `u16` index into the generated pack, range-checked on receipt)
-— never bytes. **Never accept audio bytes over the wire**: unlike the art path, where
-`SpellArtStore` writes a verified-hash image to disk, a peer-supplied audio blob is decoder
-attack surface in a native codec with no upside.
-
-**D-5 — What sounds beyond spell casts? → Recommend a fixed, small event set.**
-
-The pack has clearly non-spell material (`interlude*`, `cheer*`, `entrance`, `moving`).
-Recommend covering: **cast, impact, ward-block/counter, summon entrance, wizard walk,
-inscribe-proof success/failure, victory.** Explicitly out: background music, ambient beds,
-menu clicks, and anything on the sorcerer-mode capture path (a sound playing while the mic
-is scoring a vocal formula is an obvious own-goal — see F-3).
-
-**D-6 — Volume/mute control? → Recommend one master SFX slider + mute toggle, persisted,
-in `settings_screen.dart`.** Minimal, but non-optional: this game is played in person,
-across a table, in public. There must be a way to silence it in one tap.
-
-**D-7 — Encode target? → Recommend mono, 44.1 kHz, Ogg Vorbis `-q:a 4`, silence-trimmed.**
-
-Measured on the actual corpus, all 75 files:
-
-| Setting | Size | Notes |
-|---|---|---|
-| source (as committed) | 47 MB | 65 files mislabeled WAV |
-| mono 44.1 kHz q4, trimmed | **1.4 MB** | **recommended** |
-| mono 22.05 kHz q2, trimmed + loudnorm | 0.9 MB | audibly dulls the `zap` family's top end |
-
-Mono is right: these are point-source SFX on a shared tabletop device, and stereo doubles
-the bytes for imaging nobody will hear. 44.1 kHz is worth keeping — the zaps live in the
-8–16 kHz band that 22.05 kHz throws away. 1.4 MB is a rounding error next to the three
-circuit VKs already in the bundle.
-
-Trim threshold needs care: −50 dB was used for the measurements above and is probably too
-aggressive for the reverb tails on `blessing`/`warp`. Recommend **−60 dB with a 30 ms
-guard**, and B-4 makes it a listened-to check, not a spec.
+**D-6 — Every spell gets a sound with zero player effort.** Default to a pack clip chosen
+deterministically from the spell's dominant formula element (`suggestedElementFor` in
+`spell_art_pack_screen.dart` already computes this for art), with the picker as an
+override. Art can fall back to the commitment-derived coat of arms; silence is a worse
+default than a generic sigil is, and 75 clips is plenty to seed from.
 
 ---
 
 ## 3. Phase A — licensing, attribution, repo hygiene
 
-**A-1 — Reconcile 75 vs 79.** Re-download `spells.zip` from the OpenGameArt page, diff
-filenames against `assets/audio_src/spells/`, hash-match the overlap. Either add the four
-missing sounds or record in ATTRIBUTION.md what they were and why they're absent. Do not
-skip this — it is the one place the provenance chain is currently loose.
+- **A-1.** Write `assets/sound_pack/spells/ATTRIBUTION.md` in the exact shape of
+  `assets/art_pack/painterly/ATTRIBUTION.md`: source page, archive name/size/SHA-256, the
+  verification note above, the licence list verbatim from the page, the p0ss attribution
+  line, and — different from the art pack — an explicit **"Adapted: transcoded to mono
+  Vorbis, loudness-normalized, silence-trimmed; adaptation licensed CC BY-SA 4.0"**
+  modification statement. The art pack's statement says "re-encoded"; ours must not,
+  because ours *is* an adaptation (§1 crux).
+- **A-2.** Add `/assets/audio/` to `.gitignore` and `git rm --cached` the raw sources,
+  matching the `/assets/art/` precedent. **Explain to Soren:** this stops tracking them
+  going forward, but they remain in history at `4908565` — that is fine and not worth
+  rewriting history over; the point is that the tree and future clones stay lean, and the
+  pack is regenerable from a hash-verified archive.
+- **A-3.** Add the pack to `CREDITS.md` and `lib/ui/credits_screen.dart`. While there,
+  fix the stale `assets/audio/practice/` path in `CREDITS.md:50` — that directory is now
+  `assets/practice_templates/`.
+- **A-4.** Add `assets/sound_pack/spells/` to `pubspec.yaml`'s asset list.
 
-**A-2 — `assets/audio_pack/spells/ATTRIBUTION.md`.** Modelled on
-`assets/art_pack/avatars/ATTRIBUTION.md`: source title, author (`p0ss`), source URLs,
-licence taken under (D-1) *and* the licence offered (CC BY-SA 3.0 → 4.0 upgrade path, with
-the §4(b)(ii) citation), the exact credit line, the modification statement — which must
-describe what we actually did (**"downmixed to mono, silence-trimmed, re-encoded to Ogg
-Vorbis q4"**), and the per-file source SHA-256 table. The art pack's modification statement
-was rewritten once because it claimed something the pixels didn't support; write this one
-from the ffmpeg command line, not from intent.
+## 4. Phase B — asset pipeline (source WAV/Ogg → shipped pack)
 
-**A-3 — `git mv assets/audio/spells assets/audio_src/spells`** (D-2). Leave
-`assets/audio/practice/` exactly where it is — it is generated, already shipped, and
-unrelated.
+- **B-1.** `scripts/build_sound_pack.py`, modelled on `build_art_pack.py`: reads
+  `assets/audio/spells/`, sniffs magic bytes (never the extension — Finding 1), runs the
+  D-2 `ffmpeg` invocation, writes `assets/sound_pack/spells/*.ogg` + `manifest.json`,
+  and emits `lib/spells/spell_sound_pack.dart` as a GENERATED file with the same header
+  banner. Per-entry fields: `id`, `asset`, `subject`, `element`, `category`,
+  `durationMs`, `sha256`, `bytes`.
+- **B-2. Category tagging (the frames analogy).** The art pack excluded 37 decorative
+  frames from the picker (D-3 there). The equivalent here: several clips are not spell
+  sounds — `interlude`, `interlude2`, `interlude2a`, `cheer`, `cheer-crowd`, `entrance`,
+  `moving`. Tag them `category: ambient` and have the picker offer only `category: spell`.
+  They stay in the pack (cheap, and useful later for UI sounds) but never appear as a
+  spell's resolution sound.
+- **B-3. Element derivation**, by filename stem, defaulting to `neutral`:
+  `fire` ← `explode*`, `flamethrower`; `water` ← `water`, `freeze*`, `steam`;
+  `air` ← `wind*`, `forcepush*`, `forcepulse`, `zap*`, `warp*`, `shot*`;
+  `earth` ← `sand`, `spring`, `insect`; `neutral` ← everything else (`blessing*`,
+  `curse*`, `enchant*`, `heal`, `magic*`, `teleport`, …). **Eyeball the result once** —
+  the art pack's alpha-channel assumption did not survive checking the actual data, and
+  this table is exactly the same kind of assumption.
+- **B-4.** Two-pass `loudnorm` (measure, then apply), not single-pass — single-pass is a
+  live estimate and will not hit the target consistently across 75 files.
+- **B-5.** Verify the output: every file decodes, every duration is within 5% of source
+  (trim aside), and the measured mean-volume spread across the pack collapses from 38 dB
+  to a few dB. That last check is the acceptance test for Finding 2.
+  **Measured 2026-08-07:** integrated-loudness (LUFS) spread collapsed to **13.9 dB**
+  (mean −17.1 LUFS, stdev 2.35 across 75 clips), not "a few dB." Root cause: a handful of
+  sub-second, high-crest-factor zap transients (`zap4a`, `zap15`, …) hit ffmpeg's
+  `loudnorm` true-peak ceiling (`TP=-1.5 dBTP`) hard enough that it falls back from
+  `linear` to `dynamic` normalization for just those files, which undershoots the −16
+  LUFS target rather than risk clipping. This is expected EBU R128 behaviour for very
+  short percussive content, not a pipeline bug — the alternative (relaxing the TP
+  ceiling) trades a loudness outlier for actual clipping, which is worse. 71 of 75 clips
+  land within a few dB of target; the outliers are still ~20 dB quieter than the original
+  38 dB spread's loudest file, so D-4's volume-cap goal (nothing painfully loud) still
+  holds even though D-4's "audible" half is imperfect for those few clips.
 
-**A-4 — `.gitignore`:** no change. Unlike art D-2, the raws stay tracked.
+## 5. Phase C — data model and resolution
 
-**A-5 — Credits screen row.** `lib/ui/credits_screen.dart` already renders
-`_PackLicenceDetail(licence: kPainterlyLicence)` from generated Dart. Add
-`kSpellSoundLicence` the same way — read from the generated catalogue, never hardcoded, so
-a licence correction is a one-file regeneration.
+- **C-1.** `SpellAsset` gains `soundHash`, `soundSource` (`SpellSoundSource`:
+  `builtIn` / `localImport` / `synced`), `soundUpdatedAt`, `soundPackId`, with
+  `withSound()` / `withPackSound()` mirroring `withArt()` / `withPackArt()`. All optional
+  in JSON, so existing spell files parse unchanged.
+- **C-2.** `SightingAsset` gains the same four, mirroring its art fields — including the
+  rule at `sighting_asset.dart:233` that a battle-cast upsert must **never** clear them.
+- **C-3.** `lib/spells/spell_sound_store.dart` — blob store keyed the same way
+  `SpellArtStore` is, one variant (`<key>.ogg`) rather than full/thumb. Same reasoning for
+  keeping bytes out of `SpellAsset`'s JSON: `inscribeSpell` parses every spell's JSON on
+  every inscription.
+- **C-4.** `lib/spells/spell_sound_resolver.dart` — the single seam, mirroring
+  `spell_art_resolver.dart`: pack id → bundle, otherwise → store, null → D-6's elemental
+  default.
+- **C-5.** `library_backup.dart` gains `spellSound` / `sightingSound` maps, skipping
+  `builtIn` exactly as the art path does. Note the backup file grows by roughly the size
+  of a player's imported clips; worth a line in the export UI if it gets large.
 
----
+## 6. Phase D — import validation (no canonicalization available)
 
-## 4. Phase B — asset pipeline (raw sources → shipped pack)
+- **D-1.** `lib/spells/spell_sound_import.dart`: byte cap **before** anything else, magic
+  bytes must be `OggS`, then a pure-Dart Ogg/Vorbis header walk yielding sample rate,
+  channel count, and duration from the final page's granule position. Reject on: not Ogg,
+  not Vorbis, > 2 channels, duration > **6 s**, bytes > **256 KB**. Hash the raw bytes
+  (SHA-256, `0x`-prefixed, matching `artHashHex` convention) and store as-is.
+- **D-2.** `spell_sound_io.dart` — `file_picker` glue, `allowedExtensions: ['ogg']`,
+  mirroring `spell_art_io.dart`. Extension filters the *dialog*; the magic-byte check is
+  what actually decides.
+- **D-3.** Every rejection path returns a `SpellSoundImportException` with a
+  player-facing message that names the fix ("Runewright accepts Ogg Vorbis files — most
+  audio editors can export one").
 
-**B-1 — `scripts/build_sound_pack.py`.** Direct sibling of `build_art_pack.py`: Python 3,
-deterministic, idempotent, re-runnable to byte-identical output. Reads
-`assets/audio_src/spells/*.ogg`, writes:
+## 7. Phase E — playback
 
-    assets/audio_pack/spells/<stem>.ogg      one per sound
-    assets/audio_pack/spells/manifest.json   licence header + per-sound metadata
-    lib/audio/spell_sound_pack.dart          generated Dart catalogue
+- **E-1.** `lib/audio/spell_sound_player.dart`: a small pool of `audioplayers` instances
+  (2–3), lazily constructed exactly as `practice_screen.dart:56` does — an `AudioPlayer`
+  is a hard failure under `flutter test`, and this must not break the widget suite.
+- **E-2.** Hook into `battle_screen.dart`'s `_playResolvedSpellSequence` at **card
+  reveal**, not effect bloom — the card is the moment the player is looking at the spell.
+  A fully countered cast (`ResolvedSpellEvent.wasCountered`) plays a fizzle, not the
+  spell's own sound; a partial counter (`counteredFormulas > 0`) plays the spell normally,
+  since it did resolve.
+- **E-3.** Stop all playback when the reveal sequence ends and on dispose — Finding 3
+  means an 8.5 s clip otherwise outlives its 2 s card and bleeds into the next phase.
+- **E-4. Gain policy** (implements D-4): pack clips play at the global volume setting;
+  imported and synced clips play at a fixed fraction of it (start at 0.7) since they are
+  un-normalizable; global volume defaults to 0.6 with a slider in `settings_screen.dart`,
+  which has no audio section today; a mute control is reachable **from inside battle**,
+  not only from settings.
+- **E-5.** Verify playback on Linux desktop early — audioplayers goes through gstreamer
+  there, and there is no root on this machine to install anything missing. Practice mode
+  already plays clips, so this is likely fine, but "likely" is not the bar for a
+  device-facing path.
 
-Depends on `ffmpeg`/`ffprobe`, both already on this machine (`/usr/bin/ffmpeg`). Note the
-Pillow precedent: `build_art_pack.py` pins encoder settings for reproducibility. Do the
-same — pin `-q:a`, channel count, sample rate, and **`-map_metadata -1`**, since libvorbis
-otherwise stamps an encoder version string that breaks byte-identical re-runs across
-ffmpeg upgrades.
+## 8. Phase F — sync
 
-**B-2 — Per-file processing.** In order: probe true container (never trust the extension) →
-decode → downmix to mono → trim leading/trailing silence at −60 dB with a 30 ms guard →
-peak-normalise → encode Vorbis q4 44.1 kHz mono. Record pre/post duration in the manifest;
-**a >90 % duration reduction is a build error**, not a warning — that is the signature of a
-trim that ate the sound.
-
-**B-3 — Catalogue metadata.** Per entry: `id` (source filename stem, stable — this is what
-a future `soundPackId` persists), `asset` path, `family` (`zap`, `curse`, …), `variant`
-index within family, `durationMs`, `sha256`, `bytes`. Every field a pure function of the
-source, exactly as the art pack's are.
-
-**B-4 — Listen to the output.** Not optional and not automatable. Play all 75 processed
-files back before committing and confirm no clipped attack and no swallowed tail. This is
-the audio analogue of the art plan's "the alpha assumption didn't survive checking the
-actual pixel data" — measurements said the trim was fine at −50 dB; ears are the authority.
-
-**B-5 — `pubspec.yaml`:** add `- assets/audio_pack/spells/` with a comment pointing at this
-plan and at ATTRIBUTION.md, matching the existing asset-block comment style. Do **not** add
-`assets/audio_src/`.
-
----
-
-## 5. Phase C — data model
-
-**C-1 — `lib/audio/spell_sound_pack.dart`** (generated by B-1). `SpellSoundPackEntry` +
-`kSpellSoundPack` + `kSpellSoundLicence`, structurally identical to `spell_art_pack.dart`.
-
-**C-2 — `lib/audio/spell_sound_map.dart`** (hand-written, the taste layer). Pure functions,
-no I/O, no Flutter imports — so it is unit-testable without a widget harness:
-
-    String castSoundId(SpellAffinity affinity, String commitmentHex);
-    String impactSoundId(EffectKind kind, String commitmentHex);
-    String eventSoundId(GameSoundEvent event);
-
-**C-3 — The mapping table (proposed; taste call, wants Soren's ear).** Two layers, because
-the battle screen already has two moments — orb launch (`SpellCastEvent.affinity`) and
-effect bloom (`EffectKind`, derived from the formula's 2nd/3rd triplet).
-
-*Cast layer, by affinity:*
-
-| Affinity | Sound |
-|---|---|
-| fire | `flamethrower` |
-| air | `wind2` |
-| water | `water` |
-| earth | `sand` |
-| (none / neutral) | `spell` |
-
-*Impact layer, all 16 `EffectKind`s:*
-
-| EffectKind | Formula pair | Sound |
-|---|---|---|
-| `damage` | Fire-Fire | `explode` family |
-| `barrier` | Earth-Earth | `magicshield` |
-| `reflections` | Water-Water | `warp2` |
-| `speedManipulation` | Air-Air | `spring` |
-| `statusEffectInteraction` | Fire-Earth | `curse` family |
-| `chainInteraction` | Fire-Water | `zap2` family |
-| `spellInteraction` | Fire-Air | `disenchant` |
-| `fuelTransmutation` | Earth-Fire | `transmision` |
-| `tileModification` | Earth-Water | `sand` |
-| `rangeModification` | Earth-Air | `forcepush` |
-| `clouds` | Water-Fire | `steam` |
-| `artifactsInteraction` | Water-Earth | `enchant` |
-| `illusions` | Water-Air | `confusion` |
-| `multiplierCycles` | Air-Fire | `magicdrop` |
-| `haymakerInteraction` | Air-Earth | `forcepulse` |
-| `divination` | Air-Water | `blessing` |
-
-*Event layer (D-5):*
-
-| Event | Sound |
-|---|---|
-| ward blocks a cast (`wasCountered`) | `magicfail` |
-| inscribe: proof verified | `blessing2` |
-| inscribe: proof failed | `magicfail2` |
-| summon appears | `entrance` |
-| wizard walks | `moving` |
-| wild magic fires | `magicerase` |
-| victory | `cheer-crowd` |
-
-Leaves `heal`, `freeze`, `teleport`, `warp`, `insect`, `pestilence`, `shot`, `interlude*`
-unassigned — deliberately. They are the reserve for artifacts, clouds, and the summons mode.
-
-**C-4 — Deterministic variant selection.** Where a family has variants (22 `zap`s, 5
-`explode`s, 5 `curse`s), pick by `commitmentHex` — the same derivation idea as the coat of
-arms. Effect: a given spell always sounds identical to itself on every device and every
-cast (so players learn it by ear), while two different Fire-Fire spells don't sound alike.
-Free variety, zero storage, zero network, and it stays consistent across peers without the
-wire ever carrying a sound id.
-
-**C-5 — `SpellAsset.soundPackId` (D-3 override, Phase F only).** Nullable `String?`,
-serialised only when non-null, exactly like `artPackId`. **Do not add this field until
-Phase F.** Anything persisted is forever.
-
----
-
-## 6. Phase D — the playback layer
-
-This is the part with no art-pack analogue, and the part most likely to eat the schedule.
-Art is static bytes handed to a painter; sound is a scheduled, stateful, concurrent resource.
-
-**D-1 — `lib/audio/sfx_player.dart`.** A small service over `audioplayers ^6.1.0` (already a
-dependency, already used by `practice_screen.dart` for trainer clips — that file is the
-working reference for `AssetSource` paths and the Linux/Android behaviour we know works).
-
-Requirements:
-
-- **A pool of `AudioPlayer`s (4–6), not one.** A single `AudioPlayer` is a single stream;
-  playing a second sound on it cuts the first. Casts overlap with impacts by design, so
-  one-shot SFX need round-robin over a small pool with oldest-stream stealing when
-  exhausted.
-- **Preload/decode on entry to the battle screen**, not on first play. First-play decode
-  latency on Android is tens of milliseconds — enough to make the orb's impact sound late.
-- **`fire-and-forget` API.** `SfxPlayer.play(soundId)` returns `void`, never throws, and
-  never blocks an animation. Audio failure must degrade to silence, never to a stalled
-  reveal sequence.
-- **Respects the D-6 mute/volume setting** at the service level, so no call site checks it.
-
-**D-2 — Lifecycle.** Dispose the pool in `BattleScreenState.dispose()` alongside the four
-existing `AnimationController`s. Stop everything on app background — an SFX firing from a
-pocketed phone mid-duel is a bug.
-
-**D-3 — Do not sequence animation off audio completion.** Animation timing stays driven by
-`_castAnimController` and `kCastOrbImpactFraction`, exactly as now. Sound is fired *at* an
-animation phase and is otherwise ignored. Coupling reveal pacing to decoder callbacks would
-make the whole reveal sequence device-dependent, and §1 already shows how wrong the source
-durations are about when a sound actually ends.
-
----
-
-## 7. Phase E — wiring (derived sounds, no new persisted state)
-
-All hook points already exist in `lib/ui/battle_screen.dart`'s reveal sequence
-(`_revealCasts`, around lines 2300–2420) — no restructuring needed.
-
-**E-1 — Cast.** Fire `castSoundId(cast.affinity, …)` in the same `setState` that installs
-the `CastAnimation`, i.e. at orb launch (~line 2355).
-
-**E-2 — Impact.** Fire `impactSoundId(...)` after `await Future.delayed(impact)` — the
-existing `kCastOrbImpactFraction` delay that already marks the orb reaching its target.
-
-**E-3 — Ward block.** `magicfail` where `ev.wasCountered` is handled (~line 2385), replacing
-nothing; the countered-flash UI stays.
-
-**E-4 — Walk.** `moving` from `_playAvatarWalks`, gated to *one* play per turn regardless of
-avatar count.
-
-**E-5 — Wild magic / summon / victory.** `_showWildMagicBanner`, the summon branch of the
-reveal loop, and the existing end-of-match path.
-
-**E-6 — Inscribe.** Proof success/failure in the Rune Craft inscribe pipeline. This is the
-one hook outside the battle screen and can land in its own commit.
-
----
-
-## 8. Phase F — override + picker UI (D-3's second half)
-
-Only after Phases A–E are playable and the mapping has survived Soren's ear.
-
-**F-1 — `SpellAsset.soundPackId`** (C-5), plus the `SpellAsset` round-trip test.
-
-**F-2 — `lib/ui/spell_sound_pack_screen.dart`.** Modelled on `spell_art_pack_screen.dart`
-(343 lines): family chips instead of element chips, a row per sound, **tap to audition** —
-the one thing the art picker didn't need. Entry point from the same Craftings menu that
-opens the art picker. Attribution footer reading `kSpellSoundLicence`.
-
-**F-3 — Sorcerer-mode interlock.** Audition and battle SFX must be hard-muted while the mic
-is capturing for vocal scoring (`lib/sorcerer/`). Playing a sound into the microphone that
-is scoring a Latin formula would corrupt the score in a way that looks like a scoring bug,
-not an audio bug — and per the gesture-corpus finding, a plausible-looking scorer
-regression can cost days. Interlock at the `SfxPlayer` level, one flag, not per call site.
-
----
+- **F-1.** Extend the existing `artBundle` payload with optional `soundHash`,
+  `soundPackId`, `soundBase64` fields rather than minting new `SyncArtMsgType` bytes —
+  nothing has shipped, both sides update together, and unknown JSON keys are ignored by
+  older peers. Want-list entries gain `currentSoundHash`.
+- **F-2. Caps.** Per-clip 256 KB (matching D-1's import cap) and a **total-bundle cap**,
+  which does not exist today: `OUTSTANDING_ITEMS.md` §7 added a per-item cap only, and
+  art items are ≤288 KB so it never mattered. Twenty spells × a 60 KB clip is fine;
+  twenty × an un-capped import is not.
+- **F-3.** Implement D-5 for both sound and art: send `packId` for built-in sources,
+  bytes only for `localImport`.
+- **F-4.** Rename the Sync Art screen's user-facing label (it now moves art *and* sound).
+  Message-type names and enum identifiers stay — same discipline as the Rod of Wind
+  rename, since `SpellArtSource` values are persisted by name on-device.
 
 ## 9. Tests and verification
 
-| | What |
-|---|---|
-| unit | `spell_sound_map` — all 16 `EffectKind`s map to an id **that exists in the generated catalogue** (this is the test that catches a typo'd id at build time rather than as silence in a duel); variant selection is deterministic for a fixed `commitmentHex`; every catalogue id resolves to a bundled asset |
-| unit | manifest round-trip; `build_sound_pack.py` is idempotent (run twice, diff) |
-| widget | `SfxPlayer` fake injected into the battle screen; assert *which* ids fire in *what order* over a scripted reveal — this is how the mapping gets regression-protected without playing audio in CI |
-| widget | credits screen renders the sound licence rows (mirrors `credits_screen_test.dart`) |
-| manual | **B-4 listen-through of all 75 processed files** |
-| manual | `flutter run -d linux` — full duel, judge the mix by ear |
-| **manual, gating** | **two-device Android duel.** Per CLAUDE.md's verification hierarchy, audio is device-facing: pool exhaustion, decode latency, background-stop, and the sorcerer interlock only show up on hardware |
-
-CI stays silent — no audio device on the runner, and the fake-player widget tests are the
-actual coverage.
+- Unit: Ogg header parser against golden fixtures — **and negative fixtures**, which is
+  where the real coverage is: truncated file, `RIFF` bytes with an `.ogg` name (Finding 1
+  is the natural attack), Ogg container with a non-Vorbis codec, 9 s duration, 8-channel
+  header, granule position implying a negative duration.
+- Unit: `spell_sound_resolver` across all three sources plus the D-6 default.
+- Unit: `SpellAsset` / `SightingAsset` round-trip with and without sound fields; a
+  pre-sound JSON file must parse.
+- Unit: sync bundle caps, and a built-in-source item asserting **no bytes on the wire**.
+- Widget: battle reveal plays for a normal cast, fizzles for a full counter, stops on
+  sequence end — with the player faked, no real audio in the suite.
+- Pipeline: B-5's mean-volume-spread check, run as part of the build script.
+- **Real-device:** one Linux desktop pass (E-5) and one two-device LAN pass syncing an
+  imported sound. Per CLAUDE.md's verification hierarchy, this feature is not done without
+  the two-device pass — it is a networking *and* an audio path, both device-facing.
 
 ## 10. Commit sequence
 
-Small and legible, per CLAUDE.md:
-
-1. `docs: spell sound pack plan` — this file.
-2. `assets: move raw spell sounds to audio_src` — A-3, pure `git mv`.
-3. `assets: build sound pack (47 MB → 1.4 MB, mono ogg)` — B-1…B-5 + generated catalogue +
-   ATTRIBUTION.md + pubspec.
-4. `audio: sfx player service` — Phase D, no call sites yet.
-5. `audio: spell sound mapping` — C-2/C-3/C-4 + unit tests.
-6. `battle: wire spell sounds into the reveal sequence` — Phase E.
-7. `ui: sfx volume + mute setting` — D-6.
-8. `ui: credits row for the sound pack` — A-5.
-9. *(later)* Phase F.
-
-Commits 4–6 are separately revertable, which matters: if the mix is wrong on hardware,
-reverting 6 restores a silent-but-working game without touching the pipeline.
+1. Phase A (licensing, attribution, gitignore) — lands alone, reviewable in isolation.
+2. Phase B (pipeline + generated pack).
+3. Phase C (data model, store, resolver) + its tests.
+4. Phase D (import validation) + negative fixtures.
+5. Phase E (playback + settings).
+6. Phase F (sync + the D-5 art fix).
 
 ## 11. Explicitly out of scope
 
-- Background music, ambient beds, menu/UI click sounds.
-- Positional/spatial audio, reverb, or any runtime DSP.
-- Sound on the wire (D-4) — including opponent-advertised sound ids.
-- Accepting audio bytes from a peer, under any circumstance.
-- Recording or shipping original Runewright sounds.
-- Sound in Commune/Trade, Sightings, or the Master/Apprentice loan flows.
-- Anything behind a `[DECISION — needs Soren]` flag in the design doc.
+Music, ambient beds, UI click sounds, per-element sound layering, positional or
+spatialized audio, recording sounds in-app, and anything that mixes two clips into one
+file — the last of these because it would make *us* the author of Adapted Material at
+runtime, which is a licensing question this plan has not answered.

@@ -36,6 +36,7 @@ import 'sighting_asset.dart';
 import 'spell_art_store.dart';
 import 'spell_asset.dart';
 import 'spell_permission.dart';
+import 'spell_sound_store.dart';
 
 const String _kMagic = 'RUNEWRIGHT_LIBRARY_BACKUP';
 const int _kVersion = 1;
@@ -106,15 +107,33 @@ Future<String> exportLibraryBackup() async {
     if (blob != null) sightingArt[sighting.id] = blob;
   }
 
+  final spellSound = <String, dynamic>{};
+  for (final spell in spells) {
+    // Built-in pack sound ships in the asset bundle already (spell_sound_pack.dart)
+    // -- nothing to copy out of SpellSoundStore for it. Mirrors spellArt above.
+    if (spell.soundHash == null || spell.soundSource == SpellSoundSource.builtIn) continue;
+    final bytes = await SpellSoundStore.load(spell.spellHashHex);
+    if (bytes != null) spellSound[spell.spellHashHex] = base64Encode(bytes);
+  }
+
+  final sightingSound = <String, dynamic>{};
+  for (final sighting in sightings) {
+    if (sighting.soundHash == null || sighting.soundSource == SpellSoundSource.builtIn) continue;
+    final bytes = await SpellSoundStore.load(sighting.id);
+    if (bytes != null) sightingSound[sighting.id] = base64Encode(bytes);
+  }
+
   final doc = {
     'magic': _kMagic,
     'version': _kVersion,
     'exportedAt': DateTime.now().toUtc().toIso8601String(),
     'spells': spells.map((s) => s.toJson()).toList(),
     'spellArt': spellArt,
+    'spellSound': spellSound,
     'chapters': chapters.map((c) => c.toJson()).toList(),
     'sightings': sightings.map((s) => s.toJson()).toList(),
     'sightingArt': sightingArt,
+    'sightingSound': sightingSound,
     'permissions': permissions.map((p) => p.toJson()).toList(),
     'recipes': recipes.toList(),
   };
@@ -150,6 +169,7 @@ Future<LibraryImportSummary> importLibraryBackup(String jsonText) async {
   final spellResult = await _importSpells(
     (doc['spells'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>(),
     (doc['spellArt'] as Map<String, dynamic>? ?? {}).cast<String, dynamic>(),
+    (doc['spellSound'] as Map<String, dynamic>? ?? {}).cast<String, dynamic>(),
   );
   final chapterResult = await _importChapters(
     (doc['chapters'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>(),
@@ -158,6 +178,7 @@ Future<LibraryImportSummary> importLibraryBackup(String jsonText) async {
   final sightingResult = await _importSightings(
     (doc['sightings'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>(),
     (doc['sightingArt'] as Map<String, dynamic>? ?? {}).cast<String, dynamic>(),
+    (doc['sightingSound'] as Map<String, dynamic>? ?? {}).cast<String, dynamic>(),
   );
   final permissionResult = await _importPermissions(
     (doc['permissions'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>(),
@@ -197,6 +218,7 @@ class _SpellImportResult {
 Future<_SpellImportResult> _importSpells(
   List<Map<String, dynamic>> spellJsons,
   Map<String, dynamic> spellArtJson,
+  Map<String, dynamic> spellSoundJson,
 ) async {
   final existingBySpellHash = {for (final s in await SpellAsset.loadAll()) s.spellHashHex: s};
   final idRemap = <String, String>{};
@@ -231,6 +253,11 @@ Future<_SpellImportResult> _importSpells(
         full: base64Decode(art['full'] as String),
         thumb: base64Decode(art['thumb'] as String),
       );
+    }
+
+    final soundBase64 = spellSoundJson[spellHashHex] as String?;
+    if (soundBase64 != null && await SpellSoundStore.load(spellHashHex) == null) {
+      await SpellSoundStore.save(spellHashHex, base64Decode(soundBase64));
     }
   }
   return _SpellImportResult(added, skipped, idRemap);
@@ -274,6 +301,7 @@ Future<_ImportCounts> _importChapters(
 Future<_ImportCounts> _importSightings(
   List<Map<String, dynamic>> sightingJsons,
   Map<String, dynamic> sightingArtJson,
+  Map<String, dynamic> sightingSoundJson,
 ) async {
   final existingIds = (await SightingAsset.loadAll()).map((s) => s.id).toSet();
   var added = 0, skipped = 0;
@@ -295,6 +323,11 @@ Future<_ImportCounts> _importSightings(
         full: base64Decode(art['full'] as String),
         thumb: base64Decode(art['thumb'] as String),
       );
+    }
+
+    final soundBase64 = sightingSoundJson[sighting.id] as String?;
+    if (soundBase64 != null && await SpellSoundStore.load(sighting.id) == null) {
+      await SpellSoundStore.save(sighting.id, base64Decode(soundBase64));
     }
   }
   return _ImportCounts(added, skipped);

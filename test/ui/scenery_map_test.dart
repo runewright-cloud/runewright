@@ -189,17 +189,18 @@ void main() {
         reason: 'desert sand cannot border a bog',
       );
       expect(
-        sceneryAdjacencyIsLegal(SceneryTile.chalk, SceneryTile.mossSoil),
-        isFalse,
-        reason: 'a bare crest cannot border a bog',
-      );
-      expect(
         sceneryAdjacencyIsLegal(SceneryTile.redClay, SceneryTile.forest),
         isFalse,
         reason: 'arid clay cannot border pinewood',
       );
       // The removed tiles are not in the ladder at all, so nothing can legally
       // border them — a cheap tripwire if one is ever re-added by accident.
+      // Chalk joined them on 2026-08-07, when it was reserved for raised walls.
+      expect(
+        sceneryAdjacencyIsLegal(SceneryTile.chalk, SceneryTile.sand),
+        isFalse,
+        reason: 'chalk is wall terrain now, not ground',
+      );
       expect(
         sceneryAdjacencyIsLegal(SceneryTile.chalk, SceneryTile.snow),
         isFalse,
@@ -215,13 +216,13 @@ void main() {
         isTrue,
       );
       expect(
-        sceneryAdjacencyIsLegal(SceneryTile.chalk, SceneryTile.sand),
+        sceneryAdjacencyIsLegal(SceneryTile.sand, SceneryTile.dryGrass),
         isTrue,
       );
       expect(
-        sceneryAdjacencyIsLegal(SceneryTile.chalk, SceneryTile.forest),
+        sceneryAdjacencyIsLegal(SceneryTile.dryGrass, SceneryTile.forest),
         isTrue,
-        reason: 'the treeline: crag thinning into pinewood',
+        reason: 'the treeline: dry grass thinning into pinewood',
       );
       expect(
         sceneryAdjacencyIsLegal(SceneryTile.sand, SceneryTile.sand),
@@ -299,12 +300,20 @@ void main() {
     /// Terrains each region should produce at least some of. A region whose
     /// weights stop reaching its characteristic terrain has silently become a
     /// duplicate of another.
+    ///
+    /// NOTE (2026-08-07): the two ex-rock regions lost their old signature when
+    /// chalk moved to the raised walls. Pine Crest (was Stonecrest) now shares
+    /// `forest` with Pinewood, and Dry Downs (was Chalk Hills) shares
+    /// `dryGrass` with Ashen Steppe — so this test no longer proves those four
+    /// are visually distinct, only that each still reaches its terrain. They
+    /// are separated in practice by elevation band and ruin/burn density, which
+    /// this test cannot see. Worth a design pass.
     const signatures = {
-      SceneryRegion.stonecrest: {SceneryTile.chalk},
+      SceneryRegion.pineCrest: {SceneryTile.forest},
       SceneryRegion.sunscorchedFlats: {SceneryTile.sand, SceneryTile.dryGrass},
       SceneryRegion.pinewood: {SceneryTile.forest},
       SceneryRegion.bogHollow: {SceneryTile.mossSoil},
-      SceneryRegion.chalkHills: {SceneryTile.chalk},
+      SceneryRegion.dryDowns: {SceneryTile.dryGrass},
       SceneryRegion.verdantDowns: {SceneryTile.grass},
       SceneryRegion.ashenSteppe: {SceneryTile.dryGrass},
     };

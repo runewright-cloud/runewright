@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rune_duel/spells/spell_art_pack.dart';
+import 'package:rune_duel/spells/spell_sound_pack.dart';
 import 'package:rune_duel/ui/about_screen.dart';
 import 'package:rune_duel/ui/credits_screen.dart';
 import 'package:rune_duel/ui/settings_screen.dart';
@@ -34,6 +35,16 @@ void main() {
     expect(find.textContaining('J. W. Bjerk'), findsWidgets);
     expect(find.textContaining(kPainterlyLicence.modifications), findsOneWidget);
     for (final url in kPainterlyLicence.sourceUrls) {
+      expect(find.text(url), findsOneWidget);
+    }
+  });
+
+  testWidgets('renders the sound pack attribution', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: CreditsScreen()));
+
+    expect(find.textContaining('p0ss'), findsWidgets);
+    expect(find.textContaining(kSpellSoundLicence.modifications), findsOneWidget);
+    for (final url in kSpellSoundLicence.sourceUrls) {
       expect(find.text(url), findsOneWidget);
     }
   });

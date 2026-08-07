@@ -54,9 +54,9 @@ import 'scenery_tile.dart';
 /// *somewhere*.
 ///
 /// The lowland presets deliberately carry **zero weight in the top elevation
-/// band** and very little in the one below: downs and bogs have no crags, and
-/// bare chalk is bright enough that stray patches of it in a meadow read as a
-/// mistake. Regions that should look rocky say so explicitly.
+/// band** and very little in the one below: downs and bogs have no highland
+/// pinewood, and a stray stand of crest forest in a meadow reads as a mistake.
+/// Regions that should climb say so explicitly.
 enum SceneryRegion {
   verdantDowns(
     'Verdant Downs',
@@ -86,18 +86,25 @@ enum SceneryRegion {
     ruinClusters: 2,
     burnClusters: 3,
   ),
-  // Dry chalk downs: bare rock among sand and dry grass.
-  chalkHills(
-    'Chalk Hills',
+  // Dry upland: sand and dry grass on the heights, heavily ruined.
+  //
+  // Was 'Chalk Hills' until 2026-08-07, when chalk left the walkable palette
+  // for the raised walls. Its weights are unchanged — what it produces on the
+  // dry side is the same as it always was; only the bare crag it used to reach
+  // above the treeline is gone. Its ruin density is now what distinguishes it
+  // from Sunscorched Flats, which sits lower and drier.
+  dryDowns(
+    'Dry Downs',
     elevationWeights: [0.12, 0.26, 0.34, 0.24, 0.04],
     moistureWeights: [0.24, 0.32, 0.26, 0.14, 0.04],
     ruinClusters: 3,
     burnClusters: 1,
   ),
-  // The high preset. Damper than Chalk Hills, so its crags stand out of
-  // pinewood rather than out of sand — otherwise the two read as one region.
-  stonecrest(
-    'Stonecrest',
+  // The high preset, and the only one weighted into the crest band at all.
+  // Damper than Dry Downs, so it tops out in dense pinewood; with no ruins and
+  // no burn scars it is the one region that reads as untouched.
+  pineCrest(
+    'Pine Crest',
     elevationWeights: [0.04, 0.14, 0.28, 0.34, 0.20],
     moistureWeights: [0.08, 0.18, 0.28, 0.28, 0.18],
     ruinClusters: 1,
@@ -147,10 +154,14 @@ const int _kBands = 5;
 /// is a transition that reads naturally on the ground: bare crag meets sand,
 /// scrub meets forest, forest thins to rock at the treeline, clay meets sand.
 ///
-/// Lava, open water, snow, rime and ice are deliberately absent — see
-/// [SceneryTile.walkable] for why. With the alpine tier gone the elevation axis
-/// tops out at bare [SceneryTile.chalk] crag, and the top row is uniformly
-/// chalk: above the treeline there is only rock, whatever the moisture.
+/// Lava, open water, snow, rime, ice and chalk are deliberately absent — see
+/// [SceneryTile.walkable] for why. With both the alpine tier and (as of
+/// 2026-08-07) bare rock gone, the elevation axis tops out at a **pine
+/// treeline**: the climb ends in dense pinewood rather than crag, and the arid
+/// column stays sand all the way up, since the one place nothing grows is the
+/// dry side. The single abrupt neighbour that leaves — crest pine against
+/// highland sand, on the diagonal — replaces the equally abrupt chalk-meets-sand
+/// it used to have there, so the ladder is no rougher than before.
 ///
 /// Kept hand-aligned (`dart format off`) because the grid layout *is* the
 /// documentation: reading down a column shows a climb, reading across a row
@@ -159,7 +170,6 @@ const int _kBands = 5;
 const _clay = SceneryTile.redClay;
 const _dirt = SceneryTile.dirt;
 const _mire = SceneryTile.mossSoil;
-const _chlk = SceneryTile.chalk;
 const _sand = SceneryTile.sand;
 const _dry = SceneryTile.dryGrass;
 const _scrb = SceneryTile.patchGrass;
@@ -172,8 +182,8 @@ const List<List<SceneryTile>> _kLadder = [
   [   _clay,  _dirt,  _scrb,    _gras,  _mire ],  // lowland
   [   _sand,  _dry,   _gras,    _gras,  _pine ],  // plains
   [   _sand,  _dry,   _scrb,    _pine,  _pine ],  // hills
-  [   _sand,  _chlk,  _chlk,    _pine,  _pine ],  // highland
-  [   _chlk,  _chlk,  _chlk,    _chlk,  _chlk ],  // crest
+  [   _sand,  _dry,   _pine,    _pine,  _pine ],  // highland
+  [   _sand,  _pine,  _pine,    _pine,  _pine ],  // crest
 ];
 // dart format on
 
@@ -211,7 +221,6 @@ const _kRuins = _Feature(
     SceneryTile.grass,
     SceneryTile.dryGrass,
     SceneryTile.sand,
-    SceneryTile.chalk,
   },
   avoidNeighbours: {SceneryTile.mossSoil},
   minSize: 3,

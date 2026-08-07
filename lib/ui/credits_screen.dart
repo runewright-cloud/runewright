@@ -14,6 +14,7 @@
 import 'package:flutter/material.dart';
 
 import '../spells/spell_art_pack.dart';
+import '../spells/spell_sound_pack.dart';
 import 'manuscript_theme.dart';
 
 class CreditsScreen extends StatelessWidget {
@@ -50,6 +51,15 @@ class CreditsScreen extends StatelessWidget {
               ],
             ),
             _PackLicenceDetail(licence: kPainterlyLicence),
+            const SizedBox(height: 28),
+            const _CreditSection(
+              title: 'Spell Sounds Starter Pack',
+              body: [
+                _CreditRow(label: 'Author', value: 'p0ss'),
+                _CreditRow(label: 'Source', value: 'opengameart.org'),
+              ],
+            ),
+            _SoundPackLicenceDetail(licence: kSpellSoundLicence),
             const SizedBox(height: 28),
             // CC BY 3.0 *requires* attribution — unlike the CC0 battle-scenery
             // terrain, which is credited nowhere because it needs no credit.
@@ -154,6 +164,38 @@ class _PackLicenceDetail extends StatelessWidget {
   const _PackLicenceDetail({required this.licence});
 
   final SpellArtPackLicence licence;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _CreditRow(label: 'Licence', value: licence.licence),
+          _CreditRow(label: 'Attribution', value: licence.attribution),
+          _CreditRow(label: 'Modifications', value: licence.modifications),
+          const SizedBox(height: 6),
+          Text('Sources:', style: manuscriptCaptionStyle()),
+          for (final url in licence.sourceUrls)
+            Padding(
+              padding: const EdgeInsets.only(left: 8, top: 2),
+              child: Text(url, style: manuscriptCaptionStyle()),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The sound pack's licence, attribution, and modification statement, read
+/// entirely from [kSpellSoundLicence] -- mirrors [_PackLicenceDetail]. See
+/// docs/SPELL_SOUND_PACK_PLAN.md §2 D-1 for why this pack states an
+/// "Adapted" modification note rather than the art pack's "re-encoded" one.
+class _SoundPackLicenceDetail extends StatelessWidget {
+  const _SoundPackLicenceDetail({required this.licence});
+
+  final SpellSoundPackLicence licence;
 
   @override
   Widget build(BuildContext context) {

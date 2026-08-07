@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // sync_art_screen.dart — Commune/Sync Art: pair with a nearby wizard over
-// LAN and reconcile custom spell art across each side's Sightings library.
+// LAN and reconcile custom spell art AND sound across each side's Sightings
+// library (docs/SPELL_SOUND_PACK_PLAN.md F-4 renamed the user-facing label
+// to "Sync Art & Sound" -- the message-type names and enum identifiers below
+// stay as SyncArt*/SpellArtSource, same discipline as the Rod of Wind
+// rename, since SpellArtSource values are persisted by name on-device).
 //
 // State machine mirrors trade_screen.dart's host/join/connect shape, trimmed:
 // unlike Trade, Sync Art grants nothing and moves no ownership, so there is
@@ -170,7 +174,7 @@ class _SyncArtScreenState extends State<SyncArtScreen> {
         backgroundColor: kInkColor,
         foregroundColor: kParchmentColor,
         elevation: 0,
-        title: Text('SYNC ART', style: manuscriptHeaderStyle(fontSize: 20, color: kParchmentColor)),
+        title: Text('SYNC ART & SOUND', style: manuscriptHeaderStyle(fontSize: 20, color: kParchmentColor)),
       ),
       body: SafeArea(
         child: Padding(
@@ -218,8 +222,8 @@ class _IdleSection extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Text(
-          'Reconcile custom spell art with a fellow wizard whose spells you\'ve '
-          'faced in a duel — and yours with them.',
+          'Reconcile custom spell art and sound with a fellow wizard whose spells '
+          'you\'ve faced in a duel — and yours with them.',
           style: manuscriptCaptionStyle(),
           textAlign: TextAlign.center,
         ),
@@ -377,7 +381,7 @@ class _ResultSection extends StatelessWidget {
               const SizedBox(height: 6),
               if (result.sent.isEmpty)
                 Text('Nothing to send — the other wizard already had it all, or hasn\'t sighted '
-                        'any spells of yours with custom art.',
+                        'any spells of yours with custom art or sound.',
                     style: manuscriptBodyStyle(fontSize: 14, color: kInkMutedColor))
               else
                 ...result.sent.map((r) => _ResultLine(item: r)),
@@ -385,7 +389,8 @@ class _ResultSection extends StatelessWidget {
               Text('Received', style: manuscriptCaptionStyle(color: kIlluminationGold)),
               const SizedBox(height: 6),
               if (result.received.isEmpty)
-                Text('Nothing new — you\'re already caught up, or they have no custom art yet.',
+                Text('Nothing new — you\'re already caught up, or they have no custom art or '
+                        'sound yet.',
                     style: manuscriptBodyStyle(fontSize: 14, color: kInkMutedColor))
               else
                 ...result.received.map((r) => _ResultLine(item: r)),

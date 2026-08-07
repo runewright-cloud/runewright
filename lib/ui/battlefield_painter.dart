@@ -22,6 +22,7 @@ import '../battle/models/minion.dart';
 import '../battle/models/terrain.dart';
 import '../engine/hex_grid.dart';
 import 'avatars/avatar_sprites.dart';
+import 'scenery/scenery_tile.dart';
 
 // ── Pixel ↔ hex coordinate conversion (flat-top axial) ───────────────────────
 
@@ -487,6 +488,21 @@ class ResolutionBaseline {
 
 // ── Painter ───────────────────────────────────────────────────────────────────
 
+/// An entity a raised wall may stand in front of: where it was drawn, and the
+/// hex its depth is judged by. Collected during the token passes and consumed
+/// by [BattlefieldPainter._drawWallOcclusion].
+///
+/// For a walking entity this is the occupancy hex rather than the interpolated
+/// position, so a wizard mid-stride doesn't flicker between occluded and clear
+/// as they cross a row boundary — they resolve behind or in front of a wall
+/// once, for the whole step.
+class _WallOccludable {
+  const _WallOccludable(this.hex, this.bounds);
+
+  final HexCoord hex;
+  final Rect bounds;
+}
+
 class BattlefieldPainter extends CustomPainter {
   BattlefieldPainter({
     required this.radius,
@@ -529,6 +545,7 @@ class BattlefieldPainter extends CustomPainter {
     this.attackAnimation,
     this.avatarAtlas,
     this.avatarAssignment = const AvatarAssignment(),
+    this.sceneryAtlas,
   }) : super(
          repaint: Listenable.merge([
            pulseAnimation,
@@ -592,6 +609,17 @@ class BattlefieldPainter extends CustomPainter {
   /// Which sprite each wizard wears. See AvatarAssignment — today a pure
   /// function of playerId, later the player's own pick.
   final AvatarAssignment avatarAssignment;
+
+  /// The decoded scenery terrain atlas (the same image SceneryBackdropPainter
+  /// draws the ground from), used ONLY to build raised walls — see
+  /// [_drawRaisedWall]. Null while it loads, or if it failed, in which case
+  /// impassable tiles fall back to the flat crosshatch they had before.
+  ///
+  /// This is the one place the battlefield reaches into scenery art. Scenery
+  /// stays ignorant of the battle in return: nothing about gameplay is passed
+  /// *down* into SceneryBackdropPainter, so its "purely cosmetic" contract
+  /// (scenery_tile.dart) still holds in the direction that matters.
+  final ui.Image? sceneryAtlas;
 
   /// Hex to highlight as a spell target (golden ring).
   final HexCoord? highlightHex;
@@ -850,7 +878,15 @@ class BattlefieldPainter extends CustomPainter {
     // Pass 1.5 — permanent terrain effects (over tiles, under highlights).
     // Held-back terrain (not yet revealed by its spell's card) is skipped;
     // terrain currently blooming in scales up out of the cast tile.
-    for (final entry in tileEffects.entries) {
+    //
+    // Drawn back-to-front rather than in map order. Flat effects never overlap,
+    // so insertion order was fine for them — but a raised wall stands into the
+    // tile behind it, and two adjacent walls drawn in the wrong order give the
+    // farther one's body priority over the nearer one's. Same sort key the
+    // scenery backdrop uses (see _depthKey).
+    final orderedEffects = tileEffects.entries.toList()
+      ..sort((a, b) => _depthKey(a.key).compareTo(_depthKey(b.key)));
+    for (final entry in orderedEffects) {
       if (_tileHeldBack(entry.key)) continue;
       _bloomWrap(
         canvas,
@@ -918,6 +954,10 @@ class BattlefieldPainter extends CustomPainter {
     // A creature mid-walk is drawn at its interpolated position; the rest of
     // its footprint rides along at the same offset, so a Big creature moves
     // as one body rather than shedding its outlying tiles.
+    // Entities a raised wall may need to re-occlude, gathered as they're drawn
+    // so the bounds here can never drift from the bounds actually painted.
+    final occludable = <_WallOccludable>[];
+
     final creatureWalks = _minionWalkStates(center);
     for (final m in minions) {
       if (!m.isAlive) continue;
@@ -928,13 +968,15 @@ class BattlefieldPainter extends CustomPainter {
       final shift = walk == null ? Offset.zero : walk.pos - anchor;
       _bloomWrap(canvas, center, () {
         for (final tile in m.occupiedTiles) {
+          final at = _hexToPixel(tile, center) + shift;
           _drawMinionToken(
             canvas,
-            _hexToPixel(tile, center) + shift,
+            at,
             m,
             friendly,
             showLabel: tile == m.position,
           );
+          occludable.add(_WallOccludable(tile, _minionBounds(at)));
         }
       }, minionId: m.id);
     }
@@ -946,14 +988,21 @@ class BattlefieldPainter extends CustomPainter {
     for (final entry in occupancy.entries) {
       final isLocal = entry.key == localPlayerId;
       final walk = walking[entry.key];
+      final at = walk?.pos ?? _hexToPixel(entry.value, center);
       _drawToken(
         canvas,
-        walk?.pos ?? _hexToPixel(entry.value, center),
+        at,
         isLocal,
         entry.key,
         facing: walk?.facing ?? AvatarFacing.down,
       );
+      occludable.add(_WallOccludable(entry.value, _wizardBounds(at)));
     }
+
+    // Pass 4.5 — raised walls take back the entities standing behind them.
+    // Must run after BOTH token passes: a wall can stand between the viewer
+    // and a wizard, a minion, or both at once.
+    _drawWallOcclusion(canvas, center, occludable);
 
     // Pass 4.2 — collision impact. Drawn after both tokens so the spark sits
     // between them at the moment they meet. Covers a melee summon's lunge too:
@@ -1367,13 +1416,17 @@ class BattlefieldPainter extends CustomPainter {
     );
     canvas.drawPath(path, Paint()..color = color.withValues(alpha: 0.48));
 
+    final raisedWall = effect is ImpassableTile && sceneryAtlas != null;
+
     canvas.save();
     canvas.clipPath(path);
     switch (effect) {
       case FloorIsLava():
         _drawLavaAccents(canvas, coord, pos);
       case ImpassableTile():
-        _drawCrosshatch(canvas, pos, color);
+        // The crosshatch is the fallback for a board with no terrain art: a
+        // raised wall says "impassable" far better, but it needs the atlas.
+        if (!raisedWall) _drawCrosshatch(canvas, pos, color);
       case SlowTile():
         _drawSludgeLines(canvas, pos, color);
       case ConveyorTile(:final direction, :final directionSet):
@@ -1389,6 +1442,11 @@ class BattlefieldPainter extends CustomPainter {
     }
     canvas.restore();
 
+    // Outside the clip: the rock stands proud of its own tile.
+    if (raisedWall) {
+      _drawRaisedWall(canvas, sceneryAtlas!, pos, _wallLayers(coord));
+    }
+
     canvas.drawPath(
       path,
       Paint()
@@ -1400,6 +1458,215 @@ class BattlefieldPainter extends CustomPainter {
     _drawTerrainBarrierArcs(canvas, coord, pos);
     _drawTerrainHpPips(canvas, coord, pos, effect, color);
   }
+
+  // ── Raised walls ──────────────────────────────────────────────────────────
+  //
+  // An ImpassableTile is drawn as rock standing proud of the ground plane,
+  // using the terrain pack's own elevation trick. The Screaming Brain Studios
+  // hex set ships the same 18-tile sheet as three Tiled tilesets differing only
+  // by a vertical offset (0 / -16 / -32 px — see the `(Layer 2)` / `(Layer 3)`
+  // .tsx files in the raw pack), because stacking a tile on itself at those
+  // offsets turns its 16px downward extrusion into a continuous cliff face.
+  // We do exactly that: N copies of SceneryTile.wallTile, each 16 atlas px
+  // above the last.
+  //
+  // Chalk is reserved for this and excluded from the walkable palette
+  // (scenery_tile.dart), so raised rock means "wall" and nothing else — a
+  // player never has to ask whether a rocky tile is scenery or an obstacle.
+
+  /// Vertical step between stacked wall layers, in atlas pixels. Matches the
+  /// pack's own `<tileoffset y="-16"/>`; any other value leaves a seam or an
+  /// overlap where the extrusion no longer lines up with the face above it.
+  static const double _kWallLayerRise = 16;
+
+  /// Layers a wall at full HP stands.
+  ///
+  /// The pack ships three tilesets, but three layers is a *shelf*, not a wall:
+  /// measured, it stands 1.30 × hexSize above its own centre, while one hex row
+  /// is sqrt(3) ≈ 1.73 × hexSize. A three-layer wall therefore cannot reach
+  /// anything standing behind it, and [_drawWallOcclusion] would never fire.
+  ///
+  /// Five layers puts the top at 0.866 + 4 × 0.2165 = 1.732 × hexSize —
+  /// *exactly* one row step. A wall stands precisely one hex-row tall, which
+  /// makes the geometry self-checking, and a wizard one row back sinks in to
+  /// roughly the boot (their feet sit 1.43 × hexSize above the wall's centre).
+  /// Stacking past the pack's three is safe because the tile is self-similar:
+  /// each layer's 16px extrusion abuts the face above it, so any number of
+  /// layers builds one seamless column.
+  static const int _kWallMaxLayers = 5;
+
+  /// Alpha the wall is redrawn at over an entity standing behind it, so the
+  /// entity reads as occluded but stays trackable. See [_drawWallOcclusion].
+  static const double _kWallShowThrough = 0.75;
+
+  /// How tall the wall at [coord] currently stands, from its remaining HP.
+  ///
+  /// Ties the crumble to the HP pips already drawn under the tile: 4/4 and 3/4
+  /// HP stand full height, 2/4 drops a layer, 1/4 is a stump. A player can read
+  /// "nearly through this wall" off the board without counting pips.
+  int _wallLayers(HexCoord coord) {
+    const maxHp = 4; // terrainMaxHpOf(ImpassableTile()) — const for cheapness
+    assert(maxHp == terrainMaxHpOf(const ImpassableTile()));
+    final hp = (terrainHp[coord] ?? maxHp).clamp(0, maxHp);
+    if (hp <= 0) return 0;
+    return (hp / maxHp * _kWallMaxLayers).ceil().clamp(1, _kWallMaxLayers);
+  }
+
+  /// Screen rect for one atlas cell whose hex *face* is centred on [pos], lifted
+  /// by [riseAtlasPx] atlas pixels.
+  ///
+  /// Reproduces SceneryBackdropPainter's atlas→screen scale exactly (sx from the
+  /// cell width, sy from the FACE height — the extrusion is overhang, not
+  /// footprint), so a wall sits squarely on the ground tile beneath it.
+  Rect _wallTileRect(Offset pos, double riseAtlasPx) {
+    final sx = 2 * hexSize / atlasCellWidth;
+    final sy = sqrt(3) * hexSize / atlasFaceHeight;
+    return Rect.fromLTWH(
+      pos.dx - atlasCellWidth / 2 * sx,
+      pos.dy - (atlasFaceHeight / 2 + riseAtlasPx) * sy,
+      atlasCellWidth * sx,
+      atlasCellHeight * sy,
+    );
+  }
+
+  /// Brightness multiplier for wall layer [i], counting from the bottom.
+  ///
+  /// Two jobs. First, chalk is the brightest tile in the atlas — drawn raw it
+  /// out-glares the tokens, which is the same complaint that got snow and rime
+  /// cut from the walkable palette (scenery_tile.dart), and it sits on ground
+  /// the scenery painter has already dimmed to 0.82. Second, only the top
+  /// layer's face and each lower layer's 16px extrusion are actually visible,
+  /// so a bottom-dark ramp bands the cliff face exactly where the real shading
+  /// would fall, and the stack reads as one solid body of rock rather than as
+  /// stacked cut-outs.
+  static double _wallLayerBrightness(int i, int layers) {
+    if (layers <= 1) return _kWallTopBrightness;
+    final t = i / (layers - 1);
+    return _kWallBaseBrightness +
+        (_kWallTopBrightness - _kWallBaseBrightness) * t;
+  }
+
+  /// Tuned against the composite in scenery_render_preview_test.dart, not in
+  /// isolation: the top face is the large visible surface, so it sets whether
+  /// a wall reads as grey stone or as a pale beige box, and the base sets how
+  /// deep the cliff looks. Ground around it sits at scenery's own 0.82.
+  static const double _kWallBaseBrightness = 0.42;
+  static const double _kWallTopBrightness = 0.70;
+
+  /// RGB-only brightness scale, leaving alpha alone so the tile's antialiased
+  /// silhouette survives.
+  static ColorFilter _wallTone(double b) => ColorFilter.matrix(<double>[
+    b, 0, 0, 0, 0, //
+    0, b, 0, 0, 0, //
+    0, 0, b, 0, 0, //
+    0, 0, 0, 1, 0, //
+  ]);
+
+  /// Draws [layers] stacked copies of the wall terrain, bottom first so each
+  /// layer's face covers the one below and only its 16px extrusion shows —
+  /// which is what reads as a cliff.
+  void _drawRaisedWall(
+    Canvas canvas,
+    ui.Image atlas,
+    Offset pos,
+    int layers, {
+    double opacity = 1,
+  }) {
+    if (layers <= 0) return;
+    const tile = SceneryTile.wallTile;
+    final src = Rect.fromLTWH(
+      tile.atlasCol * atlasCellWidth,
+      tile.atlasRow * atlasCellHeight,
+      atlasCellWidth,
+      atlasCellHeight,
+    );
+    for (var i = 0; i < layers; i++) {
+      canvas.drawImageRect(
+        atlas,
+        src,
+        _wallTileRect(pos, _kWallLayerRise * i),
+        Paint()
+          ..isAntiAlias = true
+          ..filterQuality = FilterQuality.medium
+          // drawImageRect modulates by the paint colour's alpha; RGB is unused.
+          ..color = Color.fromRGBO(0, 0, 0, opacity)
+          ..colorFilter = _wallTone(_wallLayerBrightness(i, layers)),
+      );
+    }
+  }
+
+  /// Full screen bounds of the wall at [pos] standing [layers] high — the
+  /// bottom layer's cell unioned with the top layer's.
+  Rect _wallBounds(Offset pos, int layers) => _wallTileRect(
+    pos,
+    _kWallLayerRise * (layers - 1),
+  ).expandToInclude(_wallTileRect(pos, 0));
+
+  /// Screen-depth key: larger means nearer the viewer.
+  ///
+  /// `q + 2r` is the scenery paint order's own sort key (scenery_map.dart), and
+  /// it is exactly proportional to screen y, since
+  /// `y = hexSize * (sqrt(3)/2 q + sqrt(3) r)`.
+  static int _depthKey(HexCoord c) => c.q + 2 * c.r;
+
+  /// Pass 4.5 — re-occludes entities standing behind a raised wall.
+  ///
+  /// Tokens are all drawn after all terrain, so a wall can never hide one the
+  /// honest way. Rather than depth-sort the whole painter, this redraws the
+  /// wall over just the band where it overlaps an entity that is *behind* it,
+  /// at [_kWallShowThrough] alpha: the wizard's legs sink into the rock and
+  /// ghost through it, while the head and torso — which really would clear a
+  /// wall this height — stay untouched.
+  void _drawWallOcclusion(
+    Canvas canvas,
+    Offset center,
+    List<_WallOccludable> entities,
+  ) {
+    final atlas = sceneryAtlas;
+    if (atlas == null || entities.isEmpty) return;
+    for (final entry in tileEffects.entries) {
+      if (entry.value is! ImpassableTile) continue;
+      if (_tileHeldBack(entry.key)) continue;
+      final layers = _wallLayers(entry.key);
+      if (layers <= 0) continue;
+      final wallKey = _depthKey(entry.key);
+      final pos = _hexToPixel(entry.key, center);
+      final bounds = _wallBounds(pos, layers);
+      for (final e in entities) {
+        // Level with the wall, or in front of it, means nothing to hide.
+        if (_depthKey(e.hex) >= wallKey) continue;
+        final overlap = bounds.intersect(e.bounds);
+        if (overlap.isEmpty) continue;
+        canvas.save();
+        canvas.clipRect(overlap);
+        _drawRaisedWall(
+          canvas,
+          atlas,
+          pos,
+          layers,
+          opacity: _kWallShowThrough,
+        );
+        canvas.restore();
+      }
+    }
+  }
+
+  /// Screen bounds of a wizard token drawn at [pos] — the sprite rect from
+  /// [_drawSpriteToken], or the disc's bounds when the atlas hasn't decoded.
+  Rect _wizardBounds(Offset pos) {
+    if (avatarAtlas == null) {
+      final r = hexSize * 0.36;
+      return Rect.fromCircle(center: pos, radius: r);
+    }
+    final h = hexSize * 1.65;
+    final w = h * kAvatarFrameWidth / kAvatarFrameHeight;
+    final feet = pos.dy + hexSize * 0.30;
+    return Rect.fromLTWH(pos.dx - w / 2, feet - h, w, h);
+  }
+
+  /// Screen bounds of a minion token drawn at [pos] — see [_drawMinionToken].
+  Rect _minionBounds(Offset pos) =>
+      Rect.fromCircle(center: pos, radius: hexSize * 0.24);
 
   /// HP pips along the bottom of a destructible tile: filled for HP the tile
   /// still has, hollow for HP it has lost. Terrain is destructible
@@ -2178,6 +2445,7 @@ class BattlefieldPainter extends CustomPainter {
       old.minionMoveAnimations.length != minionMoveAnimations.length ||
       old.attackAnimations.length != attackAnimations.length ||
       !identical(old.avatarAtlas, avatarAtlas) ||
+      !identical(old.sceneryAtlas, sceneryAtlas) ||
       !identical(old.avatarAssignment, avatarAssignment) ||
       !identical(old.effectBloom, effectBloom);
 

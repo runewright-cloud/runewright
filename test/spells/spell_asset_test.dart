@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rune_duel/spells/spell_art_pack.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
+import 'package:rune_duel/spells/spell_sound_pack.dart';
 
 import 'fake_path_provider.dart';
 
@@ -55,6 +56,112 @@ void main() {
     expect(restored.artHash, isNull);
     expect(restored.artSource, isNull);
     expect(restored.artUpdatedAt, isNull);
+    expect(restored.soundHash, isNull);
+    expect(restored.soundSource, isNull);
+    expect(restored.soundUpdatedAt, isNull);
+    expect(restored.soundPackId, isNull);
+  });
+
+  test('withSound() sets soundHash/soundSource and stamps soundUpdatedAt, leaving other '
+      'fields unchanged', () {
+    final original = sample();
+    final withSound =
+        original.withSound(hash: '0xf00d', source: SpellSoundSource.localImport);
+
+    expect(withSound.soundHash, equals('0xf00d'));
+    expect(withSound.soundSource, equals(SpellSoundSource.localImport));
+    expect(withSound.soundUpdatedAt, isNotNull);
+    expect(withSound.id, equals(original.id));
+    expect(withSound.spellHashHex, equals(original.spellHashHex));
+
+    final restored = SpellAsset.fromJson(withSound.toJson());
+    expect(restored.soundHash, equals('0xf00d'));
+    expect(restored.soundSource, equals(SpellSoundSource.localImport));
+    expect(restored.soundUpdatedAt, equals(withSound.soundUpdatedAt));
+  });
+
+  test('withoutSound() clears sound metadata', () {
+    final withSound =
+        sample().withSound(hash: '0xf00d', source: SpellSoundSource.localImport);
+    final cleared = withSound.withoutSound();
+
+    expect(cleared.soundHash, isNull);
+    expect(cleared.soundSource, isNull);
+    expect(cleared.soundUpdatedAt, isNull);
+
+    final restored = SpellAsset.fromJson(cleared.toJson());
+    expect(restored.soundHash, isNull);
+  });
+
+  test(
+      'withPackSound() sets soundHash/soundSource/soundPackId from the pack entry, leaving '
+      'other fields unchanged', () {
+    final original = sample();
+    final entry = kSpellSoundPack.first;
+    final withPack = original.withPackSound(packId: entry.id);
+
+    expect(withPack.soundHash, equals(entry.sha256));
+    expect(withPack.soundSource, equals(SpellSoundSource.builtIn));
+    expect(withPack.soundPackId, equals(entry.id));
+    expect(withPack.soundUpdatedAt, isNotNull);
+    expect(withPack.id, equals(original.id));
+    expect(withPack.spellHashHex, equals(original.spellHashHex));
+
+    final restored = SpellAsset.fromJson(withPack.toJson());
+    expect(restored.soundHash, equals(entry.sha256));
+    expect(restored.soundSource, equals(SpellSoundSource.builtIn));
+    expect(restored.soundPackId, equals(entry.id));
+    expect(restored.soundUpdatedAt, equals(withPack.soundUpdatedAt));
+  });
+
+  test('withPackSound() throws for an id not in kSpellSoundPack', () {
+    expect(() => sample().withPackSound(packId: 'not-a-real-id'), throwsArgumentError);
+  });
+
+  test('withSound() clears a previous soundPackId (import supersedes pack selection)', () {
+    final withPack = sample().withPackSound(packId: kSpellSoundPack.first.id);
+    final withImport =
+        withPack.withSound(hash: '0xf00d', source: SpellSoundSource.localImport);
+
+    expect(withImport.soundPackId, isNull);
+    expect(withImport.soundHash, equals('0xf00d'));
+    expect(withImport.soundSource, equals(SpellSoundSource.localImport));
+  });
+
+  test('withoutSound() clears soundPackId along with the rest of the sound metadata', () {
+    final withPack = sample().withPackSound(packId: kSpellSoundPack.first.id);
+    final cleared = withPack.withoutSound();
+
+    expect(cleared.soundHash, isNull);
+    expect(cleared.soundSource, isNull);
+    expect(cleared.soundPackId, isNull);
+  });
+
+  test('a spell JSON predating any sound field still loads, with sound fields null', () {
+    final original = sample().withArt(hash: '0xdeadbeef', source: SpellArtSource.localImport);
+    final legacyJson = original.toJson();
+
+    final restored = SpellAsset.fromJson(legacyJson);
+    expect(restored.soundHash, isNull);
+    expect(restored.soundSource, isNull);
+    expect(restored.soundPackId, isNull);
+    // Confirms art still round-trips fine on the same object -- this isn't
+    // testing sound in isolation, it's testing that adding sound fields
+    // didn't disturb the pre-existing art fields.
+    expect(restored.artHash, equals('0xdeadbeef'));
+  });
+
+  test('withArt() and withGridWithheld() carry sound metadata through unchanged', () {
+    final withSound = sample().withSound(hash: '0xf00d', source: SpellSoundSource.synced);
+
+    final afterArt = withSound.withArt(hash: '0xdeadbeef', source: SpellArtSource.localImport);
+    expect(afterArt.soundHash, equals('0xf00d'));
+    expect(afterArt.soundSource, equals(SpellSoundSource.synced));
+
+    final afterLoan = withSound.withGridWithheld();
+    expect(afterLoan.soundHash, equals('0xf00d'));
+    expect(afterLoan.soundSource, equals(SpellSoundSource.synced));
+    expect(afterLoan.gridWithheld, isTrue);
   });
 
   test('withArt() sets artHash/artSource and stamps artUpdatedAt, leaving other fields unchanged',

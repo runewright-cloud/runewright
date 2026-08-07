@@ -58,7 +58,7 @@ class CommuneScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 12),
                   IlluminatedButton(
-                    label: 'SYNC ART',
+                    label: 'SYNC ART & SOUND',
                     onTap: () => Navigator.push(
                       context,
                       MaterialPageRoute(builder: (_) => const SyncArtScreen()),

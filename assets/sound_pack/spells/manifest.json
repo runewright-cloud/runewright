@@ -1,0 +1,763 @@
+{
+  "name": "Spell Sounds Starter Pack",
+  "author": "p0ss",
+  "sourceUrls": [
+    "https://opengameart.org/content/spell-sounds-starter-pack"
+  ],
+  "licence": "CC BY-SA 4.0",
+  "licenceUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+  "attribution": "p0ss -- https://opengameart.org/content/spell-sounds-starter-pack",
+  "modifications": "Adapted: transcoded to mono Vorbis, loudness-normalized (two-pass loudnorm, I=-16 LUFS, TP=-1.5 dBTP, LRA=11), leading silence trimmed; adaptation licensed CC BY-SA 4.0.",
+  "sounds": [
+    {
+      "id": "blessing",
+      "asset": "assets/sound_pack/spells/blessing.ogg",
+      "subject": "blessing",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 5200,
+      "sha256": "709e005b3f925706bf7ecd2e1617a6acc0a291bd4bab08662d8a99db6daf8fac",
+      "bytes": 22876
+    },
+    {
+      "id": "blessing2",
+      "asset": "assets/sound_pack/spells/blessing2.ogg",
+      "subject": "blessing",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 3415,
+      "sha256": "743ea10dd15c1a84cd2624f3c145308851448863de94cf584e82b1f8cb9e7570",
+      "bytes": 16024
+    },
+    {
+      "id": "blessing3",
+      "asset": "assets/sound_pack/spells/blessing3.ogg",
+      "subject": "blessing",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "2fb9178be18f571969687ab99d61655b401b3b7c73482a90162ece46968b1d42",
+      "bytes": 14930
+    },
+    {
+      "id": "cheer",
+      "asset": "assets/sound_pack/spells/cheer.ogg",
+      "subject": "cheer",
+      "element": "neutral",
+      "category": "ambient",
+      "durationMs": 3335,
+      "sha256": "df708daa659ccd260d4cb75a809b380c23bd5d30a6e3545e199518a90dd36cf8",
+      "bytes": 16929
+    },
+    {
+      "id": "cheer-crowd",
+      "asset": "assets/sound_pack/spells/cheer-crowd.ogg",
+      "subject": "cheer-crowd",
+      "element": "neutral",
+      "category": "ambient",
+      "durationMs": 5143,
+      "sha256": "8968738a373dd35f5ed9d75a7fd5530cbce4ea3a710790412b9c62faab0136a9",
+      "bytes": 30701
+    },
+    {
+      "id": "confusion",
+      "asset": "assets/sound_pack/spells/confusion.ogg",
+      "subject": "confusion",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "1673251e33cc129481cb848aaddd8e58e1465f54b1c926534dad687b27dc9077",
+      "bytes": 6722
+    },
+    {
+      "id": "curse",
+      "asset": "assets/sound_pack/spells/curse.ogg",
+      "subject": "curse",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 3424,
+      "sha256": "b5983b8d02e1c0a04974f1c286862db6519dfa0ca217f630616eef3faa543675",
+      "bytes": 16478
+    },
+    {
+      "id": "curse2",
+      "asset": "assets/sound_pack/spells/curse2.ogg",
+      "subject": "curse",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 5200,
+      "sha256": "8781faed328bfbf7f9657c6655d038a25afe3618b909851fb68c0c9925cf3aee",
+      "bytes": 23758
+    },
+    {
+      "id": "curse3",
+      "asset": "assets/sound_pack/spells/curse3.ogg",
+      "subject": "curse",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "daef4dd36d2a06cef2e057346726395d4d3a8f98375ca529eee40e2028534583",
+      "bytes": 4471
+    },
+    {
+      "id": "curse4",
+      "asset": "assets/sound_pack/spells/curse4.ogg",
+      "subject": "curse",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 3425,
+      "sha256": "3e6cf25544009efcf9ef6386534729d1092501274411cc3052032768ed1b187b",
+      "bytes": 11149
+    },
+    {
+      "id": "curse5",
+      "asset": "assets/sound_pack/spells/curse5.ogg",
+      "subject": "curse",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "6645b96d3a1725bcfb4f008773a14c43a06450e6f832cfcd4bb42e3c6cdbcd1d",
+      "bytes": 16263
+    },
+    {
+      "id": "disenchant",
+      "asset": "assets/sound_pack/spells/disenchant.ogg",
+      "subject": "disenchant",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 6774,
+      "sha256": "f41749aca66df68ac29b7028fd0bfd1efbfeb7c1d16b7511562a9d60e855bde4",
+      "bytes": 30111
+    },
+    {
+      "id": "enchant",
+      "asset": "assets/sound_pack/spells/enchant.ogg",
+      "subject": "enchant",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "882fa2e8bcd402466da8e9f3b27bf5df51bf29b295cb4f399d5f820cc26472b3",
+      "bytes": 10781
+    },
+    {
+      "id": "enchant2",
+      "asset": "assets/sound_pack/spells/enchant2.ogg",
+      "subject": "enchant",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 3425,
+      "sha256": "548783cba499984b14f126d4b388e7248b77225e4d43531e26c325c1d047e806",
+      "bytes": 10371
+    },
+    {
+      "id": "entrance",
+      "asset": "assets/sound_pack/spells/entrance.ogg",
+      "subject": "entrance",
+      "element": "neutral",
+      "category": "ambient",
+      "durationMs": 3425,
+      "sha256": "e091780504deb740fd9fdbd7c821c10d1d0e58e46d7325f52c6eeea5aa26ce31",
+      "bytes": 17609
+    },
+    {
+      "id": "explode",
+      "asset": "assets/sound_pack/spells/explode.ogg",
+      "subject": "explode",
+      "element": "fire",
+      "category": "spell",
+      "durationMs": 5200,
+      "sha256": "5432854c9f1ef701c0a1d79bc607db68321dbe77621da211d3b3b0aa5d4bacbc",
+      "bytes": 23378
+    },
+    {
+      "id": "explode1",
+      "asset": "assets/sound_pack/spells/explode1.ogg",
+      "subject": "explode",
+      "element": "fire",
+      "category": "spell",
+      "durationMs": 5200,
+      "sha256": "0b059663fd334345b1c865356cfac1efe7b1b72b7191d9e57653a5b62f2d2174",
+      "bytes": 22296
+    },
+    {
+      "id": "explode2",
+      "asset": "assets/sound_pack/spells/explode2.ogg",
+      "subject": "explode",
+      "element": "fire",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "0b64601ffb22c635b2eebbe775f69b1f8e7c77e332664b2d051b2f40f7418461",
+      "bytes": 15993
+    },
+    {
+      "id": "explode3",
+      "asset": "assets/sound_pack/spells/explode3.ogg",
+      "subject": "explode",
+      "element": "fire",
+      "category": "spell",
+      "durationMs": 5137,
+      "sha256": "565666d4ae80885926a4cedbca2b992a1047d7458141aebd027f85a46bb7be06",
+      "bytes": 28500
+    },
+    {
+      "id": "explode4",
+      "asset": "assets/sound_pack/spells/explode4.ogg",
+      "subject": "explode",
+      "element": "fire",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "5a50a13d6b2e168263898219a9a7642f74869240b2e5f1cf8a64f68c03b7edd7",
+      "bytes": 16551
+    },
+    {
+      "id": "explode5",
+      "asset": "assets/sound_pack/spells/explode5.ogg",
+      "subject": "explode",
+      "element": "fire",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "c38f0a915e0269a369f3a57ea6c87e847e63870dad4d7e54388f94d89f949ba5",
+      "bytes": 15341
+    },
+    {
+      "id": "flamethrower",
+      "asset": "assets/sound_pack/spells/flamethrower.ogg",
+      "subject": "flamethrower",
+      "element": "fire",
+      "category": "spell",
+      "durationMs": 5120,
+      "sha256": "f72206de28582dad7e5634671be2a428f9357e1ee717abb78eff466baae49a02",
+      "bytes": 21627
+    },
+    {
+      "id": "forcepulse",
+      "asset": "assets/sound_pack/spells/forcepulse.ogg",
+      "subject": "forcepulse",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "054610fac51049754a3140dd29ba2dcba432ebfc04e740da81b1c1356028fd4c",
+      "bytes": 6077
+    },
+    {
+      "id": "forcepush",
+      "asset": "assets/sound_pack/spells/forcepush.ogg",
+      "subject": "forcepush",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "6db655afc0884397a0c2de5a385124ca51e3936dabdb4d4ead1e790bc35b4f72",
+      "bytes": 25092
+    },
+    {
+      "id": "forcepush-old1",
+      "asset": "assets/sound_pack/spells/forcepush-old1.ogg",
+      "subject": "forcepush-old",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "64742fd0401e74e4c3b5e389f59e7833c836710e9e70edef8dc8d78aa9e0d368",
+      "bytes": 6655
+    },
+    {
+      "id": "freeze",
+      "asset": "assets/sound_pack/spells/freeze.ogg",
+      "subject": "freeze",
+      "element": "water",
+      "category": "spell",
+      "durationMs": 8567,
+      "sha256": "caef346fd7ba0b89c46f2b294ea0b2805d52f0e68bddd8b2a5439847cf25c5a3",
+      "bytes": 61076
+    },
+    {
+      "id": "freeze2",
+      "asset": "assets/sound_pack/spells/freeze2.ogg",
+      "subject": "freeze",
+      "element": "water",
+      "category": "spell",
+      "durationMs": 3425,
+      "sha256": "b5c8246f9e761831e228544ebb07f0d6d10c538ab7127efa166a33f631b65644",
+      "bytes": 13556
+    },
+    {
+      "id": "heal",
+      "asset": "assets/sound_pack/spells/heal.ogg",
+      "subject": "heal",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 5200,
+      "sha256": "7d675465624dd5c04f2655f54652c4eb7c61087c92cad6d643241e5f7fbaf19a",
+      "bytes": 21868
+    },
+    {
+      "id": "insect",
+      "asset": "assets/sound_pack/spells/insect.ogg",
+      "subject": "insect",
+      "element": "earth",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "8bc6671189f35b66a31d9860c8d826c453c4cc7383934132db0f6ff24ab76f21",
+      "bytes": 6703
+    },
+    {
+      "id": "interlude",
+      "asset": "assets/sound_pack/spells/interlude.ogg",
+      "subject": "interlude",
+      "element": "neutral",
+      "category": "ambient",
+      "durationMs": 5137,
+      "sha256": "8d345729e1c1c4a919173080f9910cefab3eb0de3b28ea5f109ca9fcca389374",
+      "bytes": 21438
+    },
+    {
+      "id": "interlude2",
+      "asset": "assets/sound_pack/spells/interlude2.ogg",
+      "subject": "interlude",
+      "element": "neutral",
+      "category": "ambient",
+      "durationMs": 5137,
+      "sha256": "a2c9a4d9426e4cf6033004139462f5b16bef555af0ebd9d22639cd1ac556dc97",
+      "bytes": 22259
+    },
+    {
+      "id": "interlude2a",
+      "asset": "assets/sound_pack/spells/interlude2a.ogg",
+      "subject": "interlude",
+      "element": "neutral",
+      "category": "ambient",
+      "durationMs": 5200,
+      "sha256": "415af817f7131e526c307942ac066c34956d026eb9d57418d3db1c6803b830f2",
+      "bytes": 32345
+    },
+    {
+      "id": "magicdrop",
+      "asset": "assets/sound_pack/spells/magicdrop.ogg",
+      "subject": "magicdrop",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 5200,
+      "sha256": "e99fc6cd3af1f932e03c04e6c81d2cf3cecb309a7511d0141cca4d4582d12ee8",
+      "bytes": 8855
+    },
+    {
+      "id": "magicerase",
+      "asset": "assets/sound_pack/spells/magicerase.ogg",
+      "subject": "magicerase",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 5200,
+      "sha256": "c2fb4c4406277cd2d6beb4163518577c449dc475023456b691f7c43ea2ff5a58",
+      "bytes": 16249
+    },
+    {
+      "id": "magicfail",
+      "asset": "assets/sound_pack/spells/magicfail.ogg",
+      "subject": "magicfail",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "f7d81c360e5c87e46e24f1ce9330c80ba4e11a581367dc5e9077871cdcbdd1a2",
+      "bytes": 12311
+    },
+    {
+      "id": "magicfail2",
+      "asset": "assets/sound_pack/spells/magicfail2.ogg",
+      "subject": "magicfail",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "a37efff143f68d5ab978884338e8b388edb4c3270a7f1a0a1c3b209178188556",
+      "bytes": 15089
+    },
+    {
+      "id": "magicshield",
+      "asset": "assets/sound_pack/spells/magicshield.ogg",
+      "subject": "magicshield",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 5200,
+      "sha256": "17256931cc2f33197a33485b2ae1a946eb7165e0806c83b729af9609673b5523",
+      "bytes": 8304
+    },
+    {
+      "id": "moving",
+      "asset": "assets/sound_pack/spells/moving.ogg",
+      "subject": "moving",
+      "element": "neutral",
+      "category": "ambient",
+      "durationMs": 5200,
+      "sha256": "4ecbabecc06232176455cd86fae3622864fb3842cfffe435d94f0e6d3c578bee",
+      "bytes": 35477
+    },
+    {
+      "id": "pestilence",
+      "asset": "assets/sound_pack/spells/pestilence.ogg",
+      "subject": "pestilence",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 6700,
+      "sha256": "b0dc8952bbe03e9dbee910901727374d4eaab77744b04a7e387196defc11f9ab",
+      "bytes": 34114
+    },
+    {
+      "id": "sand",
+      "asset": "assets/sound_pack/spells/sand.ogg",
+      "subject": "sand",
+      "element": "earth",
+      "category": "spell",
+      "durationMs": 3420,
+      "sha256": "b9bdd0e214e1b82162b4cd3eb159958cf21ce4bb13ab8de9985b465f4c0ae4bb",
+      "bytes": 7204
+    },
+    {
+      "id": "shot",
+      "asset": "assets/sound_pack/spells/shot.ogg",
+      "subject": "shot",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "46a5e431d98e861381964bc733d146c31667c583e8bc96e254d227588f9781f4",
+      "bytes": 7578
+    },
+    {
+      "id": "shot2",
+      "asset": "assets/sound_pack/spells/shot2.ogg",
+      "subject": "shot",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 5200,
+      "sha256": "e7605e8e397d68dd277807a6e9ac4b5a3131162fc5045e71ad76ea793c57b486",
+      "bytes": 13028
+    },
+    {
+      "id": "spell",
+      "asset": "assets/sound_pack/spells/spell.ogg",
+      "subject": "spell",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 3375,
+      "sha256": "2539c5780c05eee1cf446e251301565e6c766c19ca0478bc6e03cc72d61d5d1b",
+      "bytes": 10699
+    },
+    {
+      "id": "spring",
+      "asset": "assets/sound_pack/spells/spring.ogg",
+      "subject": "spring",
+      "element": "earth",
+      "category": "spell",
+      "durationMs": 5200,
+      "sha256": "60cf835b59fae59f5b489e8c65a0a11e5db7f25646aa94c54e37ef4ecc2c6760",
+      "bytes": 9586
+    },
+    {
+      "id": "steam",
+      "asset": "assets/sound_pack/spells/steam.ogg",
+      "subject": "steam",
+      "element": "water",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "dc407ae91309171556395364e5b94efa02a254c2737cb1c396368c8e89deb3a0",
+      "bytes": 8534
+    },
+    {
+      "id": "teleport",
+      "asset": "assets/sound_pack/spells/teleport.ogg",
+      "subject": "teleport",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "b380c5549918f5073d940d3ad8c07615a1a6f1ee6d5607fd39f3c47f0e13b970",
+      "bytes": 11392
+    },
+    {
+      "id": "transmision",
+      "asset": "assets/sound_pack/spells/transmision.ogg",
+      "subject": "transmision",
+      "element": "neutral",
+      "category": "spell",
+      "durationMs": 6900,
+      "sha256": "087d35bb7eeadb5d217c46e0b8cf06367a4cdc92bac1eca548c3abf87baef814",
+      "bytes": 37598
+    },
+    {
+      "id": "warp",
+      "asset": "assets/sound_pack/spells/warp.ogg",
+      "subject": "warp",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3426,
+      "sha256": "0a7e29e6651276f320a65ae27e5dd4fbdddbccffb7fbe4e78518b31dab570803",
+      "bytes": 13352
+    },
+    {
+      "id": "warp2",
+      "asset": "assets/sound_pack/spells/warp2.ogg",
+      "subject": "warp",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3425,
+      "sha256": "ec46347d2d060ba706fec1eb9bc9eda790810bafc8221dea86b32077dfa83baf",
+      "bytes": 14465
+    },
+    {
+      "id": "warp3",
+      "asset": "assets/sound_pack/spells/warp3.ogg",
+      "subject": "warp",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3425,
+      "sha256": "880eab83ceb208aebe05da464df1a2be18871340e9b320236224b2a1642e2a26",
+      "bytes": 8950
+    },
+    {
+      "id": "water",
+      "asset": "assets/sound_pack/spells/water.ogg",
+      "subject": "water",
+      "element": "water",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "4c880c6bb01b0f4609b067e7d54dd350cdba921ca1855db6a04e98647c8f2117",
+      "bytes": 15887
+    },
+    {
+      "id": "wind",
+      "asset": "assets/sound_pack/spells/wind.ogg",
+      "subject": "wind",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 6900,
+      "sha256": "25f0030efee8244a2f8bea41c87dad54db7b4c795056ad2df571d0aa7fe8b3c3",
+      "bytes": 43451
+    },
+    {
+      "id": "wind2",
+      "asset": "assets/sound_pack/spells/wind2.ogg",
+      "subject": "wind",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 5136,
+      "sha256": "e799123c65323a309881c176ba0c3a911551bd033b63887e8a828673014ba2cf",
+      "bytes": 29532
+    },
+    {
+      "id": "zap",
+      "asset": "assets/sound_pack/spells/zap.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "3c4f80ee2e8960e132c01df411e7bf0b0e921791f3a39cabf89dbbfa190052b2",
+      "bytes": 8566
+    },
+    {
+      "id": "zap10",
+      "asset": "assets/sound_pack/spells/zap10.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3425,
+      "sha256": "6108026d87cb44fe664dd895a6088e04a722919c6987752dad72bccfa887d491",
+      "bytes": 17064
+    },
+    {
+      "id": "zap11",
+      "asset": "assets/sound_pack/spells/zap11.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "fbd2635b883c5deb7ec7477f4cb90e8871dfc3e9f45d35eddec634b5c3a729c9",
+      "bytes": 5733
+    },
+    {
+      "id": "zap12",
+      "asset": "assets/sound_pack/spells/zap12.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "8460e9716d479f6036cf3d17efee310b78570616a82c0c79011ba49135868fe2",
+      "bytes": 6189
+    },
+    {
+      "id": "zap13",
+      "asset": "assets/sound_pack/spells/zap13.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "d2a8178e4e66a2aeedb7422f7102485a5f2995419bdd977c6db318584c55de66",
+      "bytes": 7274
+    },
+    {
+      "id": "zap14",
+      "asset": "assets/sound_pack/spells/zap14.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "62c80bed105f9e57664e45cf5be3419e9683c1763f0b45b2cb92e67ca78c09a7",
+      "bytes": 5387
+    },
+    {
+      "id": "zap15",
+      "asset": "assets/sound_pack/spells/zap15.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "f85654031a94a1730c6c34979c40bac7f1786ee7a8d2904432b0a1d303269052",
+      "bytes": 7667
+    },
+    {
+      "id": "zap16",
+      "asset": "assets/sound_pack/spells/zap16.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "bdeac6e9927a291d5801427b7346c620ff87c80fb95f544ae5e154db5c29db5a",
+      "bytes": 6738
+    },
+    {
+      "id": "zap2",
+      "asset": "assets/sound_pack/spells/zap2.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3434,
+      "sha256": "0a1d6280c2ac5005eb65818701e27f017b9f1a2df3639a58598a50af9497e924",
+      "bytes": 26596
+    },
+    {
+      "id": "zap2a",
+      "asset": "assets/sound_pack/spells/zap2a.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3435,
+      "sha256": "5051656ce2ba805b24cc3e018e0f70b31547e3d51c8b332c35bd8bf8733485da",
+      "bytes": 26474
+    },
+    {
+      "id": "zap2b",
+      "asset": "assets/sound_pack/spells/zap2b.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3435,
+      "sha256": "90b43cebb17d0c26432966c6b10f8ddcb587df4d017aed7ed03eaf614e2483e4",
+      "bytes": 26233
+    },
+    {
+      "id": "zap2c",
+      "asset": "assets/sound_pack/spells/zap2c.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3144,
+      "sha256": "52404e4a3fbf5609a0391b42a49d43a563972713ef6f8aa25cbf33c81354972d",
+      "bytes": 22595
+    },
+    {
+      "id": "zap2d",
+      "asset": "assets/sound_pack/spells/zap2d.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 2327,
+      "sha256": "5a74909a66522c823aa9002b4cb235172d58ee914f40c29390b306d19f6414f0",
+      "bytes": 16910
+    },
+    {
+      "id": "zap2e",
+      "asset": "assets/sound_pack/spells/zap2e.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 1050,
+      "sha256": "77d4df301046b57a5057dd78b70eda131e93ec5c7f78fc4553e6b2535c8e72b2",
+      "bytes": 11820
+    },
+    {
+      "id": "zap2f",
+      "asset": "assets/sound_pack/spells/zap2f.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 2347,
+      "sha256": "6ab80789c0ceefe471f8f3f3fd39e98d5af265e20be1d31911b4820f8a6e00d0",
+      "bytes": 21186
+    },
+    {
+      "id": "zap2g",
+      "asset": "assets/sound_pack/spells/zap2g.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 4100,
+      "sha256": "6a084498edb70a021669b80443395f722be928759fab50602382b3cf5f0a9bd4",
+      "bytes": 30912
+    },
+    {
+      "id": "zap4a",
+      "asset": "assets/sound_pack/spells/zap4a.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "0a1362d0d2071770022d4aa5232ffa83f546e341a33a5b486d34698486402ad4",
+      "bytes": 5084
+    },
+    {
+      "id": "zap5a",
+      "asset": "assets/sound_pack/spells/zap5a.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "ced127505435e05975d85eaa710dd835ea58d1a3c4078ac36fd35d2d6039aaa2",
+      "bytes": 9141
+    },
+    {
+      "id": "zap6a",
+      "asset": "assets/sound_pack/spells/zap6a.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3425,
+      "sha256": "3ef47cd207d7aa8af59cea89c0d9f2db8e52502e28931588fb0100d5e8f44944",
+      "bytes": 10190
+    },
+    {
+      "id": "zap7a",
+      "asset": "assets/sound_pack/spells/zap7a.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 5200,
+      "sha256": "88689645f0feba0deb16ae271a007a04b87ded596c755b2b522faacb39ff62df",
+      "bytes": 9332
+    },
+    {
+      "id": "zap8a",
+      "asset": "assets/sound_pack/spells/zap8a.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 5200,
+      "sha256": "8077874999117aedc433819efffaa0ded55532c5da07601426d68372be8e0fca",
+      "bytes": 16809
+    },
+    {
+      "id": "zap9a",
+      "asset": "assets/sound_pack/spells/zap9a.ogg",
+      "subject": "zap",
+      "element": "air",
+      "category": "spell",
+      "durationMs": 3428,
+      "sha256": "ce86644abd5d77feccf820e31b8b73d8a5dd41e220cbada19333a71905b3ca1e",
+      "bytes": 6427
+    }
+  ]
+}

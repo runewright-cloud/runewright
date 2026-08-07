@@ -17,6 +17,7 @@ import 'package:rune_duel/spells/sighting_asset.dart';
 import 'package:rune_duel/spells/spell_art_store.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
 import 'package:rune_duel/spells/spell_permission.dart';
+import 'package:rune_duel/spells/spell_sound_store.dart';
 
 import 'fake_path_provider.dart';
 
@@ -315,6 +316,29 @@ void main() {
       await importLibraryBackup(json);
       expect(await SpellArtStore.loadFull('0xh1'), Uint8List.fromList([1, 2, 3]));
       expect(await SpellArtStore.loadThumb('0xh1'), Uint8List.fromList([4, 5]));
+    });
+
+    test('carries a newly-added spell\'s custom sound across, keyed by spellHashHex', () async {
+      final withSound = spell(id: 's1', spellHashHex: '0xh1')
+          .withSound(hash: '0xsoundhash', source: SpellSoundSource.localImport);
+      await withSound.save();
+      await SpellSoundStore.save('0xh1', Uint8List.fromList([9, 8, 7]));
+      final json = await exportLibraryBackup();
+
+      tempDir = await installFakePathProvider();
+
+      await importLibraryBackup(json);
+      expect(await SpellSoundStore.load('0xh1'), Uint8List.fromList([9, 8, 7]));
+    });
+
+    test('does not export bytes for a built-in-pack-sourced sound (D-5)', () async {
+      final withPack = spell(id: 's1', spellHashHex: '0xh1')
+          .withPackSound(packId: 'zap');
+      await withPack.save();
+
+      final json = await exportLibraryBackup();
+      final doc = jsonDecode(json) as Map<String, dynamic>;
+      expect((doc['spellSound'] as Map<String, dynamic>).containsKey('0xh1'), isFalse);
     });
   });
 }

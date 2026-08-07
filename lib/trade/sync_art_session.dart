@@ -28,10 +28,24 @@ import '../identity/identity.dart';
 import '../protocol/transport.dart';
 import '../spells/sighting_asset.dart';
 import '../spells/spell_art_import.dart' show kSpellArtMaxImportBytes;
+import '../spells/spell_art_pack.dart' show SpellArtPackEntry, kPainterlyPack;
 import '../spells/spell_art_resolver.dart';
 import '../spells/spell_art_store.dart';
 import '../spells/spell_asset.dart';
+import '../spells/spell_sound_import.dart' show kSpellSoundMaxImportBytes;
+import '../spells/spell_sound_pack.dart' show SpellSoundPackEntry, kSpellSoundPack;
+import '../spells/spell_sound_resolver.dart';
+import '../spells/spell_sound_store.dart';
 import 'sync_art_wire.dart';
+
+/// F-2: total-bundle cap. Per-clip caps ([kSpellArtMaxImportBytes],
+/// [kSpellSoundMaxImportBytes]) bound a single item; this bounds the whole
+/// frame, which nothing did before (OUTSTANDING_ITEMS.md §7 added only a
+/// per-item cap, and every art item was ≤288 KB so it never mattered --
+/// adding sound to the same bundle is what makes a total cap matter now).
+/// 4 MB comfortably covers dozens of spells' worth of art+sound in one
+/// bundle while still bounding a pathological want-list.
+const int kSyncBundleMaxTotalBytes = 4 * 1024 * 1024;
 
 bool _hexEq(String a, String b) {
   BigInt parse(String s) => BigInt.parse(s.startsWith('0x') ? s.substring(2) : s, radix: 16);
@@ -152,6 +166,7 @@ class SyncArtSession {
                   'commitmentHex': s.commitmentHex,
                   't': s.t,
                   if (s.artHash != null) 'currentArtHash': s.artHash,
+                  if (s.soundHash != null) 'currentSoundHash': s.soundHash,
                 })
             .toList(),
       })),
@@ -200,63 +215,124 @@ class SyncArtSession {
         .toList();
     final sent = <SyncArtResultItem>[];
     final bundle = <Map<String, dynamic>>[];
+    var totalBytes = 0;
 
     for (final item in theirItems) {
       final commitmentHex = item['commitmentHex'] as String;
       final t = item['t'] as int?;
       final currentArtHash = item['currentArtHash'] as String?;
+      final currentSoundHash = item['currentSoundHash'] as String?;
 
-      SpellAsset? candidate;
-      for (final sp in ourOwned) {
-        if (sp.artHash == null || !_hexEq(sp.commitmentHex, commitmentHex)) continue;
-        if (t != null && sp.t == t) {
-          candidate = sp;
-          break;
+      final artCandidate = _findCandidate(ourOwned, commitmentHex, t, (sp) => sp.artHash != null);
+      final soundCandidate = _findCandidate(ourOwned, commitmentHex, t, (sp) => sp.soundHash != null);
+
+      final entry = <String, dynamic>{'commitmentHex': commitmentHex};
+      String? spellName;
+
+      if (artCandidate != null &&
+          (currentArtHash == null || !_hexEq(currentArtHash, artCandidate.artHash!))) {
+        // D-5/F-3: built-in pack art travels as an id, never as bytes --
+        // the peer's own APK already has these WebP files.
+        final Map<String, dynamic>? part;
+        if (artCandidate.artSource == SpellArtSource.builtIn && artCandidate.artPackId != null) {
+          part = {'artHash': artCandidate.artHash, 'artPackId': artCandidate.artPackId};
+        } else {
+          final full = await resolveSpellArtFull(artCandidate);
+          final thumb = await resolveSpellArtThumb(artCandidate);
+          part = (full != null && thumb != null)
+              ? {
+                  'artHash': artCandidate.artHash,
+                  'fullBase64': base64Encode(full),
+                  'thumbBase64': base64Encode(thumb),
+                }
+              : null; // artHash pointer with no blob -- shouldn't happen, skip defensively
         }
-        candidate ??= sp;
-      }
-      if (candidate == null) continue; // we have no art to offer for this spell
-      final ourArtHash = candidate.artHash!;
-      if (currentArtHash != null && _hexEq(currentArtHash, ourArtHash)) {
-        continue; // they already have our current art
-      }
-
-      final full = await resolveSpellArtFull(candidate);
-      final thumb = await resolveSpellArtThumb(candidate);
-      if (full == null || thumb == null) {
-        continue; // artHash pointer with no blob -- shouldn't happen, skip defensively
+        if (part != null && totalBytes + _claimedStringBytes(part) <= kSyncBundleMaxTotalBytes) {
+          entry.addAll(part);
+          totalBytes += _claimedStringBytes(part);
+          spellName = artCandidate.name;
+        }
       }
 
-      bundle.add({
-        'commitmentHex': commitmentHex,
-        'artHash': ourArtHash,
-        'spellName': candidate.name,
-        'fullBase64': base64Encode(full),
-        'thumbBase64': base64Encode(thumb),
-      });
-      sent.add(SyncArtResultItem(commitmentHex: commitmentHex, spellName: candidate.name, success: true));
+      if (soundCandidate != null &&
+          (currentSoundHash == null || !_hexEq(currentSoundHash, soundCandidate.soundHash!))) {
+        final Map<String, dynamic>? part;
+        if (soundCandidate.soundSource == SpellSoundSource.builtIn && soundCandidate.soundPackId != null) {
+          part = {'soundHash': soundCandidate.soundHash, 'soundPackId': soundCandidate.soundPackId};
+        } else {
+          final bytes = await resolveSpellSound(soundCandidate);
+          part = bytes != null
+              ? {'soundHash': soundCandidate.soundHash, 'soundBase64': base64Encode(bytes)}
+              : null;
+        }
+        if (part != null && totalBytes + _claimedStringBytes(part) <= kSyncBundleMaxTotalBytes) {
+          entry.addAll(part);
+          totalBytes += _claimedStringBytes(part);
+          spellName ??= soundCandidate.name;
+        }
+      }
+
+      if (spellName == null) continue; // nothing new to offer for this commitment (or cap reached)
+      entry['spellName'] = spellName;
+      bundle.add(entry);
+      sent.add(SyncArtResultItem(commitmentHex: commitmentHex, spellName: spellName, success: true));
     }
 
     _send(SyncArtMsgType.artBundle, utf8.encode(jsonEncode({'items': bundle})));
     return sent;
   }
 
-  /// Validates and saves each entry in the peer's art bundle against
+  /// Finds a natively-owned spell sharing [commitmentHex] for which [has]
+  /// holds (an art or a sound pointer), preferring an exact generation-count
+  /// match over any other same-grid variant. Shared by both halves of
+  /// [_fulfillWantlist] -- see its doc comment for why matching is by grid
+  /// commitment, not the behavioural kinship key.
+  SpellAsset? _findCandidate(
+    List<SpellAsset> owned,
+    String commitmentHex,
+    int? t,
+    bool Function(SpellAsset) has,
+  ) {
+    SpellAsset? candidate;
+    for (final sp in owned) {
+      if (!has(sp) || !_hexEq(sp.commitmentHex, commitmentHex)) continue;
+      if (t != null && sp.t == t) return sp;
+      candidate ??= sp;
+    }
+    return candidate;
+  }
+
+  /// A conservative byte-size estimate for one bundle-item's payload
+  /// contribution, used only to enforce [kSyncBundleMaxTotalBytes] (F-2) --
+  /// summing string field lengths overcounts slightly (hashes/ids are
+  /// counted too) but that only makes the cap stricter, never looser.
+  static int _claimedStringBytes(Map<String, dynamic> part) {
+    var total = 0;
+    for (final v in part.values) {
+      if (v is String) total += v.length;
+    }
+    return total;
+  }
+
+  /// Validates and saves each entry in the peer's art+sound bundle against
   /// [ourSightings] (the same list we sent our want-list from, so every
-  /// entry here should have a local match). Each entry's integrity is
-  /// checked by recomputing SHA-256 over the decoded bytes and comparing to
-  /// the claimed artHash -- same discipline spell_art_import.dart applies on
-  /// local import, now applied to network-received bytes.
+  /// entry here should have a local match). Each byte-carrying half's
+  /// integrity is checked by recomputing SHA-256 over the decoded bytes and
+  /// comparing to the claimed hash -- same discipline spell_art_import.dart
+  /// applies on local import, now applied to network-received bytes. Each
+  /// pack-id-carrying half is checked by looking the id up in this device's
+  /// own pack catalogue and confirming its sha256 matches the claimed hash --
+  /// no bytes to hash, but no bytes to trust blindly either.
   Future<List<SyncArtResultItem>> _receiveAndSaveBundle(
     SyncArtFrame theirBundleFrame,
     List<SightingAsset> ourSightings,
   ) async {
     final theirItems = _decodeItems(theirBundleFrame.payload);
     final received = <SyncArtResultItem>[];
+    var totalClaimedBytes = 0;
 
     for (final item in theirItems) {
       final commitmentHex = item['commitmentHex'] as String;
-      final artHash = item['artHash'] as String;
       final spellName = item['spellName'] as String? ?? '';
 
       SightingAsset? sighting;
@@ -276,54 +352,123 @@ class SyncArtSession {
         continue;
       }
 
-      // Size-cap BEFORE decoding, mirroring spell_art_import.dart's local
-      // import path (OUTSTANDING_ITEMS.md §7). The integrity check below is
-      // no defence here: the peer computes the hash over their own bytes, so
-      // an arbitrarily large payload passes it. Measuring the base64 string
-      // rather than the decoded bytes is the whole point — decoding first is
-      // the allocation we are trying to refuse. Base64 encodes 3 bytes as 4
-      // characters, so the encoded length bounds the decoded one at 3/4.
+      // F-2 total-bundle cap, checked BEFORE decoding anything in this item
+      // (same "measure the base64 string, don't decode first" discipline the
+      // per-item cap below already used) -- a peer who front-loads small
+      // items to sneak real ones past a per-item-only cap gets stopped here.
       final fullB64 = item['fullBase64'] as String? ?? '';
       final thumbB64 = item['thumbBase64'] as String? ?? '';
-      final claimedBytes = ((fullB64.length + thumbB64.length) * 3) ~/ 4;
-      if (claimedBytes > kSpellArtMaxImportBytes) {
+      final soundB64 = item['soundBase64'] as String? ?? '';
+      totalClaimedBytes += ((fullB64.length + thumbB64.length + soundB64.length) * 3) ~/ 4;
+      if (totalClaimedBytes > kSyncBundleMaxTotalBytes) {
         received.add(SyncArtResultItem(
           commitmentHex: commitmentHex,
           spellName: spellName,
           success: false,
-          error: 'art payload too large',
+          error: 'sync bundle exceeds the total size cap',
         ));
-        continue;
+        break; // stop processing the rest of this bundle entirely
       }
 
-      final Uint8List full;
-      final Uint8List thumb;
-      try {
-        full = base64Decode(fullB64);
-        thumb = base64Decode(thumbB64);
-      } catch (_) {
+      var updated = sighting;
+      var ok = true;
+      String? failure;
+
+      final artHash = item['artHash'] as String?;
+      if (artHash != null) {
+        final artPackId = item['artPackId'] as String?;
+        if (artPackId != null) {
+          SpellArtPackEntry? entry;
+          for (final e in kPainterlyPack) {
+            if (e.id == artPackId) {
+              entry = e;
+              break;
+            }
+          }
+          if (entry == null || !_hexEq(entry.sha256, artHash)) {
+            ok = false;
+            failure = 'unknown or mismatched art pack id';
+          } else {
+            updated = updated.withArt(hash: artHash, source: SpellArtSource.builtIn, packId: artPackId);
+          }
+        } else if (fullB64.isNotEmpty) {
+          // Per-item cap, mirroring spell_art_import.dart's local import path
+          // (OUTSTANDING_ITEMS.md §7) -- the total cap above bounds the whole
+          // frame; this bounds one item within it.
+          if (((fullB64.length + thumbB64.length) * 3) ~/ 4 > kSpellArtMaxImportBytes) {
+            ok = false;
+            failure = 'art payload too large';
+          } else {
+            try {
+              final full = base64Decode(fullB64);
+              final thumb = base64Decode(thumbB64);
+              final actualHash = await _sha256Hex(full);
+              if (!_hexEq(actualHash, artHash)) {
+                ok = false;
+                failure = 'art integrity check failed';
+              } else {
+                await SpellArtStore.save(sighting.id, full: full, thumb: thumb);
+                updated = updated.withArt(hash: artHash, source: SpellArtSource.synced);
+              }
+            } catch (_) {
+              ok = false;
+              failure = 'malformed art payload';
+            }
+          }
+        }
+      }
+
+      final soundHash = ok ? item['soundHash'] as String? : null;
+      if (ok && soundHash != null) {
+        final soundPackId = item['soundPackId'] as String?;
+        if (soundPackId != null) {
+          SpellSoundPackEntry? entry;
+          for (final e in kSpellSoundPack) {
+            if (e.id == soundPackId) {
+              entry = e;
+              break;
+            }
+          }
+          if (entry == null || !_hexEq(entry.sha256, soundHash)) {
+            ok = false;
+            failure = 'unknown or mismatched sound pack id';
+          } else {
+            updated = updated.withSound(hash: soundHash, source: SpellSoundSource.builtIn, packId: soundPackId);
+          }
+        } else if (soundB64.isNotEmpty) {
+          if ((soundB64.length * 3) ~/ 4 > kSpellSoundMaxImportBytes) {
+            ok = false;
+            failure = 'sound payload too large';
+          } else {
+            try {
+              final bytes = base64Decode(soundB64);
+              final actualHash = await _sha256Hex(bytes);
+              if (!_hexEq(actualHash, soundHash)) {
+                ok = false;
+                failure = 'sound integrity check failed';
+              } else {
+                await SpellSoundStore.save(sighting.id, bytes);
+                updated = updated.withSound(hash: soundHash, source: SpellSoundSource.synced);
+              }
+            } catch (_) {
+              ok = false;
+              failure = 'malformed sound payload';
+            }
+          }
+        }
+      }
+
+      if (!ok) {
         received.add(SyncArtResultItem(
           commitmentHex: commitmentHex,
           spellName: spellName,
           success: false,
-          error: 'malformed art payload',
+          error: failure,
         ));
         continue;
       }
 
-      final actualHash = await _sha256Hex(full);
-      if (!_hexEq(actualHash, artHash)) {
-        received.add(SyncArtResultItem(
-          commitmentHex: commitmentHex,
-          spellName: spellName,
-          success: false,
-          error: 'art integrity check failed',
-        ));
-        continue;
-      }
-
-      await SpellArtStore.save(sighting.id, full: full, thumb: thumb);
-      await sighting.withArt(hash: artHash).save();
+      await updated.save();
       received.add(SyncArtResultItem(commitmentHex: commitmentHex, spellName: spellName, success: true));
     }
 

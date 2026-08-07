@@ -29,6 +29,14 @@ migrate_working_dir/
 # derived assets/art_pack/ directory IS tracked and is not covered by this rule.
 /assets/art/
 
+# Raw third-party audio sources (unpacked OpenGameArt archive). Never vendored --
+# docs/SPELL_SOUND_PACK_PLAN.md D-2/A-2: regenerate assets/sound_pack/ from these via
+# scripts/build_sound_pack.py rather than committing 21 MB of source WAV/Ogg. These
+# were tracked in git through commit 4908565 and remain in history there -- that is
+# fine and not worth rewriting; only the tree and future clones need to stay lean.
+# The derived assets/sound_pack/ directory IS tracked and is not covered by this rule.
+/assets/audio/
+
 # Flutter/Dart/Pub related
 **/doc/api/
 **/ios/Flutter/.last_build_id

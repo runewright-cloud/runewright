@@ -16,6 +16,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'spell_art_pack.dart' show kPainterlyPack;
 import 'spell_identity.dart' show behaviouralKinKey, kKinshipMinElements;
+import 'spell_sound_pack.dart' show kSpellSoundPack;
 
 /// Where a spell's custom art (lib/spells/spell_art_store.dart) came from.
 /// P1 only ever writes [localImport]. [received]/[synced] are reserved for
@@ -25,6 +26,12 @@ import 'spell_identity.dart' show behaviouralKinKey, kKinshipMinElements;
 /// shipped art pack (lib/spells/spell_art_pack.dart) rather than an imported
 /// image -- its bytes live in the asset bundle, not [SpellArtStore].
 enum SpellArtSource { localImport, received, synced, builtIn }
+
+/// Where a spell's custom sound (lib/spells/spell_sound_store.dart) came
+/// from. Mirrors [SpellArtSource] but with no `received` value -- Sound has
+/// no P2-battle-advertised-art analogue (docs/SPELL_SOUND_PACK_PLAN.md D-5/
+/// F-1); a sound only ever arrives as a local import or a Sync Art bundle.
+enum SpellSoundSource { localImport, synced, builtIn }
 
 class SpellAsset {
   SpellAsset({
@@ -49,6 +56,10 @@ class SpellAsset {
     this.artSource,
     this.artUpdatedAt,
     this.artPackId,
+    this.soundHash,
+    this.soundSource,
+    this.soundUpdatedAt,
+    this.soundPackId,
     this.gridWithheld = false,
   });
 
@@ -167,6 +178,28 @@ class SpellAsset {
   /// so Sync Art's integrity check needs no special case for pack art.
   final String? artPackId;
 
+  /// Hex SHA-256 of the player-imported custom sound's raw bytes
+  /// (lib/spells/spell_sound_import.dart), or null if this spell has no
+  /// custom sound and resolves D-6's elemental default at cast time.
+  ///
+  /// The sound bytes themselves are NOT stored here -- same reasoning as
+  /// [artHash]/[SpellArtStore]: see lib/spells/spell_sound_store.dart.
+  final String? soundHash;
+
+  /// Where this spell's custom sound came from. Mirrors [artSource].
+  final SpellSoundSource? soundSource;
+
+  /// When [soundHash] was last set. Null iff [soundHash] is null.
+  final DateTime? soundUpdatedAt;
+
+  /// The [SpellSoundPackEntry.id] this spell's sound was set from, when
+  /// [soundSource] is [SpellSoundSource.builtIn]. Null otherwise. Mirrors
+  /// [artPackId] -- looked up in [kSpellSoundPack], never touches
+  /// [SpellSoundStore]. [soundHash] is still set (copied from the pack
+  /// manifest's sha256), so Sync Sound's integrity check needs no special
+  /// case for pack sound (docs/SPELL_SOUND_PACK_PLAN.md D-5).
+  final String? soundPackId;
+
   /// True iff [initialGrid] was deliberately redacted (stored empty) before
   /// this asset was handed to someone other than its creator -- the Trade
   /// loan case (docs/COMMUNE_TRADE_PLAN.md §2): the loanee gets proof bytes
@@ -207,6 +240,10 @@ class SpellAsset {
         if (artSource != null) 'artSource': artSource!.name,
         if (artUpdatedAt != null) 'artUpdatedAt': artUpdatedAt!.toIso8601String(),
         if (artPackId != null) 'artPackId': artPackId,
+        if (soundHash != null) 'soundHash': soundHash,
+        if (soundSource != null) 'soundSource': soundSource!.name,
+        if (soundUpdatedAt != null) 'soundUpdatedAt': soundUpdatedAt!.toIso8601String(),
+        if (soundPackId != null) 'soundPackId': soundPackId,
         if (gridWithheld) 'gridWithheld': gridWithheld,
       };
 
@@ -240,6 +277,16 @@ class SpellAsset {
             ? DateTime.parse(json['artUpdatedAt'] as String)
             : null,
         artPackId: json['artPackId'] as String?,
+        soundHash: json['soundHash'] as String?,
+        soundSource: switch (json['soundSource'] as String?) {
+          null => null,
+          final s => SpellSoundSource.values.firstWhere((v) => v.name == s,
+              orElse: () => SpellSoundSource.localImport),
+        },
+        soundUpdatedAt: json['soundUpdatedAt'] != null
+            ? DateTime.parse(json['soundUpdatedAt'] as String)
+            : null,
+        soundPackId: json['soundPackId'] as String?,
         gridWithheld: (json['gridWithheld'] as bool?) ?? false,
       );
 
@@ -277,6 +324,10 @@ class SpellAsset {
         artSource: artSource,
         artUpdatedAt: artUpdatedAt,
         artPackId: artPackId,
+        soundHash: soundHash,
+        soundSource: soundSource,
+        soundUpdatedAt: soundUpdatedAt,
+        soundPackId: soundPackId,
       );
 
   /// Returns a copy with [personality] substituted for [summonPersonality];
@@ -308,6 +359,10 @@ class SpellAsset {
         artSource: artSource,
         artUpdatedAt: artUpdatedAt,
         artPackId: artPackId,
+        soundHash: soundHash,
+        soundSource: soundSource,
+        soundUpdatedAt: soundUpdatedAt,
+        soundPackId: soundPackId,
         gridWithheld: gridWithheld,
       );
 
@@ -338,6 +393,10 @@ class SpellAsset {
         artHash: hash,
         artSource: source,
         artUpdatedAt: DateTime.now().toUtc(),
+        soundHash: soundHash,
+        soundSource: soundSource,
+        soundUpdatedAt: soundUpdatedAt,
+        soundPackId: soundPackId,
       );
 
   /// Returns a copy with this spell's art set to the built-in pack entry
@@ -373,6 +432,10 @@ class SpellAsset {
       artSource: SpellArtSource.builtIn,
       artUpdatedAt: DateTime.now().toUtc(),
       artPackId: packId,
+      soundHash: soundHash,
+      soundSource: soundSource,
+      soundUpdatedAt: soundUpdatedAt,
+      soundPackId: soundPackId,
     );
   }
 
@@ -400,6 +463,108 @@ class SpellAsset {
         supremeTags: supremeTags,
         isSummon: isSummon,
         summonPersonality: summonPersonality,
+        soundHash: soundHash,
+        soundSource: soundSource,
+        soundUpdatedAt: soundUpdatedAt,
+        soundPackId: soundPackId,
+      );
+
+  /// Returns a copy with custom-sound metadata set to [hash]/[source],
+  /// stamped with the current time. The sound bytes themselves go to
+  /// [SpellSoundStore.save] separately -- this only updates the pointer.
+  /// Deliberately does not carry [soundPackId] forward: importing a clip
+  /// supersedes any previous built-in-pack selection. Mirrors [withArt].
+  SpellAsset withSound({required String hash, required SpellSoundSource source}) => SpellAsset(
+        id: id,
+        createdAt: createdAt,
+        tier: tier,
+        t: t,
+        ownerPubkeyHex: ownerPubkeyHex,
+        manaCost: manaCost,
+        segmentCount: segmentCount,
+        dotCount: dotCount,
+        initialGrid: initialGrid,
+        proofBytes: proofBytes,
+        name: name,
+        commitmentHex: commitmentHex,
+        spellHashHex: spellHashHex,
+        formula: formula,
+        supremeTags: supremeTags,
+        isSummon: isSummon,
+        summonPersonality: summonPersonality,
+        artHash: artHash,
+        artSource: artSource,
+        artUpdatedAt: artUpdatedAt,
+        artPackId: artPackId,
+        soundHash: hash,
+        soundSource: source,
+        soundUpdatedAt: DateTime.now().toUtc(),
+      );
+
+  /// Returns a copy with this spell's sound set to the built-in pack entry
+  /// [packId] (docs/SPELL_SOUND_PACK_PLAN.md), stamped with the current
+  /// time. Mirrors [withPackArt].
+  SpellAsset withPackSound({required String packId}) {
+    final entry = kSpellSoundPack.firstWhere(
+      (e) => e.id == packId,
+      orElse: () => throw ArgumentError.value(packId, 'packId', 'not in kSpellSoundPack'),
+    );
+    return SpellAsset(
+      id: id,
+      createdAt: createdAt,
+      tier: tier,
+      t: t,
+      ownerPubkeyHex: ownerPubkeyHex,
+      manaCost: manaCost,
+      segmentCount: segmentCount,
+      dotCount: dotCount,
+      initialGrid: initialGrid,
+      proofBytes: proofBytes,
+      name: name,
+      commitmentHex: commitmentHex,
+      spellHashHex: spellHashHex,
+      formula: formula,
+      supremeTags: supremeTags,
+      isSummon: isSummon,
+      summonPersonality: summonPersonality,
+      artHash: artHash,
+      artSource: artSource,
+      artUpdatedAt: artUpdatedAt,
+      artPackId: artPackId,
+      soundHash: entry.sha256,
+      soundSource: SpellSoundSource.builtIn,
+      soundUpdatedAt: DateTime.now().toUtc(),
+      soundPackId: packId,
+    );
+  }
+
+  /// Returns a copy with custom-sound metadata cleared (including any
+  /// built-in pack selection) -- casting this spell falls back to D-6's
+  /// elemental default. Does NOT delete anything from [SpellSoundStore];
+  /// callers pair this with [SpellSoundStore.delete] when the cleared sound
+  /// was a local import. Mirrors [withoutArt].
+  SpellAsset withoutSound() => SpellAsset(
+        id: id,
+        createdAt: createdAt,
+        tier: tier,
+        t: t,
+        ownerPubkeyHex: ownerPubkeyHex,
+        manaCost: manaCost,
+        segmentCount: segmentCount,
+        dotCount: dotCount,
+        initialGrid: initialGrid,
+        proofBytes: proofBytes,
+        name: name,
+        commitmentHex: commitmentHex,
+        spellHashHex: spellHashHex,
+        formula: formula,
+        supremeTags: supremeTags,
+        isSummon: isSummon,
+        summonPersonality: summonPersonality,
+        artHash: artHash,
+        artSource: artSource,
+        artUpdatedAt: artUpdatedAt,
+        artPackId: artPackId,
       );
 
   /// Returns a copy with [initialGrid] redacted (stored empty) and
@@ -413,7 +578,9 @@ class SpellAsset {
   /// docs/SPELL_ART_PACK_PLAN.md Phase C -- this previously dropped
   /// artHash/artSource/artUpdatedAt silently, since this method predates the
   /// custom-art feature and was never updated when those fields were added;
-  /// a loaned spell with custom art lost its art on the wire).
+  /// a loaned spell with custom art lost its art on the wire). Carries sound
+  /// metadata through for the same reason, from the start
+  /// (docs/SPELL_SOUND_PACK_PLAN.md Phase C).
   SpellAsset withGridWithheld() => SpellAsset(
         id: id,
         createdAt: createdAt,
@@ -436,6 +603,10 @@ class SpellAsset {
         artSource: artSource,
         artUpdatedAt: artUpdatedAt,
         artPackId: artPackId,
+        soundHash: soundHash,
+        soundSource: soundSource,
+        soundUpdatedAt: soundUpdatedAt,
+        soundPackId: soundPackId,
         gridWithheld: true,
       );
 

@@ -47,22 +47,26 @@ enum SceneryTile {
 
   /// Tiles the backdrop is allowed to draw.
   ///
-  /// Two exclusions, both Soren's call (2026-07-28):
+  /// Three exclusions, all Soren's call:
   ///
-  /// - **Lava and open water** — the backdrop only draws ground a wizard could
-  ///   be standing on.
-  /// - **Snow, rime and ice** — they read as out of place against the rest of
-  ///   the palette, which is temperate throughout, and they are far the
-  ///   brightest tiles in the atlas so they pull the eye off the game pieces.
-  ///   With them gone the elevation axis tops out at bare [chalk] crag.
+  /// - **Lava and open water** (2026-07-28) — the backdrop only draws ground a
+  ///   wizard could be standing on.
+  /// - **Snow, rime and ice** (2026-07-28) — they read as out of place against
+  ///   the rest of the palette, which is temperate throughout, and they are far
+  ///   the brightest tiles in the atlas so they pull the eye off the game
+  ///   pieces.
+  /// - **Chalk** (2026-08-07) — reserved for [wallTile]. Raised rock now means
+  ///   "impassable wall" and nothing else; leaving chalk in the walkable
+  ///   palette would put visually identical rock on the ground plane, which is
+  ///   exactly the ambiguity the raised walls exist to remove. The elevation
+  ///   ladder tops out at a pine treeline instead — see `_kLadder`.
   ///
-  /// All six stay in the enum and in the shipped atlas: they cost nothing to
+  /// All seven stay in the enum and in the shipped atlas: they cost nothing to
   /// keep, and a future hazard or seasonal-scenery feature may want them.
   static const Set<SceneryTile> walkable = {
     redClay,
     dirt,
     mossSoil,
-    chalk,
     sand,
     dryGrass,
     charcoal,
@@ -71,6 +75,14 @@ enum SceneryTile {
     forest,
     cobble,
   };
+
+  /// The terrain an impassable wall is built from.
+  ///
+  /// Deliberately NOT in [walkable] — see the note there. This is the one place
+  /// scenery art is used for something a player can reason about, and it stays
+  /// a single named constant so the exception is auditable: everything else in
+  /// this file is decoration with no gameplay meaning whatsoever.
+  static const SceneryTile wallTile = chalk;
 
   bool get isWalkable => walkable.contains(this);
 }

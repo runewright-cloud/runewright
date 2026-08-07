@@ -437,22 +437,23 @@ class _VocabularyScreenState extends State<VocabularyScreen> {
             const SizedBox(height: 16),
           ],
           const Text(
-            'These are the words you speak to cast. Choose words you '
-            'associate with each element — words you picked are far easier to '
-            'recall mid-duel than ones you were handed.\n\n'
-            'An opponent who learns your words can read your spells as you '
-            'cast them. Changing your words costs nothing, so change them '
-            'whenever someone has your measure.',
+            'Choose which words to mentally anchor to their elemental '
+            'power, and make sure they are distinct enough that you will '
+            'not confuse them in battle. Latin words have been added by '
+            'default, but choose whatever flavor suits you best, '
+            'wizard.\n\n'
+            'Experienced wizards may learn to infer what spells you are '
+            'casting by the words you say. You can change them any time '
+            'to throw them off, but you will have to retrain yourself as '
+            'well.',
           ),
           const SizedBox(height: 12),
           Text(
-            'Attune each word about '
-            '${VocalEnrollment.suggestedTakes} times, and roughly the same '
-            'number for every word — a word you have attuned far more than '
-            'its neighbours starts winning ties it should lose. There is no '
-            'upper limit: keep going as long as you like, and your oldest '
-            'attunement quietly retires to make room, so what you are scored '
-            'against is always how you speak now.',
+            'Preferably attune each word at least '
+            '${VocalEnrollment.suggestedTakes} times. More is better, so '
+            'long as each word has the same number of attunements. An '
+            'indicator below will provide feedback on how distinct your '
+            'words are — use it or ignore it at your own discretion.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 20),

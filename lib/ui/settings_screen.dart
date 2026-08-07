@@ -24,6 +24,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
+import '../audio/spell_sound_settings.dart';
 import '../battle/models/wild_magic_effect.dart'
     show kDefaultCommunitySeed, normalizeCommunitySeed;
 import '../identity/identity.dart';
@@ -59,6 +60,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _exportingLibrary = false;
   bool _importingLibrary = false;
 
+  /// The battle spell-sound volume/mute (docs/SPELL_SOUND_PACK_PLAN.md E-4).
+  /// This screen's slider is the durable control; the in-battle mute button
+  /// (battle_screen.dart's AppBar action) writes to the same file, so
+  /// changing it in either place updates the other on next open — same
+  /// pattern this file already uses for the retired vocal-tuning dial.
+  SpellSoundSettings _soundSettings = const SpellSoundSettings();
+
   @override
   void initState() {
     super.initState();
@@ -75,6 +83,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
     unawaited(_loadSeed());
     unawaited(_loadAvatar());
+    unawaited(_loadSoundSettings());
+  }
+
+  Future<void> _loadSoundSettings() async {
+    final settings = await SpellSoundSettings.load();
+    if (!mounted) return;
+    setState(() => _soundSettings = settings);
+  }
+
+  Future<void> _setSoundVolume(double volume) async {
+    final updated = _soundSettings.withVolume(volume);
+    setState(() => _soundSettings = updated);
+    await updated.save();
+  }
+
+  Future<void> _setSoundMuted(bool muted) async {
+    final updated = _soundSettings.withMuted(muted);
+    setState(() => _soundSettings = updated);
+    await updated.save();
   }
 
   /// Loaded separately, never blocking, same reason as [_loadSeed]: secure
@@ -410,6 +437,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               ),
                             ),
                           ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              'Spell Sound',
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
+                            Switch(
+                              value: !_soundSettings.muted,
+                              onChanged: (on) => unawaited(_setSoundMuted(!on)),
+                            ),
+                          ],
+                        ),
+                        const Text(
+                          'Volume for spells resolving in battle. Imported and '
+                          'synced sounds play quieter than the built-in pack, '
+                          'since they cannot be loudness-matched on this device.',
+                        ),
+                        Slider(
+                          value: _soundSettings.volume,
+                          onChanged: _soundSettings.muted
+                              ? null
+                              : (v) => unawaited(_setSoundVolume(v)),
                         ),
                       ],
                     ),

@@ -78,7 +78,7 @@ void main() {
     expect(find.text('COMMUNE'), findsOneWidget);
     expect(find.text('TRADE'), findsOneWidget);
     expect(find.text('CREATE AN APPRENTICESHIP'), findsOneWidget);
-    expect(find.text('SYNC ART'), findsOneWidget);
+    expect(find.text('SYNC ART & SOUND'), findsOneWidget);
 
     await tester.tap(find.text('TRADE'));
     await tester.pumpAndSettle();
@@ -115,10 +115,10 @@ void main() {
     await tester.tap(find.text('Commune'));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('SYNC ART'));
+    await tester.tap(find.text('SYNC ART & SOUND'));
     await tester.pumpAndSettle();
 
-    expect(find.text('SYNC ART'), findsWidgets); // AppBar title + nothing else conflicting
+    expect(find.text('SYNC ART & SOUND'), findsWidgets); // AppBar title + nothing else conflicting
     expect(find.text('HOST A SYNC'), findsOneWidget);
     expect(find.text('JOIN A SYNC'), findsOneWidget);
   });

@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rune_duel/spells/sighting_asset.dart';
-import 'package:rune_duel/spells/spell_asset.dart' show SpellArtSource;
+import 'package:rune_duel/spells/spell_asset.dart' show SpellArtSource, SpellSoundSource;
 
 import 'fake_path_provider.dart';
 
@@ -334,5 +334,119 @@ void main() {
     expect(display.artSource, equals(SpellArtSource.synced));
     expect(display.commitmentHex, equals(commitmentHex));
     expect(display.ownerPubkeyHex, equals(opponentPubkeyHex));
+  });
+
+  test('withSound() sets soundHash/soundSource/soundUpdatedAt (synced, no pack id)', () async {
+    final sighting = await SightingAsset.record(
+      opponentPubkeyHex: opponentPubkeyHex,
+      commitmentHex: commitmentHex,
+      spellName: 'Ember Wake',
+      t: 1,
+      tier: 12,
+      manaCost: 10,
+    );
+    expect(sighting.soundHash, isNull);
+
+    final withSound =
+        sighting.withSound(hash: '0xf00d', source: SpellSoundSource.synced);
+    expect(withSound.soundHash, equals('0xf00d'));
+    expect(withSound.soundSource, equals(SpellSoundSource.synced));
+    expect(withSound.soundUpdatedAt, isNotNull);
+    expect(withSound.soundPackId, isNull);
+  });
+
+  test('withSound() with a packId records a built-in-sourced opponent sound (D-5)', () async {
+    final sighting = await SightingAsset.record(
+      opponentPubkeyHex: opponentPubkeyHex,
+      commitmentHex: commitmentHex,
+      spellName: 'Ember Wake',
+      t: 1,
+      tier: 12,
+      manaCost: 10,
+    );
+
+    final withPack = sighting.withSound(
+      hash: '0xabc123',
+      source: SpellSoundSource.builtIn,
+      packId: 'zap',
+    );
+    expect(withPack.soundSource, equals(SpellSoundSource.builtIn));
+    expect(withPack.soundPackId, equals('zap'));
+  });
+
+  test('withoutSound() clears sound metadata but leaves art alone', () async {
+    final sighting = (await SightingAsset.record(
+      opponentPubkeyHex: opponentPubkeyHex,
+      commitmentHex: commitmentHex,
+      spellName: 'Ember Wake',
+      t: 1,
+      tier: 12,
+      manaCost: 10,
+    ))
+        .withArt(hash: '0xdeadbeef')
+        .withSound(hash: '0xf00d', source: SpellSoundSource.synced);
+
+    final cleared = sighting.withoutSound();
+    expect(cleared.soundHash, isNull);
+    expect(cleared.soundSource, isNull);
+    expect(cleared.artHash, equals('0xdeadbeef'));
+  });
+
+  test('toJson/fromJson round-trips sound fields', () async {
+    final withSound = (await SightingAsset.record(
+      opponentPubkeyHex: opponentPubkeyHex,
+      commitmentHex: commitmentHex,
+      spellName: 'Ember Wake',
+      t: 1,
+      tier: 12,
+      manaCost: 10,
+    ))
+        .withSound(hash: '0xf00d', source: SpellSoundSource.builtIn, packId: 'zap');
+
+    final restored = SightingAsset.fromJson(withSound.toJson());
+    expect(restored.soundHash, equals('0xf00d'));
+    expect(restored.soundSource, equals(SpellSoundSource.builtIn));
+    expect(restored.soundPackId, equals('zap'));
+    expect(restored.soundUpdatedAt, equals(withSound.soundUpdatedAt));
+  });
+
+  test('record() upsert never clears sound written by a prior Sync Sound session', () async {
+    final first = await SightingAsset.record(
+      opponentPubkeyHex: opponentPubkeyHex,
+      commitmentHex: commitmentHex,
+      spellName: 'Ember Wake',
+      t: 5,
+      tier: 24,
+      manaCost: 42,
+    );
+    await first.withSound(hash: '0xf00d', source: SpellSoundSource.synced).save();
+
+    final second = await SightingAsset.record(
+      opponentPubkeyHex: opponentPubkeyHex,
+      commitmentHex: commitmentHex,
+      spellName: 'Ember Wake',
+      t: 5,
+      tier: 24,
+      manaCost: 42,
+    );
+
+    expect(second.soundHash, equals('0xf00d'));
+    expect(second.soundSource, equals(SpellSoundSource.synced));
+  });
+
+  test('toDisplaySpell() passes through sound fields', () async {
+    final sighting = (await SightingAsset.record(
+      opponentPubkeyHex: opponentPubkeyHex,
+      commitmentHex: commitmentHex,
+      spellName: 'Ember Wake',
+      t: 1,
+      tier: 12,
+      manaCost: 10,
+    ))
+        .withSound(hash: '0xf00d', source: SpellSoundSource.synced);
+
+    final display = sighting.toDisplaySpell();
+    expect(display.soundHash, equals('0xf00d'));
+    expect(display.soundSource, equals(SpellSoundSource.synced));
   });
 }

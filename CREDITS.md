@@ -35,6 +35,22 @@ licence condition here, not a courtesy** — this entry and the matching section
 in-app credits screen must ship with any build that bundles
 `assets/art_pack/avatars/`.
 
+## Spell Sounds Starter Pack (built-in spell sound pack)
+
+**Author:** p0ss
+**Source:** OpenGameArt.org — https://opengameart.org/content/spell-sounds-starter-pack
+(see `assets/sound_pack/spells/ATTRIBUTION.md` for the archive hash)
+**Licence taken:** CC BY-SA 3.0. **Licence shipped:** CC BY-SA 4.0 — the transcode is an
+Adaptation (not just a technical format-shift, unlike the art pack above), and BY-SA
+3.0 §4(b) permits relicensing an Adaptation under a later same-family version. Full
+reasoning in `docs/SPELL_SOUND_PACK_PLAN.md` §1/§2 D-1.
+**Modified:** yes — downmixed to mono Vorbis, loudness-normalized (two-pass `loudnorm`,
+I=−16 LUFS), leading silence trimmed. Full statement in
+`assets/sound_pack/spells/ATTRIBUTION.md`.
+
+Used as the built-in sound pack a spell resolution plays by default (see
+`docs/SPELL_SOUND_PACK_PLAN.md`).
+
 ## Piper text-to-speech (Practice Mode trainer audio)
 
 **Voice model:** `it_IT-paola-medium`
@@ -47,6 +63,6 @@ for the underlying corpus's own terms)
 
 Used offline, at build time only, via the self-contained Piper release binary
 (`rhasspy/piper`, also MIT) to render the trainer-clip audio under
-`assets/audio/practice/` (see `scripts/generate_practice_assets.dart` and
+`assets/practice_templates/` (see `scripts/generate_practice_assets.dart` and
 `docs/M4_findings.md`'s "Piper toolchain" notes). Piper and the voice model are not
 themselves bundled into the app — only their rendered output is.

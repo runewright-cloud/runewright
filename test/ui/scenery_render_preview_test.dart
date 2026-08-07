@@ -19,6 +19,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:rune_duel/battle/models/terrain.dart' show ImpassableTile;
 import 'package:rune_duel/engine/hex_grid.dart' show HexCoord;
 import 'package:rune_duel/ui/battlefield_painter.dart' show BattlefieldPainter;
 import 'package:rune_duel/ui/scenery/scenery_map.dart';
@@ -61,13 +62,32 @@ Future<void> _render({
 
   // The whole point of the preview is the composite: scenery alone says
   // nothing about whether the playable cells stay countable on top of it.
+  //
+  // The wall row is here for the same reason. Raised rock is a judgement call
+  // twice over — whether it reads as an obstacle at all, and whether a wizard
+  // standing behind one still reads as a wizard — and neither is something
+  // battlefield_raised_wall_test.dart's pixel probes can answer. The three
+  // walls are at full, half and near-death HP so the crumble is visible in one
+  // frame, and 'behind' stands directly behind the intact one.
   BattlefieldPainter(
     radius: playRadius,
     hexSize: hexSize,
     terrainBeneath: true,
+    sceneryAtlas: atlas,
+    tileEffects: {
+      const HexCoord(-1, 0): const ImpassableTile(),
+      const HexCoord(0, 0): const ImpassableTile(),
+      const HexCoord(1, 0): const ImpassableTile(),
+    },
+    terrainHp: {
+      const HexCoord(-1, 0): 4,
+      const HexCoord(0, 0): 2,
+      const HexCoord(1, 0): 1,
+    },
     occupancy: {
       'local': HexCoord(0, playRadius),
       'foe': HexCoord(0, -playRadius),
+      'behind': const HexCoord(-1, -1),
     },
     localPlayerId: 'local',
   ).paint(canvas, size);

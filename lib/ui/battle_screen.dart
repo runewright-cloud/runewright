@@ -61,11 +61,15 @@ import '../ffi/srs_cache.dart';
 import '../identity/identity.dart';
 import '../protocol/match_session.dart' show ProofVerifier;
 import '../sorcerer/vocal_scorer.dart';
+import '../audio/spell_sound_player.dart';
+import '../audio/spell_sound_settings.dart';
 import '../spells/chapter_asset.dart';
 import '../spells/enhancement_zone.dart';
 import '../spells/sighting_asset.dart';
 import '../spells/spell_asset.dart';
 import '../spells/spell_permission.dart';
+import '../spells/spell_sound_pack.dart' show loadPackSound;
+import '../spells/spell_sound_resolver.dart' show resolveSpellSound;
 import '../spells/supreme_tags.dart' show deriveSupremeTags;
 import '../spells/wild_magic_preview.dart'
     show activeLeylineSeed, overrideLeylineSeed;
@@ -302,6 +306,7 @@ class BattleScreen extends StatefulWidget {
     this.peerPermissions,
     this.pactIdHex,
     this.peerAvatarId,
+    this.soundPlayerForTesting,
   });
 
   final BattleState state;
@@ -348,6 +353,15 @@ class BattleScreen extends StatefulWidget {
   /// [_BattleScreenState._avatarAssignment], never read by engine code.
   final String? peerAvatarId;
 
+  /// Test-only injection point: constructing an [SpellSoundPlayer] pool is
+  /// harmless, but the moment it actually plays a clip it constructs a real
+  /// `audioplayers.AudioPlayer`, which throws (uncatchably, from inside an
+  /// unawaited async init — see docs/SPELL_SOUND_PACK_PLAN.md §9) under
+  /// `flutter test`, no platform plugin being registered. A widget test that
+  /// needs to observe the reveal-plays-a-sound behavior supplies a fake
+  /// subclass here instead. Null in every real screen construction.
+  final SpellSoundPlayer? soundPlayerForTesting;
+
   @override
   State<BattleScreen> createState() => _BattleScreenState();
 }
@@ -357,6 +371,17 @@ class _BattleScreenState extends State<BattleScreen>
   List<SpellAsset?> _spells = [];
   late TurnLoop _loop;
   late AnimationController _pulseController;
+
+  // Lazily constructed, same reasoning as practice_screen.dart's _player
+  // getter: an AudioPlayer is a hard failure under `flutter test`, and a
+  // battle that reveals zero spells (a very early forfeit) should never pay
+  // for one. Settings are loaded once and cached -- volume/mute changes made
+  // from Settings mid-match take effect on the next resolution, not
+  // retroactively on an in-flight clip.
+  SpellSoundPlayer? _soundPlayerOrNull;
+  SpellSoundPlayer get _soundPlayer =>
+      widget.soundPlayerForTesting ?? (_soundPlayerOrNull ??= SpellSoundPlayer());
+  SpellSoundSettings _soundSettings = const SpellSoundSettings();
 
   /// The library-wide leyline seed this duel displaces, restored on dispose.
   /// Captured at construction rather than in initState so it is well-defined
@@ -909,6 +934,21 @@ class _BattleScreenState extends State<BattleScreen>
     if (_somaticOn) unawaited(_initSomaticComponents());
     _initTurnLoop();
     _listenForPeerForfeit();
+    unawaited(_loadSoundSettings());
+  }
+
+  Future<void> _loadSoundSettings() async {
+    final settings = await SpellSoundSettings.load();
+    if (!mounted) return;
+    setState(() => _soundSettings = settings);
+  }
+
+  /// The mute control D-4/E-4 requires be reachable from inside battle, not
+  /// only from Settings — see the AppBar action in [build].
+  Future<void> _toggleSoundMute() async {
+    final updated = _soundSettings.withMuted(!_soundSettings.muted);
+    setState(() => _soundSettings = updated);
+    await updated.save();
   }
 
   /// Ends the match on THIS device when the peer's device forfeits.
@@ -1424,6 +1464,7 @@ class _BattleScreenState extends State<BattleScreen>
     _attackAnimController.dispose();
     _vocalScorer?.dispose();
     _gestureCapture?.dispose();
+    unawaited(_soundPlayerOrNull?.dispose() ?? Future<void>.value());
     // This screen owns the session and its transport from the moment the
     // lobby hands off (battle_lobby_screen.dart's `_handedOff`), and nothing
     // else ever released them — so leaving a duel by any route left the
@@ -2943,6 +2984,11 @@ class _BattleScreenState extends State<BattleScreen>
         if (!mounted) return;
       }
 
+      // Card reveal, not effect bloom — the card is the moment the player is
+      // looking at the spell (E-2). Fire-and-forget: a decode/store hiccup on
+      // one clip must never block or fail the reveal it's decorating.
+      unawaited(_playSpellSound(ev));
+
       await showSpellCardFullscreen(
         context,
         ev.spell,
@@ -2996,6 +3042,35 @@ class _BattleScreenState extends State<BattleScreen>
         _effectBloom = null;
         _revealReservesTray = false;
       });
+    }
+    // Finding 3 (docs/SPELL_SOUND_PACK_PLAN.md): an 8.5s clip would otherwise
+    // outlive its 2s card and bleed into the next phase (E-3).
+    unawaited(_soundPlayerOrNull?.stopAll() ?? Future<void>.value());
+  }
+
+  /// Plays [ev]'s resolution sound: a fizzle for a full counter (nothing
+  /// resolved, so the spell's own sound would be a lie), or the spell's
+  /// resolved sound otherwise — D-6's elemental default when it has no
+  /// explicit one. [normalized] selects the gain policy (E-4/D-4): built-in
+  /// pack clips (including the D-6 default, which only ever picks a pack
+  /// entry) were loudness-matched at build time; imported/synced clips
+  /// weren't and play at [kUnnormalizedSoundGain] instead.
+  Future<void> _playSpellSound(ResolvedSpellEvent ev) async {
+    try {
+      if (ev.wasCountered) {
+        final bytes = await loadPackSound('magicfail');
+        if (bytes == null) return;
+        await _soundPlayer.play(bytes, settings: _soundSettings, normalized: true);
+        return;
+      }
+      final bytes = await resolveSpellSound(ev.spell);
+      if (bytes == null) return;
+      final normalized =
+          ev.spell.soundHash == null || ev.spell.soundSource == SpellSoundSource.builtIn;
+      await _soundPlayer.play(bytes, settings: _soundSettings, normalized: normalized);
+    } catch (_) {
+      // Sound is cosmetic — never let a resolve/decode failure interrupt the
+      // reveal sequence it's decorating.
     }
   }
 
@@ -3332,6 +3407,16 @@ class _BattleScreenState extends State<BattleScreen>
               : 'TURN ${widget.state.turnNumber}',
           style: manuscriptHeaderStyle(fontSize: 18, color: kParchmentColor),
         ),
+        actions: [
+          // Reachable from inside battle, not only from Settings (E-4) — a
+          // player who wants quiet mid-duel shouldn't have to leave it to get
+          // there.
+          IconButton(
+            icon: Icon(_soundSettings.muted ? Icons.volume_off : Icons.volume_up),
+            tooltip: _soundSettings.muted ? 'Unmute spell sounds' : 'Mute spell sounds',
+            onPressed: () => unawaited(_toggleSoundMute()),
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -3415,6 +3500,10 @@ class _BattleScreenState extends State<BattleScreen>
                                   // grid. Falls back to the opaque board if the
                                   // atlas never loaded.
                                   terrainBeneath: _sceneryAtlas != null,
+                                  // Same atlas again, this time to build
+                                  // impassable tiles as raised rock. Without it
+                                  // they fall back to the flat crosshatch.
+                                  sceneryAtlas: _sceneryAtlas,
                                   occupancy: widget.state.battlefield.occupancy,
                                   localPlayerId: widget.localPlayerId,
                                   highlightHex: _targetHex,

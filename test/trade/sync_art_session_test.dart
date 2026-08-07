@@ -20,6 +20,8 @@ import 'package:rune_duel/spells/spell_art_import.dart' show kSpellArtMaxImportB
 import 'package:rune_duel/spells/spell_art_pack.dart';
 import 'package:rune_duel/spells/spell_art_store.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
+import 'package:rune_duel/spells/spell_sound_pack.dart';
+import 'package:rune_duel/spells/spell_sound_store.dart';
 import 'package:rune_duel/src/rust/frb_generated.dart';
 import 'package:rune_duel/trade/sync_art_session.dart';
 import 'package:rune_duel/trade/sync_art_wire.dart';
@@ -59,6 +61,7 @@ void main() {
     int t = 5,
     String name = 'Ember Wake',
     String? artHash,
+    String? soundHash,
   }) =>
       SpellAsset(
         id: id,
@@ -76,6 +79,8 @@ void main() {
         spellHashHex: '0x$id',
         artHash: artHash,
         artSource: artHash != null ? SpellArtSource.localImport : null,
+        soundHash: soundHash,
+        soundSource: soundHash != null ? SpellSoundSource.localImport : null,
       );
 
   Future<(SyncArtSession, SyncArtSession)> pairedSessions(Identity alice, Identity bob) async {
@@ -152,6 +157,135 @@ void main() {
     expect(savedFull, equals(fullBytes));
   });
 
+  test('sync() delivers sound from the true owner to a sighter, and saves it locally', () async {
+    final alice = await Identity.ephemeral();
+    final bob = await Identity.ephemeral();
+    final bobPubkeyHex = await bob.ownerPubkeyHex();
+
+    final soundBytes = Uint8List.fromList(List.generate(64, (i) => i));
+    final soundHash = await _sha256Hex(soundBytes);
+    final bobSpell = ownedSpell(id: 'bob1', ownerPubkeyHex: bobPubkeyHex, soundHash: soundHash);
+    await bobSpell.save();
+    await SpellSoundStore.save(bobSpell.spellHashHex, soundBytes);
+
+    final aliceSighting = await SightingAsset.record(
+      opponentPubkeyHex: bobPubkeyHex,
+      commitmentHex: commitmentHex,
+      spellName: 'Ember Wake',
+      t: 5,
+      tier: 12,
+      manaCost: 10,
+    );
+    expect(aliceSighting.soundHash, isNull);
+
+    final (aliceSession, bobSession) = await pairedSessions(alice, bob);
+    final aliceResultFuture = aliceSession.sync(ourIdentity: alice);
+    final bobResultFuture = bobSession.sync(ourIdentity: bob);
+    final aliceResult = await aliceResultFuture;
+    final bobResult = await bobResultFuture;
+
+    expect(bobResult.sent, hasLength(1));
+    expect(bobResult.sent.single.success, isTrue);
+    expect(aliceResult.received, hasLength(1));
+    expect(aliceResult.received.single.success, isTrue);
+
+    final reloaded = (await SightingAsset.loadAll()).single;
+    expect(reloaded.soundHash, equals(soundHash));
+    expect(reloaded.soundSource, equals(SpellSoundSource.synced));
+
+    final savedSound = await SpellSoundStore.load(reloaded.id);
+    expect(savedSound, equals(soundBytes));
+  });
+
+  test('sync() delivers built-in pack sound as a packId, with no bytes on the wire (D-5/F-3)',
+      () async {
+    final alice = await Identity.ephemeral();
+    final bob = await Identity.ephemeral();
+    final bobPubkeyHex = await bob.ownerPubkeyHex();
+
+    final entry = kSpellSoundPack.firstWhere((e) => e.category == 'spell');
+    final bobSpell =
+        ownedSpell(id: 'bob1', ownerPubkeyHex: bobPubkeyHex).withPackSound(packId: entry.id);
+    await bobSpell.save();
+
+    await SightingAsset.record(
+      opponentPubkeyHex: bobPubkeyHex,
+      commitmentHex: commitmentHex,
+      spellName: 'Ember Wake',
+      t: 5,
+      tier: 12,
+      manaCost: 10,
+    );
+
+    final (aliceSession, bobSession) = await pairedSessions(alice, bob);
+    final artBundleFrameFuture = aliceSession.framesOfType(SyncArtMsgType.artBundle).first;
+    final aliceResultFuture = aliceSession.sync(ourIdentity: alice);
+    final bobResultFuture = bobSession.sync(ourIdentity: bob);
+
+    final artBundleFrame = await artBundleFrameFuture;
+    final bundleJson = jsonDecode(utf8.decode(artBundleFrame.payload)) as Map<String, dynamic>;
+    final item = (bundleJson['items'] as List<dynamic>).single as Map<String, dynamic>;
+    expect(item['soundPackId'], equals(entry.id));
+    expect(item.containsKey('soundBase64'), isFalse,
+        reason: 'built-in pack sound must travel as an id, never as bytes');
+
+    await aliceResultFuture;
+    await bobResultFuture;
+
+    final reloaded = (await SightingAsset.loadAll()).single;
+    expect(reloaded.soundHash, equals(entry.sha256));
+    expect(reloaded.soundSource, equals(SpellSoundSource.builtIn));
+    expect(reloaded.soundPackId, equals(entry.id));
+    final savedSound = await SpellSoundStore.load(reloaded.id);
+    expect(savedSound, isNull);
+  });
+
+  test('a tampered sound payload (bytes do not hash to the claimed soundHash) is rejected, '
+      'not saved', () async {
+    final alice = await Identity.ephemeral();
+    final bob = await Identity.ephemeral();
+    final bobPubkeyHex = await bob.ownerPubkeyHex();
+
+    await SightingAsset.record(
+      opponentPubkeyHex: bobPubkeyHex,
+      commitmentHex: commitmentHex,
+      spellName: 'Ember Wake',
+      t: 5,
+      tier: 12,
+      manaCost: 10,
+    );
+
+    final (aliceSession, bobSession, _, tBob) = await pairedSessionsWithTransports(alice, bob);
+    final aliceWantlistFuture = bobSession.framesOfType(SyncArtMsgType.wantlist).first;
+    final aliceResultFuture = aliceSession.sync(ourIdentity: alice);
+    await aliceWantlistFuture;
+    tBob.send(
+      SyncArtFrame(SyncArtMsgType.wantlist, Uint8List.fromList(utf8.encode(jsonEncode({'items': []}))))
+          .encode(),
+    );
+
+    final tamperedBundle = jsonEncode({
+      'items': [
+        {
+          'commitmentHex': commitmentHex,
+          'soundHash': '0xdeadbeef',
+          'spellName': 'Ember Wake',
+          'soundBase64': base64Encode(Uint8List.fromList([1, 2, 3, 4])),
+        }
+      ],
+    });
+    tBob.send(
+        SyncArtFrame(SyncArtMsgType.artBundle, Uint8List.fromList(utf8.encode(tamperedBundle))).encode());
+
+    final aliceResult = await aliceResultFuture;
+    expect(aliceResult.received, hasLength(1));
+    expect(aliceResult.received.single.success, isFalse);
+    expect(aliceResult.received.single.error, contains('integrity'));
+
+    final reloaded = (await SightingAsset.loadAll()).single;
+    expect(reloaded.soundHash, isNull, reason: 'a refused payload must not save anything');
+  });
+
   test(
       'sync() delivers built-in pack art from the true owner to a sighter, materialising it '
       'from the asset bundle rather than SpellArtStore', () async {
@@ -188,16 +322,16 @@ void main() {
     expect(aliceResult.received, hasLength(1));
     expect(aliceResult.received.single.success, isTrue);
 
-    // The receiver always saves synced bytes into SpellArtStore keyed by
-    // sighting id, regardless of what the sender's own art source was (plan
-    // §6: no wire format change, no receiver change) -- so this is a real
-    // integrity-check pass over materialised pack bytes, not a special case.
+    // D-5/F-3 (docs/SPELL_SOUND_PACK_PLAN.md): built-in pack art travels as
+    // an id, never as bytes -- the sighter's own APK already has this WebP.
+    // Only artHash/artSource/artPackId are set; SpellArtStore is untouched,
+    // and the art materialises via the resolver's pack lookup instead.
     final reloaded = (await SightingAsset.loadAll()).single;
     expect(reloaded.artHash, equals(entry.sha256));
-    expect(reloaded.artSource, equals(SpellArtSource.synced));
+    expect(reloaded.artSource, equals(SpellArtSource.builtIn));
+    expect(reloaded.artPackId, equals(entry.id));
     final savedFull = await SpellArtStore.loadFull(reloaded.id);
-    expect(savedFull, isNotNull);
-    expect(savedFull!.length, entry.bytes);
+    expect(savedFull, isNull);
   });
 
   test('sync() is bidirectional in a single call', () async {
@@ -422,7 +556,11 @@ void main() {
     // as a repeated character rather than real bytes: the point is that this
     // is refused on its LENGTH, without ever being decoded, so its content is
     // irrelevant — and materialising 8 MB of real image bytes in a unit test
-    // would be exactly the allocation under discussion.
+    // would be exactly the allocation under discussion. F-2's total-bundle
+    // cap (kSyncBundleMaxTotalBytes, 4 MB) is tighter than the per-item art
+    // cap this reuses (kSpellArtMaxImportBytes, 8 MB), so a single item this
+    // oversized trips the total cap first -- either way it's refused before
+    // base64Decode ever runs, which is what this test actually verifies.
     final oversized = 'A' * ((kSpellArtMaxImportBytes ~/ 3) * 4 + 8);
     final huge = jsonEncode({
       'items': [
@@ -440,9 +578,77 @@ void main() {
     final aliceResult = await aliceResultFuture;
     expect(aliceResult.received, hasLength(1));
     expect(aliceResult.received.single.success, isFalse);
-    expect(aliceResult.received.single.error, contains('too large'));
+    expect(aliceResult.received.single.error, contains('size cap'));
 
     final reloaded = (await SightingAsset.loadAll()).single;
     expect(reloaded.artHash, isNull, reason: 'a refused payload must not save anything');
+  });
+
+  test('the total-bundle cap (F-2) rejects once cumulative claimed bytes cross it, even when '
+      'every individual item is under the per-item cap', () async {
+    final alice = await Identity.ephemeral();
+    final bob = await Identity.ephemeral();
+    final bobPubkeyHex = await bob.ownerPubkeyHex();
+
+    // Two distinct sighted commitments, so two distinct bundle items.
+    await SightingAsset.record(
+      opponentPubkeyHex: bobPubkeyHex,
+      commitmentHex: commitmentHex,
+      spellName: 'Ember Wake',
+      t: 5,
+      tier: 12,
+      manaCost: 10,
+    );
+    const commitmentHex2 = '0xdeadbeef';
+    await SightingAsset.record(
+      opponentPubkeyHex: bobPubkeyHex,
+      commitmentHex: commitmentHex2,
+      spellName: 'Second Spell',
+      t: 5,
+      tier: 12,
+      manaCost: 10,
+    );
+
+    final (aliceSession, bobSession, _, tBob) = await pairedSessionsWithTransports(alice, bob);
+    final aliceWantlistFuture = bobSession.framesOfType(SyncArtMsgType.wantlist).first;
+    final aliceResultFuture = aliceSession.sync(ourIdentity: alice);
+    await aliceWantlistFuture;
+    tBob.send(
+      SyncArtFrame(SyncArtMsgType.wantlist, Uint8List.fromList(utf8.encode(jsonEncode({'items': []}))))
+          .encode(),
+    );
+
+    // Each item alone is well under kSpellArtMaxImportBytes, but the two
+    // together exceed kSyncBundleMaxTotalBytes (4 MB) -- ~3 MB each. Neither
+    // hashes correctly (this test isn't exercising the integrity check), so
+    // what matters is WHY each is rejected: the first fails on hash mismatch
+    // (it was reached and processed), the second never gets that far.
+    final eachItemBase64 = 'A' * (3 * 1024 * 1024);
+    final huge = jsonEncode({
+      'items': [
+        {
+          'commitmentHex': commitmentHex,
+          'artHash': '0x00',
+          'spellName': 'First',
+          'fullBase64': eachItemBase64,
+          'thumbBase64': '',
+        },
+        {
+          'commitmentHex': commitmentHex2,
+          'artHash': '0x00',
+          'spellName': 'Second',
+          'fullBase64': eachItemBase64,
+          'thumbBase64': '',
+        },
+      ],
+    });
+    tBob.send(SyncArtFrame(SyncArtMsgType.artBundle, Uint8List.fromList(utf8.encode(huge))).encode());
+
+    final aliceResult = await aliceResultFuture;
+    expect(aliceResult.received, hasLength(2));
+    expect(aliceResult.received.first.success, isFalse);
+    expect(aliceResult.received.first.error, contains('integrity'));
+    expect(aliceResult.received.last.success, isFalse);
+    expect(aliceResult.received.last.error, contains('size cap'));
   });
 }
