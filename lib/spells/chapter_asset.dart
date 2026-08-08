@@ -291,4 +291,25 @@ class ChapterAsset {
       await file.writeAsString(id);
     }
   }
+
+  /// Strips every [ChapterEntry] whose [ChapterEntry.spellId] is [spellId]
+  /// out of every persisted chapter, saving only the chapters that actually
+  /// changed. Called whenever a spell is deleted (crafted or loaned — both
+  /// are [SpellAsset]s, and a [ChapterEntry] always points at a
+  /// [SpellAsset.id] regardless of which tab it was added from) so a chapter
+  /// never carries a dangling reference; previously this was only masked at
+  /// battle-resolve time by [Chapter.fromChapterAsset]'s silent drop.
+  static Future<void> removeSpellFromAllChapters(String spellId) async {
+    for (final chapter in await loadAll()) {
+      final idx = chapter.entries.indexWhere((e) => e.spellId == spellId);
+      if (idx < 0) continue;
+      var updated = chapter;
+      while (true) {
+        final i = updated.entries.indexWhere((e) => e.spellId == spellId);
+        if (i < 0) break;
+        updated = updated.withoutEntryAt(i);
+      }
+      await updated.save();
+    }
+  }
 }

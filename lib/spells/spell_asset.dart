@@ -14,6 +14,7 @@ import 'dart:typed_data';
 
 import 'package:path_provider/path_provider.dart';
 
+import 'chapter_asset.dart';
 import 'spell_art_pack.dart' show kPainterlyPack;
 import 'spell_identity.dart' show behaviouralKinKey, kKinshipMinElements;
 import 'spell_sound_pack.dart' show kSpellSoundPack;
@@ -610,11 +611,15 @@ class SpellAsset {
         gridWithheld: true,
       );
 
-  /// Deletes this spell's persisted JSON file. Silently no-ops if already gone.
+  /// Deletes this spell's persisted JSON file (silently no-ops if already
+  /// gone) and strips it out of every chapter that referenced it — a chapter
+  /// entry is only ever a [SpellAsset.id], so this covers a deletion from
+  /// either the Craftings tab or the Loans tab the same way.
   Future<void> delete() async {
     final dir = await _spellsDir();
     final file = File('${dir.path}/$id.json');
     if (await file.exists()) await file.delete();
+    await ChapterAsset.removeSpellFromAllChapters(id);
   }
 
   /// Persists this spell as `<app documents>/spells/<id>.json`. Returns the

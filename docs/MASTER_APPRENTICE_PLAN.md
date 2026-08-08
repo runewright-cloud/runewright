@@ -531,10 +531,55 @@ Manuscript theme, `IlluminatedButton`s, mirroring `commune_screen.dart`. Three r
   this number), and actions: `RENEW` (opens the pairing flow as the *apprentice* side),
   `REQUEST GRADUATION` (§7), `ABANDON APPRENTICESHIP`. Lapsed shows "Your studies have
   lapsed" with `RENEW` / `CLEAR`.
+  - **With no master yet, this region must still offer `STUDY UNDER A MASTER`** — the
+    apprentice-side entry point for a *first* apprenticeship, disabled with "An apprentice
+    may not take an apprentice. Graduate yours first." when this device has an active
+    apprentice of its own (the mirror of the `OFFER AN APPRENTICESHIP` disablement below;
+    same §2.2 decision 4, read from the other side). This bullet was missing from the
+    original draft of §6.2 and the omission shipped — see §6.2a.
 - **Your apprentices** — list, each with days remaining and: `RENEW`, `BEQUEATH GRADUATION`,
   `CHALLENGE TO A GRADUATION BATTLE`.
 - **`OFFER AN APPRENTICESHIP`** — disabled with the explanation *"An apprentice may not
   take an apprentice. Graduate first."* when `activeMastership() != null`.
+
+### 6.2a The missing apprentice door — fixed 2026-08-08
+
+**Symptom, from a real two-device attempt:** two players trying to form an apprenticeship
+both hung forever on "Awaiting their decision...".
+
+**Cause — a UI reachability gap, not a protocol bug.** `ApprenticeOfferRole.apprentice` had
+exactly one caller: `_renew(asApprentice: true)`, wired to the `RENEW` button inside
+`_MastershipPanel` — which only renders when `record != null`, i.e. *only once you already
+have a master*. For a device with no mastership the panel was a single line of prose and no
+action, so the only live route into the pairing flow was `OFFER AN APPRENTICESHIP` (master
+role). Both players therefore entered as master, both reached `pickingChapter`, both sent
+`chapterOffer`, and both blocked in `awaitAcceptance()`. Neither side ever sends
+`offerAccept`, so neither future ever completes.
+
+Note what *didn't* fail: the transport, the handshake, and `_nextFrame`'s buffering all
+worked exactly as designed. Each peer's `chapterOffer` arrived and was parked in
+`_buffered` with no waiter to claim it — silently, since no side of this protocol treats an
+unexpected frame as an error. A correct lower layer faithfully served a state the UI should
+never have been able to produce.
+
+**Fix:** `_MastershipPanel`'s null-record branch now renders `STUDY UNDER A MASTER`
+(→ `ApprenticeOfferRole.apprentice`), disabled with the §2.2 decision-4 explanation when
+`_HubData.hasActiveApprentices`. That flag filters `ApprenticeshipRecord.apprentices()` by
+`status == active` — the unfiltered list keeps graduated relationships as history and must
+not gate anything.
+
+**Pinned by** `test/ui/apprenticeship_hub_entry_points_test.dart` (3 tests: both roles are
+reachable from a fresh hub, and each button opens the flow in the role it names). Verified
+to fail without the fix.
+
+**Bonus finding — this screen IS widget-testable after all.**
+`commune_trade_navigation_test.dart`'s header records that `ApprenticeshipScreen`'s
+`FutureBuilder` never resolves under `WidgetTester`, even inside `tester.runAsync`. The
+missing piece was *where* `runAsync` starts: calling `pumpWidget` **inside** it makes
+`initState`'s `_load()` chain get created in the real zone, and the real `dart:io`
+continuations are then delivered normally. Created in the fake-async zone instead, they
+never are. See `_pumpHub` in the new test — the same trick should unstick any other screen
+written off for this reason.
 
 ### 6.3 `lib/ui/apprentice_offer_screen.dart` (new)
 

@@ -50,7 +50,14 @@ class _ApprenticeshipScreenState extends State<ApprenticeshipScreen> {
     final apprentices = await ApprenticeshipRecord.apprentices();
     apprentices.sort((a, b) => b.startedAt.compareTo(a.startedAt));
     final pending = await _findPendingSettlements(myOwnerPubkeyHex);
-    return _HubData(mastership: mastership, apprentices: apprentices, pendingSettlements: pending);
+    return _HubData(
+      mastership: mastership,
+      apprentices: apprentices,
+      pendingSettlements: pending,
+      // `apprentices()` is unfiltered by status — graduated relationships stay
+      // in the list as history and must not gate anything.
+      hasActiveApprentices: apprentices.any((r) => r.status == ApprenticeshipStatus.active),
+    );
   }
 
   /// Any fully-signed pact whose matching, fully-signed [MatchOutcomeRecord]
@@ -243,6 +250,7 @@ class _ApprenticeshipScreenState extends State<ApprenticeshipScreen> {
                 _MastershipPanel(
                   record: data.mastership,
                   onRenew: () => _renew(asApprentice: true),
+                  onStudy: data.hasActiveApprentices ? null : () => _renew(asApprentice: true),
                   onReceiveGrant: data.mastership == null ? null : _receiveGrant,
                   onAbandon: data.mastership == null ? null : () => _abandon(data.mastership!),
                 ),
@@ -286,10 +294,20 @@ class _ApprenticeshipScreenState extends State<ApprenticeshipScreen> {
 }
 
 class _HubData {
-  const _HubData({required this.mastership, required this.apprentices, required this.pendingSettlements});
+  const _HubData({
+    required this.mastership,
+    required this.apprentices,
+    required this.pendingSettlements,
+    required this.hasActiveApprentices,
+  });
   final ApprenticeshipRecord? mastership;
   final List<ApprenticeshipRecord> apprentices;
   final List<_PendingSettlement> pendingSettlements;
+
+  /// Whether [apprentices] contains at least one still-active relationship —
+  /// the other half of §2.2 decision 4 ("an apprentice may not take on
+  /// apprentices of their own"), read from the master's side.
+  final bool hasActiveApprentices;
 }
 
 class _PendingSettlement {
@@ -358,11 +376,20 @@ class _MastershipPanel extends StatelessWidget {
   const _MastershipPanel({
     required this.record,
     required this.onRenew,
+    required this.onStudy,
     required this.onReceiveGrant,
     required this.onAbandon,
   });
   final ApprenticeshipRecord? record;
   final VoidCallback onRenew;
+
+  /// Opens the pairing flow as the *apprentice* side for a FIRST
+  /// apprenticeship. Null when this device already teaches an apprentice
+  /// (§2.2 decision 4). Without this the apprentice role was unreachable:
+  /// `RENEW` is the only other route to it and only renders once a master
+  /// already exists, so both players could only ever enter as masters — and
+  /// then both sat on "Awaiting their decision..." forever.
+  final VoidCallback? onStudy;
   final VoidCallback? onReceiveGrant;
   final VoidCallback? onAbandon;
 
@@ -370,9 +397,24 @@ class _MastershipPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final r = record;
     if (r == null) {
-      return Text(
-        'You are not currently studying under a master.',
-        style: manuscriptBodyStyle(fontSize: 14, color: kInkMutedColor),
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'You are not currently studying under a master.',
+            style: manuscriptBodyStyle(fontSize: 14, color: kInkMutedColor),
+          ),
+          const SizedBox(height: 12),
+          IlluminatedButton(label: 'STUDY UNDER A MASTER', onTap: onStudy, primary: false),
+          if (onStudy == null) ...[
+            const SizedBox(height: 8),
+            Text(
+              'An apprentice may not take an apprentice. Graduate yours first.',
+              style: manuscriptCaptionStyle(),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ],
       );
     }
     final lapsed = r.isLapsed();

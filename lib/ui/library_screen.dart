@@ -2739,6 +2739,41 @@ class _LoansTabState extends State<_LoansTab> with AutomaticKeepAliveClientMixin
     _loansFuture = _loadUsableLoans();
   });
 
+  /// Forgets a single loan: deletes the local grid-withheld [SpellAsset]
+  /// copy and its [SpellPermission] grant. Local-only, same as [SpellAsset.
+  /// delete] elsewhere — the lender isn't notified, and this doesn't touch
+  /// the [ApprenticeshipRecord] bookkeeping lists, only this one loan.
+  /// [SpellAsset.delete] also strips the spell out of any chapter it was
+  /// added to.
+  Future<void> _removeLoan(_LoanEntry entry) async {
+    final name = entry.spell.name.isNotEmpty ? entry.spell.name : 'this spell';
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Remove Loan'),
+        content: Text(
+          'Remove "$name" from your library? This only forgets your local copy '
+          '— the lender keeps their spell, and you can ask them to re-lend it later.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: kRubricRed),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await entry.permission.delete();
+    await entry.spell.delete();
+    _reload();
+  }
+
   Future<void> _addToChapter(SpellAsset spell) async {
     final chapterId = widget.selectedChapterId;
     if (chapterId == null) {
@@ -2806,7 +2841,11 @@ class _LoansTabState extends State<_LoansTab> with AutomaticKeepAliveClientMixin
           child: ListView.builder(
             padding: const EdgeInsets.all(16),
             itemCount: entries.length,
-            itemBuilder: (_, i) => _LoanTile(entry: entries[i], onAddToChapter: () => _addToChapter(entries[i].spell)),
+            itemBuilder: (_, i) => _LoanTile(
+              entry: entries[i],
+              onAddToChapter: () => _addToChapter(entries[i].spell),
+              onRemove: () => _removeLoan(entries[i]),
+            ),
           ),
         );
       },
@@ -2815,9 +2854,10 @@ class _LoansTabState extends State<_LoansTab> with AutomaticKeepAliveClientMixin
 }
 
 class _LoanTile extends StatelessWidget {
-  const _LoanTile({required this.entry, required this.onAddToChapter});
+  const _LoanTile({required this.entry, required this.onAddToChapter, required this.onRemove});
   final _LoanEntry entry;
   final VoidCallback onAddToChapter;
+  final VoidCallback onRemove;
 
   String get _daysRemaining {
     final remaining = entry.permission.expiresAt!.difference(DateTime.now().toUtc());
@@ -2872,6 +2912,14 @@ class _LoanTile extends StatelessWidget {
           TextButton(
             onPressed: onAddToChapter,
             child: Text('Add', style: manuscriptCaptionStyle(color: kIlluminationGold)),
+          ),
+          const SizedBox(width: 4),
+          IconButton(
+            onPressed: onRemove,
+            icon: const Icon(Icons.delete_outline, size: 20, color: kRubricRed),
+            tooltip: 'Remove loan',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
           ),
         ],
       ),

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:rune_duel/spells/chapter_asset.dart';
 import 'package:rune_duel/spells/spell_art_pack.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
 import 'package:rune_duel/spells/spell_sound_pack.dart';
@@ -358,5 +359,77 @@ void main() {
 
     final restored = SpellAsset.fromJson(rebound.toJson());
     expect(restored.summonPersonality, equals('evasive'));
+  });
+
+  group('delete() cleans up chapter references', () {
+    ChapterAsset emptyChapter(String id) => ChapterAsset(
+          id: id,
+          name: 'Chapter $id',
+          createdAt: DateTime.utc(2026, 8, 8, 12, 0, 0),
+        );
+
+    test('removes the deleted spell\'s entry from a chapter that referenced it', () async {
+      final spell = sample();
+      await spell.save();
+      final chapter = emptyChapter('c1').withEntry(const ChapterEntry(spellId: 'spell-1'));
+      await chapter.save();
+
+      await spell.delete();
+
+      final reloaded = await ChapterAsset.loadById('c1');
+      expect(reloaded!.entries, isEmpty);
+    });
+
+    test('strips the entry from every chapter that referenced it, leaving other entries', () async {
+      final deleted = sample(id: 'spell-1');
+      final kept = sample(id: 'spell-2');
+      await deleted.save();
+      await kept.save();
+
+      final chapterA = emptyChapter('a')
+          .withEntry(const ChapterEntry(spellId: 'spell-1'))
+          .withEntry(const ChapterEntry(spellId: 'spell-2'));
+      final chapterB = emptyChapter('b').withEntry(const ChapterEntry(spellId: 'spell-1'));
+      final chapterC = emptyChapter('c').withEntry(const ChapterEntry(spellId: 'spell-2'));
+      await chapterA.save();
+      await chapterB.save();
+      await chapterC.save();
+
+      await deleted.delete();
+
+      final a = await ChapterAsset.loadById('a');
+      final b = await ChapterAsset.loadById('b');
+      final c = await ChapterAsset.loadById('c');
+      expect(a!.entries.map((e) => e.spellId), ['spell-2']);
+      expect(b!.entries, isEmpty);
+      expect(c!.entries.map((e) => e.spellId), ['spell-2']); // untouched
+    });
+
+    test('removes every duplicate entry when the same spell was added to a chapter twice '
+        '(e.g. a Basic spell added more than once)', () async {
+      final spell = sample();
+      await spell.save();
+      final chapter = emptyChapter('c1')
+          .withEntry(const ChapterEntry(spellId: 'spell-1'))
+          .withEntry(const ChapterEntry(spellId: 'spell-1', summonPersonality: 'evasive'));
+      await chapter.save();
+
+      await spell.delete();
+
+      final reloaded = await ChapterAsset.loadById('c1');
+      expect(reloaded!.entries, isEmpty);
+    });
+
+    test('no-ops cleanly when the spell was never in any chapter', () async {
+      final spell = sample();
+      await spell.save();
+      final chapter = emptyChapter('c1');
+      await chapter.save();
+
+      await spell.delete();
+
+      final reloaded = await ChapterAsset.loadById('c1');
+      expect(reloaded!.entries, isEmpty);
+    });
   });
 }

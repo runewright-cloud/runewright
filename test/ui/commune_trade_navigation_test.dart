@@ -30,7 +30,17 @@
 // WidgetTester.pump()/pumpAndSettle() (nor does wrapping the wait in
 // tester.runAsync() bridge it, since the Future is already created against
 // the fake test zone by the time initState runs) -- it just spins the
-// CircularProgressIndicator forever. So this file only confirms navigation
+// CircularProgressIndicator forever.
+//
+// UPDATE 2026-08-08: that last parenthetical is beatable -- call pumpWidget
+// itself INSIDE tester.runAsync and initState's chain is created in the real
+// zone, where its dart:io continuations do get delivered. See _pumpHub in
+// test/ui/apprenticeship_hub_entry_points_test.dart, which drives this very
+// screen's loaded state. The bounded-pump approach below is left as-is
+// (it's testing navigation, not the hub's data), but nothing here is
+// blocked by the old limitation any more.
+//
+// So this file only confirms navigation
 // REACHES the screen (its AppBar title, which renders independently of the
 // FutureBuilder); it does not drive past the loading state into the
 // offer/pairing screen. That data layer and the full protocol round-trip
