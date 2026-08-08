@@ -5350,3 +5350,104 @@ silently. `BattleSession` now records which frame it is blocked on and exposes
 
 This does not fix any hang — it makes the next one diagnosable from a screenshot instead of
 guessed at, which is what cost the most time here.
+
+## M4.10 — "state hash mismatch on turn 3": the two cast-charging phases
+
+*2026-08-08, from a play-test. Second lockstep break of the day, unrelated to the
+tier/VK one above — that fix let duels get far enough to hit this.*
+
+### The report
+
+`This duel broke lockstep and cannot continue ... Bad state: state hash mismatch on
+turn 3: local=47b8a4f3... peer=78421261...`
+
+### Root cause: a cast is charged in two different phases
+
+A spell's mana is deducted in two places, and they are deliberately in different phases:
+
+| whose cast | where it is charged | phase |
+|---|---|---|
+| your own | `_deductManaForCommittedSpell`, right after the action commit crosses the wire | **1** |
+| the peer's | `_verifyPeerSpellCast`, once the reveal is verified | **5** |
+
+Neither can move on its own: you cannot charge for a cast you have not seen revealed, and
+the caster's own device must price and affordability-gate the cast at commit time.
+
+So for any single cast, **device A applies the deduction three phases earlier than device
+B does**. Anything that touches the caster's mana in between is applied on opposite sides
+of the deduction on the two devices — and `_applyManaGain` clamps at `maxMana`, so the
+order is *observable*:
+
+```
+caster's device:   100 − 11 = 89, then +25 → clamped 100
+opponent's device: 100 + 25 → clamped 100, then − 11 = 89
+```
+
+Exactly one thing lands in that window in ordinary play: **move-phase Meditate**, granted
+at Phase 2. Which is why this presents on turn 3 and not turn 1 — a player spends the
+opening turns meditating, arrives at their mana ceiling, and the first turn they *cast
+while also meditating in move* is the turn the clamp has something to eat.
+
+The mana totals are not the worst of it. `_fizzlesForMana` was also being evaluated
+against two different pools — the opponent priced an unaffordable cast against 25 more
+mana than the caster did, so the two devices could disagree about whether the spell
+fizzled *at all*, and resolve completely different turns.
+
+### The fix
+
+Move-phase Meditate now pays out at **Phase 5, after both casts have been charged**
+(`_applyMoveMeditations`), instead of at Phase 2 where it is declared. Phase 2 still
+exchanges and records the declaration; only the payout moved.
+
+**The caster's own ordering is the canonical one.** Their cast was committed — and gated
+for affordability — before the meditation was worth anything, so a move-Meditate cannot
+fund the same turn's spell. It never could on the caster's device; now every device agrees.
+
+The payout also walks its players in **sorted playerId order**, not local-first. It was
+local-first, which is a different order on each device: a Reflections `manaMirror` link
+makes one player's gain feed the other's, so with two meditators and a link the clamp is
+order-sensitive there too. Same convention `_findCounteringCharm` and the Phase 4b melee
+round already follow.
+
+### Test
+
+`turn_loop_determinism_test.dart` → "cast + move-Meditate mana lockstep". Two real
+`TurnSessionPair` loops; caster at their 100 ceiling casts an 11-mana spell *and*
+meditates in move. **Verified to fail without the fix**, with the identical
+`state hash mismatch on turn 1: local=… peer=…` shape as the play-test screenshot.
+Suite: 1550 green (the 2 `vocabulary_screen_test` failures are still pre-existing).
+
+### Still open — the rest of the Phase 1 → Phase 5 window
+
+The meditate payout was the only thing in that window that bites in *ordinary* play, but
+it is not the only thing in it. The inputs to both pricing paths are the caster's `mana`,
+their `chainSurcharge` / `nextSpellCostDouble` entries, their chain state, and their HP.
+Chain state and mana are now clean. Two rarer holes remain, **both the same root cause**:
+
+1. **Water haymaker status drain** (`_applyHaymaker`, Phase 4b) strips a turn from *all*
+   of its target's status effects and removes any that hit zero. Punch a caster who is
+   carrying `nextSpellCostDouble` with **1 turn left**: their own device already consumed
+   it at Phase 1 and charged double; the opponent's device drains it away at Phase 4b and
+   charges single. Mana diverges.
+2. **Shortfall-to-HP damage** (`_certifiedManaCost` step 5) can in principle kill the
+   caster. On their device that death lands at Phase 1, before the melee round's
+   `isAlive` gate; on the opponent's, at Phase 5, after it. One device throws a punch the
+   other does not.
+
+Both need a status combination rare enough that neither has been seen in play. The
+options, none of them free, for whoever picks this up:
+
+- **Snapshot the pricing inputs at Phase 1** on every device (each avatar's mana +
+  cost-relevant status entries), and have `_verifyPeerSpellCast` price against the
+  snapshot. Precise and closes the whole window at once, including anything added later;
+  costs a per-turn snapshot and a second source of truth for "what did they carry".
+- **Defer each offending mutation past the charge**, as the meditate payout now is.
+  Cheap per case, but it is one-at-a-time and the next addition to Phases 2–4b reopens it.
+- **Charge both casts at Phase 5.** Structurally the cleanest — one phase, one order —
+  but the local mana bar then does not move until reveal, and the commit-time
+  affordability gate needs somewhere else to live.
+
+**The standing rule this leaves behind: anything new that mutates a wizard's mana, chain,
+cost-modifying statuses, or HP between the action commit (Phase 1) and the action reveal
+(Phase 5) is a lockstep bug by construction.** That window has two different charging
+orders in it and always will, until one of the three options above is taken.

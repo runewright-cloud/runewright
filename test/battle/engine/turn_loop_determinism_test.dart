@@ -337,6 +337,113 @@ void main() {
     });
   });
 
+  // ── Move-phase Meditate vs. the two cast-charging phases ─────────────────
+
+  group('cast + move-Meditate mana lockstep', () {
+    test(
+        'a caster at full mana who also meditates in move stays in lockstep',
+        () async {
+      // The caster charges its OWN cast at Phase 1 (_deductManaForCommittedSpell,
+      // right after the action commit) but the peer charges the same cast at
+      // Phase 5 (_verifyPeerSpellCast, after the reveal). Move-phase Meditate
+      // lands between the two, at Phase 2 — so a caster near their mana ceiling
+      // saw "spend, then gain" while their opponent's device saw "gain (clamped
+      // at maxMana), then spend". The clamp ate the difference on exactly one
+      // device and the state hash forfeited the duel.
+      final state1 = _makeAdjacentState();
+      final state2 = _makeAdjacentState();
+      // At the ceiling, so the +25 has nowhere to go unless the cast is
+      // charged first. This is the ordinary mid-duel condition — a player who
+      // spent turns 1-2 meditating is sitting at max when they finally cast.
+      for (final s in [state1, state2]) {
+        s.avatars.firstWhere((av) => av.playerId == 'player_a').mana = 100;
+      }
+
+      final pair = TurnSessionPair();
+      Future<bool> alwaysOk(Uint8List vk, Uint8List proof) async => true;
+      final loop1 = TurnLoop(
+        state: state1,
+        session: pair.sessionA,
+        localPlayerId: 'player_a',
+        verifyProof: alwaysOk,
+        vkBytes: Uint8List(0),
+      );
+      final loop2 = TurnLoop(
+        state: state2,
+        session: pair.sessionB,
+        localPlayerId: 'player_b',
+        verifyProof: alwaysOk,
+        vkBytes: Uint8List(0),
+      );
+
+      // segmentCount 2 -> certified base 5*2 + 0 = 10, grown by 1.05^1 = 11.
+      // Non-zero is the whole point: a free cast can't expose the ordering.
+      final commitmentBytes = Uint8List.fromList(List.filled(32, 0x7e));
+      final commitmentHex =
+          '0x${commitmentBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join()}';
+      final spell = SpellAsset(
+        id: 'costed-spell',
+        createdAt: DateTime.utc(2026, 8, 8),
+        tier: tierForSteps(1)!,
+        t: 1,
+        ownerPubkeyHex: '0x${'00' * 32}',
+        manaCost: 11,
+        segmentCount: 2,
+        dotCount: 0,
+        initialGrid: const [],
+        proofBytes: _syntheticProofFor(
+          tier: tierForSteps(1)!,
+          t: 1,
+          commitmentBytes: commitmentBytes,
+          segmentCount: 2,
+          dotCount: 0,
+        ),
+        name: 'Kindling',
+        commitmentHex: commitmentHex,
+        spellHashHex: '',
+        formula: const [],
+      );
+      loop1.localChapterCommitments = [spell.commitmentHex];
+
+      final errors = <Object>[];
+      await Future.wait([
+        loop1
+            .runTurn(TurnInput(
+              action:
+                  SpellCastAction(spell: spell, targetHex: const HexCoord(1, 0)),
+              meditateInMove: true,
+            ))
+            .catchError((Object e) {
+          errors.add(e);
+          return null;
+        }),
+        loop2
+            .runTurn(TurnInput(action: PassAction()))
+            .catchError((Object e) {
+          errors.add(e);
+          return null;
+        }),
+      ]);
+
+      expect(errors, isEmpty,
+          reason: 'the turn threw instead of completing — a state hash '
+              'mismatch here means the cast charge and the move-Meditate gain '
+              'are applied in a different order on the two devices');
+      expect(
+        state1.toCanonicalBytes(),
+        equals(state2.toCanonicalBytes()),
+        reason: 'cast + move-Meditate diverged between the two loops.',
+      );
+
+      // The caster's own device is canonical: the cast was committed (and so
+      // priced) before the meditation was worth anything, so 100 - 11 + 25
+      // clamps back to the ceiling rather than 100 + 25 (clamped) - 11 = 89.
+      final a = state1.avatars.firstWhere((av) => av.playerId == 'player_a');
+      expect(a.mana, equals(100),
+          reason: 'charge first, then gain: 100 - 11 = 89, +25 -> clamped 100');
+    });
+  });
+
   // ── Watery Inertia rolls the same destination on both devices ────────────
 
   group('turbulent range lockstep', () {

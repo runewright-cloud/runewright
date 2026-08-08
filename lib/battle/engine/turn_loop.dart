@@ -2254,14 +2254,13 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
     // Move-phase Meditate: forgo movement (path already forced empty above/
     // in the decoder) for +25 mana, independent of a main-phase Meditate.
-    if (input.meditateInMove)
-      _applyManaGain(_localAvatar(), _kMeditateManaGain);
-    if (peerId != null && peerMovePayload.meditateInMove) {
-      final peerAvatarForMeditate = _avatarById(peerId);
-      if (peerAvatarForMeditate != null) {
-        _applyManaGain(peerAvatarForMeditate, _kMeditateManaGain);
-      }
-    }
+    // The mana is NOT granted here — see [_applyMoveMeditations], called from
+    // Phase 5 once both casts have been charged. Only the declaration is
+    // captured at this point.
+    final meditators = <String>[
+      if (input.meditateInMove) localPlayerId,
+      if (peerId != null && peerMovePayload.meditateInMove) peerId,
+    ]..sort();
 
     // ── Phase 3: Entropy reveal ───────────────────────────────────────────
     // All player decisions for this turn are committed. Reveal joint entropy
@@ -2421,6 +2420,11 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         certifiedPeerWildMagic,
       );
     }
+
+    // Move-phase Meditate pays out HERE, not back at Phase 2 where it was
+    // declared — the one point in the turn where both players' casts have
+    // been charged on both devices. See [_applyMoveMeditations].
+    _applyMoveMeditations(meditators);
 
     // Hand/deck refill (SPELL_DRAW_WIRING_PLAN.md §4) — a spell leaves the
     // caster's hand the instant its cast is committed this turn, regardless
@@ -3940,6 +3944,46 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// Encodes local [DelayedSpellReveal]s into the wire payload for
   /// [BattleSession.exchangeDelayedSpellReveals].
   /// Format: [count:1][ id:16, coord:4, delay:1, nonce:16 per entry ]
+  /// Pays out this turn's move-phase Meditations, for the players in
+  /// [meditatorIds] (already sorted by playerId).
+  ///
+  /// **Called from Phase 5, after both casts have been charged** — not from
+  /// Phase 2, where the declaration is exchanged. The two cast-charging paths
+  /// sit in different phases by design: a player's own cast is priced and
+  /// deducted the moment its commit crosses the wire
+  /// ([_deductManaForCommittedSpell], Phase 1), while the peer's cast can only
+  /// be charged once its reveal has been verified ([_verifyPeerSpellCast],
+  /// Phase 5). Any mana movement *between* those two points is therefore
+  /// applied before the deduction on one device and after it on the other —
+  /// and since [_applyManaGain] clamps at `maxMana`, a caster near their
+  /// ceiling ended the turn with two different mana totals:
+  ///
+  ///   caster's device:  100 − 11 = 89, +25 → clamped 100
+  ///   opponent's device: 100 + 25 → clamped 100, −11 = 89
+  ///
+  /// which [_exchangeStateHash] correctly reports as a broken duel. The
+  /// caster's own ordering is the canonical one: their cast was committed —
+  /// and gated for affordability — before the meditation was worth anything,
+  /// so the meditation cannot fund this turn's spell. Paying out here makes
+  /// every device agree with that.
+  ///
+  /// The same reasoning is why [_fizzlesForMana] has to be evaluated against
+  /// the same mana on both sides: with the payout at Phase 2, the opponent
+  /// priced an unaffordable cast against 25 more mana than the caster did and
+  /// the two devices disagreed about whether the spell fizzled at all.
+  ///
+  /// Sorted rather than local-first for the usual reason (the convention
+  /// [_findCounteringCharm] and the Phase 4b melee round follow): a Reflections
+  /// manaMirror link makes one player's gain feed the other's, so the order
+  /// the two payouts run in is observable, and "me first" is a different order
+  /// on each device.
+  void _applyMoveMeditations(List<String> meditatorIds) {
+    for (final id in meditatorIds) {
+      final av = _avatarById(id);
+      if (av != null) _applyManaGain(av, _kMeditateManaGain);
+    }
+  }
+
   /// Apply mana gain to [av] and fire the manaMirror trigger on any active
   /// Reflections links where [av] is the link's target.
   void _applyManaGain(WizardAvatar av, int amount) {
