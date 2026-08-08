@@ -23,6 +23,7 @@ import 'package:rune_duel/battle/models/wild_magic_effect.dart';
 import 'package:rune_duel/battle/models/wizard_avatar.dart';
 import 'package:rune_duel/battle/networking/solo_battle_session.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
+import 'package:rune_duel/spells/inscribe.dart' show tierForSteps;
 import 'package:rune_duel/spells/spell_asset.dart';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -51,12 +52,16 @@ const _seedRow1AtT20 = 'w281';
 /// verifies one — but byte-exact where the parser reads.
 Uint8List _proofBytes({
   required int t,
-  int tier = 24,
+  // Defaults to the tier a real inscription of this T would have used, so the
+  // blob's field count matches what the verifier derives from T. A fixed 24
+  // here paired with a low T describes a spell that cannot exist.
+  int? tier,
   List<int> trajectory = _kFireTrajectory,
   List<int> supremeFlags = const [],
   int segmentCount = 1,
   int dotCount = 1,
 }) {
+  tier ??= tierForSteps(t)!;
   final count = 10 + 2 * tier;
   final out = Uint8List(4 + count * 32);
   final bd = ByteData.sublistView(out);
@@ -110,7 +115,7 @@ SpellAsset _fireSpell({
     SpellAsset(
       id: 'wm',
       createdAt: DateTime.fromMillisecondsSinceEpoch(0),
-      tier: 24,
+      tier: tierForSteps(t)!,
       t: t,
       ownerPubkeyHex: '0x${'0' * 64}',
       manaCost: 6,

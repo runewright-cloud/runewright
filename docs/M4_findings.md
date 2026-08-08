@@ -5256,3 +5256,97 @@ directly — Updraft fired twice at 4 turns is now 8, still in one entry. Full s
   casts of the same debuff — the "rest of match" sentinel (`revealCounterCharms` = 999)
   is harmless, but a spammed slow or `nextSpellCostDouble` now compounds where it used
   to plateau. Worth watching in the first play-test that has two casts of one status.
+
+---
+
+## M4.9 — The tier/VK mismatch that broke lockstep (and froze the board)
+
+*2026-08-08, from a play-test. Two separate bug reports, one root cause.*
+
+### The reports
+
+1. "Froze on battle map, no indication of error other than lack of responsiveness."
+2. `The duel broke lockstep and cannot continue ... circuit_verify failed: Backend error:`
+   `Assertion failed: num_public_inputs == static_cast<size_t>(vk->num_public_inputs).`
+   `Actual: 42 Expected 66. Reason: Oink verifier: num_public_inputs mismatch with VK`
+
+### Root cause
+
+The battle screen loaded **one** verification key for the whole duel, chosen from
+`MatchConfig.tier` (default **24**), and `TurnLoop._verifyPeerSpellCast` verified *every*
+peer cast against it. But a spell is proven at the smallest tier covering **its own T**
+(`tierForSteps`, `inscribe.dart`) — a T≤12 spell is a **tier-12** proof.
+
+Public-input count is `10 + 2*tier_max`, plus 8 for barretenberg's pairing-point object:
+
+| tier | public inputs |
+|------|---------------|
+| 12   | 42            |
+| 24   | 66            |
+| 48   | 114           |
+
+So the reported 42-vs-66 is exactly *a tier-12 spell cast into a tier-24 match*. The delta
+of 24 is `2 × (24 − 12)` — the arithmetic identifies the tier gap precisely, which is worth
+remembering: **this error message names both tiers if you invert the formula.**
+
+`MatchConfig.tier` is a *ceiling* negotiated at handshake, never the tier any given spell
+was proven at. Treating it as the latter meant most duels broke on the first real cast,
+since tier-12 is the common cheap spell and the config defaults to 24.
+
+### Why it presented two different ways — the important part
+
+The regression test below, run against the *unfixed* code, **timed out rather than
+throwing**. A mismatched VK makes the assertion fire *inside* the native call and the Dart
+future never completes. So:
+
+- If the abort surfaces as a catchable error → "duel broke lockstep" (report 2).
+- If it wedges the FFI call → `runTurn` never returns, `_isBusy` never clears, the board
+  freezes with no error, **and the peer freezes too**, waiting for the next exchange
+  (report 1).
+
+Both reports are the same bug. This is also a standing hazard beyond this fix: **a failing
+verify can hang the turn loop rather than fail it.** The `catch_unwind` wrappers do not
+cover a native `assert` abort. Worth a timeout around `verifyProof` in a later pass.
+
+### The fix
+
+- `TurnLoop` takes `vkBytesForTier` (a `Uint8List? Function(int tier)`) alongside the old
+  single `vkBytes`, which remains as the fallback so the ~14 test call sites passing
+  `vkBytes: Uint8List(0)` keep working.
+- `_verifyPeerSpellCast` derives the tier from the spell's own T and selects both the VK
+  and the parse layout from it. T is peer-supplied, so it is fail-closed by construction
+  (a wrong tier picks a VK the proof cannot satisfy), and the certified `outputs.t` is
+  re-checked against the claim so the value that chose the layout is bound to the value
+  the proof attests.
+- `_wildMagicFromOwnProof` had the same bug for *local* spells — `parseOwn(bytes, tier)`
+  with the match tier reads the trajectory arrays at the wrong offsets. Now derives from T.
+- The battle screen loads **all three** bundled VKs (already in `pubspec.yaml`), and inits
+  the SRS from the **largest** tier's bytecode: it must cover the biggest proof the device
+  might verify, and the cache is sized to the tier-48 floor anyway.
+
+### Tests
+
+`turn_loop_proof_verification_test.dart` gained a real-FFI regression test: a tier-12 spell
+cast into a **tier-24** match, asserting the VK lookup asked for tier 12 and the cast
+survived. **Verified to fail (by timeout) without the fix.**
+
+The pre-existing test in that file could never have caught this — it runs a tier-12 spell
+in a tier-12 match, so the right and wrong lookups coincide. *A fixture whose match tier
+equals its spell tier cannot see this class of bug.*
+
+Five fixture files (`mana_cost_lockstep`, `resolution_order`, `vocal_recall_parity`,
+`turn_loop_determinism`, `wild_magic_resolution`) built tier-24-shaped synthetic proofs for
+low-T spells — internally inconsistent, describing spells that cannot exist. They now
+derive tier via `tierForSteps(t)`, so the fixture matches what a real inscription produces.
+Suite: 1549 green (the 2 `vocabulary_screen_test` failures are pre-existing).
+
+### Also added — stall diagnostics
+
+Every exchange is "send ours, await theirs"; if the peer never answers, the board freezes
+silently. `BattleSession` now records which frame it is blocked on and exposes
+`stalledExchange` after 8s; the battle screen polls it and shows a "WAITING FOR OPPONENT —
+`<frame>`" banner. Deliberately **not** on the `BattleTurnSession` interface: that is
+`implements`-ed by every test double, so a member there forces a stub into each.
+
+This does not fix any hang — it makes the next one diagnosable from a screenshot instead of
+guessed at, which is what cost the most time here.

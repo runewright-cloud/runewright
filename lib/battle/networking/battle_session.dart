@@ -322,6 +322,57 @@ class BattleSession implements BattleTurnSession {
   /// should use [framesOfType].
   Stream<BattleFrame> get frames => _reader.frames;
 
+  // ── Stall diagnostics ───────────────────────────────────────────────────────
+  //
+  // Every exchange is "send ours, await theirs". If the peer never sends its
+  // half, that await never completes, `runTurn` never returns, and the battle
+  // screen sits with `_isBusy` true — a frozen board with no error, which is
+  // exactly what a playtest reported. These two fields name which frame the
+  // device is waiting for so the freeze can be identified from a screenshot
+  // instead of guessed at.
+  //
+  // Single-slot on purpose: the artifact-entropy exchange for the NEXT turn is
+  // deliberately started (unawaited) while the current turn is still settling,
+  // so two waits can briefly overlap and the later one wins. That is fine for a
+  // diagnostic — it reports the most recent wait, not a full stack.
+
+  String? _pendingExchange;
+  DateTime? _pendingSince;
+
+  /// Name of the frame this device has been waiting on for longer than
+  /// [_kStallThreshold], or null if nothing is overdue.
+  ///
+  /// Read by the battle screen to replace a silent frozen board with a
+  /// "waiting for opponent" banner naming the stuck exchange.
+  ///
+  /// Deliberately NOT on [BattleTurnSession]: that interface is `implements`-ed
+  /// (not extended) by every test double and by [SoloBattleSession], so adding
+  /// a member there forces a stub into each of them for a field only a real
+  /// network session can ever populate.
+  String? get stalledExchange {
+    final label = _pendingExchange;
+    final since = _pendingSince;
+    if (label == null || since == null) return null;
+    return DateTime.now().difference(since) >= _kStallThreshold ? label : null;
+  }
+
+  static const _kStallThreshold = Duration(seconds: 8);
+
+  /// [framesOfType].first, wrapped so the wait is visible to [stalledExchange].
+  Future<BattleFrame> _awaitFrame(BattleMsgType type) {
+    final label = type.name;
+    _pendingExchange = label;
+    _pendingSince = DateTime.now();
+    return framesOfType(type).first.whenComplete(() {
+      // Guarded: a longer-running overlapping wait must not have its marker
+      // cleared by this one finishing first.
+      if (_pendingExchange == label) {
+        _pendingExchange = null;
+        _pendingSince = null;
+      }
+    });
+  }
+
   /// The next frame of exactly [type] — buffers if it already arrived, never
   /// drops it. See [BattleFrameReader.framesOfType]'s doc comment for why
   /// this isn't a `.where()` filter over [frames].
@@ -353,7 +404,7 @@ class BattleSession implements BattleTurnSession {
   }) async {
     final nonceLocal = CommitRevealEntropy.generateNonce();
     send(BattleMsgType.authChallenge, nonceLocal);
-    final noncePeer = (await framesOfType(BattleMsgType.authChallenge).first).payload;
+    final noncePeer = (await _awaitFrame(BattleMsgType.authChallenge)).payload;
 
     final tag = utf8.encode(kIdentityAuthSignatureTag);
     final ourSig = await localIdentity.sign([...tag, ...matchId, ...noncePeer]);
@@ -362,7 +413,7 @@ class BattleSession implements BattleTurnSession {
       Uint8List.fromList([...localIdentity.publicKeyBytes, ...ourSig]),
     );
     final responsePayload =
-        (await framesOfType(BattleMsgType.authResponse).first).payload;
+        (await _awaitFrame(BattleMsgType.authResponse)).payload;
     if (responsePayload.length < 32 + 64) {
       sendForfeit('auth_malformed_response');
       throw StateError('peer auth response too short — match forfeit');
@@ -408,7 +459,7 @@ class BattleSession implements BattleTurnSession {
       utf8.encode(jsonEncode(ours.map((p) => p.toJson()).toList())),
     );
     send(BattleMsgType.spellPermissions, payload);
-    final frame = await framesOfType(BattleMsgType.spellPermissions).first;
+    final frame = await _awaitFrame(BattleMsgType.spellPermissions);
     final decoded = jsonDecode(utf8.decode(frame.payload)) as List<dynamic>;
     final received = decoded
         .map((j) => SpellPermission.fromJson(j as Map<String, dynamic>))
@@ -442,7 +493,7 @@ class BattleSession implements BattleTurnSession {
   /// class).
   Future<Uint8List> exchangeMatchIdNonce(Uint8List ourNonce) async {
     send(BattleMsgType.matchIdNonce, ourNonce);
-    final frame = await framesOfType(BattleMsgType.matchIdNonce).first;
+    final frame = await _awaitFrame(BattleMsgType.matchIdNonce);
     return frame.payload;
   }
 
@@ -452,7 +503,7 @@ class BattleSession implements BattleTurnSession {
   /// tier-48 in [MatchConfig.tier] negotiation.
   Future<DeviceCapabilities> exchangeCapabilities(DeviceCapabilities ours) async {
     send(BattleMsgType.capabilities, Uint8List.fromList(utf8.encode(jsonEncode(ours.toJson()))));
-    final frame = await framesOfType(BattleMsgType.capabilities).first;
+    final frame = await _awaitFrame(BattleMsgType.capabilities);
     return DeviceCapabilities.fromJson(jsonDecode(utf8.decode(frame.payload)) as Map<String, dynamic>);
   }
 
@@ -463,7 +514,7 @@ class BattleSession implements BattleTurnSession {
   /// UI is out of scope for this pass.
   Future<MatchConfig?> exchangeMatchConfig(MatchConfig ours) async {
     send(BattleMsgType.matchConfig, Uint8List.fromList(utf8.encode(jsonEncode(ours.toJson()))));
-    final frame = await framesOfType(BattleMsgType.matchConfig).first;
+    final frame = await _awaitFrame(BattleMsgType.matchConfig);
     final theirs = MatchConfig.fromJson(jsonDecode(utf8.decode(frame.payload)) as Map<String, dynamic>);
 
     if (!ours.matches(theirs)) {
@@ -492,12 +543,12 @@ class BattleSession implements BattleTurnSession {
   /// [receiveHostMatchConfig] from the guest.
   Future<void> sendHostMatchConfig(MatchConfig config) async {
     send(BattleMsgType.matchConfig, Uint8List.fromList(utf8.encode(jsonEncode(config.toJson()))));
-    await framesOfType(BattleMsgType.matchConfigAck).first;
+    await _awaitFrame(BattleMsgType.matchConfigAck);
   }
 
   /// See [sendHostMatchConfig]. Call from the guest.
   Future<MatchConfig> receiveHostMatchConfig() async {
-    final frame = await framesOfType(BattleMsgType.matchConfig).first;
+    final frame = await _awaitFrame(BattleMsgType.matchConfig);
     final config = MatchConfig.fromJson(jsonDecode(utf8.decode(frame.payload)) as Map<String, dynamic>);
     send(BattleMsgType.matchConfigAck, Uint8List(0));
     return config;
@@ -509,7 +560,7 @@ class BattleSession implements BattleTurnSession {
   /// lockstep. Returns the peer's name, or '' if they haven't set one.
   Future<String> exchangeWizardName(String ours) async {
     send(BattleMsgType.wizardName, Uint8List.fromList(utf8.encode(ours)));
-    final frame = await framesOfType(BattleMsgType.wizardName).first;
+    final frame = await _awaitFrame(BattleMsgType.wizardName);
     return utf8.decode(frame.payload);
   }
 
@@ -522,7 +573,7 @@ class BattleSession implements BattleTurnSession {
   /// stream frame being dropped when a listener attached after the send.
   Future<String> exchangeAvatarId(String ours) async {
     send(BattleMsgType.avatarId, Uint8List.fromList(utf8.encode(ours)));
-    final frame = await framesOfType(BattleMsgType.avatarId).first;
+    final frame = await _awaitFrame(BattleMsgType.avatarId);
     return utf8.decode(frame.payload);
   }
 
@@ -530,7 +581,7 @@ class BattleSession implements BattleTurnSession {
   /// Returns the peer's root bytes (32 bytes).
   Future<Uint8List> exchangeBookCommitment(Uint8List ourRoot) async {
     send(BattleMsgType.bookCommit, ourRoot);
-    final frame = await framesOfType(BattleMsgType.bookCommit).first;
+    final frame = await _awaitFrame(BattleMsgType.bookCommit);
     return frame.payload;
   }
 
@@ -541,7 +592,7 @@ class BattleSession implements BattleTurnSession {
   /// verification at [exchangeBookReveal].
   Future<Uint8List> exchangeBookHash(Uint8List ourHash) async {
     send(BattleMsgType.bookHash, ourHash);
-    final frame = await framesOfType(BattleMsgType.bookHash).first;
+    final frame = await _awaitFrame(BattleMsgType.bookHash);
     return frame.payload;
   }
 
@@ -554,7 +605,7 @@ class BattleSession implements BattleTurnSession {
   Future<int> exchangeBookLeafCount(int ourCount) async {
     final payload = ByteData(4)..setUint32(0, ourCount, Endian.big);
     send(BattleMsgType.bookLeafCount, payload.buffer.asUint8List());
-    final frame = await framesOfType(BattleMsgType.bookLeafCount).first;
+    final frame = await _awaitFrame(BattleMsgType.bookLeafCount);
     return ByteData.sublistView(frame.payload).getUint32(0, Endian.big);
   }
 
@@ -571,7 +622,7 @@ class BattleSession implements BattleTurnSession {
       utf8.encode(jsonEncode(ours.map((a) => a.toJson()).toList())),
     );
     send(BattleMsgType.artifactLoadout, payload);
-    final frame = await framesOfType(BattleMsgType.artifactLoadout).first;
+    final frame = await _awaitFrame(BattleMsgType.artifactLoadout);
     final decoded = jsonDecode(utf8.decode(frame.payload)) as List<dynamic>;
     return decoded
         .map((j) => ArtifactEntry.fromJson(j as Map<String, dynamic>))
@@ -622,7 +673,7 @@ class BattleSession implements BattleTurnSession {
       utf8.encode(jsonEncode(ourSortedLeaves)),
     );
     send(BattleMsgType.bookReveal, payload);
-    final frame = await framesOfType(BattleMsgType.bookReveal).first;
+    final frame = await _awaitFrame(BattleMsgType.bookReveal);
     final theirLeaves =
         (jsonDecode(utf8.decode(frame.payload)) as List<dynamic>).cast<String>();
 
@@ -664,12 +715,12 @@ class BattleSession implements BattleTurnSession {
   }) async {
     // Commit phase — both send simultaneously.
     send(BattleMsgType.nonceCommit, ourCommit);
-    final theirCommitFrame = await framesOfType(BattleMsgType.nonceCommit).first;
+    final theirCommitFrame = await _awaitFrame(BattleMsgType.nonceCommit);
     final theirCommit = theirCommitFrame.payload;
 
     // Reveal phase.
     send(BattleMsgType.nonceReveal, ourNonce);
-    final theirRevealFrame = await framesOfType(BattleMsgType.nonceReveal).first;
+    final theirRevealFrame = await _awaitFrame(BattleMsgType.nonceReveal);
     return (theirNonce: theirRevealFrame.payload, theirCommit: theirCommit);
   }
 
@@ -678,14 +729,14 @@ class BattleSession implements BattleTurnSession {
   @override
   Future<Uint8List> exchangeMoveCommit(Uint8List ourCommit) async {
     send(BattleMsgType.moveCommit, ourCommit);
-    final frame = await framesOfType(BattleMsgType.moveCommit).first;
+    final frame = await _awaitFrame(BattleMsgType.moveCommit);
     return frame.payload;
   }
 
   @override
   Future<Uint8List> exchangeMoveReveal(Uint8List ourReveal) async {
     send(BattleMsgType.moveReveal, ourReveal);
-    final frame = await framesOfType(BattleMsgType.moveReveal).first;
+    final frame = await _awaitFrame(BattleMsgType.moveReveal);
     return frame.payload;
   }
 
@@ -694,14 +745,14 @@ class BattleSession implements BattleTurnSession {
   @override
   Future<Uint8List> exchangeArtifactActivationCommit(Uint8List ourCommit) async {
     send(BattleMsgType.artifactCommit, ourCommit);
-    final frame = await framesOfType(BattleMsgType.artifactCommit).first;
+    final frame = await _awaitFrame(BattleMsgType.artifactCommit);
     return frame.payload;
   }
 
   @override
   Future<Uint8List> exchangeArtifactActivationReveal(Uint8List ourReveal) async {
     send(BattleMsgType.artifactReveal, ourReveal);
-    final frame = await framesOfType(BattleMsgType.artifactReveal).first;
+    final frame = await _awaitFrame(BattleMsgType.artifactReveal);
     return frame.payload;
   }
 
@@ -710,14 +761,14 @@ class BattleSession implements BattleTurnSession {
   @override
   Future<Uint8List> exchangeMeleeCommit(Uint8List ourCommit) async {
     send(BattleMsgType.meleeCommit, ourCommit);
-    final frame = await framesOfType(BattleMsgType.meleeCommit).first;
+    final frame = await _awaitFrame(BattleMsgType.meleeCommit);
     return frame.payload;
   }
 
   @override
   Future<Uint8List> exchangeMeleeReveal(Uint8List ourReveal) async {
     send(BattleMsgType.meleeReveal, ourReveal);
-    final frame = await framesOfType(BattleMsgType.meleeReveal).first;
+    final frame = await _awaitFrame(BattleMsgType.meleeReveal);
     return frame.payload;
   }
 
@@ -726,14 +777,14 @@ class BattleSession implements BattleTurnSession {
   @override
   Future<Uint8List> exchangeFreeMoveCommit(Uint8List ourCommit) async {
     send(BattleMsgType.freeMoveCommit, ourCommit);
-    final frame = await framesOfType(BattleMsgType.freeMoveCommit).first;
+    final frame = await _awaitFrame(BattleMsgType.freeMoveCommit);
     return frame.payload;
   }
 
   @override
   Future<Uint8List> exchangeFreeMoveReveal(Uint8List ourReveal) async {
     send(BattleMsgType.freeMoveReveal, ourReveal);
-    final frame = await framesOfType(BattleMsgType.freeMoveReveal).first;
+    final frame = await _awaitFrame(BattleMsgType.freeMoveReveal);
     return frame.payload;
   }
 
@@ -744,7 +795,7 @@ class BattleSession implements BattleTurnSession {
   @override
   Future<Uint8List> exchangeActionCommit(Uint8List ourCommit) async {
     send(BattleMsgType.actionCommit, ourCommit);
-    final frame = await framesOfType(BattleMsgType.actionCommit).first;
+    final frame = await _awaitFrame(BattleMsgType.actionCommit);
     return frame.payload;
   }
 
@@ -753,7 +804,7 @@ class BattleSession implements BattleTurnSession {
   @override
   Future<Uint8List> exchangeActionReveal(Uint8List ourReveal) async {
     send(BattleMsgType.actionReveal, ourReveal);
-    final frame = await framesOfType(BattleMsgType.actionReveal).first;
+    final frame = await _awaitFrame(BattleMsgType.actionReveal);
     return frame.payload;
   }
 
@@ -763,7 +814,7 @@ class BattleSession implements BattleTurnSession {
   @override
   Future<Uint8List> exchangeDelayedSpellReveals(Uint8List ourReveals) async {
     send(BattleMsgType.delayedSpellReveal, ourReveals);
-    final frame = await framesOfType(BattleMsgType.delayedSpellReveal).first;
+    final frame = await _awaitFrame(BattleMsgType.delayedSpellReveal);
     return frame.payload;
   }
 
@@ -772,14 +823,14 @@ class BattleSession implements BattleTurnSession {
   @override
   Future<Uint8List> exchangeScryKey(Uint8List ourFrame) async {
     send(BattleMsgType.scryKey, ourFrame);
-    final frame = await framesOfType(BattleMsgType.scryKey).first;
+    final frame = await _awaitFrame(BattleMsgType.scryKey);
     return frame.payload;
   }
 
   @override
   Future<Uint8List> exchangeScryOpen(Uint8List ourFrame) async {
     send(BattleMsgType.scryOpen, ourFrame);
-    final frame = await framesOfType(BattleMsgType.scryOpen).first;
+    final frame = await _awaitFrame(BattleMsgType.scryOpen);
     return frame.payload;
   }
 
@@ -788,21 +839,21 @@ class BattleSession implements BattleTurnSession {
   @override
   Future<Uint8List> exchangeSpellRevealKey(Uint8List ourFrame) async {
     send(BattleMsgType.spellRevealKey, ourFrame);
-    final frame = await framesOfType(BattleMsgType.spellRevealKey).first;
+    final frame = await _awaitFrame(BattleMsgType.spellRevealKey);
     return frame.payload;
   }
 
   @override
   Future<Uint8List> exchangeSpellRevealOpen(Uint8List ourFrame) async {
     send(BattleMsgType.spellRevealOpen, ourFrame);
-    final frame = await framesOfType(BattleMsgType.spellRevealOpen).first;
+    final frame = await _awaitFrame(BattleMsgType.spellRevealOpen);
     return frame.payload;
   }
 
   @override
   Future<Uint8List?> exchangeForcedReveal(Uint8List ourFrame) async {
     send(BattleMsgType.forcedReveal, ourFrame);
-    final frame = await framesOfType(BattleMsgType.forcedReveal).first;
+    final frame = await _awaitFrame(BattleMsgType.forcedReveal);
     return frame.payload;
   }
 
@@ -815,11 +866,11 @@ class BattleSession implements BattleTurnSession {
 
     // Commit phase — simultaneous, same protocol as turn-start nonce exchange.
     send(BattleMsgType.refreshEntropyCommit, ourCommit);
-    final theirCommitFrame = await framesOfType(BattleMsgType.refreshEntropyCommit).first;
+    final theirCommitFrame = await _awaitFrame(BattleMsgType.refreshEntropyCommit);
 
     // Reveal phase.
     send(BattleMsgType.refreshEntropyReveal, ourNonce);
-    final theirRevealFrame = await framesOfType(BattleMsgType.refreshEntropyReveal).first;
+    final theirRevealFrame = await _awaitFrame(BattleMsgType.refreshEntropyReveal);
 
     final jointEntropy = await CommitRevealEntropy.revealAndCombine(
       ourNonce: ourNonce,
@@ -843,7 +894,7 @@ class BattleSession implements BattleTurnSession {
     // TODO(battle): prepend Ed25519 signature to ourHash before sending;
     //   depends on identity module (lib/identity/identity.dart).
     send(BattleMsgType.stateHash, ourHash);
-    final frame = await framesOfType(BattleMsgType.stateHash).first;
+    final frame = await _awaitFrame(BattleMsgType.stateHash);
     return frame.payload;
   }
 
@@ -927,7 +978,7 @@ class BattleSession implements BattleTurnSession {
       BattleMsgType.matchResultSig,
       Uint8List.fromList(utf8.encode(jsonEncode(mine.toJson()))),
     );
-    final frame = await framesOfType(BattleMsgType.matchResultSig).first;
+    final frame = await _awaitFrame(BattleMsgType.matchResultSig);
     return SignedMatchOutcome.fromJson(
       jsonDecode(utf8.decode(frame.payload)) as Map<String, dynamic>,
     );

@@ -168,4 +168,103 @@ void main() {
     // Both clients converge on identical canonical state.
     expect(stateCaster.toCanonicalBytes(), equals(stateVerifier.toCanonicalBytes()));
   }, timeout: const Timeout(Duration(minutes: 2)));
+
+  // REGRESSION (playtest, 2026-08-08): "The duel broke lockstep ... Assertion
+  // failed: num_public_inputs == vk->num_public_inputs. Actual: 42 Expected 66."
+  //
+  // Every spell is proven at the smallest tier covering its own T, but the
+  // battle screen used to load ONE verification key, chosen from
+  // MatchConfig.tier (default 24), and verify every peer cast against it. A
+  // tier-12 proof carries 10 + 2*12 public inputs (+8 for barretenberg's
+  // pairing-point object) = 42; the tier-24 VK expects 10 + 2*24 + 8 = 66, so
+  // the backend aborted and the verifier forfeited a perfectly legal cast.
+  //
+  // The test above cannot catch this: it runs a tier-12 spell in a tier-12
+  // match, so the two tiers coincide and the wrong lookup is indistinguishable
+  // from the right one. THIS test is that one with the tiers deliberately
+  // split — a tier-12 spell cast into a tier-24 match, the exact playtest
+  // configuration. It fails against the single-VK code and passes once the
+  // verifier keys off the spell's own T.
+  test(
+      'a spell proven at a tier BELOW the match tier still verifies '
+      '(per-spell VK selection, not MatchConfig.tier)', () async {
+    final casterIdentity = await Identity.ephemeral();
+    final verifierIdentity = await Identity.ephemeral();
+    final casterOwnerHex = await casterIdentity.ownerPubkeyHex();
+    final verifierOwnerHex = await verifierIdentity.ownerPubkeyHex();
+
+    // T=1 → tier 12, while the match below negotiates tier 24.
+    final spell = await inscribeSpell(
+      initialGrid: HexGrid(12),
+      steps: 1,
+      identity: casterIdentity,
+      manaCost: 0,
+      segmentCount: 0,
+      dotCount: 0,
+      name: 'Tier Mismatch Regression',
+      loadCircuitJson: rootBundle.loadString,
+      loadVkBytes: (path) async => (await rootBundle.load(path)).buffer.asUint8List(),
+    );
+    expect(spell.tier, equals(12), reason: 'T=1 must land in the smallest tier');
+
+    // All three bundled VKs, exactly as the battle screen now supplies them.
+    final vkByTier = <int, Uint8List>{
+      for (final t in kInscribeTiers)
+        t: (await rootBundle.load('assets/circuits/ca_v2_4_tier$t.vk'))
+            .buffer
+            .asUint8List(),
+    };
+    final requestedTiers = <int>[];
+
+    final peerBookRoot = BookCommitment.computeRoot([spell.commitmentHex]);
+    final stateCaster = makeState(casterOwnerHex, verifierOwnerHex);
+    final stateVerifier = makeState(casterOwnerHex, verifierOwnerHex);
+
+    final matchId = Uint8List.fromList(List.generate(16, (i) => i));
+    final (transportCaster, transportVerifier) = InMemoryTransport.pair();
+
+    final loopCaster = TurnLoop(
+      state: stateCaster,
+      session: BattleSession(transportCaster, matchId),
+      localPlayerId: 'caster',
+      matchId: matchId,
+      tier: 24, // match tier, NOT the spell's tier
+    )..localChapterCommitments = [spell.commitmentHex];
+    final loopVerifier = TurnLoop(
+      state: stateVerifier,
+      session: BattleSession(transportVerifier, matchId),
+      localPlayerId: 'verifier',
+      matchId: matchId,
+      tier: 24, // match tier, NOT the spell's tier
+      verifyProof: prover.verifyProof,
+      vkBytesForTier: (t) {
+        requestedTiers.add(t);
+        return vkByTier[t];
+      },
+      peerBookRoot: peerBookRoot,
+      peerOwnerPubkeyHex: casterOwnerHex,
+      peerPermissions: const <SpellPermission>[],
+    );
+
+    await Future.wait([
+      loopCaster.runTurn(TurnInput(
+        action: SpellCastAction(spell: spell, targetHex: const HexCoord(1, 0)),
+      )),
+      loopVerifier.runTurn(TurnInput(action: PassAction())),
+    ]);
+
+    // The VK was chosen from the SPELL's tier, never the match's.
+    expect(requestedTiers, isNotEmpty, reason: 'verifier never looked up a VK');
+    expect(requestedTiers, everyElement(equals(12)),
+        reason: 'VK must be selected per-spell (tier 12), not from '
+            'MatchConfig.tier (24)');
+
+    // And the cast actually survived verification rather than forfeiting.
+    expect(loopVerifier.lastResolvedSpells, hasLength(1));
+    expect(
+      loopVerifier.lastResolvedSpells.single.spell.commitmentHex,
+      equals(spell.commitmentHex),
+    );
+    expect(stateCaster.toCanonicalBytes(), equals(stateVerifier.toCanonicalBytes()));
+  }, timeout: const Timeout(Duration(minutes: 2)));
 }

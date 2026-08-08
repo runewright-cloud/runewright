@@ -25,6 +25,7 @@ import 'package:rune_duel/battle/models/match_config.dart';
 import 'package:rune_duel/battle/models/status_effect_ids.dart';
 import 'package:rune_duel/battle/models/wizard_avatar.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
+import 'package:rune_duel/spells/inscribe.dart' show tierForSteps;
 import 'package:rune_duel/spells/spell_asset.dart';
 
 import 'turn_session_pair.dart';
@@ -281,7 +282,7 @@ void main() {
       final spell = SpellAsset(
         id: 'test-spell',
         createdAt: DateTime.utc(2026, 7, 19),
-        tier: 24,
+        tier: tierForSteps(1)!,
         t: 1,
         ownerPubkeyHex: '0x${'00' * 32}',
         manaCost: 0,
@@ -289,7 +290,7 @@ void main() {
         dotCount: 0,
         initialGrid: const [],
         proofBytes: _syntheticProofFor(
-          tier: 24,
+          tier: tierForSteps(1)!,
           t: 1,
           commitmentBytes: commitmentBytes,
           segmentCount: 0,
@@ -380,7 +381,7 @@ void main() {
       final spell = SpellAsset(
         id: 'turbulent-spell',
         createdAt: DateTime.utc(2026, 8, 6),
-        tier: 24,
+        tier: tierForSteps(1)!,
         t: 1,
         ownerPubkeyHex: '0x${'00' * 32}',
         manaCost: 0,
@@ -388,7 +389,7 @@ void main() {
         dotCount: 0,
         initialGrid: const [],
         proofBytes: _syntheticProofFor(
-          tier: 24,
+          tier: tierForSteps(1)!,
           t: 1,
           commitmentBytes: commitmentBytes,
           segmentCount: 0,

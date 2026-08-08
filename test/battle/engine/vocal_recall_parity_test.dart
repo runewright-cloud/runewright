@@ -30,6 +30,7 @@ import 'package:rune_duel/battle/models/wizard_avatar.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/sorcerer/incantation_recall.dart';
 import 'package:rune_duel/sorcerer/vocal_slot.dart';
+import 'package:rune_duel/spells/inscribe.dart' show tierForSteps;
 import 'package:rune_duel/spells/spell_asset.dart';
 
 import 'turn_session_pair.dart';
@@ -120,7 +121,7 @@ SpellAsset _spell() {
   return SpellAsset(
     id: 'recall-spell',
     createdAt: DateTime.utc(2026, 8, 5),
-    tier: 24,
+    tier: tierForSteps(3)!,
     t: 3,
     ownerPubkeyHex: '0x${'00' * 32}',
     manaCost: 0,
@@ -128,7 +129,7 @@ SpellAsset _spell() {
     dotCount: 0,
     initialGrid: const [],
     proofBytes: _syntheticProof(
-      tier: 24,
+      tier: tierForSteps(3)!,
       t: 3,
       commitmentBytes: commitmentBytes,
       segmentCount: 10,

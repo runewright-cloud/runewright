@@ -65,6 +65,7 @@ import '../audio/spell_sound_player.dart';
 import '../audio/spell_sound_settings.dart';
 import '../spells/chapter_asset.dart';
 import '../spells/enhancement_zone.dart';
+import '../spells/inscribe.dart' show kInscribeTiers;
 import '../spells/sighting_asset.dart';
 import '../spells/spell_asset.dart';
 import '../spells/spell_permission.dart';
@@ -893,6 +894,7 @@ class _BattleScreenState extends State<BattleScreen>
   @override
   void initState() {
     super.initState();
+    _startStallWatchdog();
     _pulseController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1800),
@@ -1103,16 +1105,30 @@ class _BattleScreenState extends State<BattleScreen>
     final isRealDuel = _isRealDuel;
 
     ProofVerifier? verifyProof;
-    Uint8List? vkBytes;
+    Map<int, Uint8List>? vkByTier;
     Future<List<int>> Function(List<int>)? signMessage;
 
     if (isRealDuel) {
       try {
-        final tier = widget.state.config.tier;
-        final vkData = await rootBundle.load(
-          'assets/circuits/ca_v2_4_tier$tier.vk',
-        );
-        vkBytes = vkData.buffer.asUint8List();
+        // ALL three tiers, not just the match's negotiated one. Each spell is
+        // proven at the smallest tier covering its own T, so a duel routinely
+        // has to verify proofs from tiers other than config.tier. Loading only
+        // that one made every such cast abort in barretenberg with
+        // "num_public_inputs mismatch with VK" and forfeit the match. All three
+        // VKs are already bundled (see pubspec.yaml assets); they are a few KB
+        // each, so there is nothing to gain by loading them lazily.
+        vkByTier = {
+          for (final t in kInscribeTiers)
+            t: (await rootBundle.load('assets/circuits/ca_v2_4_tier$t.vk'))
+                .buffer
+                .asUint8List(),
+        };
+        // The SRS still initializes from the LARGEST tier's bytecode: it must
+        // cover the biggest proof this device might verify, and the cache is
+        // sized to the tier-48 floor regardless of which tier triggers it
+        // (see srs_cache.dart). Sizing it from config.tier would leave a
+        // tier-12 match unable to verify a tier-48 cast.
+        final tier = kInscribeTiers.last;
         final circuitJson = await rootBundle.loadString(
           'assets/circuits/ca_v2_4_tier$tier.json',
         );
@@ -1133,6 +1149,9 @@ class _BattleScreenState extends State<BattleScreen>
     }
 
     if (!mounted) return;
+    // Copied to a local so the closure below captures a non-nullable map —
+    // Dart won't promote `vkByTier` inside a closure.
+    final vks = vkByTier;
     _loop = TurnLoop(
       state: widget.state,
       session: session ?? SoloBattleSession(state: widget.state),
@@ -1140,7 +1159,7 @@ class _BattleScreenState extends State<BattleScreen>
       matchId: widget.matchId,
       tier: widget.state.config.tier,
       verifyProof: verifyProof,
-      vkBytes: vkBytes,
+      vkBytesForTier: vks == null ? null : (t) => vks[t],
       peerBookRoot: widget.peerBookRoot,
       peerBookLeafCount: widget.peerBookLeafCount,
       peerOwnerPubkeyHex: widget.peerOwnerPubkeyHex,
@@ -1457,6 +1476,7 @@ class _BattleScreenState extends State<BattleScreen>
   @override
   void dispose() {
     activeLeylineSeed.value = _leylineSeedBeforeDuel;
+    _stallTimer?.cancel();
     _pulseController.dispose();
     _castAnimController.dispose();
     _effectBloomController.dispose();
@@ -1653,6 +1673,34 @@ class _BattleScreenState extends State<BattleScreen>
   }
 
   // ── Spell components: order + banner (SPELL_COMPONENTS_PLAN.md §5.2) ────────
+
+  // ── Stall watchdog ──────────────────────────────────────────────────────────
+
+  /// The peer frame this device has been blocked on long enough to say so, or
+  /// null when nothing is overdue. Mirrors
+  /// [BattleTurnSession.stalledExchange] into build state.
+  String? _stalledExchange;
+  Timer? _stallTimer;
+
+  /// Polls the session for an overdue exchange.
+  ///
+  /// A poll rather than a push because the stall is defined by elapsed time,
+  /// not by an event — the whole failure mode is that *nothing* happens. Two
+  /// seconds is well under the eight-second threshold the session applies, and
+  /// costs nothing: the tick only calls setState when the value actually
+  /// changes.
+  void _startStallWatchdog() {
+    if (!_isRealDuel) return;
+    _stallTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (!mounted) return;
+      final session = widget.session;
+      final stalled =
+          session is BattleSession ? session.stalledExchange : null;
+      if (stalled != _stalledExchange) {
+        setState(() => _stalledExchange = stalled);
+      }
+    });
+  }
 
   /// Opens the local player's lock-in when everyone ahead of them in this
   /// turn's order has performed.
@@ -3431,6 +3479,14 @@ class _BattleScreenState extends State<BattleScreen>
           // or playing out Summons/Resolution.
           _PhaseBanner(label: _phaseLabel),
 
+          // Names the peer frame this device has been blocked on. Without it a
+          // stalled exchange is indistinguishable from a hung app: the board
+          // just stops responding, with no error, which is exactly how a
+          // playtest freeze was reported. Purely informational — the duel is
+          // still live and will resume the moment the frame arrives.
+          if (_stalledExchange != null)
+            _StalledExchangeBanner(exchange: _stalledExchange!),
+
           // Opponent strip — swaps to the tapped enemy creature's HP (no
           // mana row: minions don't have any) when one is inspected. Guards
           // isAlive too: a dead minion is removed from state.minions by the
@@ -4690,6 +4746,40 @@ class _UnverifiedPlayBanner extends StatelessWidget {
           fontWeight: FontWeight.w700,
           letterSpacing: 1.5,
           color: Color(0xFFF2E4C9),
+        ),
+      ),
+    );
+  }
+}
+
+/// Shown when this device has been waiting on a peer frame for longer than the
+/// session's stall threshold (see [BattleSession.stalledExchange]).
+///
+/// Deliberately not a blocking error: the duel is still live, the socket is
+/// still open, and the exchange completes the moment the peer's frame lands.
+/// The point is only that a frozen board should say what it is waiting for
+/// instead of looking like a crashed app — the exchange name is what turns a
+/// "it just froze" bug report into a diagnosable one.
+class _StalledExchangeBanner extends StatelessWidget {
+  const _StalledExchangeBanner({required this.exchange});
+
+  final String exchange;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      color: const Color(0xFF4A3410),
+      padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 12),
+      child: Text(
+        'WAITING FOR OPPONENT — $exchange',
+        textAlign: TextAlign.center,
+        style: const TextStyle(
+          fontFamily: 'serif',
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 1.2,
+          color: Color(0xFFE8C87A),
         ),
       ),
     );

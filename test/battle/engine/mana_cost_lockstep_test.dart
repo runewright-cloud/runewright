@@ -26,6 +26,7 @@ import 'package:rune_duel/battle/models/hex_battlefield.dart' show Battlefield;
 import 'package:rune_duel/battle/models/match_config.dart';
 import 'package:rune_duel/battle/models/wizard_avatar.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
+import 'package:rune_duel/spells/inscribe.dart' show tierForSteps;
 import 'package:rune_duel/spells/spell_asset.dart';
 
 import 'turn_session_pair.dart';
@@ -123,8 +124,14 @@ Future<_Result> _castAndCompare({required int activations}) async {
 /// inscription does (main.dart's Inscribe handler) — that agreement is the
 /// whole point of the test.
 SpellAsset _spellWith({required int activations}) {
-  const tier = 24;
   final t = activations;
+  // Must be the tier a REAL inscription of this T would have used: the
+  // verifier now selects the VK (and the public-output layout) from T via
+  // tierForSteps, so a fixture that pairs a low T with a tier-24-shaped
+  // synthetic proof describes a spell that cannot exist and is rejected for
+  // its field count. See turn_loop_proof_verification_test.dart's tier
+  // regression test for the production bug this mirrors.
+  final tier = tierForSteps(t)!;
   final commitmentBytes = Uint8List.fromList(List.filled(32, 0xab));
   final commitmentHex =
       '0x${commitmentBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join()}';

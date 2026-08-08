@@ -27,6 +27,7 @@ import 'package:rune_duel/battle/models/match_config.dart';
 import 'package:rune_duel/battle/models/status_effect_ids.dart';
 import 'package:rune_duel/battle/models/wizard_avatar.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
+import 'package:rune_duel/spells/inscribe.dart' show tierForSteps;
 import 'package:rune_duel/spells/spell_asset.dart';
 
 import 'turn_session_pair.dart';
@@ -197,14 +198,14 @@ SpellAsset _whiffSpell({required int fill, required int t}) {
   return SpellAsset(
     id: 'spell-$fill',
     createdAt: DateTime.utc(2026, 7, 29),
-    tier: 24,
+    tier: tierForSteps(t)!,
     t: t,
     ownerPubkeyHex: '0x${'00' * 32}',
     manaCost: 0,
     segmentCount: 0,
     dotCount: 0,
     initialGrid: const [],
-    proofBytes: _syntheticProofFor(tier: 24, t: t, commitmentBytes: commitmentBytes),
+    proofBytes: _syntheticProofFor(tier: tierForSteps(t)!, t: t, commitmentBytes: commitmentBytes),
     name: 'Whiff $fill',
     commitmentHex: commitmentHex,
     spellHashHex: '',

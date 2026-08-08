@@ -20,7 +20,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # matters mechanically: it must never go backwards, and Play would never let
 # a value be reused. Bump it for every build handed to a playtester, so a bug
 # report can name which one it came from.
-version: 1.0.1+3
+version: 1.0.1+4
 
 environment:
   sdk: ^3.11.4

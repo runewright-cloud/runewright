@@ -130,6 +130,8 @@ import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/spells/basic_spells.dart' show isBasicGridAndT;
 import 'package:rune_duel/spells/counter_charm.dart';
+import 'package:rune_duel/spells/inscribe.dart'
+    show kMaxInscribableSteps, tierForSteps;
 import 'package:rune_duel/spells/spell_asset.dart';
 import 'package:rune_duel/spells/spell_authorization.dart';
 import 'package:rune_duel/spells/spell_permission.dart';
@@ -818,6 +820,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     this.matchId,
     this.verifyProof,
     this.vkBytes,
+    this.vkBytesForTier,
     this.peerBookRoot,
     this.peerBookLeafCount,
     this.peerOwnerPubkeyHex,
@@ -915,8 +918,22 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// via [ProofIntake.verifyAndParse] before being accepted.
   final ProofVerifier? verifyProof;
 
-  /// Verification key bytes for the agreed circuit tier.
+  /// Verification key bytes, used when [vkBytesForTier] is null or has no
+  /// entry for the tier being verified.
+  ///
+  /// A single match-wide VK is NOT sufficient on its own: every spell is
+  /// proven at the smallest tier covering its own T ([tierForSteps]), so a
+  /// tier-12 spell cast into a tier-24 match presents 42 public inputs to a
+  /// VK expecting 66 and barretenberg rejects it ("num_public_inputs mismatch
+  /// with VK"). That was a real two-device break — see [_vkForTier].
   final Uint8List? vkBytes;
+
+  /// Resolves the bundled verification key for a given circuit tier
+  /// (12 / 24 / 48). Supplied by the battle screen, which bundles all three.
+  ///
+  /// Null in solo/tests, where [vkBytes] (usually an empty placeholder
+  /// alongside a null [verifyProof]) stands in.
+  final Uint8List? Function(int tier)? vkBytesForTier;
 
   /// The peer's Merkle book root (hex), received at session handshake. Used
   /// to verify the membership proof included with each peer spell cast.
@@ -942,9 +959,28 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// peer casts a spell they don't own. Empty in solo/test.
   final List<SpellPermission> peerPermissions;
 
-  /// Circuit tier (12 / 24 / 48), from [MatchConfig.tier]. Required for
-  /// [ProofIntake.verifyAndParse] to parse public outputs correctly.
+  /// Circuit tier (12 / 24 / 48), from [MatchConfig.tier].
+  ///
+  /// This is the tier the *match* negotiated — a ceiling, not the tier any
+  /// given spell was proven at. Never verify or parse a spell against it; use
+  /// [_tierForSpell] / [_vkForTier], which key off the spell's own T.
   final int tier;
+
+  /// The circuit tier a spell with [t] generations was proven at — the
+  /// smallest tier covering it, exactly as [inscribeSpell] chose at proving
+  /// time. Null when [t] is outside the circuit's supported range.
+  ///
+  /// [t] arrives on the wire for a peer cast and is therefore untrusted, but
+  /// using it only to *select* a verification key is fail-closed: a wrong tier
+  /// picks a VK the proof cannot satisfy and verification rejects it.
+  /// [_verifyPeerSpellCast] additionally re-checks the certified `outputs.t`
+  /// against the claim, so the value that chose the layout is bound to the
+  /// value the proof actually attests.
+  static int? _tierForSpell(int t) => tierForSteps(t);
+
+  /// The verification key for [tier], preferring the per-tier resolver and
+  /// falling back to the single [vkBytes].
+  Uint8List? _vkForTier(int tier) => vkBytesForTier?.call(tier) ?? vkBytes;
 
   /// When true, spell action payloads carry the [IncantationRecall] suffix,
   /// committed inside the action hash, and the peer prices the recital against
@@ -4483,7 +4519,14 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   List<WildMagicTrigger> _wildMagicFromOwnProof(SpellAsset spell) {
     if (spell.proofBytes.isEmpty) return const [];
     try {
-      final outputs = ProofIntake.parseOwn(spell.proofBytes, tier);
+      // The spell's OWN tier, not the match ceiling — parsing at the wrong
+      // tier_max reads the trajectory arrays at the wrong offsets and would
+      // derive different wild-magic triggers than the peer does from the same
+      // proof (§10 invariant 2). This is a local asset, so its recorded tier
+      // is authoritative; fall back to deriving it from T for assets written
+      // before the field was trustworthy.
+      final ownTier = _tierForSpell(spell.t) ?? spell.tier;
+      final outputs = ProofIntake.parseOwn(spell.proofBytes, ownTier);
       return WildMagic.triggersFor(
         outputs,
         TrajectoryParser.parse(outputs).formulas,
@@ -6349,10 +6392,9 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     Map<String, List<WildMagicTrigger>> certifiedPeerWildMagic, {
     bool forcedCast = false,
   }) async {
-    final vk = vkBytes;
     final verify = verifyProof;
     final bookRoot = peerBookRoot;
-    if (verify == null || vk == null)
+    if (verify == null || (vkBytes == null && vkBytesForTier == null))
       return; // solo or verification not wired up
 
     final SpellAsset spell;
@@ -6394,17 +6436,49 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         'peer sent a spell cast with no proof bytes — match forfeit',
       );
     }
+    // The tier this spell was PROVEN at, not the match's negotiated ceiling.
+    // Getting this wrong is not a soft failure: the public-input count is
+    // 10 + 2*tier_max (+8 for barretenberg's pairing-point object), so a
+    // tier-12 proof checked against the tier-24 VK aborts in the backend with
+    // "num_public_inputs mismatch with VK" (42 vs 66) and forfeits a duel that
+    // was perfectly legal. Every cast whose T fell outside the match tier used
+    // to break lockstep this way.
+    final spellTier = _tierForSpell(spell.t);
+    if (spellTier == null) {
+      session.sendForfeit('invalid_spell_tier');
+      throw StateError(
+        'peer spell declares T=${spell.t}, outside the circuit range '
+        '(1..$kMaxInscribableSteps) — match forfeit',
+      );
+    }
+    final vk = _vkForTier(spellTier);
+    if (vk == null) {
+      session.sendForfeit('missing_vk_for_tier');
+      throw StateError(
+        'no bundled verification key for tier $spellTier — match forfeit',
+      );
+    }
     final VerifiedSpellOutputs outputs;
     try {
       outputs = await ProofIntake.verifyAndParse(
         spell.proofBytes,
         vk,
         verify,
-        tier,
+        spellTier,
       );
     } on ProofIntakeException catch (e) {
       session.sendForfeit('invalid_spell_proof');
       throw StateError('peer spell proof rejected: $e');
+    }
+    // Binds the wire-declared T (which selected the VK and the parse layout)
+    // to the T the proof actually attests. Without this a peer could steer
+    // tier selection with a value nothing checked.
+    if (outputs.t != spell.t) {
+      session.sendForfeit('t_mismatch');
+      throw StateError(
+        'peer proof certifies T=${outputs.t} but the wire declared T=${spell.t}'
+        ' — match forfeit',
+      );
     }
     if (outputs.commitmentHex != spell.commitmentHex) {
       session.sendForfeit('commitment_mismatch');
