@@ -51,6 +51,24 @@ import 'package:crypto/crypto.dart' show sha256;
 /// the threshold.
 const int kKinshipMinElements = 9;
 
+/// True iff a trajectory of [elementCount] elements is short enough to carry
+/// the CANTRIP tag: two effects (an incantation) or a low stat-contributor
+/// count (a summon), under [kKinshipMinElements]. The floor is the same one
+/// kinship-exemption already uses — a Cantrip IS a kinship-exempt spell,
+/// named here for what it means to a player (unlimited copies of it may be
+/// added to one chapter) rather than for what it means to the anti-stacking
+/// rule.
+///
+/// This replaces the old hardcoded allowlist ([isBasicSpell] in
+/// `basic_spells.dart`) as the unlimited-copy rule: any spell this short
+/// qualifies, not just the five shipped starters. [isBasicSpell] still gates
+/// something else entirely — the OWNERSHIP bypass that lets a player cast a
+/// shipped starter despite its proof carrying Soren's dev key, not theirs —
+/// and stays scoped to exactly those five (grid, T) pairs; do not widen it to
+/// this predicate, that would let anyone cast anyone else's short spell
+/// without owning it or holding a grant.
+bool isCantripElementCount(int elementCount) => elementCount < kKinshipMinElements;
+
 /// The behavioural identity of a spell: what it does and what it costs.
 ///
 /// Two spells are KIN when this is equal and non-null. Null means the spell is

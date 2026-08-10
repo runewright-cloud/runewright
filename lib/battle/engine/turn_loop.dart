@@ -134,6 +134,7 @@ import 'package:rune_duel/spells/inscribe.dart'
     show kMaxInscribableSteps, tierForSteps;
 import 'package:rune_duel/spells/spell_asset.dart';
 import 'package:rune_duel/spells/spell_authorization.dart';
+import 'package:rune_duel/spells/spell_identity.dart' show isCantripElementCount;
 import 'package:rune_duel/spells/spell_permission.dart';
 
 import '../models/battle_state.dart';
@@ -1437,9 +1438,10 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   final Uint8List? peerRawPubkey;
 
   /// commitmentHex values the peer has cast this match. A second cast of the
-  /// same grid is a protocol violation (Kin-stacking exploit); the match is
-  /// forfeited on detection. EXCEPT for a shipped Basic spell
-  /// (docs/BASIC_SPELLS_PLAN.md — isBasicGridAndT), which is exempt: a
+  /// same grid is a protocol violation; the match is forfeited on detection.
+  /// EXCEPT for a shipped Basic spell (docs/BASIC_SPELLS_PLAN.md —
+  /// isBasicGridAndT) or a Cantrip (certified trajectory under
+  /// kKinshipMinElements, spell_identity.dart), either of which is exempt: a
   /// chapter may hold unlimited copies of one, so casting it more than once
   /// per match is legitimate, not an exploit.
   final _seenPeerCommitments = <String>{};
@@ -6405,13 +6407,16 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   ///
   /// Checks (in order):
   ///   1. UltraHonk proof verifies and public [commitmentHex] matches the wire value.
-  ///   2. No duplicate grid cast — same (verified [commitmentHex], T) twice is
-  ///      Kin-stacking — UNLESS this is one of the shipped Basic spells
-  ///      (docs/BASIC_SPELLS_PLAN.md), which may legitimately be cast more than
-  ///      once per match (a chapter may hold unlimited copies of one). Keyed on
-  ///      VERIFIED proof outputs, not the wire `spell.commitmentHex`/`.t` — see
-  ///      [isBasicGridAndT]'s header for why that distinction matters at a
-  ///      trust boundary.
+  ///   2. No duplicate grid cast — same (verified [commitmentHex], T) twice
+  ///      is a protocol violation — UNLESS this is one of the shipped Basic
+  ///      spells (docs/BASIC_SPELLS_PLAN.md) or a CANTRIP (certified
+  ///      trajectory under kKinshipMinElements, spell_identity.dart), either
+  ///      of which a chapter may legitimately hold in unlimited copies, so
+  ///      casting one more than once per match is not an exploit. Keyed on
+  ///      VERIFIED proof outputs, not the wire `spell.commitmentHex`/`.t`/
+  ///      `.formula` — see [isBasicGridAndT]'s header for why that
+  ///      distinction matters at a trust boundary; the Cantrip check is on
+  ///      the certified element sequence for the same reason.
   ///   3. Merkle membership proof is valid against [peerBookRoot].
   ///
   /// On success, populates [certifiedPeerFormulas] with the trajectory-derived
@@ -6532,10 +6537,24 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       );
     }
 
-    // 2. Duplicate grid detection — skipped for a shipped Basic spell, which
-    // may legitimately be cast more than once per match.
+    // Recompute formula triplets from the SNARK-certified trajectory (B-1 fix).
+    // Replaces the untrusted wire spell.formula for both mana-cost deduction and
+    // effect resolution. Stored here; read by _resolveActions → _applySpell.
+    //
+    // Computed before the duplicate-grid check below because the Cantrip
+    // exemption needs the CERTIFIED element count, not the peer-claimed
+    // `spell.formula.length`.
+    final certFormulas = TrajectoryParser.parse(outputs).formulas;
+    certifiedPeerFormulas[spell.commitmentHex] = certFormulas;
+    final certElementSequence = TrajectoryParser.certifiedElementSequence(outputs);
+    certifiedPeerElementSequences[spell.commitmentHex] = certElementSequence;
+
+    // 2. Duplicate grid detection — skipped for a shipped Basic spell or a
+    // Cantrip (certified trajectory under kKinshipMinElements), either of
+    // which may legitimately be cast more than once per match.
     if (!forcedCast &&
         !isBasicGridAndT(outputs.commitmentHex, outputs.t) &&
+        !isCantripElementCount(certElementSequence.length) &&
         !_seenPeerCommitments.add(outputs.commitmentHex)) {
       session.sendForfeit('duplicate_spell_cast:${outputs.commitmentHex}');
       throw StateError(
@@ -6543,14 +6562,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         '(commitmentHex=${outputs.commitmentHex})',
       );
     }
-
-    // Recompute formula triplets from the SNARK-certified trajectory (B-1 fix).
-    // Replaces the untrusted wire spell.formula for both mana-cost deduction and
-    // effect resolution. Stored here; read by _resolveActions → _applySpell.
-    final certFormulas = TrajectoryParser.parse(outputs).formulas;
-    certifiedPeerFormulas[spell.commitmentHex] = certFormulas;
-    final certElementSequence = TrajectoryParser.certifiedElementSequence(outputs);
-    certifiedPeerElementSequences[spell.commitmentHex] = certElementSequence;
     // Wild magic, same trust boundary (WILD_MAGIC_PLAN.md §4.6): derived from
     // the VERIFIED public outputs + the certified formulas, never from the
     // wire SpellAsset. The community seed comes from the agreed MatchConfig,

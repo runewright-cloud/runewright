@@ -654,17 +654,21 @@ class _CraftingsTabState extends State<_CraftingsTab>
     final chapter = await ChapterAsset.loadById(chapterId);
     if (chapter == null || !mounted) return;
 
-    // Reject if any existing chapter entry shares the same grid commitment —
-    // UNLESS this is a shipped Basic spell (docs/BASIC_SPELLS_PLAN.md), which
-    // may be added any number of times.
-    if (effectiveSpell.commitmentHex.isNotEmpty && !isBasicSpell(effectiveSpell)) {
+    // Reject if any existing chapter entry shares the same (grid, T) spell
+    // hash — UNLESS this is a CANTRIP (trajectory under kKinshipMinElements,
+    // spell_identity.dart), which may be added any number of times. Keyed on
+    // spellHashHex, not commitmentHex: the commitment is grid-only (CLAUDE.md
+    // invariant #2), so two spells that reuse the same grid but declare
+    // different T are legitimately different spells (inscribe.dart's own
+    // dedup rule) and must not collide here.
+    if (effectiveSpell.spellHashHex.isNotEmpty && !effectiveSpell.isCantrip) {
       final allSpells = await SpellAsset.loadAll();
       final byId = {for (final s in allSpells) s.id: s};
-      final chapterCommitments = chapter.entries
-          .map((e) => byId[e.spellId]?.commitmentHex)
+      final chapterSpellHashes = chapter.entries
+          .map((e) => byId[e.spellId]?.spellHashHex)
           .whereType<String>()
           .toSet();
-      if (chapterCommitments.contains(effectiveSpell.commitmentHex)) {
+      if (chapterSpellHashes.contains(effectiveSpell.spellHashHex)) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -826,7 +830,7 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
   Future<void> _clearCustomArt(SpellAsset spell) => _clearCustomArtOnSpell(spell, _reload);
 
   /// Adds every spell in [spells] to the selected chapter as a single batch:
-  /// one chapter load, one save, skipping any whose grid commitment is
+  /// one chapter load, one save, skipping any whose spell hash (grid + T) is
   /// already present (matching Craftings' per-spell dedup rule). Passing a
   /// one-element list is how the per-card "add" button reuses this.
   ///
@@ -861,17 +865,17 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
 
     final allSpells = await SpellAsset.loadAll();
     final byId = {for (final s in allSpells) s.id: s};
-    final seenCommitments = chapter.entries
-        .map((e) => byId[e.spellId]?.commitmentHex)
+    final seenSpellHashes = chapter.entries
+        .map((e) => byId[e.spellId]?.spellHashHex)
         .whereType<String>()
         .toSet();
 
     var added = 0;
     var skipped = 0;
     for (final spell in spells) {
-      if (spell.commitmentHex.isNotEmpty &&
-          seenCommitments.contains(spell.commitmentHex) &&
-          !isBasicSpell(spell)) {
+      if (spell.spellHashHex.isNotEmpty &&
+          seenSpellHashes.contains(spell.spellHashHex) &&
+          !spell.isCantrip) {
         skipped++;
         continue;
       }
@@ -881,7 +885,7 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
             ? (singlePersonality ?? SummonPersonality.aggressive.name)
             : null,
       ));
-      if (spell.commitmentHex.isNotEmpty) seenCommitments.add(spell.commitmentHex);
+      if (spell.spellHashHex.isNotEmpty) seenSpellHashes.add(spell.spellHashHex);
       added++;
     }
     if (added > 0) {
@@ -1013,7 +1017,17 @@ class _SpellCard extends StatelessWidget {
   /// These ship with every install under a dev owner_pubkey that is NOT this
   /// player's — the creator sigil (below) would otherwise falsely imply the
   /// player inscribed it, so it's suppressed and replaced with a plain label.
+  /// This is an OWNERSHIP fact, unrelated to [_isCantrip] below — do not
+  /// conflate the two (spell_identity.dart's [isCantripElementCount] header).
   bool get _isBasic => isBasicSpell(spell);
+
+  /// True iff this spell is short enough to carry the CANTRIP tag (under
+  /// [kKinshipMinElements] elements) — the player-facing signal that a
+  /// chapter may hold unlimited copies of it. Independent of [_isBasic]:
+  /// a player's own short homemade spell qualifies just as much as a
+  /// shipped starter, and the shipped Windhound summon (12 elements) does
+  /// NOT qualify despite being one of the five.
+  bool get _isCantrip => spell.isCantrip;
 
   /// True when this spell's proof is bound to somebody ELSE's Runekey.
   ///
@@ -1213,6 +1227,25 @@ class _SpellCard extends StatelessWidget {
                     ],
                     const SizedBox(height: 2),
                     Text(_date, style: manuscriptCaptionStyle()),
+                    if (_isCantrip) ...[
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.all_inclusive,
+                            size: 14,
+                            color: kIlluminationGold.withValues(alpha: 0.8),
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Cantrip — unlimited copies per chapter',
+                            style: manuscriptCaptionStyle(
+                              color: kInkColor.withValues(alpha: 0.6),
+                            ).copyWith(fontStyle: FontStyle.normal),
+                          ),
+                        ],
+                      ),
+                    ],
                     if (_isBasic) ...[
                       const SizedBox(height: 4),
                       Row(
@@ -1224,7 +1257,7 @@ class _SpellCard extends StatelessWidget {
                           ),
                           const SizedBox(width: 4),
                           Text(
-                            'Basic starter spell',
+                            'Shipped starter spell',
                             style: manuscriptCaptionStyle(
                               color: kInkColor.withValues(alpha: 0.6),
                             ).copyWith(fontStyle: FontStyle.normal),

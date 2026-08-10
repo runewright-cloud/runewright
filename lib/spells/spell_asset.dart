@@ -16,7 +16,8 @@ import 'package:path_provider/path_provider.dart';
 
 import 'chapter_asset.dart';
 import 'spell_art_pack.dart' show kPainterlyPack;
-import 'spell_identity.dart' show behaviouralKinKey, kKinshipMinElements;
+import 'spell_identity.dart'
+    show behaviouralKinKey, isCantripElementCount, kKinshipMinElements;
 import 'spell_sound_pack.dart' show kSpellSoundPack;
 
 /// Where a spell's custom art (lib/spells/spell_art_store.dart) came from.
@@ -218,6 +219,13 @@ class SpellAsset {
   /// why this must never be used to authorize anything.
   String? get kinKey =>
       behaviouralKinKey(trajectory: formula, baseManaCost: manaCost);
+
+  /// True iff this spell is a CANTRIP — its trajectory is under
+  /// [kKinshipMinElements] — and so a chapter may hold unlimited copies of
+  /// it (library_screen.dart's chapter-add dedup and TurnLoop's mid-match
+  /// duplicate-cast check both exempt Cantrips). Equivalent to `kinKey ==
+  /// null`; see spell_identity.dart's [isCantripElementCount].
+  bool get isCantrip => isCantripElementCount(formula.length);
 
   Map<String, dynamic> toJson() => {
         'id': id,

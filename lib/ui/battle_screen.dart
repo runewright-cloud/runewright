@@ -3466,465 +3466,473 @@ class _BattleScreenState extends State<BattleScreen>
           ),
         ],
       ),
-      body: Column(
-        children: [
-          // DEV FLAG (lib/dev_flags.dart): a duel running without proof
-          // verification must never be mistakable for a real one. Delete
-          // this with the flag.
-          if (kAllowProoflessSpells && _isRealDuel)
-            const _UnverifiedPlayBanner(),
-
-          // Phase banner — always visible, so it's never ambiguous whether
-          // the battle is waiting on the local player's Main/Move decision
-          // or playing out Summons/Resolution.
-          _PhaseBanner(label: _phaseLabel),
-
-          // Names the peer frame this device has been blocked on. Without it a
-          // stalled exchange is indistinguishable from a hung app: the board
-          // just stops responding, with no error, which is exactly how a
-          // playtest freeze was reported. Purely informational — the duel is
-          // still live and will resume the moment the frame arrives.
-          if (_stalledExchange != null)
-            _StalledExchangeBanner(exchange: _stalledExchange!),
-
-          // Opponent strip — swaps to the tapped enemy creature's HP (no
-          // mana row: minions don't have any) when one is inspected. Guards
-          // isAlive too: a dead minion is removed from state.minions by the
-          // engine, but this reference isn't cleared until the next tap.
-          // Watery Scrying Pool reveal — sits directly over the opponent
-          // strip below it; sourced from TurnLoop.revealedEnemyHand, which
-          // is reset every turn (see TurnLoop._beginTurnImpl), so this
-          // clears on its own at the next turn boundary with no separate
-          // expiry timer here.
-          if ((_loop.revealedEnemyHand?.isNotEmpty ?? false) && foes.isNotEmpty)
-            _RevealedHandRow(spells: _loop.revealedEnemyHand!),
-
-          if (_inspectedMinion != null && _inspectedMinion!.isAlive)
-            _EnemyCreatureHudRow(minion: _inspectedMinion!)
-          else if (foes.isNotEmpty)
-            _OpponentHudRow(avatars: foes, maxHp: config.playerHp),
-
-          // Battlefield — tappable, with the 4 artifact corner tiles
-          // floating over the empty space around the hex map (see
-          // _ArtifactCornerTile) so they don't cost the map any of the
-          // Expanded area's height.
-          Expanded(
-            child: Stack(
-              children: [
-                Positioned.fill(
-                  child: LayoutBuilder(
-                    builder: (ctx, constraints) {
-                      final size = Size(
-                        constraints.maxWidth,
-                        constraints.maxHeight,
-                      );
-                      final hSize = _hexSizeFromConstraints(
-                        size,
-                        config.gridRadius,
-                      );
-                      final center = Offset(size.width / 2, size.height / 2);
-                      // Store for tap handler (accessed on next frame — safe
-                      // because the values only change on resize, not during
-                      // a turn).
-                      _hexSize = hSize;
-                      _fieldCenter = center;
-                      return Stack(
-                        children: [
-                          GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onTapUp: (d) => _onTapBattlefield(d.localPosition),
-                            onLongPressStart: (d) =>
-                                _onLongPressBattlefield(d.localPosition),
-                            // Cosmetic terrain backdrop, drawn first and on the
-                            // same hex geometry as the battlefield so playable
-                            // tiles sit squarely on their terrain. See
-                            // lib/ui/scenery/.
-                            child: CustomPaint(
-                              painter: SceneryBackdropPainter(
-                                map: _sceneryFor(size, hSize),
-                                atlas: _sceneryAtlas,
-                                hexSize: hSize,
-                                playRadius: config.gridRadius,
-                              ),
+      // Samsung devices default to the 3-button nav bar, which is taller
+      // than the gesture pill this was originally tested against on Pixel
+      // (see M4/M5 findings) — without SafeArea it clips straight into the
+      // action bar / spell hand. AppBar already consumes the top inset, so
+      // this only adds bottom/side padding, matching the pattern used by
+      // menu_screen.dart and battle_lobby_screen.dart.
+      body: SafeArea(
+        child: Column(
+          children: [
+            // DEV FLAG (lib/dev_flags.dart): a duel running without proof
+            // verification must never be mistakable for a real one. Delete
+            // this with the flag.
+            if (kAllowProoflessSpells && _isRealDuel)
+              const _UnverifiedPlayBanner(),
+  
+            // Phase banner — always visible, so it's never ambiguous whether
+            // the battle is waiting on the local player's Main/Move decision
+            // or playing out Summons/Resolution.
+            _PhaseBanner(label: _phaseLabel),
+  
+            // Names the peer frame this device has been blocked on. Without it a
+            // stalled exchange is indistinguishable from a hung app: the board
+            // just stops responding, with no error, which is exactly how a
+            // playtest freeze was reported. Purely informational — the duel is
+            // still live and will resume the moment the frame arrives.
+            if (_stalledExchange != null)
+              _StalledExchangeBanner(exchange: _stalledExchange!),
+  
+            // Opponent strip — swaps to the tapped enemy creature's HP (no
+            // mana row: minions don't have any) when one is inspected. Guards
+            // isAlive too: a dead minion is removed from state.minions by the
+            // engine, but this reference isn't cleared until the next tap.
+            // Watery Scrying Pool reveal — sits directly over the opponent
+            // strip below it; sourced from TurnLoop.revealedEnemyHand, which
+            // is reset every turn (see TurnLoop._beginTurnImpl), so this
+            // clears on its own at the next turn boundary with no separate
+            // expiry timer here.
+            if ((_loop.revealedEnemyHand?.isNotEmpty ?? false) && foes.isNotEmpty)
+              _RevealedHandRow(spells: _loop.revealedEnemyHand!),
+  
+            if (_inspectedMinion != null && _inspectedMinion!.isAlive)
+              _EnemyCreatureHudRow(minion: _inspectedMinion!)
+            else if (foes.isNotEmpty)
+              _OpponentHudRow(avatars: foes, maxHp: config.playerHp),
+  
+            // Battlefield — tappable, with the 4 artifact corner tiles
+            // floating over the empty space around the hex map (see
+            // _ArtifactCornerTile) so they don't cost the map any of the
+            // Expanded area's height.
+            Expanded(
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: LayoutBuilder(
+                      builder: (ctx, constraints) {
+                        final size = Size(
+                          constraints.maxWidth,
+                          constraints.maxHeight,
+                        );
+                        final hSize = _hexSizeFromConstraints(
+                          size,
+                          config.gridRadius,
+                        );
+                        final center = Offset(size.width / 2, size.height / 2);
+                        // Store for tap handler (accessed on next frame — safe
+                        // because the values only change on resize, not during
+                        // a turn).
+                        _hexSize = hSize;
+                        _fieldCenter = center;
+                        return Stack(
+                          children: [
+                            GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTapUp: (d) => _onTapBattlefield(d.localPosition),
+                              onLongPressStart: (d) =>
+                                  _onLongPressBattlefield(d.localPosition),
+                              // Cosmetic terrain backdrop, drawn first and on the
+                              // same hex geometry as the battlefield so playable
+                              // tiles sit squarely on their terrain. See
+                              // lib/ui/scenery/.
                               child: CustomPaint(
-                                key: _battlefieldKey,
-                                painter: BattlefieldPainter(
-                                  radius: config.gridRadius,
+                                painter: SceneryBackdropPainter(
+                                  map: _sceneryFor(size, hSize),
+                                  atlas: _sceneryAtlas,
                                   hexSize: hSize,
-                                  // Wash the playable tiles instead of filling
-                                  // them, so the scenery shows through inside the
-                                  // grid. Falls back to the opaque board if the
-                                  // atlas never loaded.
-                                  terrainBeneath: _sceneryAtlas != null,
-                                  // Same atlas again, this time to build
-                                  // impassable tiles as raised rock. Without it
-                                  // they fall back to the flat crosshatch.
-                                  sceneryAtlas: _sceneryAtlas,
-                                  occupancy: widget.state.battlefield.occupancy,
-                                  localPlayerId: widget.localPlayerId,
-                                  highlightHex: _targetHex,
-                                  // Renders the *simulated* path (including any
-                                  // free conveyor push-throughs), not just the
-                                  // raw tiles tapped, so the player sees where
-                                  // they'll actually end up -- see
-                                  // predictAvatarMove.
-                                  movePath: _local != null
-                                      ? predictAvatarMove(
-                                          state: widget.state,
-                                          origin: _local!.position,
-                                          declaredPath: _movePath,
-                                          budget: _localMoveBudget,
-                                          moverId: widget.localPlayerId,
-                                        ).path.skip(1).toList()
-                                      : _movePath,
-                                  spellRangeRadius:
-                                      _selectedSpell != null && _local != null
-                                      ? _maxCastRange(_local!, _local!.position)
-                                      : 0,
-                                  casterPos: _local?.position,
-                                  minions: widget.state.minions
-                                      .where((m) => m.isAlive)
-                                      .toList(),
-                                  localTeamId: _local?.teamId,
-                                  barrierRings: _barrierRings(),
-                                  pulseAnimation: _pulseController,
-                                  castAnimations: _castAnimations,
-                                  castAnimation: _castAnimController,
-                                  avatarMoveAnimations: _avatarMoveAnimations,
-                                  minionMoveAnimations: _minionMoveAnimations,
-                                  moveAnimation: _moveAnimController,
-                                  attackAnimations: _attackAnimations,
-                                  attackAnimation: _attackAnimController,
-                                  avatarAtlas: _avatarAtlas,
-                                  avatarAssignment: _avatarAssignment,
-                                  tileEffects: widget.state.tileEffects,
-                                  terrainHp: _terrainHpForPainter(),
-                                  terrainBarrierElements:
-                                      _terrainBarrierElements(),
-                                  blockedLandingHex: _blockedLandingHex(),
-                                  clouds: widget.state.clouds,
-                                  directionPickHexes:
-                                      _phase == _InputPhase.pickingDirection &&
-                                          _conveyorPickOrigin != null
-                                      ? HexGrid.directions
-                                            .map(
-                                              (d) => HexCoord(
-                                                _conveyorPickOrigin!.q + d.q,
-                                                _conveyorPickOrigin!.r + d.r,
-                                              ),
-                                            )
-                                            .toList()
-                                      : const [],
-                                  conveyorChainAnimations:
-                                      _conveyorChainAnimations,
-                                  pendingCastOrbs: _pendingCastOrbs,
-                                  scryRevealHex: _scryRevealedTile,
-                                  meleePickHexes: _pickingMelee
-                                      ? _meleeCandidates
-                                      : const [],
-                                  // While the free-move prompt is up, the
-                                  // highlight shows the run built so far (or
-                                  // the legal first steps when nothing is
-                                  // tapped yet), tinted by whichever resource
-                                  // is paying: air for a free burst step,
-                                  // water/fire for a Boost.
-                                  freeMovePickHexes: _pickingFreeMove
-                                      ? (_freeMovePath.isEmpty
-                                            ? _loop.freeMoveCandidatesFor(
-                                                _local!.playerId,
-                                              )
-                                            : _freeMovePrediction.path
-                                                  .skip(1)
-                                                  .toList())
-                                      : const [],
-                                  freeMovePickColor:
-                                      _freeMoveGrant.boostResource == null
-                                      ? null
-                                      : BattlefieldPainter.colorForAffinity(
-                                          _freeMoveGrant.boostResource!,
-                                        ),
-                                  hiddenCloudIds: _hiddenCloudIds,
-                                  hiddenTileHexes: _hiddenTileHexes,
-                                  hiddenMinionIds: _hiddenMinionIds,
-                                  resolutionBaseline: _resolutionBaseline,
-                                  effectBloom: _effectBloom,
-                                  effectBloomAnimation: _effectBloomController,
+                                  playRadius: config.gridRadius,
                                 ),
-                                child: const SizedBox.expand(),
+                                child: CustomPaint(
+                                  key: _battlefieldKey,
+                                  painter: BattlefieldPainter(
+                                    radius: config.gridRadius,
+                                    hexSize: hSize,
+                                    // Wash the playable tiles instead of filling
+                                    // them, so the scenery shows through inside the
+                                    // grid. Falls back to the opaque board if the
+                                    // atlas never loaded.
+                                    terrainBeneath: _sceneryAtlas != null,
+                                    // Same atlas again, this time to build
+                                    // impassable tiles as raised rock. Without it
+                                    // they fall back to the flat crosshatch.
+                                    sceneryAtlas: _sceneryAtlas,
+                                    occupancy: widget.state.battlefield.occupancy,
+                                    localPlayerId: widget.localPlayerId,
+                                    highlightHex: _targetHex,
+                                    // Renders the *simulated* path (including any
+                                    // free conveyor push-throughs), not just the
+                                    // raw tiles tapped, so the player sees where
+                                    // they'll actually end up -- see
+                                    // predictAvatarMove.
+                                    movePath: _local != null
+                                        ? predictAvatarMove(
+                                            state: widget.state,
+                                            origin: _local!.position,
+                                            declaredPath: _movePath,
+                                            budget: _localMoveBudget,
+                                            moverId: widget.localPlayerId,
+                                          ).path.skip(1).toList()
+                                        : _movePath,
+                                    spellRangeRadius:
+                                        _selectedSpell != null && _local != null
+                                        ? _maxCastRange(_local!, _local!.position)
+                                        : 0,
+                                    casterPos: _local?.position,
+                                    minions: widget.state.minions
+                                        .where((m) => m.isAlive)
+                                        .toList(),
+                                    localTeamId: _local?.teamId,
+                                    barrierRings: _barrierRings(),
+                                    pulseAnimation: _pulseController,
+                                    castAnimations: _castAnimations,
+                                    castAnimation: _castAnimController,
+                                    avatarMoveAnimations: _avatarMoveAnimations,
+                                    minionMoveAnimations: _minionMoveAnimations,
+                                    moveAnimation: _moveAnimController,
+                                    attackAnimations: _attackAnimations,
+                                    attackAnimation: _attackAnimController,
+                                    avatarAtlas: _avatarAtlas,
+                                    avatarAssignment: _avatarAssignment,
+                                    tileEffects: widget.state.tileEffects,
+                                    terrainHp: _terrainHpForPainter(),
+                                    terrainBarrierElements:
+                                        _terrainBarrierElements(),
+                                    blockedLandingHex: _blockedLandingHex(),
+                                    clouds: widget.state.clouds,
+                                    directionPickHexes:
+                                        _phase == _InputPhase.pickingDirection &&
+                                            _conveyorPickOrigin != null
+                                        ? HexGrid.directions
+                                              .map(
+                                                (d) => HexCoord(
+                                                  _conveyorPickOrigin!.q + d.q,
+                                                  _conveyorPickOrigin!.r + d.r,
+                                                ),
+                                              )
+                                              .toList()
+                                        : const [],
+                                    conveyorChainAnimations:
+                                        _conveyorChainAnimations,
+                                    pendingCastOrbs: _pendingCastOrbs,
+                                    scryRevealHex: _scryRevealedTile,
+                                    meleePickHexes: _pickingMelee
+                                        ? _meleeCandidates
+                                        : const [],
+                                    // While the free-move prompt is up, the
+                                    // highlight shows the run built so far (or
+                                    // the legal first steps when nothing is
+                                    // tapped yet), tinted by whichever resource
+                                    // is paying: air for a free burst step,
+                                    // water/fire for a Boost.
+                                    freeMovePickHexes: _pickingFreeMove
+                                        ? (_freeMovePath.isEmpty
+                                              ? _loop.freeMoveCandidatesFor(
+                                                  _local!.playerId,
+                                                )
+                                              : _freeMovePrediction.path
+                                                    .skip(1)
+                                                    .toList())
+                                        : const [],
+                                    freeMovePickColor:
+                                        _freeMoveGrant.boostResource == null
+                                        ? null
+                                        : BattlefieldPainter.colorForAffinity(
+                                            _freeMoveGrant.boostResource!,
+                                          ),
+                                    hiddenCloudIds: _hiddenCloudIds,
+                                    hiddenTileHexes: _hiddenTileHexes,
+                                    hiddenMinionIds: _hiddenMinionIds,
+                                    resolutionBaseline: _resolutionBaseline,
+                                    effectBloom: _effectBloom,
+                                    effectBloomAnimation: _effectBloomController,
+                                  ),
+                                  child: const SizedBox.expand(),
+                                ),
                               ),
                             ),
-                          ),
-                          // Non-interactive: long-press is still hit-tested
-                          // manually via _onLongPressBattlefield above, using
-                          // pixelToHex on the raw tap position, so these
-                          // thumbnails must never intercept a pointer event.
-                          IgnorePointer(
-                            child: _MinionArtOverlay(
-                              minions: widget.state.minions
-                                  .where((m) => m.isAlive)
-                                  .toList(),
-                              spellByMinionId: _summonSpellByMinionId,
-                              localTeamId: _local?.teamId,
-                              center: center,
-                              hexSize: hSize,
-                              moveAnimations: _minionMoveAnimations,
-                              moveAnimation: _moveAnimController,
+                            // Non-interactive: long-press is still hit-tested
+                            // manually via _onLongPressBattlefield above, using
+                            // pixelToHex on the raw tap position, so these
+                            // thumbnails must never intercept a pointer event.
+                            IgnorePointer(
+                              child: _MinionArtOverlay(
+                                minions: widget.state.minions
+                                    .where((m) => m.isAlive)
+                                    .toList(),
+                                spellByMinionId: _summonSpellByMinionId,
+                                localTeamId: _local?.teamId,
+                                center: center,
+                                hexSize: hSize,
+                                moveAnimations: _minionMoveAnimations,
+                                moveAnimation: _moveAnimController,
+                              ),
                             ),
-                          ),
-                        ],
-                      );
-                    },
-                  ),
-                ),
-                Positioned(
-                  top: 0,
-                  left: 0,
-                  child: _ArtifactCornerTile(
-                    corner: _TileCorner.topLeft,
-                    icon: _kCounterCharmDisplay.$1,
-                    color: _kCounterCharmDisplay.$2,
-                    label: _kCounterCharmDisplay.$3,
-                    count: _accoutrementCount(
-                      local,
-                      AccoutrementKind.counterCharm,
+                          ],
+                        );
+                      },
                     ),
-                    // Charms have no activation to spend, so this tile never
-                    // lights up — but it DOES grey out on a turn the local
-                    // wizard spent something else, because that is precisely
-                    // when their charms are down (§2.2). A tap explains it;
-                    // there's nothing to long-press-declare.
-                    dimmed: _localCharmsDown,
-                    onTap: () =>
-                        _onArtifactCornerTap(AccoutrementKind.counterCharm),
                   ),
-                ),
-                Positioned(
-                  top: 0,
-                  right: 0,
-                  child: _ArtifactCornerTile(
-                    corner: _TileCorner.topRight,
-                    icon: _kRodOfWindDisplay.$1,
-                    color: _kRodOfWindDisplay.$2,
-                    label: _kRodOfWindDisplay.$3,
-                    count: local?.rodOfSpreadingCount ?? 0,
-                    active: _artifactRound.local ==
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    child: _ArtifactCornerTile(
+                      corner: _TileCorner.topLeft,
+                      icon: _kCounterCharmDisplay.$1,
+                      color: _kCounterCharmDisplay.$2,
+                      label: _kCounterCharmDisplay.$3,
+                      count: _accoutrementCount(
+                        local,
+                        AccoutrementKind.counterCharm,
+                      ),
+                      // Charms have no activation to spend, so this tile never
+                      // lights up — but it DOES grey out on a turn the local
+                      // wizard spent something else, because that is precisely
+                      // when their charms are down (§2.2). A tap explains it;
+                      // there's nothing to long-press-declare.
+                      dimmed: _localCharmsDown,
+                      onTap: () =>
+                          _onArtifactCornerTap(AccoutrementKind.counterCharm),
+                    ),
+                  ),
+                  Positioned(
+                    top: 0,
+                    right: 0,
+                    child: _ArtifactCornerTile(
+                      corner: _TileCorner.topRight,
+                      icon: _kRodOfWindDisplay.$1,
+                      color: _kRodOfWindDisplay.$2,
+                      label: _kRodOfWindDisplay.$3,
+                      count: local?.rodOfSpreadingCount ?? 0,
+                      active: _artifactRound.local ==
+                          AccoutrementKind.rodOfSpreading,
+                      onTap: () =>
+                          _onArtifactCornerTap(AccoutrementKind.rodOfSpreading),
+                      onLongPress: () => _onArtifactCornerLongPress(
                         AccoutrementKind.rodOfSpreading,
-                    onTap: () =>
-                        _onArtifactCornerTap(AccoutrementKind.rodOfSpreading),
-                    onLongPress: () => _onArtifactCornerLongPress(
-                      AccoutrementKind.rodOfSpreading,
+                      ),
                     ),
                   ),
-                ),
-                Positioned(
-                  bottom: 0,
-                  right: 0,
-                  child: _ArtifactCornerTile(
-                    corner: _TileCorner.bottomRight,
-                    icon: _kManaGemDisplay.$1,
-                    color: _kManaGemDisplay.$2,
-                    label: _kManaGemDisplay.$3,
-                    count: _accoutrementCount(local, AccoutrementKind.manaGem),
-                    active: _artifactRound.local == AccoutrementKind.manaGem,
-                    onTap: () =>
-                        _onArtifactCornerTap(AccoutrementKind.manaGem),
-                    onLongPress: () =>
-                        _onArtifactCornerLongPress(AccoutrementKind.manaGem),
+                  Positioned(
+                    bottom: 0,
+                    right: 0,
+                    child: _ArtifactCornerTile(
+                      corner: _TileCorner.bottomRight,
+                      icon: _kManaGemDisplay.$1,
+                      color: _kManaGemDisplay.$2,
+                      label: _kManaGemDisplay.$3,
+                      count: _accoutrementCount(local, AccoutrementKind.manaGem),
+                      active: _artifactRound.local == AccoutrementKind.manaGem,
+                      onTap: () =>
+                          _onArtifactCornerTap(AccoutrementKind.manaGem),
+                      onLongPress: () =>
+                          _onArtifactCornerLongPress(AccoutrementKind.manaGem),
+                    ),
                   ),
-                ),
-                Positioned(
-                  bottom: 0,
-                  left: 0,
-                  child: _ArtifactCornerTile(
-                    corner: _TileCorner.bottomLeft,
-                    icon: _kBookmarkDisplay.$1,
-                    color: _kBookmarkDisplay.$2,
-                    label: _kBookmarkDisplay.$3,
-                    count: _accoutrementCount(local, AccoutrementKind.bookmark),
-                    active: _artifactRound.local == AccoutrementKind.bookmark,
-                    onTap: () =>
-                        _onArtifactCornerTap(AccoutrementKind.bookmark),
-                    onLongPress: () =>
-                        _onArtifactCornerLongPress(AccoutrementKind.bookmark),
+                  Positioned(
+                    bottom: 0,
+                    left: 0,
+                    child: _ArtifactCornerTile(
+                      corner: _TileCorner.bottomLeft,
+                      icon: _kBookmarkDisplay.$1,
+                      color: _kBookmarkDisplay.$2,
+                      label: _kBookmarkDisplay.$3,
+                      count: _accoutrementCount(local, AccoutrementKind.bookmark),
+                      active: _artifactRound.local == AccoutrementKind.bookmark,
+                      onTap: () =>
+                          _onArtifactCornerTap(AccoutrementKind.bookmark),
+                      onLongPress: () =>
+                          _onArtifactCornerLongPress(AccoutrementKind.bookmark),
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-
-          // Cast-time enhancement picker — only when the selected spell
-          // achieved supreme dominance in at least one zone.
-          //
-          // HIDDEN under somatic components (SPELL_COMPONENTS_PLAN.md §4.2):
-          // the gesture performed during the hold is what selects the
-          // enhancement there, and leaving a tap path alongside it would mean
-          // two sources of truth for one choice — with the tap winning
-          // whenever the player forgot to release last.
-          if (_phase == _InputPhase.action &&
-              !_somaticOn &&
-              _selectedSpell != null &&
-              _selectedSpell!.supremeTags.isNotEmpty)
-            _EnhancementPicker(
-              availableTags: _selectedSpell!.supremeTags.toSet(),
-              selected: _selectedEnhancement,
-              mysteryDelay: _mysteryDelay,
-              onSelect: (zone) => setState(() {
-                _selectedEnhancement = _selectedEnhancement == zone
-                    ? null
-                    : zone;
-                if (_selectedEnhancement != 'earth') _mysteryDelay = 0;
+  
+            // Cast-time enhancement picker — only when the selected spell
+            // achieved supreme dominance in at least one zone.
+            //
+            // HIDDEN under somatic components (SPELL_COMPONENTS_PLAN.md §4.2):
+            // the gesture performed during the hold is what selects the
+            // enhancement there, and leaving a tap path alongside it would mean
+            // two sources of truth for one choice — with the tap winning
+            // whenever the player forgot to release last.
+            if (_phase == _InputPhase.action &&
+                !_somaticOn &&
+                _selectedSpell != null &&
+                _selectedSpell!.supremeTags.isNotEmpty)
+              _EnhancementPicker(
+                availableTags: _selectedSpell!.supremeTags.toSet(),
+                selected: _selectedEnhancement,
+                mysteryDelay: _mysteryDelay,
+                onSelect: (zone) => setState(() {
+                  _selectedEnhancement = _selectedEnhancement == zone
+                      ? null
+                      : zone;
+                  if (_selectedEnhancement != 'earth') _mysteryDelay = 0;
+                }),
+                onDelayChanged: (d) => setState(() => _mysteryDelay = d),
+              ),
+  
+            // …and what stands in its place under somatic. The picker was the
+            // only thing telling a player which enhancements a spell had
+            // actually certified; hiding it without this would leave them
+            // guessing which gesture is even worth attempting.
+            if (_phase == _InputPhase.action &&
+                _somaticOn &&
+                _selectedSpell != null &&
+                _selectedSpell!.supremeTags.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                child: Text(
+                  'Gesture to enhance: '
+                  '${_selectedSpell!.supremeTags.map((z) => kEnhancementLabel[z] ?? z).join(' · ')}',
+                  textAlign: TextAlign.center,
+                  style: manuscriptCaptionStyle(color: kIlluminationGold),
+                ),
+              ),
+  
+            // Phase-0 read-out is corner-tile-only now (2026-07-31): "mine" is
+            // the outlined tile, "charms down" is the dimmed counter-charm
+            // tile, and the opponent's declaration is a one-shot toast fired
+            // from _beginArtifactPhaseForTurn the moment it's revealed, rather
+            // than a banner that lingers for the rest of the turn.
+  
+            // Components: whose turn it is to perform, and what to do while the
+            // hold is open. One banner rather than two — vocal and somatic share
+            // the window, so a player performing both wants one instruction.
+            if (_componentBannerText != null)
+              Container(
+                width: double.infinity,
+                color: _isPerformingComponents
+                    ? const Color(0xFF6B1F1F)
+                    : kInkColor,
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Text(
+                  _componentBannerText!,
+                  textAlign: TextAlign.center,
+                  style: manuscriptHeaderStyle(
+                    fontSize: 16,
+                    color: kParchmentColor,
+                  ),
+                ),
+              ),
+  
+            // Action bar
+            _ActionBar(
+              phase: _phase,
+              selectedSpell: _selectedSpell,
+              // Priced under the enhancement actually chosen, which can differ
+              // from the hand strip's best-case figure (Water/Efficiency is −1/3;
+              // everything else is full price).
+              selectedSpellCost: _selectedSpell != null
+                  ? _spellCost(
+                      _selectedSpell!,
+                      enhancementZone: _selectedEnhancement,
+                    )
+                  : null,
+              // Under somatic the enhancement is not known until release, so the
+              // exact figure above is only the no-enhancement price. This is the
+              // cheapest it could turn out to be, and the button shows the pair
+              // as a range. Affordability still gates on the DEARER of the two
+              // (see _ActionBar): offering a cast the caster might not be able
+              // to pay for would make the PEER forfeit, not merely inconvenience
+              // this device.
+              selectedSpellCostFloor: _somaticOn && _selectedSpell != null
+                  ? _bestCaseSpellCost(_selectedSpell!)
+                  : null,
+              availableMana: _local?.mana,
+              hasTarget: _targetHex != null,
+              movePathLength: _movePath.length,
+              isBusy: _isBusy || _isPerformingComponents || !_componentSlotOpen,
+              pickingMelee: _pickingMelee,
+              pickingFreeMove: _pickingFreeMove,
+              freeMoveGrant: _freeMoveGrant,
+              freeMovePathLength: _freeMovePath.isEmpty
+                  ? 0
+                  : _freeMovePrediction.path.length - 1,
+              freeMoveCost: _freeMoveCost,
+              onDash: _onDash,
+              onMeditateMain: _onMeditateMain,
+              onCast: _onCast,
+              componentsEnabled: _componentsOn,
+              onCastHoldStart: _onCastHoldStart,
+              onCastHoldEnd: _onCastHoldEnd,
+              onCastHoldCancel: _onCastHoldCancel,
+              onCancel: () => setState(() {
+                _selectedSpell = null;
+                _targetHex = null;
+                _selectedEnhancement = null;
+                _mysteryDelay = 0;
               }),
-              onDelayChanged: (d) => setState(() => _mysteryDelay = d),
+              onMeditateMove: _onMeditateMove,
+              onConfirmMove: _onConfirmMove,
+              onCancelMove: () => setState(() => _movePath = const []),
+              onCancelDirectionPick: () => _conveyorPickCompleter?.complete(null),
+              onDeclineMelee: () => _meleePickCompleter?.complete(null),
+              onDeclineFreeMove: () => _freeMovePickCompleter?.complete(null),
+              onConfirmFreeMove: () =>
+                  _freeMovePickCompleter?.complete(_freeMovePath),
             ),
-
-          // …and what stands in its place under somatic. The picker was the
-          // only thing telling a player which enhancements a spell had
-          // actually certified; hiding it without this would leave them
-          // guessing which gesture is even worth attempting.
-          if (_phase == _InputPhase.action &&
-              _somaticOn &&
-              _selectedSpell != null &&
-              _selectedSpell!.supremeTags.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              child: Text(
-                'Gesture to enhance: '
-                '${_selectedSpell!.supremeTags.map((z) => kEnhancementLabel[z] ?? z).join(' · ')}',
-                textAlign: TextAlign.center,
-                style: manuscriptCaptionStyle(color: kIlluminationGold),
+  
+            // Incantation thumbnail tray — neutral space outside the grid for
+            // spells resolved this turn; long-tap re-opens the full card.
+            if (_incantationTray.isNotEmpty || _revealReservesTray)
+              _IncantationTray(
+                key: _incantationTrayKey,
+                thumbnails: _incantationTray,
               ),
-            ),
-
-          // Phase-0 read-out is corner-tile-only now (2026-07-31): "mine" is
-          // the outlined tile, "charms down" is the dimmed counter-charm
-          // tile, and the opponent's declaration is a one-shot toast fired
-          // from _beginArtifactPhaseForTurn the moment it's revealed, rather
-          // than a banner that lingers for the rest of the turn.
-
-          // Components: whose turn it is to perform, and what to do while the
-          // hold is open. One banner rather than two — vocal and somatic share
-          // the window, so a player performing both wants one instruction.
-          if (_componentBannerText != null)
-            Container(
-              width: double.infinity,
-              color: _isPerformingComponents
-                  ? const Color(0xFF6B1F1F)
-                  : kInkColor,
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Text(
-                _componentBannerText!,
-                textAlign: TextAlign.center,
-                style: manuscriptHeaderStyle(
-                  fontSize: 16,
-                  color: kParchmentColor,
-                ),
+  
+            // Player HP / MP bars. During a Boost prompt the bar also shows,
+            // in a paler shade behind the real level, where the run tapped so
+            // far would leave the wizard — the decision is "how much of this bar
+            // am I willing to burn", so it has to be visible while deciding.
+            if (local != null)
+              _PlayerHud(
+                avatar: local,
+                maxHp: config.playerHp,
+                pendingManaSpend: _freeMoveGrant.boostResource == SpellAffinity.water
+                    ? _freeMoveCost
+                    : 0,
+                pendingHpSpend: _freeMoveGrant.boostResource == SpellAffinity.fire
+                    ? _freeMoveCost
+                    : 0,
               ),
+  
+            // Status effects — local player by default; opponent when inspecting
+            _StatusEffectPanel(
+              avatar: _inspectedAvatar ?? local,
+              isLocal: _inspectedAvatar == null,
             ),
-
-          // Action bar
-          _ActionBar(
-            phase: _phase,
-            selectedSpell: _selectedSpell,
-            // Priced under the enhancement actually chosen, which can differ
-            // from the hand strip's best-case figure (Water/Efficiency is −1/3;
-            // everything else is full price).
-            selectedSpellCost: _selectedSpell != null
-                ? _spellCost(
-                    _selectedSpell!,
-                    enhancementZone: _selectedEnhancement,
-                  )
-                : null,
-            // Under somatic the enhancement is not known until release, so the
-            // exact figure above is only the no-enhancement price. This is the
-            // cheapest it could turn out to be, and the button shows the pair
-            // as a range. Affordability still gates on the DEARER of the two
-            // (see _ActionBar): offering a cast the caster might not be able
-            // to pay for would make the PEER forfeit, not merely inconvenience
-            // this device.
-            selectedSpellCostFloor: _somaticOn && _selectedSpell != null
-                ? _bestCaseSpellCost(_selectedSpell!)
-                : null,
-            availableMana: _local?.mana,
-            hasTarget: _targetHex != null,
-            movePathLength: _movePath.length,
-            isBusy: _isBusy || _isPerformingComponents || !_componentSlotOpen,
-            pickingMelee: _pickingMelee,
-            pickingFreeMove: _pickingFreeMove,
-            freeMoveGrant: _freeMoveGrant,
-            freeMovePathLength: _freeMovePath.isEmpty
-                ? 0
-                : _freeMovePrediction.path.length - 1,
-            freeMoveCost: _freeMoveCost,
-            onDash: _onDash,
-            onMeditateMain: _onMeditateMain,
-            onCast: _onCast,
-            componentsEnabled: _componentsOn,
-            onCastHoldStart: _onCastHoldStart,
-            onCastHoldEnd: _onCastHoldEnd,
-            onCastHoldCancel: _onCastHoldCancel,
-            onCancel: () => setState(() {
-              _selectedSpell = null;
-              _targetHex = null;
-              _selectedEnhancement = null;
-              _mysteryDelay = 0;
-            }),
-            onMeditateMove: _onMeditateMove,
-            onConfirmMove: _onConfirmMove,
-            onCancelMove: () => setState(() => _movePath = const []),
-            onCancelDirectionPick: () => _conveyorPickCompleter?.complete(null),
-            onDeclineMelee: () => _meleePickCompleter?.complete(null),
-            onDeclineFreeMove: () => _freeMovePickCompleter?.complete(null),
-            onConfirmFreeMove: () =>
-                _freeMovePickCompleter?.complete(_freeMovePath),
-          ),
-
-          // Incantation thumbnail tray — neutral space outside the grid for
-          // spells resolved this turn; long-tap re-opens the full card.
-          if (_incantationTray.isNotEmpty || _revealReservesTray)
-            _IncantationTray(
-              key: _incantationTrayKey,
-              thumbnails: _incantationTray,
+  
+            // Spell hand (SPELL_DRAW_WIRING_PLAN.md §5) — the live hand, not
+            // the whole chapter; deck count is the small HUD readout the plan
+            // calls out as a nice-to-have.
+            _SpellBook(
+              spells: _handSpells,
+              selectedIndex: _selectedHandIndex,
+              onSelect: _selectSpell,
+              onView: (spell) => showSpellCardFullscreen(context, spell),
+              isWithered: (index, _) => _loop.isHandSlotWithered(index),
+              // Best-case price per card: what the enhancement picker could get
+              // it down to. Shown on every card so the player can budget, and
+              // reddened + tap-refused on the ones they can't pay for.
+              costOf: (_, spell) => _bestCaseSpellCost(spell),
+              isUnaffordable: (_, spell) => _isUnaffordable(spell),
+              deckCount: _loop.localSpellDraw?.remaining.length,
             ),
-
-          // Player HP / MP bars. During a Boost prompt the bar also shows,
-          // in a paler shade behind the real level, where the run tapped so
-          // far would leave the wizard — the decision is "how much of this bar
-          // am I willing to burn", so it has to be visible while deciding.
-          if (local != null)
-            _PlayerHud(
-              avatar: local,
-              maxHp: config.playerHp,
-              pendingManaSpend: _freeMoveGrant.boostResource == SpellAffinity.water
-                  ? _freeMoveCost
-                  : 0,
-              pendingHpSpend: _freeMoveGrant.boostResource == SpellAffinity.fire
-                  ? _freeMoveCost
-                  : 0,
-            ),
-
-          // Status effects — local player by default; opponent when inspecting
-          _StatusEffectPanel(
-            avatar: _inspectedAvatar ?? local,
-            isLocal: _inspectedAvatar == null,
-          ),
-
-          // Spell hand (SPELL_DRAW_WIRING_PLAN.md §5) — the live hand, not
-          // the whole chapter; deck count is the small HUD readout the plan
-          // calls out as a nice-to-have.
-          _SpellBook(
-            spells: _handSpells,
-            selectedIndex: _selectedHandIndex,
-            onSelect: _selectSpell,
-            onView: (spell) => showSpellCardFullscreen(context, spell),
-            isWithered: (index, _) => _loop.isHandSlotWithered(index),
-            // Best-case price per card: what the enhancement picker could get
-            // it down to. Shown on every card so the player can budget, and
-            // reddened + tap-refused on the ones they can't pay for.
-            costOf: (_, spell) => _bestCaseSpellCost(spell),
-            isUnaffordable: (_, spell) => _isUnaffordable(spell),
-            deckCount: _loop.localSpellDraw?.remaining.length,
-          ),
-        ],
+          ],
+        ),
       ),
     );
 

@@ -98,6 +98,7 @@ void main() {
     required int tier,
     required int t,
     required Uint8List commitmentBytes,
+    List<int> trajectory = const [],
   }) {
     final count = 10 + 2 * tier;
     final bytes = Uint8List(4 + count * 32 + 1);
@@ -106,6 +107,10 @@ void main() {
     data.setUint32(4 + 0 * 32 + 28, t, Endian.big); // field 0: T
     data.setUint32(4 + 2 * 32 + 28, 3, Endian.big); // field 2: ruleset_version
     bytes.setRange(4 + 3 * 32, 4 + 3 * 32 + 32, commitmentBytes); // field 3: commitment
+    for (var gen = 0; gen < trajectory.length; gen++) {
+      final fieldIdx = 8 + gen; // dominanceTrajectory[gen]
+      bytes[4 + fieldIdx * 32 + 31] = trajectory[gen];
+    }
     return bytes;
   }
 
@@ -284,27 +289,48 @@ void main() {
   );
 
   test(
-    'casting a SECOND copy of a non-Basic duplicate-commitment spell still triggers '
-    'the Kin-stacking forfeit — the exemption in _verifyPeerSpellCast is scoped to '
-    'registered Basic spells only, not a general relaxation of the anti-replay rule',
+    'casting a SECOND copy of a non-Basic, non-Cantrip duplicate-commitment '
+    'spell still triggers the duplicate-grid forfeit — the exemption in '
+    '_verifyPeerSpellCast is scoped to registered Basic spells and short '
+    '(Cantrip) trajectories, not a general relaxation of the anti-replay rule',
     () async {
       final commitmentBytes = Uint8List.fromList(List.filled(32, 7));
       final commitmentHex =
           '0x${commitmentBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join()}';
+      // 9 generations alternating fire/air: a lead change every generation,
+      // so FormulaTracker commits all 9 -- kKinshipMinElements exactly, i.e.
+      // NOT a Cantrip. Needed so this spell falls through both exemptions
+      // (isBasicGridAndT and isCantripElementCount) and still forfeits.
+      const nineElementTrajectory = [1, 2, 1, 2, 1, 2, 1, 2, 1];
+      // Wire formula matching the certified trajectory 1:1 (fire=1, air=2 --
+      // see ca_run.dart's ruleFromIndex/activeZoneFor), so the caster's own
+      // local effect resolution (spell.formula) agrees with what the
+      // verifier derives from certified proof outputs. A mismatch here is
+      // orthogonal to this test's point and would desync the state hash for
+      // an unrelated reason.
+      const nineElementFormula = [
+        'fire', 'air', 'fire', 'air', 'fire', 'air', 'fire', 'air', 'fire',
+      ];
       SpellAsset dup(String id) => SpellAsset(
         id: id,
         createdAt: DateTime.utc(2026, 7, 27),
         tier: 12,
-        t: 1,
+        t: 9,
         ownerPubkeyHex: '0x${'0' * 64}',
         manaCost: 0,
         segmentCount: 0,
         dotCount: 0,
         initialGrid: const [],
-        proofBytes: syntheticProofFor(tier: 12, t: 1, commitmentBytes: commitmentBytes),
+        proofBytes: syntheticProofFor(
+          tier: 12,
+          t: 9,
+          commitmentBytes: commitmentBytes,
+          trajectory: nineElementTrajectory,
+        ),
         name: 'Not A Basic Spell',
         commitmentHex: commitmentHex,
         spellHashHex: '',
+        formula: nineElementFormula,
       );
       final chapter = [dup('dup-a'), dup('dup-b')];
       final pair = buildLoopPair(
