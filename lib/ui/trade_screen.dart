@@ -111,7 +111,11 @@ class _TradeScreenState extends State<TradeScreen> {
       // mDNS advertising inside this call is itself best-effort (see
       // TradeDiscovery.startAdvertising) -- this only throws on a genuine
       // socket-bind failure, not on `nsd` being unavailable.
-      await _discovery.startAdvertising();
+      final wizardName = await Identity.loadWizardName();
+      final displayName = (wizardName != null && wizardName.isNotEmpty)
+          ? "$wizardName's Trade"
+          : 'Runewright Trade';
+      await _discovery.startAdvertising(displayName: displayName);
       final ip = await _discovery.localAddressHint();
       final port = _discovery.listeningPort;
       if (mounted && port != null) {

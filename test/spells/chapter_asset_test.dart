@@ -242,6 +242,69 @@ void main() {
     });
   });
 
+  group('ChapterAsset.rename', () {
+    test('changes the name but keeps id, createdAt, entries and artifacts', () {
+      final chapter = ChapterAsset(
+        id: 'chapter-1',
+        name: 'Old Name',
+        createdAt: DateTime.utc(2026, 7, 24, 12, 0, 0),
+        entries: const [ChapterEntry(spellId: 'spell-1')],
+        artifacts: const [ArtifactEntry(kind: ArtifactKind.manaGem)],
+      );
+
+      final renamed = chapter.rename('New Name');
+
+      expect(renamed.name, 'New Name');
+      expect(renamed.id, chapter.id);
+      expect(renamed.createdAt, chapter.createdAt);
+      expect(renamed.entries, chapter.entries);
+      expect(renamed.artifacts, chapter.artifacts);
+      // Original untouched (immutable model).
+      expect(chapter.name, 'Old Name');
+    });
+  });
+
+  group('ChapterAsset.copyAsNew', () {
+    test('carries over entries/artifacts under a fresh id, name and createdAt', () {
+      final chapter = ChapterAsset(
+        id: 'chapter-1',
+        name: 'Original',
+        createdAt: DateTime.utc(2026, 7, 24, 12, 0, 0),
+        entries: const [ChapterEntry(spellId: 'spell-1')],
+        artifacts: const [ArtifactEntry(kind: ArtifactKind.manaGem)],
+      );
+
+      final copy = chapter.copyAsNew('Original (Copy)');
+
+      expect(copy.name, 'Original (Copy)');
+      expect(copy.id, isNot(chapter.id));
+      expect(copy.entries, chapter.entries);
+      expect(copy.artifacts, chapter.artifacts);
+      // Original untouched.
+      expect(chapter.name, 'Original');
+    });
+
+    test('the copy persists independently of the original', () async {
+      final chapter = sample(artifacts: const [
+        ArtifactEntry(kind: ArtifactKind.counterCharm),
+      ]);
+      await chapter.save();
+
+      final copy = chapter.copyAsNew('Test Chapter (Copy)');
+      await copy.save();
+
+      final all = await ChapterAsset.loadAll();
+      expect(all.length, 2);
+      expect(all.map((c) => c.id).toSet(), {chapter.id, copy.id});
+
+      // Mutating the copy doesn't touch the original's persisted file.
+      final mutatedCopy = copy.withoutArtifactAt(0);
+      await mutatedCopy.save();
+      final reloadedOriginal = await ChapterAsset.loadById(chapter.id);
+      expect(reloadedOriginal!.artifacts.length, 1);
+    });
+  });
+
   group('ChapterAsset persistence', () {
     test('save/loadById round-trips unattuned and attuned charms', () async {
       final chapter = sample(artifacts: const [

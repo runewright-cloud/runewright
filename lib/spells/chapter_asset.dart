@@ -19,8 +19,8 @@ import 'counter_charm.dart';
 // NOTE: the Air-typed slot is the Rod of Wind (design v3.0 §Artifacts): a
 // one-shot consumable that adds +1 effective radius to the next spell's effects
 // (and one size rung to a summoned minion). It replaced the v2.4 "absorption /
-// deflection rod" whose status-nullify role now survives only through the
-// *summoned* deflectionTotem (Water-Earth/Earth). `deflectionRod` is kept below
+// deflection rod" whose status-nullify role survives as AccoutrementKind.
+// absorptionRod (summon-only, no loadout slot). `deflectionRod` is kept below
 // only as a read-time JSON alias for any chapter persisted under the old name.
 enum ArtifactKind { manaGem, bookmark, rodOfSpreading, counterCharm }
 
@@ -157,6 +157,32 @@ class ChapterAsset {
       artifacts: updated,
     );
   }
+
+  /// Returns a copy of this chapter renamed to [newName], keeping the same
+  /// [id] — and therefore the same active-chapter selection and, if this
+  /// chapter is a master's loan, the same loan identity.
+  ChapterAsset rename(String newName) => ChapterAsset(
+        id: id,
+        name: newName,
+        createdAt: createdAt,
+        entries: entries,
+        artifacts: artifacts,
+      );
+
+  /// Returns a new, independent chapter named [newName] with a fresh [id]
+  /// and [createdAt], carrying over this chapter's spells and artifacts.
+  /// Backs "Duplicate Chapter": players keep a chapter they like untouched
+  /// and experiment on the copy instead. The copy is always a normal,
+  /// editable chapter even when this one is a master's read-only loan
+  /// (MASTER_APPRENTICE_PLAN.md §8) — loan status is tracked externally by
+  /// chapter id, and the copy gets a new one.
+  ChapterAsset copyAsNew(String newName) => ChapterAsset(
+        id: DateTime.now().toUtc().microsecondsSinceEpoch.toString(),
+        name: newName,
+        createdAt: DateTime.now().toUtc(),
+        entries: entries,
+        artifacts: artifacts,
+      );
 
   ChapterAsset withEntry(ChapterEntry entry) => ChapterAsset(
         id: id,

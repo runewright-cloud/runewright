@@ -286,7 +286,7 @@ void main() {
       expect(caster.manaGemsEquipped, 0);
     });
 
-    test('self-targeted Earth flavor (deflection totem) lands on the caster', () {
+    test('self-targeted Earth flavor (Rod of Wind) lands on the caster', () {
       final caster = _avatar('caster', const HexCoord(0, 0));
       final state = _state([caster]);
 
@@ -298,7 +298,7 @@ void main() {
       ));
 
       expect(
-        caster.accoutrements.any((a) => a.kind == AccoutrementKind.deflectionTotem),
+        caster.accoutrements.any((a) => a.kind == AccoutrementKind.rodOfSpreading),
         isTrue,
       );
     });

@@ -10,6 +10,12 @@ formula (§4.1) is simplified from the design doc's literal text — see §13 it
 *Read `CLAUDE.md` first. Nothing here touches the CA, the circuit, or `stepper.dart`, so
 **no `RULESET_VERSION` bump is required** (see §11 for why, and what it does change).*
 
+> **`[AMENDED 2026-08-10]` The seed preimage has changed — see §16.** It is now keyed to the
+> **caster's** pubkey and the spell's **public behaviour**, not to the grid commitment, so
+> that `COUNTER_CHARM_KINSHIP_PLAN.md` Phase 4 can delete the commitment. §2.7 and §4.1's
+> `[SIMPLIFIED]` note are superseded; §2.6 is not. Everything built before this amendment
+> (§1–§15) shipped and is otherwise unchanged.
+
 ---
 
 ## 1. What this builds
@@ -139,6 +145,13 @@ search. It is ~60× weaker than proof-hashing was, and the seed-rotation lever i
 
 ### 2.7 The preimage is simplified to `commitment ‖ T ‖ seed` — border activations and trajectory dropped
 
+> **`[SUPERSEDED 2026-08-10 — see §16]`** This reasoning holds only while `commitment` is in
+> the preimage carrying the grid binding. Phase 4 deletes the commitment, at which point the
+> trajectory and border activations stop being redundant and become the *only* grid-derived
+> inputs left. Both are read back in by §16.3, and the seed gains the caster's pubkey. Left
+> below as written because the redundancy argument is correct on its own terms and worth
+> being able to re-read.
+
 Ratified 2026-07-30. Soren: *"I'm not sure why we're including trajectory... I'm happy so
 long as the same grid with the same community seed run for the same number of turns will
 always produce the same spell with both the same normal effects and wild magic effects."*
@@ -197,6 +210,12 @@ per-turn state hash diverges and the match aborts. Specify it once, test it agai
 vectors, and never let a second derivation path exist.
 
 ### 4.1 The seed hash
+
+> **`[SUPERSEDED 2026-08-10 — the preimage below is not current; see §16.3]`** The layout here
+> is what shipped and what the code does today. §16.3 replaces it with a caster-keyed
+> behavioural preimage so the commitment can be deleted from the circuit. The naming trap, the
+> `T`-is-explicit rule, the seed-goes-last rule, and the tier-independence requirement all
+> carry forward unchanged — only the grid-derived ingredient changes.
 
 > **Naming trap:** `SpellAsset.spellHashHex` already exists and is `Poseidon2(commitment, T)`
 > — a completely different value used for duplicate detection at save time. Do **not** reuse
@@ -967,6 +986,20 @@ Once the implementation is settled, update `docs/runewright_design_v3_0.md`:
 8. **Settle the in-world name** — "leyline seed word" (Soren's usage) vs "Community Seed
    Word" (current doc) — and use one consistently in UI copy.
 
+**`[ADDED 2026-08-10 — from §16, against `runewright_design_v4_0.md`]`**
+
+9. **Item 3 above is itself superseded by §16.3** — fold in the caster-keyed behavioural
+   preimage, not `SHA256(commitment ‖ T ‖ seed)`. Item 4's reasoning survives verbatim.
+10. **Record the loan exception against §449.** The design doc says loaned spells preserve
+    the master's commitment and *"the spell is still mechanically the master's."* That stands
+    for counter-charm targeting and permissions, but wild magic is now keyed to the **caster**
+    (§16.4, ratified 2026-08-10) — a borrowed rune fires the borrower's wild magic. This is
+    deliberate and story-generating; write it in rather than leaving §449 to read as
+    unqualified.
+11. **State the privacy claim honestly, alongside `COUNTER_CHARM_KINSHIP_PLAN.md` §4's.**
+    Per-caster keying ends cross-player trigger tables and the shared-Basic-Spell fingerprint;
+    it does not make a grid unrecoverable. Do not promise more than §16.6 leaves standing.
+
 ---
 
 ## 14. Explicitly deferred (name in the PR, don't build)
@@ -1029,3 +1062,242 @@ gradient stop of `0x00000000` drags the ramp through grey on its way to transpar
 first foil attempt used transparent-black stops between hues and laid a dirty grey cast
 over the parchment. Fading between low-alpha *hues* instead keeps the wash in-hue the whole
 way round.
+
+---
+
+## 16. Amendment — the caster-keyed behavioural seed (ratified 2026-08-10)
+
+*Supersedes §2.7 and the `[SIMPLIFIED — 2026-07-30]` note in §4.1. §2.6's reasoning survives
+intact and is the reason this amendment is shaped the way it is. Read §16.6 before building —
+it is the one open question this change creates.*
+
+### 16.1 Why this exists — wild magic is what pins the commitment in place
+
+`COUNTER_CHARM_KINSHIP_PLAN.md` Phase 4 deletes `commitment` from the circuit, because an
+unsalted deterministic hash of the grid is a free offline oracle for grid guesses (that plan
+§4). Phases 2–3 moved counter charms, kin-stacking and arms off it; permissions and art sync
+have a designated landing spot in `uniqueSpellId`.
+
+Wild magic had none. `WildMagic.seedHexFromParts` hashes `commitment ‖ T ‖ seed`
+([wild_magic.dart:99](../lib/battle/engine/wild_magic.dart#L99)), so **Phase 4 cannot land
+while this preimage stands.** This amendment is the last unpinning step.
+
+Note the irony in §4.1's own reasoning. It dropped `border_activations` and
+`dominance_trajectory` as redundant because they are *"pure, deterministic functions of
+`(grid, T)` — exactly like `commitment` already is."* That argument is entirely conditional
+on the commitment being present. **Delete the commitment and the trajectory stops being
+redundant: it becomes the only grid-derived thing left.** The simplification does not survive
+Phase 4 and is deliberately reverted here.
+
+### 16.2 What was evaluated and rejected
+
+**Hashing the pubkey into a grid hash — `Poseidon2(grid, T, pubkey)` — rejected.** The design
+instinct behind it is right (see §16.4) but the security claim is not: `owner_pubkey` is
+**public**, sitting at public-input index 1 of every proof you transmit
+([proof_wire.dart:11](../lib/protocol/proof_wire.dart#L11)). It is a **salt**, not a
+**pepper** — it defeats *amortization* (no single table works against everyone) but leaves the
+cost of attacking one named target completely unchanged. Same trap `COUNTER_CHARM_KINSHIP_PLAN.md`
+§6 caught with `hash(grid‖T)`.
+
+Worse, as a new public output it would be **the commitment again in a costume**: §4 of that
+plan states the entire benefit of removal as *"raises the per-guess cost from one hash to one
+CA simulation."* Any public output that is a hash of the grid hands that straight back. We
+would take the VK break, regenerate the corpus, make everyone re-inscribe, and end up with the
+same cheap oracle — merely per-player rather than universal. Against the realistic threat in an
+in-person game (the person across the table, who knows whose spells they want to read) that is
+no protection at all.
+
+**Signing or wrapping the seed with the private key — rejected, structurally.** The seed is by
+definition a value the **opponent must independently derive or verify** (§4). Ed25519 is
+deterministic per RFC 8032, so `sign(sk, msg)` is stable and consensus would work — but an
+attacker guesses a grid, computes the message, and calls `verify(pubkey, msg, sig)`. True means
+they found the grid. **Signature verification is itself the oracle.** Encryption fails the same
+way: encrypt to the opponent and they hold the plaintext; don't, and they cannot derive the
+effect.
+
+> **The general rule, worth keeping.** In a two-party protocol with no trusted third party, any
+> value your opponent can derive *or verify* is a value an attacker can use as an oracle —
+> because the attacker can simply be the opponent. The private key can only add secrecy to
+> values the opponent does not need.
+
+A **VRF** (RFC 9381) is the named primitive for "only I can produce it, anyone can verify it".
+It was considered and set aside: it does not hide its input, so a grid-derived input is the same
+oracle, and §2.6's threat model is a player grinding **their own** spells — which a VRF does
+nothing about, since they hold their own key.
+
+### 16.3 The new preimage
+
+Everything below is already public, so this introduces **no new oracle**: testing a grid guess
+against it costs one CA simulation, exactly as testing against the trajectory does.
+
+```
+preimage =
+    uint8(T)                                   // 1 byte, 1..48 — also the length prefix
+                                               //   for the two arrays that follow
+  ‖ uint8(dominance_trajectory[g])   g=0..T-1  // T bytes, 0..4
+  ‖ uint8(supreme_dominance_flags[g]) g=0..T-1 // T bytes, 0 or 1
+  ‖ uint32be(border_activations[e])  e=0..3    // 16 bytes, [fire, air, water, earth]
+  ‖ uint16be(segment_count)                    // 2 bytes
+  ‖ uint16be(dot_count)                        // 2 bytes
+  ‖ casterOwnerPubkey                          // 32 bytes big-endian raw Field — see §16.4
+  ‖ utf8(normalizedCommunitySeed)              // variable length, LAST
+
+wildMagicSeedHex = lowercase hex of SHA-256(preimage)    // 64 chars, no "0x" prefix
+```
+
+Encoding decisions you must not quietly change:
+
+1. **The arrays are sliced to `T`, never hashed at full `tierMax` length.**
+   `dominanceTrajectory` and `supremeDominanceFlags` are `tierMax`-long with masked tails
+   ([proof_intake.dart:78-88](../lib/battle/engine/proof_intake.dart#L78)). Hash them raw and
+   the preimage becomes **tier-dependent** — the same spell would roll different wild magic in
+   a tier-24 match than a tier-12 one, breaking §10 invariant 11. This padding handling is
+   precisely the *"fiddliest part of §4.1"* that dropping the arrays avoided in 2026-07-30. It
+   is back, and it is the single easiest silent bug in this change.
+2. **`T` stays an explicit field, first.** Unchanged reasoning from §4.1 — kin-spell
+   disambiguation must not rely on the CA's border output happening to vary. It doubles here as
+   the length prefix that makes the two variable arrays unambiguous.
+3. **`uint32be` for border activations is deliberately over-wide.** The bound is ~72 border
+   cells × 48 generations, which fits `uint16`, but the width is not worth re-deriving under
+   pressure later. Pin it and move on.
+4. **`segment_count`/`dot_count` are included, and this is load-bearing** — not padding. See
+   the cheapening attack in §16.5.
+5. **The community seed is last**, so it needs no length prefix. Unchanged.
+6. **The commitment is absent even before Phase 4 lands.** That is the point: this amendment
+   ships first and un-pins the commitment so Phase 4 *can* land.
+
+Soren's ratified invariant holds in its new, stronger form: **same grid + same T + same caster
++ same community seed ⇒ same wild magic, always.** Every ingredient is a deterministic function
+of `(grid, T, caster)`.
+
+### 16.4 Ratified: the seed is keyed to the CASTER, not the inscriber
+
+**Soren, 2026-08-10: a loaned spell fires the *borrower's* wild magic.** The design intent is
+explicit — *"more interesting player stories are generated if a loaned spell suddenly becomes
+infused with wild magic."* A master's rune behaves differently in an apprentice's hands, and
+neither of them can fully predict how until it is cast.
+
+This is a deliberate departure from `runewright_design_v4_0.md` §449 (*"loaned spells preserve
+the master's commitment… the spell is still mechanically the master's"*), which stands for
+counter-charm targeting and permissions; wild magic is now the one axis on which custody
+changes behaviour. **Fold this into the design doc rather than leaving the two in tension.**
+
+What this buys, beyond the story: §4 of `COUNTER_CHARM_KINSHIP_PLAN.md` names the sharpest
+current failure as *"no table is even needed for shared spells: Basic Spells ship with identical
+commitments for every player, and any published recipe is recognisable in anyone's book
+forever."* Per-caster keying **kills that outright** — no cross-player table, no published
+grid that carries the same trigger for whoever copies it. Knowledge stops transferring, which
+is the stated design goal.
+
+> **The trap: the wrong pubkey is closer to hand than the right one.**
+> `VerifiedSpellOutputs.ownerPubkeyHex` ([proof_intake.dart:61](../lib/battle/engine/proof_intake.dart#L61))
+> is the **inscriber**, and it is already sitting in the outputs object every derivation site
+> holds. It is *not* the value this preimage wants. The caster is
+> `WizardAvatar.ownerPubkeyHex` ([wizard_avatar.dart:255](../lib/battle/models/wizard_avatar.dart#L255)),
+> which is set from the authenticated handshake hex
+> ([duel_battle_setup.dart:20](../lib/battle/models/duel_battle_setup.dart#L20)) and is already
+> inside `toCanonicalBytes` ([battle_state.dart:326](../lib/battle/models/battle_state.dart#L326)).
+> Use the avatar's. Put a comment saying so at both call sites — this will be "fixed" by someone
+> reaching for the nearer field otherwise.
+
+Using the authenticated avatar value is also what makes it **unforgeable**: a self-asserted
+caster pubkey would let a peer shop identities per cast for whichever gives them a trigger.
+
+### 16.5 Implementation
+
+**Signature change.** `WildMagic.seedHex` / `triggersFor` currently take
+`(outputs, formulas, communitySeed)` and read everything from `outputs`. They gain a required
+`casterOwnerPubkeyHex`. Keep the `…FromParts` kernel split introduced for the card preview
+(§15) — §10 invariant 2 (exactly one derivation path) is unchanged and still binding.
+
+**Three call sites must be threaded:**
+
+| Site | Caster pubkey source |
+|---|---|
+| Local cast — `_wildMagicFromOwnProof` ([turn_loop.dart:4565](../lib/battle/engine/turn_loop.dart#L4565)) | `actor.ownerPubkeyHex`; `actor` is already the first parameter of the calling `_fireWildMagic` |
+| Peer cast — `_verifyPeerSpellCast` ([turn_loop.dart:6569](../lib/battle/engine/turn_loop.dart#L6569)) | the peer avatar's `ownerPubkeyHex` (authenticated, `peerOwnerPubkeyHex` from [duel_setup.dart:229](../lib/battle/networking/duel_setup.dart#L229)) — **not** `outputs.ownerPubkeyHex` |
+| Forced cast (Spontaneous Combustion) | the forced caster's avatar. Note [forced_cast.dart:371](../lib/battle/engine/forced_cast.dart#L371) currently constructs with `ownerPubkeyHex: ''` — check whether that path can reach the wild-magic seam before assuming it is inert |
+
+**The preview will now lie about loaned spells, and must say so.**
+`lib/spells/wild_magic_preview.dart` hashes a stored `SpellAsset` under the local player's
+seed. Under caster keying, a card for a spell you have **borrowed** must preview under *your*
+pubkey (correct, and it is the surprise Soren wants), while a spell you have **loaned out**
+previews under yours but will fire under the borrower's. §15's rule that a card must not lie
+at the moment it matters applies directly: the borrowed-spell case resolves itself, the
+loaned-out case needs a UI note. Treat as a Phase-adjacent UI task, not an afterthought.
+
+**The cheapening attack, and why `segment_count`/`dot_count` are in the preimage.** Trajectory
+is many-to-one where the commitment was one-to-one (that is what `behaviouralKinKey` means).
+Without the geometry fields, a grinder could find a trigger on some grid, then search for a
+*different* grid with the same trajectory but fewer dots and segments — identical effects,
+identical trigger, **cheaper mana** (base cost is `5·segment_count + dot_count`). Including both
+means any cheapening re-rolls the wild magic. Whether such behaviour-preserving mutations are
+findable in practice is untested; the fields are public and free to hash, so include them
+regardless.
+
+### 16.6 `[DECISION — needs Soren]` Caster keying opens an identity-grinding vector
+
+**This is new attack surface created by §16.4 and it needs a ruling before build.**
+
+Under the old preimage, a grinder searched *grids* against a fixed commitment. Under caster
+keying, they can instead hold a perfect spell fixed and search **identities** — generate a
+keypair, hash, check for a trigger, repeat. Identity is local and self-custodied with no
+registration (CLAUDE.md invariant 7), so a candidate costs **one keygen plus one SHA-256**:
+microseconds, with no CA simulation and no proof generation. §2.6 treated ~4 s per candidate
+(re-inscription) as a live enough threat to reject proof-hashing over. This is several orders
+cheaper.
+
+Three things stand against it, and they may well be sufficient:
+
+1. **The intersection defense reappears at book scale.** Switching identity re-rolls wild magic
+   across your *entire library at once*. You cannot tune one spell without scrambling every
+   other. Finding an identity that is simultaneously good across a whole book is vastly harder
+   than finding one good outcome — structurally the same argument §2.6 made about grids.
+2. **Identity is socially expensive.** A pubkey carries sightings, master/apprentice grants,
+   outstanding loans, and arms. Discarding it to re-roll wild magic forfeits the social graph
+   that makes the game worth playing.
+3. **Seed rotation still works.** The §7.5 community seed lever invalidates every ground result
+   at zero cost, and it composes with identity — a grinder must re-grind on every rotation.
+
+**Recommendation: accept the vector, ship §16.1–16.5, and rely on 1–3.** The alternative
+mitigations all cost more than they are worth: binding `matchId` breaks the ratified
+same-grid-same-caster invariant; requiring a registered or attested identity contradicts
+invariant 7 and the no-server trust model. Note the residual honestly in player-facing copy the
+way §4 of `COUNTER_CHARM_KINSHIP_PLAN.md` does — do not claim more than holds.
+
+### 16.7 What this supersedes, and the test that inverts
+
+- **§2.7 is superseded.** Its conclusion (drop trajectory and border activations) was correct
+  only while `commitment` carried the grid binding.
+- **§4.1's `[SIMPLIFIED — 2026-07-30]` note is superseded.** Rewrite it to point here rather
+  than leaving it to be silently contradicted by the code.
+- **`wild_magic_test.dart`'s preimage-independence test inverts.** It currently asserts that
+  changing `borderActivations` or the trajectory does **not** change the seed — written
+  specifically to catch a future edit reading them back in. That edit is now intended. Replace
+  it with its opposite: a spell differing only in trajectory, only in border activations, only
+  in `segment_count`/`dot_count`, or only in caster pubkey must produce a **different** seed;
+  and one differing only in `tierMax` must produce the **same** one (§10 invariant 11).
+- **§10 invariant 2 (one derivation path) and invariant 6 (certified outputs only) are
+  unchanged** and still the two that matter most.
+
+### 16.8 Sequencing and versioning
+
+**Dart only. No circuit change, no VK break, no re-inscribe.** Every input is an existing
+public output or authenticated battle state. Ship it **before** `COUNTER_CHARM_KINSHIP_PLAN.md`
+Phase 4, exactly as that plan's Phases 2–3 shipped before it — bundling a consensus-engine
+change into a VK-breaking circuit change would make both harder to review and harder to revert.
+
+**No `RULESET_VERSION` bump.** §11's reasoning is unchanged: that constant guards CA rule
+changes. This changes neither the simulation nor the circuit.
+
+**But it is consensus-visible, and it re-rolls every existing spell.** The preimage is a
+lockstep input, so a patched and an unpatched client cannot play together — `MatchConfig.matches()`
+must catch it at handshake and abort cleanly rather than diverging mid-match (`M4_findings`
+records a desync from exactly this class of mismatch). Bump the `BATTLE_PROTOCOL.md` version.
+Every spell in every book gets new wild magic on the day this lands: a deliberate one-time meta
+reset, the same lever §2.6 hands players via seed rotation, fired once globally. Say so in the
+release note.
+
+**Fixed vectors to add** (§12's "load-bearing" tier): one hand-computed preimage → seed pair;
+one pair differing only in caster pubkey; one pair differing only in `tierMax` (must match);
+one spanning a `T` that exercises the array slice at a tier boundary.

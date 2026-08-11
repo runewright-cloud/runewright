@@ -339,6 +339,37 @@ class SpellAsset {
         soundPackId: soundPackId,
       );
 
+  /// Returns a copy with [newName] substituted for [name]; all other fields
+  /// unchanged. The library's "Rename" menu action is the only caller.
+  SpellAsset withName(String newName) => SpellAsset(
+        id: id,
+        createdAt: createdAt,
+        tier: tier,
+        t: t,
+        ownerPubkeyHex: ownerPubkeyHex,
+        manaCost: manaCost,
+        segmentCount: segmentCount,
+        dotCount: dotCount,
+        initialGrid: initialGrid,
+        proofBytes: proofBytes,
+        name: newName,
+        commitmentHex: commitmentHex,
+        spellHashHex: spellHashHex,
+        formula: formula,
+        supremeTags: supremeTags,
+        isSummon: isSummon,
+        summonPersonality: summonPersonality,
+        artHash: artHash,
+        artSource: artSource,
+        artUpdatedAt: artUpdatedAt,
+        artPackId: artPackId,
+        soundHash: soundHash,
+        soundSource: soundSource,
+        soundUpdatedAt: soundUpdatedAt,
+        soundPackId: soundPackId,
+        gridWithheld: gridWithheld,
+      );
+
   /// Returns a copy with [personality] substituted for [summonPersonality];
   /// all other fields unchanged. Used to bind the battlefield-behavior glyph
   /// chosen when this spell is added to a Chapter (see

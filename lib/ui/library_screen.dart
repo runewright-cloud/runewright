@@ -140,6 +140,28 @@ Future<void> _clearCustomArtOnSpell(SpellAsset spell, VoidCallback onReload) asy
   onReload();
 }
 
+/// Entry point for the "Rename" menu action: prompts for a new name
+/// pre-filled with the spell's current one, and persists it via
+/// [SpellAsset.withName] if the player confirms a non-empty change.
+Future<void> _renameSpellAsset(
+  BuildContext context,
+  SpellAsset spell,
+  VoidCallback onReload,
+) async {
+  final newName = await showDialog<String>(
+    context: context,
+    builder: (_) => _NameInputDialog(
+      title: 'Rename Spell',
+      hint: 'Spell name',
+      confirmLabel: 'Rename',
+      initialValue: spell.name,
+    ),
+  );
+  if (newName == null || newName == spell.name) return;
+  await spell.withName(newName).save();
+  onReload();
+}
+
 /// Entry point for the "Set/Replace Custom Art" menu action
 /// (docs/SPELL_ART_PACK_PLAN.md Phase E): offers a choice between the
 /// built-in art pack and importing an image, then dispatches to whichever
@@ -624,6 +646,9 @@ class _CraftingsTabState extends State<_CraftingsTab>
 
   Future<void> _clearCustomArt(SpellAsset spell) => _clearCustomArtOnSpell(spell, _reload);
 
+  Future<void> _renameSpell(SpellAsset spell) =>
+      _renameSpellAsset(context, spell, _reload);
+
   Future<void> _addToChapter(SpellAsset spell) async {
     final chapterId = widget.selectedChapterId;
     if (chapterId == null) {
@@ -757,6 +782,7 @@ class _CraftingsTabState extends State<_CraftingsTab>
                 onView: () => _viewSpell(spell),
                 onDelete: () => _deleteSpell(spell),
                 onAddToChapter: () => _addToChapter(spell),
+                onRename: () => _renameSpell(spell),
                 onSetArt: () => _setCustomArt(spell),
                 onClearArt: () => _clearCustomArt(spell),
                 onPractice: () => _practiceSpell(spell),
@@ -828,6 +854,9 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
   Future<void> _setCustomArt(SpellAsset spell) => _chooseSpellArt(context, spell, _reload);
 
   Future<void> _clearCustomArt(SpellAsset spell) => _clearCustomArtOnSpell(spell, _reload);
+
+  Future<void> _renameSpell(SpellAsset spell) =>
+      _renameSpellAsset(context, spell, _reload);
 
   /// Adds every spell in [spells] to the selected chapter as a single batch:
   /// one chapter load, one save, skipping any whose spell hash (grid + T) is
@@ -960,6 +989,7 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
                 onView: () => _viewSpell(spell),
                 onDelete: () => _deleteSpell(spell),
                 onAddToChapter: () => _addAllToChapter([spell]),
+                onRename: () => _renameSpell(spell),
                 onSetArt: () => _setCustomArt(spell),
                 onClearArt: () => _clearCustomArt(spell),
                 onPractice: () => _practiceSpell(spell),
@@ -981,6 +1011,7 @@ class _SpellCard extends StatelessWidget {
     required this.onDelete,
     required this.onAddToChapter,
     required this.onView,
+    required this.onRename,
     required this.onSetArt,
     required this.onClearArt,
     required this.onPractice,
@@ -994,6 +1025,7 @@ class _SpellCard extends StatelessWidget {
   final VoidCallback onDelete;
   final VoidCallback onAddToChapter;
   final VoidCallback onView;
+  final VoidCallback onRename;
   final VoidCallback onSetArt;
   final VoidCallback onClearArt;
   final VoidCallback onPractice;
@@ -1120,6 +1152,8 @@ class _SpellCard extends StatelessWidget {
       });
     } else if (action == 'add') {
       onAddToChapter();
+    } else if (action == 'rename') {
+      onRename();
     } else if (action == 'set_art') {
       onSetArt();
     } else if (action == 'clear_art') {
@@ -1195,6 +1229,7 @@ class _SpellCard extends StatelessWidget {
                                 child: Text('Practice Incantation'),
                               ),
                             const PopupMenuItem(value: 'add', child: Text('Add to Chapter')),
+                            const PopupMenuItem(value: 'rename', child: Text('Rename')),
                             PopupMenuItem(
                               value: 'set_art',
                               child: Text(spell.artHash == null
@@ -1761,6 +1796,52 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
     widget.onChapterChanged();
   }
 
+  /// Renames the chapter in place. Blocked for a master's loaned chapter —
+  /// same doctrine as every other mutation on this screen (see [_readOnly]'s
+  /// doc comment).
+  Future<void> _renameChapter() async {
+    if (_readOnly) return;
+    final name = await showDialog<String>(
+      context: context,
+      builder: (_) => _NameInputDialog(
+        title: 'Rename Chapter',
+        hint: 'Chapter name',
+        confirmLabel: 'Rename',
+        initialValue: _chapter.name,
+      ),
+    );
+    if (name == null || !mounted) return;
+    final updated = _chapter.rename(name);
+    await updated.save();
+    setState(() => _chapter = updated);
+    widget.onChapterChanged();
+  }
+
+  /// Saves an independent copy of this chapter under a new name so the
+  /// player can keep the original untouched and experiment on the copy.
+  /// Allowed even on a master's read-only loan (see [ChapterAsset.copyAsNew])
+  /// — it's the doctrine's own suggested way out: "Build your own chapter to
+  /// make it yours."
+  Future<void> _duplicateChapter() async {
+    final name = await showDialog<String>(
+      context: context,
+      builder: (_) => _NameInputDialog(
+        title: 'Duplicate Chapter',
+        hint: 'Chapter name',
+        confirmLabel: 'Copy',
+        initialValue: '${_chapter.name} (Copy)',
+      ),
+    );
+    if (name == null || !mounted) return;
+    final copy = _chapter.copyAsNew(name);
+    await copy.save();
+    if (!mounted) return;
+    widget.onChapterChanged();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Copied to "$name".')),
+    );
+  }
+
   /// Deletes the whole chapter and pops back to the list. Blocked for a
   /// master's loaned chapter — same doctrine as every other mutation on this
   /// screen (see [_readOnly]'s doc comment): it's a snapshot the next
@@ -1948,14 +2029,31 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
                 ),
               ),
             ),
-          if (!_readOnly)
-            PopupMenuButton<String>(
-              icon: const Icon(Icons.more_vert),
-              onSelected: (_) => _deleteChapter(),
-              itemBuilder: (_) => const [
-                PopupMenuItem(value: 'delete', child: Text('Delete Chapter')),
-              ],
-            ),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert),
+            onSelected: (value) => switch (value) {
+              'rename' => _renameChapter(),
+              'duplicate' => _duplicateChapter(),
+              'delete' => _deleteChapter(),
+              _ => null,
+            },
+            itemBuilder: (_) => [
+              if (!_readOnly)
+                const PopupMenuItem(
+                  value: 'rename',
+                  child: Text('Rename Chapter'),
+                ),
+              const PopupMenuItem(
+                value: 'duplicate',
+                child: Text('Duplicate Chapter'),
+              ),
+              if (!_readOnly)
+                const PopupMenuItem(
+                  value: 'delete',
+                  child: Text('Delete Chapter'),
+                ),
+            ],
+          ),
         ],
       ),
       body: spells == null
@@ -2554,18 +2652,20 @@ class _NameInputDialog extends StatefulWidget {
     required this.title,
     this.hint = '',
     this.confirmLabel = 'OK',
+    this.initialValue = '',
   });
 
   final String title;
   final String hint;
   final String confirmLabel;
+  final String initialValue;
 
   @override
   State<_NameInputDialog> createState() => _NameInputDialogState();
 }
 
 class _NameInputDialogState extends State<_NameInputDialog> {
-  final _controller = TextEditingController();
+  late final _controller = TextEditingController(text: widget.initialValue);
 
   @override
   void dispose() {

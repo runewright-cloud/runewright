@@ -151,7 +151,11 @@ class _GraduationScreenState extends State<GraduationScreen> {
       _hostAddressHint = null;
     });
     try {
-      await _discovery.startAdvertising();
+      final wizardName = await Identity.loadWizardName();
+      final displayName = (wizardName != null && wizardName.isNotEmpty)
+          ? "$wizardName's Apprenticeship"
+          : 'Runewright Apprenticeship';
+      await _discovery.startAdvertising(displayName: displayName);
       final ip = await _discovery.localAddressHint();
       final port = _discovery.listeningPort;
       if (mounted && port != null) {

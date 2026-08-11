@@ -63,11 +63,6 @@ enum AccoutrementKind {
   bookmark,
   absorptionRod,
 
-  /// Summoned by Water-Earth/Earth (ArtifactsInteractionEffect, Earth affinity).
-  /// Mechanically identical to [absorptionRod]: halves timed effect durations
-  /// from an incoming enemy spell, consuming this totem.
-  deflectionTotem,
-
   /// Air-typed loadout artifact (design v3.0 §Artifacts). One-shot: activated
   /// before a cast to add +1 effective radius to that spell's effects (and one
   /// size rung to a summoned minion), then consumed. Only one per spell.
@@ -103,11 +98,11 @@ class Accoutrement {
   /// trajectory has been publicly revealed.
   final bool counterCharmRevealed;
 
-  // Absorption Rod / Deflection Totem mechanic:
+  // Absorption Rod mechanic:
   // When the owning avatar is hit by any enemy spell, BEFORE applying each
-  // time-based effect, check if the avatar has absorptionRod or deflectionTotem
-  // accoutrements. If so: halve all time-based effect durations (ceil), consume
-  // 1 rod/totem per spell (not per effect). Implemented in EffectApplicator.
+  // time-based effect, check if the avatar has an absorptionRod accoutrement.
+  // If so: halve all time-based effect durations (ceil), consume 1 rod per
+  // spell (not per effect). Implemented in EffectApplicator.
 
   // TODO(battle): burn hook — remove this accoutrement from avatar and apply
   //   burn effect; targeting drawn from CommitRevealEntropy (design doc §burn).
@@ -349,11 +344,8 @@ class WizardAvatar {
   int maxManaFor(MatchConfig config) =>
       config.innateManaPool + manaGemsEquipped * config.manaGemPoolPerGem;
 
-  int get absorptionRodCount => accoutrements
-      .where((a) =>
-          a.kind == AccoutrementKind.absorptionRod ||
-          a.kind == AccoutrementKind.deflectionTotem)
-      .length;
+  int get absorptionRodCount =>
+      accoutrements.where((a) => a.kind == AccoutrementKind.absorptionRod).length;
 
   /// Rods of Spreading currently carried (each is consumed on use). A cast may
   /// activate at most one; see TurnLoop's rod-consumption in the cast path.

@@ -361,6 +361,23 @@ void main() {
     expect(restored.summonPersonality, equals('evasive'));
   });
 
+  test('withName() overrides only name, leaving everything else (including art metadata) '
+      'unchanged -- the library\'s Rename action', () {
+    final original =
+        sample().withPackArt(packId: kPainterlyPack.first.id).withGridWithheld();
+    final renamed = original.withName('Frostbite');
+
+    expect(renamed.name, equals('Frostbite'));
+    expect(renamed.id, equals(original.id));
+    expect(renamed.commitmentHex, equals(original.commitmentHex));
+    expect(renamed.artHash, equals(original.artHash));
+    expect(renamed.artPackId, equals(original.artPackId));
+    expect(renamed.gridWithheld, isTrue);
+
+    final restored = SpellAsset.fromJson(renamed.toJson());
+    expect(restored.name, equals('Frostbite'));
+  });
+
   group('delete() cleans up chapter references', () {
     ChapterAsset emptyChapter(String id) => ChapterAsset(
           id: id,

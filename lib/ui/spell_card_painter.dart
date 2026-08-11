@@ -1323,7 +1323,7 @@ class _CardFrame extends StatelessWidget {
     children: [
       _DominanceTagsStrip(supremeTags: spell.supremeTags),
       _titleBar(),
-      AspectRatio(aspectRatio: 1, child: _artWindow()),
+      AspectRatio(aspectRatio: 1.5, child: _artWindow()),
       _typeLineBar(),
       Expanded(child: _rulesBox()),
       if (wildMagic.isNotEmpty) _WildMagicPanel(triggers: wildMagic),

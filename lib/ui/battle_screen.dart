@@ -239,9 +239,9 @@ enum _InputPhase { action, movement, pickingDirection }
 //
 // The 4 loadout artifacts (chapter_asset.dart's ArtifactKind — manaGem,
 // bookmark, rodOfSpreading, counterCharm), one per corner of the battlefield.
-// absorptionRod/deflectionTotem are deliberately excluded: they're summon-only
-// (never in a loadout — accoutrement_loadout.dart never emits absorptionRod)
-// and out of scope per ARTIFACT_SYSTEM_PLAN.md §1.
+// absorptionRod is deliberately excluded: it's summon-only (never in a
+// loadout — accoutrement_loadout.dart never emits it) and out of scope per
+// ARTIFACT_SYSTEM_PLAN.md §1.
 
 // Short labels — the triangular corner tiles below only have room near their
 // right-angle vertex (see _ArtifactCornerTile), not a full word or two.
@@ -672,8 +672,7 @@ class _BattleScreenState extends State<BattleScreen>
     AccoutrementKind.rodOfSpreading =>
       'Rod of Wind — passive: 10% per rod for +1 movement next turn. '
           'Spend one for +1 effect radius (or minion size) on this turn’s cast.',
-    AccoutrementKind.absorptionRod ||
-    AccoutrementKind.deflectionTotem =>
+    AccoutrementKind.absorptionRod =>
       'Absorption Rod — halves the duration of timed effects from an '
           'incoming spell, then is consumed. No activation.',
   };
@@ -684,7 +683,6 @@ class _BattleScreenState extends State<BattleScreen>
     AccoutrementKind.bookmark => 'Bookmark',
     AccoutrementKind.rodOfSpreading => 'Rod of Wind',
     AccoutrementKind.absorptionRod => 'Absorption Rod',
-    AccoutrementKind.deflectionTotem => 'Deflection Totem',
   };
 
   /// TurnLoop's [ArtifactActivationPicker]: no longer a blocking prompt —

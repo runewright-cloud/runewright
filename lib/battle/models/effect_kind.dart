@@ -138,7 +138,7 @@ const Map<EffectKind, Map<SpellAffinity, String>> kEffectDescription = {
   EffectKind.artifactsInteraction: {
     SpellAffinity.fire:
         'Burn a random player artifact to deal 1 damage (random target via joint entropy; any artifact can be hit, including their last mana gem; burning a counter charm reveals its target).',
-    SpellAffinity.earth: 'Summon 1 Absorption Totem.',
+    SpellAffinity.earth: 'Summon 1 Rod of Wind.',
     SpellAffinity.water: 'Summon 1 mana gem.',
     SpellAffinity.air: 'Summon 1 bookmark.',
   },

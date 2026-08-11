@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/gestures.dart' show DragStartBehavior, PointerDeviceKind;
 import 'package:flutter/material.dart' hide Element;
@@ -14,15 +15,30 @@ import 'engine/stepper.dart';
 import 'battle/models/creature_spec.dart'
     show CreatureSpec, SummonAbility, summonSummaryLabel;
 import 'battle/models/effect_kind.dart' show formulaTripletKind;
+import 'audio/spell_sound_player.dart' show SpellSoundPlayer;
+import 'audio/spell_sound_settings.dart' show SpellSoundSettings;
 import 'identity/identity.dart';
 import 'spells/inscribe.dart';
 import 'spells/recipe_book.dart';
+import 'spells/spell_art_import.dart'
+    show SpellArtBytes, SpellArtImportException, importSpellArt;
+import 'spells/spell_art_io.dart' show pickSpellArtFile;
+import 'spells/spell_art_pack.dart' show kPainterlyPack;
+import 'spells/spell_art_store.dart' show SpellArtStore;
 import 'spells/spell_asset.dart';
+import 'spells/spell_sound_import.dart'
+    show SpellSoundBytes, SpellSoundImportException, importSpellSound;
+import 'spells/spell_sound_io.dart' show pickSpellSoundFile;
+import 'spells/spell_sound_pack.dart' show kSpellSoundPack, loadPackSound;
+import 'spells/spell_sound_store.dart' show SpellSoundStore;
 import 'ui/formula_bar.dart';
 import 'ui/hex_grid_painter.dart';
 import 'ui/app_root.dart';
 import 'ui/recipes_screen.dart';
-import 'ui/manuscript_theme.dart' show kIlluminationGold;
+import 'ui/manuscript_theme.dart';
+import 'ui/spell_art_pack_screen.dart' show pickSpellArtPackIcon, suggestedElementFor;
+import 'ui/spell_card_painter.dart' show SpellCardWidget;
+import 'ui/spell_sound_pack_screen.dart' show pickSpellSoundPackClip;
 import 'src/rust/frb_generated.dart';
 
 // M2 spike: async main to init the Rust FFI bridge.
@@ -112,6 +128,11 @@ class _GameScreenState extends State<GameScreen>
   HexGrid? _previousGrid;
   final _formulaTracker = FormulaTracker();
   final _supremeElements = <String>{};
+
+  // Name/art/sound picked from the Preview screen, ahead of inscription --
+  // see _SpellDraft's header comment. Carried into _inscribe() so those
+  // picks "transfer" onto the SpellAsset it creates.
+  _SpellDraft _draft = const _SpellDraft();
 
   // Rune Craft mode: whether the next inscription reads this grid's element
   // sequence as an incantation effect (default) or a summoned creature (see
@@ -281,6 +302,11 @@ class _GameScreenState extends State<GameScreen>
   }
 
   void _stepOnce() {
+    // Hard stop at the largest inscribable tier: stepping past T=48 can
+    // never be inscribed (kMaxInscribableSteps / tier_max), so the stepper
+    // itself refuses rather than letting the grid wander past what Inscribe
+    // will ever accept.
+    if (_grid.stepCount >= kMaxInscribableSteps) return;
     _initialGrid ??= _grid.copy();
     final next = CAStep.step(_grid, _rules);
     final dominance = advanceDominance(_rules, next);
@@ -312,14 +338,17 @@ class _GameScreenState extends State<GameScreen>
       _timer?.cancel();
       setState(() => _running = false);
     } else {
+      // Same hard stop as _stepOnce: never run past the largest inscribable
+      // tier.
+      if (_grid.stepCount >= kMaxInscribableSteps) return;
       _initialGrid ??= _grid.copy();
       setState(() => _running = true);
       _timer = Timer.periodic(_stepInterval, (_) {
         final next = CAStep.step(_grid, _rules);
-        if (_gridsEqual(_grid, next)) {
+        if (_gridsEqual(_grid, next) || next.stepCount >= kMaxInscribableSteps) {
           _timer?.cancel();
           setState(() => _running = false);
-          return;
+          if (_gridsEqual(_grid, next)) return;
         }
         final dominance = advanceDominance(_rules, next);
         final previous = _grid;
@@ -381,6 +410,7 @@ class _GameScreenState extends State<GameScreen>
       _recordedAbilities.clear();
       _supremeElements.clear();
       _isSummonMode = false;
+      _draft = const _SpellDraft();
     });
   }
 
@@ -429,17 +459,36 @@ class _GameScreenState extends State<GameScreen>
     super.dispose();
   }
 
-  int get _manaCost {
-    final geo = gridGeometry(_initialGrid ?? _grid);
-    // Base cost: 5 mana per line segment, 1 mana per isolated dot.
-    // Segments are maximal runs of ≥2 contiguous inscribable active cells
-    // per axis (3 axes). Dots are inscribable active cells with no active
-    // inscribable neighbours. Both are pure functions of the T=0 grid.
-    final base = 5 * geo.segmentCount + geo.dotCount;
-    // Each step multiplies cost by 1.05 (unchanged growth rate).
-    // Each new formula effect (entries 4, 7, 10, …) multiplies cost by 1.5.
-    final effectCount = max(0, (_formulaTracker.committed.length - 1) ~/ 3);
-    return (base * pow(1.05, _grid.stepCount) * pow(1.5, effectCount)).round();
+  /// The bottom bar's live "Mana Cost" readout during play -- just
+  /// [_computeManaCost] over the grid/formula state as they stand right now.
+  int get _manaCost => _computeManaCost(_initialGrid ?? _grid, _grid.stepCount);
+
+  /// The mana cost [initialGrid] simulated for [steps] generations will
+  /// actually be inscribed at -- shared by the live [_manaCost] readout,
+  /// _inscribe(), and the Preview screen, so none of them ever quote a
+  /// different number for the same spell.
+  ///
+  /// Base cost: 5 mana per line segment, 1 mana per isolated dot. Segments
+  /// are maximal runs of ≥2 contiguous inscribable active cells per axis (3
+  /// axes); dots are inscribable active cells with no active inscribable
+  /// neighbours. Both are pure functions of the T=0 grid. Each step
+  /// multiplies cost by 1.05 (growth rate); each *complete* formula effect
+  /// (entries 4, 7, 10, …) multiplies cost by 1.5 -- a residual (in-progress,
+  /// not-yet-complete) activation buys nothing, so effectCount is
+  /// `formulas.length - 1`, not a raw activation count. This must match
+  /// TurnLoop._wireBaseManaCost / _certifiedBaseManaCost, which are what
+  /// actually charge the caster and the opponent at cast time -- an earlier
+  /// `(committed.length - 1) ~/ 3` form over-counted on any residual, so the
+  /// live readout advertised a price ~1.5x what the duel deducted (and,
+  /// worse, the two devices deducted different amounts; see M4_findings
+  /// 2026-07-29).
+  int _computeManaCost(HexGrid initialGrid, int steps) {
+    final geo = gridGeometry(initialGrid);
+    final effectCount = max(0, _formulaTracker.formulas.length - 1);
+    return ((5 * geo.segmentCount + geo.dotCount) *
+            pow(1.05, steps) *
+            pow(1.5, effectCount))
+        .round();
   }
 
   bool get _canInscribe =>
@@ -449,15 +498,73 @@ class _GameScreenState extends State<GameScreen>
       _grid.stepCount >= 1 &&
       _grid.stepCount <= kMaxInscribableSteps;
 
+  /// Opens the full-screen preview of the spell card the current formula/
+  /// mana cost/name would generate, with buttons to pick this spell's card
+  /// art and resolution sound ahead of inscription. Available at any point
+  /// during design, not just once inscribable -- picking art/sound doesn't
+  /// depend on having stepped the grid at all.
+  Future<void> _openPreview() async {
+    final initialGrid = _initialGrid ?? _grid;
+    final steps = _grid.stepCount;
+    final geo = gridGeometry(initialGrid);
+    final result = await Navigator.push<_SpellDraft>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _SpellPreviewScreen(
+          draft: _draft,
+          formula: _formulaTracker.committed.map((z) => z.name).toList(),
+          supremeTags: _supremeElements.toList(),
+          isSummon: _isSummonMode,
+          steps: steps,
+          tier: tierForSteps(steps) ?? kInscribeTiers.first,
+          manaCost: _computeManaCost(initialGrid, steps),
+          segmentCount: geo.segmentCount,
+          dotCount: geo.dotCount,
+        ),
+      ),
+    );
+    if (result != null && mounted) setState(() => _draft = result);
+  }
+
+  /// Writes this spell's draft art/sound (picked pre-inscription in
+  /// Preview, held only in memory until now) into the real stores under
+  /// [asset]'s real spellHashHex, and stamps the pointer fields onto it --
+  /// the post-creation counterpart to library_screen.dart's
+  /// _setCustomArtOnSpell/_choosePackArtOnSpell, run automatically right
+  /// after inscription instead of from a library menu. Returns [asset]
+  /// unchanged if no art/sound was picked.
+  Future<SpellAsset> _applyDraftMediaTo(SpellAsset asset) async {
+    var result = asset;
+    if (_draft.artSource == SpellArtSource.builtIn && _draft.artPackId != null) {
+      result = result.withPackArt(packId: _draft.artPackId!);
+    } else if (_draft.artSource == SpellArtSource.localImport &&
+        _draft.artImportBytes != null) {
+      final art = _draft.artImportBytes!;
+      await SpellArtStore.save(result.spellHashHex, full: art.full, thumb: art.thumb);
+      result = result.withArt(hash: art.artHashHex, source: SpellArtSource.localImport);
+    }
+    if (_draft.soundSource == SpellSoundSource.builtIn && _draft.soundPackId != null) {
+      result = result.withPackSound(packId: _draft.soundPackId!);
+    } else if (_draft.soundSource == SpellSoundSource.localImport &&
+        _draft.soundImportBytes != null) {
+      final sound = _draft.soundImportBytes!;
+      await SpellSoundStore.save(result.spellHashHex, sound.bytes);
+      result = result.withSound(hash: sound.soundHashHex, source: SpellSoundSource.localImport);
+    }
+    if (!identical(result, asset)) await result.save();
+    return result;
+  }
+
   Future<void> _inscribe() async {
     if (!_canInscribe) return;
 
-    // Prompt for the spell name before starting the non-cancellable prove.
+    // Prompt for the spell name before starting the non-cancellable prove,
+    // pre-filled with whatever was typed into Preview (still editable here).
     // Personality (Summon mode) is no longer chosen here -- see
     // library_screen.dart's per-chapter personality picker.
     final details = await showDialog<_InscribeDetails>(
       context: context,
-      builder: (_) => _SpellNameDialog(isSummon: _isSummonMode),
+      builder: (_) => _SpellNameDialog(isSummon: _isSummonMode, initialName: _draft.name),
     );
     if (details == null || !mounted) return;
     final spellName = details.name;
@@ -465,18 +572,7 @@ class _GameScreenState extends State<GameScreen>
     final initialGrid = _initialGrid!;
     final steps = _grid.stepCount;
     final geo = gridGeometry(initialGrid);
-    // effectCount counts *complete* formulas, not activations: a residual
-    // activation buys nothing. This must match TurnLoop._wireBaseManaCost /
-    // _certifiedBaseManaCost, which are what actually charge the caster and
-    // the opponent at cast time — the old `(committed.length - 1) ~/ 3` form
-    // over-counted on any residual, so the card advertised a price ~1.5x
-    // what the duel deducted (and, worse, the two devices deducted different
-    // amounts; see M4_findings 2026-07-29).
-    final effectCount = max(0, _formulaTracker.formulas.length - 1);
-    final manaCost = ((5 * geo.segmentCount + geo.dotCount) *
-            pow(1.05, steps) *
-            pow(1.5, effectCount))
-        .round();
+    final manaCost = _computeManaCost(initialGrid, steps);
 
     final status = ValueNotifier<String>('Preparing the loom…');
     setState(() => _inscribing = true);
@@ -503,15 +599,17 @@ class _GameScreenState extends State<GameScreen>
         loadVkBytes: (path) async => (await rootBundle.load(path)).buffer.asUint8List(),
         onProgress: (message) => status.value = message,
       );
+      final finalAsset = await _applyDraftMediaTo(asset);
       if (!mounted) return;
+      setState(() => _draft = const _SpellDraft());
       Navigator.of(context, rootNavigator: true).pop();
       await showDialog<void>(
         context: context,
         builder: (_) => AlertDialog(
           title: const Text('Spell Inscribed'),
           content: Text(
-            '"${asset.name}"\n\n'
-            'Tier ${asset.tier} · T=${asset.t} · Mana ${asset.manaCost}\n\n'
+            '"${finalAsset.name}"\n\n'
+            'Tier ${finalAsset.tier} · T=${finalAsset.t} · Mana ${finalAsset.manaCost}\n\n'
             'Bound to your Runekey and saved. '
             'It will now appear in your library.',
           ),
@@ -551,6 +649,9 @@ class _GameScreenState extends State<GameScreen>
         title: const Text(
           'Runewright',
           style: TextStyle(color: Color(0xFFF5F0E8), letterSpacing: 3),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          softWrap: false,
         ),
         backgroundColor: const Color(0xFF2C1810),
         iconTheme: const IconThemeData(color: Color(0xFFF5F0E8)),
@@ -564,6 +665,11 @@ class _GameScreenState extends State<GameScreen>
                 builder: (_) => RecipesScreen(isSummon: _isSummonMode),
               ),
             ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.visibility_outlined),
+            tooltip: 'Preview Card',
+            onPressed: _inscribing ? null : _openPreview,
           ),
           IconButton(
             icon: const Icon(Icons.undo),
@@ -687,6 +793,8 @@ class _BottomBar extends StatelessWidget {
   final int stepCount;
   final int manaCost;
 
+  bool get atMax => stepCount >= kMaxInscribableSteps;
+
   const _BottomBar({
     required this.running,
     required this.inscribing,
@@ -708,7 +816,7 @@ class _BottomBar extends StatelessWidget {
           Row(
             children: [
               Text(
-                'Step $stepCount',
+                atMax ? 'Step $stepCount (max)' : 'Step $stepCount',
                 style: const TextStyle(
                   color: Color(0xFFB8A898),
                   fontSize: 13,
@@ -731,7 +839,7 @@ class _BottomBar extends StatelessWidget {
             children: [
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed: (running || inscribing) ? null : onStepOnce,
+                  onPressed: (running || inscribing || atMax) ? null : onStepOnce,
                   icon: const Icon(Icons.navigate_next),
                   label: const Text('Step'),
                   style: ElevatedButton.styleFrom(
@@ -744,7 +852,7 @@ class _BottomBar extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed: inscribing ? null : onToggleRun,
+                  onPressed: (inscribing || (!running && atMax)) ? null : onToggleRun,
                   icon: Icon(running ? Icons.pause : Icons.play_arrow),
                   label: Text(running ? 'Pause' : 'Run'),
                   style: ElevatedButton.styleFrom(
@@ -824,17 +932,24 @@ class _InscribeDetails {
 }
 
 class _SpellNameDialog extends StatefulWidget {
-  const _SpellNameDialog({required this.isSummon});
+  const _SpellNameDialog({required this.isSummon, this.initialName = ''});
 
   final bool isSummon;
+
+  /// Pre-fills the name field with whatever was typed into the Preview
+  /// dialog's name field, so a name chosen there "transfers" to the final
+  /// inscribed spell without having to be retyped -- still editable here,
+  /// since this dialog is the one authoritative point where the name is
+  /// actually committed.
+  final String initialName;
 
   @override
   State<_SpellNameDialog> createState() => _SpellNameDialogState();
 }
 
 class _SpellNameDialogState extends State<_SpellNameDialog> {
-  final _ctrl = TextEditingController();
-  bool _isEmpty = true;
+  late final _ctrl = TextEditingController(text: widget.initialName);
+  late bool _isEmpty = widget.initialName.trim().isEmpty;
 
   @override
   void dispose() {
@@ -871,6 +986,496 @@ class _SpellNameDialogState extends State<_SpellNameDialog> {
           child: const Text('Inscribe'),
         ),
       ],
+    );
+  }
+}
+
+// ── Preview: art/sound/name chosen before inscription ───────────────────────
+//
+// The player can pick a spell's card art, resolution sound, and (a draft of)
+// its name from the Preview screen, before ever paying the proving cost of
+// Inscribe. None of this is persisted until the spell actually is inscribed
+// -- there is no SpellAsset (and so no spellHashHex to key art/sound store
+// blobs by) until then. _SpellDraft holds the in-progress picks entirely in
+// memory; _GameScreenState._applyDraftMediaTo writes them into the real
+// stores only after inscribeSpell() returns a real, saved SpellAsset.
+
+/// In-progress art/sound/name picks for the spell currently being designed,
+/// held by _GameScreenState and handed to (then returned from)
+/// _SpellPreviewScreen. Deliberately not SpellAsset itself -- most of its
+/// fields (commitment, proof, spellHash, owner) don't exist yet.
+class _SpellDraft {
+  const _SpellDraft({
+    this.name = '',
+    this.artSource,
+    this.artHash,
+    this.artPackId,
+    this.artImportBytes,
+    this.soundSource,
+    this.soundHash,
+    this.soundPackId,
+    this.soundImportBytes,
+  });
+
+  final String name;
+
+  final SpellArtSource? artSource;
+  final String? artHash;
+  final String? artPackId;
+
+  /// Set (and [artHash]/[artSource] set to [SpellArtSource.localImport])
+  /// when the player imported their own image rather than picking one from
+  /// the built-in pack. Held in memory, not yet in [SpellArtStore] -- there
+  /// is no spellHashHex to key it by until inscription.
+  final SpellArtBytes? artImportBytes;
+
+  final SpellSoundSource? soundSource;
+  final String? soundHash;
+  final String? soundPackId;
+  final SpellSoundBytes? soundImportBytes;
+
+  _SpellDraft withName(String name) => _SpellDraft(
+        name: name,
+        artSource: artSource,
+        artHash: artHash,
+        artPackId: artPackId,
+        artImportBytes: artImportBytes,
+        soundSource: soundSource,
+        soundHash: soundHash,
+        soundPackId: soundPackId,
+        soundImportBytes: soundImportBytes,
+      );
+
+  _SpellDraft withPackArt({required String packId, required String hash}) => _SpellDraft(
+        name: name,
+        artSource: SpellArtSource.builtIn,
+        artHash: hash,
+        artPackId: packId,
+        soundSource: soundSource,
+        soundHash: soundHash,
+        soundPackId: soundPackId,
+        soundImportBytes: soundImportBytes,
+      );
+
+  _SpellDraft withImportedArt(SpellArtBytes art) => _SpellDraft(
+        name: name,
+        artSource: SpellArtSource.localImport,
+        artHash: art.artHashHex,
+        artImportBytes: art,
+        soundSource: soundSource,
+        soundHash: soundHash,
+        soundPackId: soundPackId,
+        soundImportBytes: soundImportBytes,
+      );
+
+  _SpellDraft withoutArt() => _SpellDraft(
+        name: name,
+        soundSource: soundSource,
+        soundHash: soundHash,
+        soundPackId: soundPackId,
+        soundImportBytes: soundImportBytes,
+      );
+
+  _SpellDraft withPackSound({required String packId, required String hash}) => _SpellDraft(
+        name: name,
+        artSource: artSource,
+        artHash: artHash,
+        artPackId: artPackId,
+        artImportBytes: artImportBytes,
+        soundSource: SpellSoundSource.builtIn,
+        soundHash: hash,
+        soundPackId: packId,
+      );
+
+  _SpellDraft withImportedSound(SpellSoundBytes sound) => _SpellDraft(
+        name: name,
+        artSource: artSource,
+        artHash: artHash,
+        artPackId: artPackId,
+        artImportBytes: artImportBytes,
+        soundSource: SpellSoundSource.localImport,
+        soundHash: sound.soundHashHex,
+        soundImportBytes: sound,
+      );
+
+  _SpellDraft withoutSound() => _SpellDraft(
+        name: name,
+        artSource: artSource,
+        artHash: artHash,
+        artPackId: artPackId,
+        artImportBytes: artImportBytes,
+      );
+}
+
+/// Reserved key under which imported (not pack) draft art/sound bytes are
+/// stashed in [SpellArtStore]/[SpellSoundStore] so the preview card can
+/// resolve them through the same code path a real, inscribed spell uses
+/// (spell_art_resolver.dart / spell_sound_resolver.dart both key off
+/// SpellAsset.spellHashHex). Never a real spellHashHex (those are "0x" + 64
+/// hex chars) so it can't collide; overwritten on every new import, and
+/// migrated to the real spellHashHex by _applyDraftMediaTo on a successful
+/// inscribe -- nothing ever reads it back out after that.
+const String _kDraftMediaKey = 'runecraft-preview-draft';
+
+/// Full-screen preview of the spell card the current formula/mana cost/name
+/// would generate, with buttons to pick this (not-yet-inscribed) spell's
+/// card art and resolution sound. Returns the (possibly updated) draft when
+/// popped, via either the Done button or the back arrow.
+class _SpellPreviewScreen extends StatefulWidget {
+  const _SpellPreviewScreen({
+    required this.draft,
+    required this.formula,
+    required this.supremeTags,
+    required this.isSummon,
+    required this.steps,
+    required this.tier,
+    required this.manaCost,
+    required this.segmentCount,
+    required this.dotCount,
+  });
+
+  final _SpellDraft draft;
+  final List<String> formula;
+  final List<String> supremeTags;
+  final bool isSummon;
+  final int steps;
+  final int tier;
+  final int manaCost;
+  final int segmentCount;
+  final int dotCount;
+
+  @override
+  State<_SpellPreviewScreen> createState() => _SpellPreviewScreenState();
+}
+
+class _SpellPreviewScreenState extends State<_SpellPreviewScreen> {
+  late _SpellDraft _draft = widget.draft;
+  late final _nameCtrl = TextEditingController(text: widget.draft.name);
+  final _soundPlayer = SpellSoundPlayer(poolSize: 1);
+  SpellSoundSettings _soundSettings = const SpellSoundSettings();
+
+  @override
+  void initState() {
+    super.initState();
+    SpellSoundSettings.load().then((s) {
+      if (mounted) setState(() => _soundSettings = s);
+    });
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _soundPlayer.dispose();
+    super.dispose();
+  }
+
+  /// A stand-in SpellAsset for rendering only -- id/proof/commitment/owner
+  /// are placeholders (see the header comment above _SpellDraft); every
+  /// field SpellCardWidget/showSpellCardFullscreen actually read is real.
+  SpellAsset get _previewSpell => SpellAsset(
+        id: 'draft',
+        createdAt: DateTime.now().toUtc(),
+        tier: widget.tier,
+        t: widget.steps,
+        ownerPubkeyHex: '',
+        manaCost: widget.manaCost,
+        segmentCount: widget.segmentCount,
+        dotCount: widget.dotCount,
+        initialGrid: const [],
+        proofBytes: Uint8List(0),
+        name: _draft.name,
+        commitmentHex: '',
+        spellHashHex: _kDraftMediaKey,
+        formula: widget.formula,
+        supremeTags: widget.supremeTags,
+        isSummon: widget.isSummon,
+        artHash: _draft.artHash,
+        artSource: _draft.artSource,
+        artPackId: _draft.artPackId,
+        soundHash: _draft.soundHash,
+        soundSource: _draft.soundSource,
+        soundPackId: _draft.soundPackId,
+      );
+
+  void _close() => Navigator.of(context).pop(_draft);
+
+  Future<void> _chooseArt() async {
+    final choice = await showModalBottomSheet<_MediaChoice>(
+      context: context,
+      backgroundColor: kParchmentColor,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.auto_awesome_outlined, color: kIlluminationGold),
+              title: const Text('Choose from Art Pack'),
+              onTap: () => Navigator.pop(ctx, _MediaChoice.pack),
+            ),
+            ListTile(
+              leading: const Icon(Icons.image_outlined),
+              title: const Text('Import an Image…'),
+              onTap: () => Navigator.pop(ctx, _MediaChoice.import),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || choice == null) return;
+    switch (choice) {
+      case _MediaChoice.pack:
+        await _choosePackArt();
+      case _MediaChoice.import:
+        await _importArt();
+    }
+  }
+
+  Future<void> _choosePackArt() async {
+    final packId = await pickSpellArtPackIcon(
+      context,
+      suggestedElement: suggestedElementFor(widget.formula),
+    );
+    if (packId == null || !mounted) return;
+    final entry = kPainterlyPack.firstWhere((e) => e.id == packId);
+    setState(() => _draft = _draft.withPackArt(packId: packId, hash: entry.sha256));
+  }
+
+  Future<void> _importArt() async {
+    final Uint8List? source;
+    try {
+      source = await pickSpellArtFile();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Could not open the file picker: $e')));
+      }
+      return;
+    }
+    if (source == null) return; // player cancelled the picker
+
+    if (mounted) {
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const Center(child: CircularProgressIndicator(color: kIlluminationGold)),
+      );
+    }
+    final SpellArtBytes art;
+    try {
+      art = await importSpellArt(source);
+    } on SpellArtImportException catch (e) {
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+      }
+      return;
+    }
+    await SpellArtStore.save(_kDraftMediaKey, full: art.full, thumb: art.thumb);
+    if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    setState(() => _draft = _draft.withImportedArt(art));
+  }
+
+  Future<void> _chooseSound() async {
+    final choice = await showModalBottomSheet<_MediaChoice>(
+      context: context,
+      backgroundColor: kParchmentColor,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.auto_awesome_outlined, color: kIlluminationGold),
+              title: const Text('Choose from Sound Pack'),
+              onTap: () => Navigator.pop(ctx, _MediaChoice.pack),
+            ),
+            ListTile(
+              leading: const Icon(Icons.audiotrack_outlined),
+              title: const Text('Import a Sound…'),
+              onTap: () => Navigator.pop(ctx, _MediaChoice.import),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || choice == null) return;
+    switch (choice) {
+      case _MediaChoice.pack:
+        await _choosePackSound();
+      case _MediaChoice.import:
+        await _importSound();
+    }
+  }
+
+  Future<void> _choosePackSound() async {
+    final packId = await pickSpellSoundPackClip(
+      context,
+      suggestedElement: suggestedElementFor(widget.formula),
+    );
+    if (packId == null || !mounted) return;
+    final entry = kSpellSoundPack.firstWhere((e) => e.id == packId);
+    setState(() => _draft = _draft.withPackSound(packId: packId, hash: entry.sha256));
+  }
+
+  Future<void> _importSound() async {
+    final Uint8List? source;
+    try {
+      source = await pickSpellSoundFile();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Could not open the file picker: $e')));
+      }
+      return;
+    }
+    if (source == null) return; // player cancelled the picker
+
+    final SpellSoundBytes sound;
+    try {
+      sound = await importSpellSound(source);
+    } on SpellSoundImportException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+      }
+      return;
+    }
+    await SpellSoundStore.save(_kDraftMediaKey, sound.bytes);
+    setState(() => _draft = _draft.withImportedSound(sound));
+  }
+
+  Future<void> _playCurrentSound() async {
+    final Uint8List? bytes;
+    final bool normalized;
+    if (_draft.soundSource == SpellSoundSource.builtIn && _draft.soundPackId != null) {
+      bytes = await loadPackSound(_draft.soundPackId!);
+      normalized = true;
+    } else if (_draft.soundImportBytes != null) {
+      bytes = _draft.soundImportBytes!.bytes;
+      normalized = false;
+    } else {
+      return;
+    }
+    if (bytes == null || !mounted) return;
+    await _soundPlayer.play(bytes, settings: _soundSettings, normalized: normalized);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope<_SpellDraft>(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) Navigator.of(context).pop(_draft);
+      },
+      child: Scaffold(
+        backgroundColor: kParchmentColor,
+        appBar: AppBar(
+          backgroundColor: kParchmentColor,
+          foregroundColor: kInkColor,
+          elevation: 0,
+          leading: IconButton(icon: const Icon(Icons.arrow_back), onPressed: _close),
+          title: Text('Preview', style: manuscriptHeaderStyle(fontSize: 20)),
+        ),
+        body: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            Center(
+              child: SpellCardWidget(spell: _previewSpell, size: 220),
+            ),
+            const SizedBox(height: 8),
+            Center(
+              child: Text(
+                'Step ${widget.steps} · Mana ${widget.manaCost} — tap the card to view it full-size',
+                style: manuscriptCaptionStyle(color: kInkMutedColor),
+                textAlign: TextAlign.center,
+              ),
+            ),
+            const SizedBox(height: 20),
+            TextField(
+              controller: _nameCtrl,
+              decoration: const InputDecoration(labelText: 'Spell name'),
+              textCapitalization: TextCapitalization.words,
+              onChanged: (v) => setState(() => _draft = _draft.withName(v)),
+            ),
+            const SizedBox(height: 12),
+            _MediaRow(
+              icon: Icons.palette_outlined,
+              title: 'Card Art',
+              subtitle: switch (_draft.artSource) {
+                SpellArtSource.builtIn => 'Art pack icon',
+                SpellArtSource.localImport => 'Custom image',
+                _ => 'None — uses the generated coat of arms',
+              },
+              onChoose: _chooseArt,
+              onClear: _draft.artHash == null
+                  ? null
+                  : () => setState(() => _draft = _draft.withoutArt()),
+            ),
+            _MediaRow(
+              icon: Icons.music_note_outlined,
+              title: 'Resolution Sound',
+              subtitle: switch (_draft.soundSource) {
+                SpellSoundSource.builtIn => 'Sound pack clip',
+                SpellSoundSource.localImport => 'Custom sound',
+                _ => 'None — uses the elemental default',
+              },
+              onChoose: _chooseSound,
+              onPlay: _draft.soundHash == null ? null : _playCurrentSound,
+              onClear: _draft.soundHash == null
+                  ? null
+                  : () => setState(() => _draft = _draft.withoutSound()),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: _close,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: kIlluminationGold,
+                foregroundColor: kInkColor,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+              child: const Text('Done'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+enum _MediaChoice { pack, import }
+
+class _MediaRow extends StatelessWidget {
+  const _MediaRow({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onChoose,
+    this.onPlay,
+    this.onClear,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onChoose;
+  final VoidCallback? onPlay;
+  final VoidCallback? onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(icon, color: kIlluminationGold),
+      title: Text(title, style: manuscriptBodyStyle(fontSize: 15)),
+      subtitle: Text(subtitle, style: manuscriptCaptionStyle(color: kInkMutedColor)),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (onPlay != null)
+            IconButton(icon: const Icon(Icons.play_arrow), tooltip: 'Play', onPressed: onPlay),
+          if (onClear != null)
+            IconButton(icon: const Icon(Icons.close), tooltip: 'Remove', onPressed: onClear),
+          TextButton(onPressed: onChoose, child: const Text('Choose')),
+        ],
+      ),
     );
   }
 }

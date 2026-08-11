@@ -75,7 +75,11 @@ class _SyncArtScreenState extends State<SyncArtScreen> {
       _peers.clear();
     });
     try {
-      await _discovery.startAdvertising();
+      final wizardName = await Identity.loadWizardName();
+      final displayName = (wizardName != null && wizardName.isNotEmpty)
+          ? "$wizardName's Sync Art"
+          : 'Runewright Sync Art';
+      await _discovery.startAdvertising(displayName: displayName);
       final transport = await _discovery.acceptConnection();
       if (!mounted || _stage != _Stage.hosting) return;
       await _discovery.stopAdvertising();

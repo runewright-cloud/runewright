@@ -187,7 +187,14 @@ class _BattleLobbyScreenState extends State<BattleLobbyScreen> {
       // mDNS advertising inside this call is itself best-effort (see
       // LanMatchDiscovery.startAdvertising) — this only throws on a genuine
       // socket-bind failure, not on `nsd` being unavailable.
-      await _discovery.startAdvertising(caps: DeviceCapabilities.detect());
+      final wizardName = await Identity.loadWizardName();
+      final displayName = (wizardName != null && wizardName.isNotEmpty)
+          ? "$wizardName's Duel"
+          : 'Runewright Duel';
+      await _discovery.startAdvertising(
+        caps: DeviceCapabilities.detect(),
+        displayName: displayName,
+      );
       final ip = await _discovery.localAddressHint();
       final port = _discovery.listeningPort;
       if (mounted && port != null) {

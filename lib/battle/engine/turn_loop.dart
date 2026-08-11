@@ -763,9 +763,8 @@ typedef AttackPlayback = Future<void> Function(List<AttackEvent> attacks);
 /// [AccoutrementKind.counterCharm] is deliberately absent — charms self-trigger
 /// at Phase 5 and have no voluntary activation, which is exactly why an
 /// all-charm "mage slayer" loadout is never off-guard (§2.3). The summon-only
-/// kinds ([AccoutrementKind.absorptionRod], [AccoutrementKind.deflectionTotem])
-/// are absent because they have no loadout presence at all and keep their
-/// existing on-hit behaviour untouched.
+/// kind ([AccoutrementKind.absorptionRod]) is absent because it has no
+/// loadout presence at all and keeps its existing on-hit behaviour untouched.
 const kActivatableArtifactKinds = <AccoutrementKind>[
   AccoutrementKind.manaGem,
   AccoutrementKind.bookmark,
@@ -1820,7 +1819,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
       case AccoutrementKind.counterCharm:
       case AccoutrementKind.absorptionRod:
-      case AccoutrementKind.deflectionTotem:
         // Unreachable: _validateActivation rejects these kinds. Listed
         // exhaustively so adding an AccoutrementKind is a compile error here
         // rather than a silent no-op.

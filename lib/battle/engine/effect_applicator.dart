@@ -6,7 +6,7 @@
 // Called once per formula in a spell's trajectory. The caller (TurnLoop) builds
 // an ApplyContext for each formula and calls EffectApplicator.apply().
 //
-// Absorption rod (AccoutrementKind.absorptionRod / deflectionTotem):
+// Absorption rod (AccoutrementKind.absorptionRod):
 //   When an enemy spell first hits a player, one rod is consumed and all
 //   time-based effect durations from that spell on that player are halved
 //   (rounded up). The TurnLoop tracks which players have had their rod
@@ -855,7 +855,7 @@ class EffectApplicator {
             const pool = [
               AccoutrementKind.manaGem,
               AccoutrementKind.bookmark,
-              AccoutrementKind.deflectionTotem,
+              AccoutrementKind.rodOfSpreading,
             ];
             final kind = pool[ctx.rng.nextInt(pool.length)];
             av.accoutrements.add(Accoutrement(id: _uid(ctx, 'ft'), kind: kind));
@@ -973,15 +973,15 @@ class EffectApplicator {
         }
 
       case SpellAffinity.earth:
-        // Summon deflection totem(s) for whoever occupies the target tile --
+        // Summon Rod(s) of Wind for whoever occupies the target tile --
         // self-target to gift yourself the artifact; an ally's tile to gift
         // them instead.
         for (final av in _avatarsAt(ctx.state, ctx.targetTile)) {
           if (_prepareForHit(av, ctx) == null) continue; // redirected onto an illusion decoy
           for (var i = 0; i < e.count; i++) {
             av.accoutrements.add(Accoutrement(
-              id: _uid(ctx, 'dt'),
-              kind: AccoutrementKind.deflectionTotem,
+              id: _uid(ctx, 'row'),
+              kind: AccoutrementKind.rodOfSpreading,
             ));
           }
         }
@@ -1403,9 +1403,7 @@ class EffectApplicator {
     if (ctx.rodConsumedFor.contains(target.playerId)) return true;
     if (target.absorptionRodCount > 0) {
       final idx = target.accoutrements.indexWhere(
-        (a) =>
-            a.kind == AccoutrementKind.absorptionRod ||
-            a.kind == AccoutrementKind.deflectionTotem,
+        (a) => a.kind == AccoutrementKind.absorptionRod,
       );
       if (idx >= 0) target.accoutrements.removeAt(idx);
       ctx.rodConsumedFor.add(target.playerId);
