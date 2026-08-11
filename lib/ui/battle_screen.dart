@@ -18,7 +18,7 @@
 //   Player HP/MP bars
 //   Spell book  — horizontal scroll of SpellCardWidgets (tap → select)
 
-import 'dart:async' show Completer, unawaited;
+import 'dart:async' show Completer, Timer, unawaited;
 import 'dart:convert' show base64Encode;
 import 'dart:math';
 import 'dart:typed_data';
@@ -37,6 +37,7 @@ import '../battle/engine/turn_loop.dart';
 import '../battle/engine/wild_magic_applicator.dart' show WildMagicEvent;
 import '../battle/models/battle_state.dart';
 import '../battle/models/barrier.dart';
+import '../battle/models/casting_enhancements.dart' show CastingEnhancements;
 import '../battle/models/creature_spec.dart' show summonSummaryFromFormula;
 import '../battle/models/effect_kind.dart'
     show
@@ -2246,6 +2247,25 @@ class _BattleScreenState extends State<BattleScreen>
         ),
       );
 
+  /// Opens [playerId]'s graveyard (cast + withered spells). Passes [_loop]
+  /// straight through rather than a snapshot — [_GraveyardDialog] polls it
+  /// so a reactivation vanishes from an already-open dialog, since nothing
+  /// else in this codebase re-renders an open `showDialog` route when
+  /// engine state mutates elsewhere.
+  void _showGraveyard(String playerId) {
+    final avatar = widget.state.avatars
+        .where((a) => a.playerId == playerId)
+        .firstOrNull;
+    final name = avatar != null && avatar.wizardName.isNotEmpty
+        ? avatar.wizardName
+        : playerId;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (_) => _GraveyardDialog(loop: _loop, playerId: playerId, title: name),
+    );
+  }
+
   /// Prompts the caster to choose a push direction for the ConveyorTile
   /// about to be created at [origin], by tapping one of its 6 highlighted
   /// neighbor hexes (see BattlefieldPainter.directionPickHexes). Returns the
@@ -2409,7 +2429,17 @@ class _BattleScreenState extends State<BattleScreen>
                 .toList(),
       };
 
-  int _maxCastRange(WizardAvatar caster, HexCoord hex) {
+  /// [includeSelectedEnhancement]: add Velocity's [CastingEnhancements
+  /// .velocityRangeBonus] when the in-progress cast's enhancement picker has
+  /// 'air' selected. Only correct for the *local player's own live cast* —
+  /// true at this method's two live-targeting call sites, left false for the
+  /// pending-mystery-orb display (which reflects a past cast's already-
+  /// resolved range, never the current live [_selectedEnhancement]).
+  int _maxCastRange(
+    WizardAvatar caster,
+    HexCoord hex, {
+    bool includeSelectedEnhancement = false,
+  }) {
     if (caster.activeStatusEffects.any(
       (fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.scryingSight,
     )) {
@@ -2425,7 +2455,12 @@ class _BattleScreenState extends State<BattleScreen>
     final hexBound = widget.state.clouds.any(
       (c) => hexDistance(hex, c.position) <= c.radius,
     );
-    return (casterBound || hexBound) ? 1 : caster.effectiveSpellRange;
+    final base = (casterBound || hexBound) ? 1 : caster.effectiveSpellRange;
+    final velocityBonus =
+        includeSelectedEnhancement && _selectedEnhancement == 'air'
+        ? CastingEnhancements.velocityRangeBonus
+        : 0;
+    return base + velocityBonus;
   }
 
   // ── Battlefield tap ───────────────────────────────────────────────────────────
@@ -2520,7 +2555,10 @@ class _BattleScreenState extends State<BattleScreen>
       if (_selectedSpell == null) return;
       final local = _local;
       if (local == null) return;
-      if (hexDistance(local.position, hex) > _maxCastRange(local, hex)) return;
+      if (hexDistance(local.position, hex) >
+          _maxCastRange(local, hex, includeSelectedEnhancement: true)) {
+        return;
+      }
       setState(() => _targetHex = hex);
     } else {
       final local = _local;
@@ -3507,7 +3545,11 @@ class _BattleScreenState extends State<BattleScreen>
             if (_inspectedMinion != null && _inspectedMinion!.isAlive)
               _EnemyCreatureHudRow(minion: _inspectedMinion!)
             else if (foes.isNotEmpty)
-              _OpponentHudRow(avatars: foes, maxHp: config.playerHp),
+              _OpponentHudRow(
+                avatars: foes,
+                maxHp: config.playerHp,
+                onOpenGraveyard: _showGraveyard,
+              ),
   
             // Battlefield — tappable, with the 4 artifact corner tiles
             // floating over the empty space around the hex map (see
@@ -3584,7 +3626,11 @@ class _BattleScreenState extends State<BattleScreen>
                                         : _movePath,
                                     spellRangeRadius:
                                         _selectedSpell != null && _local != null
-                                        ? _maxCastRange(_local!, _local!.position)
+                                        ? _maxCastRange(
+                                            _local!,
+                                            _local!.position,
+                                            includeSelectedEnhancement: true,
+                                          )
                                         : 0,
                                     casterPos: _local?.position,
                                     minions: widget.state.minions
@@ -3905,8 +3951,9 @@ class _BattleScreenState extends State<BattleScreen>
                 pendingHpSpend: _freeMoveGrant.boostResource == SpellAffinity.fire
                     ? _freeMoveCost
                     : 0,
+                onOpenGraveyard: () => _showGraveyard(widget.localPlayerId),
               ),
-  
+
             // Status effects — local player by default; opponent when inspecting
             _StatusEffectPanel(
               avatar: _inspectedAvatar ?? local,
@@ -5136,6 +5183,231 @@ class _ActionButton extends StatelessWidget {
   }
 }
 
+// ── Graveyard (cast + withered spells) ──────────────────────────────────────
+
+/// MTG-graveyard-style browser for one player's cast + withered spells —
+/// opened via [_BattleScreenState._showGraveyard] from either the local
+/// [_PlayerHud] icon or a targeted opponent's [_OpponentChip] icon.
+///
+/// Reads [TurnLoop.usedChapterPositions]/[TurnLoop.spellAt] and
+/// [TurnLoop.drawScheduleFor]'s `withered` set directly — no snapshot is
+/// taken. Since nothing else in this codebase re-renders an already-open
+/// `showDialog` route when engine state mutates, this widget polls [loop]
+/// on a short timer so a reactivation (which must vanish from the withered
+/// list instantly per the design) is reflected while the dialog stays open.
+class _GraveyardDialog extends StatefulWidget {
+  const _GraveyardDialog({
+    required this.loop,
+    required this.playerId,
+    required this.title,
+  });
+
+  final TurnLoop loop;
+  final String playerId;
+  final String title;
+
+  @override
+  State<_GraveyardDialog> createState() => _GraveyardDialogState();
+}
+
+class _GraveyardDialogState extends State<_GraveyardDialog> {
+  Timer? _refreshTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    // Wither/reactivate only ever happens at a resolved-turn boundary, not
+    // per-frame, so a short poll is cheap and never misses a change.
+    _refreshTimer = Timer.periodic(const Duration(milliseconds: 300), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isLocal = widget.playerId == widget.loop.localPlayerId;
+    final cast = widget.loop.usedChapterPositions(widget.playerId).toList()
+      ..sort();
+    final withered =
+        (widget.loop.drawScheduleFor(widget.playerId)?.withered ?? const <int>{})
+            .toList()
+          ..sort();
+
+    return Dialog(
+      backgroundColor: kParchmentColor,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420, maxHeight: 420),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      "${widget.title}'s Graveyard",
+                      style: manuscriptHeaderStyle(fontSize: 15),
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () => Navigator.of(context).pop(),
+                    child: const Icon(Icons.close, size: 18, color: kInkColor),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              if (cast.isEmpty && withered.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 24),
+                  child: Center(
+                    child: Text(
+                      'Nothing here yet',
+                      style: manuscriptCaptionStyle(),
+                    ),
+                  ),
+                )
+              else ...[
+                Flexible(
+                  child: _GraveyardSection(
+                    label: 'Cast',
+                    positions: cast,
+                    loop: widget.loop,
+                    playerId: widget.playerId,
+                    dimmed: false,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Flexible(
+                  child: _GraveyardSection(
+                    label: 'Withered',
+                    positions: withered,
+                    loop: widget.loop,
+                    playerId: widget.playerId,
+                    dimmed: true,
+                  ),
+                ),
+                if (!isLocal && withered.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      'Withered opponent spells are hidden until cast',
+                      style: manuscriptCaptionStyle(
+                        color: kInkColor.withValues(alpha: 0.55),
+                      ),
+                    ),
+                  ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _GraveyardSection extends StatelessWidget {
+  const _GraveyardSection({
+    required this.label,
+    required this.positions,
+    required this.loop,
+    required this.playerId,
+    required this.dimmed,
+  });
+
+  final String label;
+  final List<int> positions;
+  final TurnLoop loop;
+  final String playerId;
+
+  /// Applied to every tile in this section (the _SpellBook withered-dimming
+  /// convention, battle_screen.dart's own `_SpellBook` build method) — the
+  /// Withered section is always dimmed, matching how a greyed hand card
+  /// reads elsewhere in this screen.
+  final bool dimmed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          '$label (${positions.length})',
+          style: manuscriptCaptionStyle(
+            color: kInkColor.withValues(alpha: 0.75),
+          ),
+        ),
+        const SizedBox(height: 4),
+        if (positions.isEmpty)
+          Text('—', style: manuscriptCaptionStyle())
+        else
+          SizedBox(
+            height: 78,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: positions.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 6),
+              itemBuilder: (context, i) {
+                final spell = loop.spellAt(playerId, positions[i]);
+                final tile = spell == null
+                    ? const _UnknownSpellTile(size: 64)
+                    : GestureDetector(
+                        onTap: () => showSpellCardFullscreen(context, spell),
+                        child: SpellCardWidget(
+                          spell: spell,
+                          size: 64,
+                          interactive: false,
+                        ),
+                      );
+                return Opacity(opacity: dimmed ? 0.35 : 1.0, child: tile);
+              },
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// Face-down placeholder for a graveyard entry whose content is unknown —
+/// always true of an opponent's withered (never-cast) positions under the
+/// ZK privacy model (see TurnLoop.spellAt's doc comment). Sized to match
+/// [SpellCardWidget] so its row stays aligned.
+class _UnknownSpellTile extends StatelessWidget {
+  const _UnknownSpellTile({required this.size});
+
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: const Color(0xFF130C04),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+          color: kIlluminationGold.withValues(alpha: 0.6),
+          width: 1,
+        ),
+      ),
+      child: Icon(
+        Icons.help_outline,
+        size: size * 0.4,
+        color: kIlluminationGold.withValues(alpha: 0.85),
+      ),
+    );
+  }
+}
+
 // ── Watery Scrying Pool reveal ──────────────────────────────────────────────
 
 /// Thumbnail row for a Watery Scrying Pool reveal — the enemy's spells for
@@ -5172,10 +5444,19 @@ class _RevealedHandRow extends StatelessWidget {
 // ── Opponent strip ────────────────────────────────────────────────────────────
 
 class _OpponentHudRow extends StatelessWidget {
-  const _OpponentHudRow({required this.avatars, required this.maxHp});
+  const _OpponentHudRow({
+    required this.avatars,
+    required this.maxHp,
+    this.onOpenGraveyard,
+  });
 
   final List<WizardAvatar> avatars;
   final int maxHp;
+
+  /// Opens the graveyard (cast + withered spells) for the given avatar's
+  /// playerId — see _BattleScreenState._showGraveyard. Threaded per-chip so
+  /// each opponent's icon opens THEIR graveyard, not a fixed one.
+  final void Function(String playerId)? onOpenGraveyard;
 
   @override
   Widget build(BuildContext context) {
@@ -5187,7 +5468,13 @@ class _OpponentHudRow extends StatelessWidget {
           for (int i = 0; i < avatars.length; i++) ...[
             if (i > 0) const SizedBox(width: 12),
             Expanded(
-              child: _OpponentChip(avatar: avatars[i], maxHp: maxHp),
+              child: _OpponentChip(
+                avatar: avatars[i],
+                maxHp: maxHp,
+                onOpenGraveyard: onOpenGraveyard == null
+                    ? null
+                    : () => onOpenGraveyard!(avatars[i].playerId),
+              ),
             ),
           ],
         ],
@@ -5197,10 +5484,15 @@ class _OpponentHudRow extends StatelessWidget {
 }
 
 class _OpponentChip extends StatelessWidget {
-  const _OpponentChip({required this.avatar, required this.maxHp});
+  const _OpponentChip({
+    required this.avatar,
+    required this.maxHp,
+    this.onOpenGraveyard,
+  });
 
   final WizardAvatar avatar;
   final int maxHp;
+  final VoidCallback? onOpenGraveyard;
 
   @override
   Widget build(BuildContext context) {
@@ -5218,14 +5510,25 @@ class _OpponentChip extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text(
-          name,
-          style: const TextStyle(
-            fontFamily: 'serif',
-            fontSize: 10,
-            letterSpacing: 0.5,
-            color: kParchmentColor,
-          ),
+        Row(
+          children: [
+            Flexible(
+              child: Text(
+                name,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontFamily: 'serif',
+                  fontSize: 10,
+                  letterSpacing: 0.5,
+                  color: kParchmentColor,
+                ),
+              ),
+            ),
+            if (onOpenGraveyard != null) ...[
+              const SizedBox(width: 4),
+              _GraveyardIconButton(onTap: onOpenGraveyard!),
+            ],
+          ],
         ),
         const SizedBox(height: 3),
         _ThinBar(
@@ -5337,6 +5640,7 @@ class _PlayerHud extends StatelessWidget {
     required this.maxHp,
     this.pendingManaSpend = 0,
     this.pendingHpSpend = 0,
+    this.onOpenGraveyard,
   });
 
   final WizardAvatar avatar;
@@ -5348,6 +5652,10 @@ class _PlayerHud extends StatelessWidget {
 
   /// Same, for a Fire Boost's life cost, on the HP bar.
   final int pendingHpSpend;
+
+  /// Opens this wizard's graveyard (cast + withered spells) — see
+  /// _BattleScreenState._showGraveyard. Null hides the icon entirely.
+  final VoidCallback? onOpenGraveyard;
 
   @override
   Widget build(BuildContext context) {
@@ -5364,37 +5672,82 @@ class _PlayerHud extends StatelessWidget {
     return Container(
       color: kInkColor,
       padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+      child: Stack(
         children: [
-          _StatBar(
-            label: 'HP',
-            value: avatar.hp,
-            max: maxHp,
-            fraction: hpFrac,
-            barColor: const Color(0xFF8B1E1E),
-            labelColor: const Color(0xFFD48A8A),
-            previewValue: pendingHpSpend > 0 ? hpAfter : null,
-            previewFraction: maxHp > 0 ? (hpAfter / maxHp).clamp(0.0, 1.0) : 0.0,
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _StatBar(
+                label: 'HP',
+                value: avatar.hp,
+                max: maxHp,
+                fraction: hpFrac,
+                barColor: const Color(0xFF8B1E1E),
+                labelColor: const Color(0xFFD48A8A),
+                previewValue: pendingHpSpend > 0 ? hpAfter : null,
+                previewFraction: maxHp > 0
+                    ? (hpAfter / maxHp).clamp(0.0, 1.0)
+                    : 0.0,
+              ),
+              const SizedBox(height: 6),
+              _StatBar(
+                label: 'MP',
+                value: avatar.mana,
+                max: avatar.maxMana,
+                fraction: manaFrac,
+                barColor: const Color(0xFF2B4D8C),
+                labelColor: const Color(0xFF8AACED),
+                previewValue: pendingManaSpend > 0 ? manaAfter : null,
+                previewFraction: avatar.maxMana > 0
+                    ? (manaAfter / avatar.maxMana).clamp(0.0, 1.0)
+                    : 0.0,
+              ),
+              if (avatar.activeChainElement != null) ...[
+                const SizedBox(height: 4),
+                _ChainIndicator(avatar: avatar),
+              ],
+            ],
           ),
-          const SizedBox(height: 6),
-          _StatBar(
-            label: 'MP',
-            value: avatar.mana,
-            max: avatar.maxMana,
-            fraction: manaFrac,
-            barColor: const Color(0xFF2B4D8C),
-            labelColor: const Color(0xFF8AACED),
-            previewValue: pendingManaSpend > 0 ? manaAfter : null,
-            previewFraction: avatar.maxMana > 0
-                ? (manaAfter / avatar.maxMana).clamp(0.0, 1.0)
-                : 0.0,
-          ),
-          if (avatar.activeChainElement != null) ...[
-            const SizedBox(height: 4),
-            _ChainIndicator(avatar: avatar),
-          ],
+          if (onOpenGraveyard != null)
+            Positioned(
+              top: 0,
+              right: 0,
+              child: _GraveyardIconButton(onTap: onOpenGraveyard!),
+            ),
         ],
+      ),
+    );
+  }
+}
+
+/// Small tappable icon that opens a wizard's graveyard (cast + withered
+/// spells) — see _BattleScreenState._showGraveyard/_GraveyardDialog. Styled
+/// after [_SummonBadge]'s compact bordered-icon look, sized up slightly
+/// (14px vs 10px) since this one needs to be tappable, not just legible.
+class _GraveyardIconButton extends StatelessWidget {
+  const _GraveyardIconButton({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(3),
+        decoration: BoxDecoration(
+          color: const Color(0xFF130C04),
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(
+            color: kIlluminationGold.withValues(alpha: 0.6),
+            width: 0.5,
+          ),
+        ),
+        child: Icon(
+          Icons.auto_stories,
+          size: 14,
+          color: kIlluminationGold.withValues(alpha: 0.85),
+        ),
       ),
     );
   }

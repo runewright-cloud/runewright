@@ -545,4 +545,137 @@ void main() {
       await pair.transportVerifier.disconnect();
     });
   });
+
+  group('Graveyard accessors — usedChapterPositions/spellAt', () {
+    // These back the new graveyard UI (battle_screen.dart's
+    // _GraveyardDialog): usedChapterPositions is a DERIVED set (the
+    // complement of hand ∪ remaining, no new synced state), spellAt covers
+    // content lookup, and drawScheduleFor(...).withered is the exact live
+    // set the dialog polls so a reactivation vanishes from an open dialog.
+
+    test('a resolved cast appears in usedChapterPositions for both clients, '
+        'and leaves both hand and remaining on both', () async {
+      final chapter = List.generate(5, (i) => fixtureSpell('inert$i'));
+      final pair =
+          buildLoopPair(casterChapter: chapter, verifierChapter: [fixtureSpell('v')]);
+
+      await runTurnExpectingSuccess(
+        (caster: pair.caster, verifier: pair.verifier),
+        PassAction(),
+      );
+      final handSpell = pair.caster.localSpellDraw!.hand.first;
+      final position = BookCommitment.proveMembership(
+        pair.casterCommitments,
+        handSpell.commitmentHex,
+      )!.leafIndex;
+
+      await runTurnExpectingSuccess(
+        (caster: pair.caster, verifier: pair.verifier),
+        SpellCastAction(spell: handSpell, targetHex: const HexCoord(1, 0)),
+      );
+
+      expect(pair.caster.usedChapterPositions('caster'), contains(position));
+      expect(pair.verifier.usedChapterPositions('caster'), contains(position));
+      expect(pair.caster.drawScheduleFor('caster')!.hand, isNot(contains(position)));
+      expect(pair.caster.drawScheduleFor('caster')!.remaining, isNot(contains(position)));
+
+      await pair.transportCaster.disconnect();
+      await pair.transportVerifier.disconnect();
+    });
+
+    test('opponent content is unknown until their first cast reveals it', () async {
+      final chapter = List.generate(5, (i) => fixtureSpell('inert$i'));
+      final pair =
+          buildLoopPair(casterChapter: chapter, verifierChapter: [fixtureSpell('v')]);
+
+      await runTurnExpectingSuccess(
+        (caster: pair.caster, verifier: pair.verifier),
+        PassAction(),
+      );
+      final handSpell = pair.caster.localSpellDraw!.hand.first;
+      final position = BookCommitment.proveMembership(
+        pair.casterCommitments,
+        handSpell.commitmentHex,
+      )!.leafIndex;
+
+      expect(pair.verifier.spellAt('caster', position), isNull);
+
+      await runTurnExpectingSuccess(
+        (caster: pair.caster, verifier: pair.verifier),
+        SpellCastAction(spell: handSpell, targetHex: const HexCoord(1, 0)),
+      );
+
+      final revealed = pair.verifier.spellAt('caster', position);
+      expect(revealed, isNotNull);
+      expect(revealed!.commitmentHex, equals(handSpell.commitmentHex));
+      expect(revealed.name, equals(handSpell.name));
+      expect(revealed.formula, equals(handSpell.formula));
+      // The ZK model never transmits grid/segment data — only a Merkle
+      // proof of which position was cast (_decodeAction's reconstruction).
+      expect(revealed.initialGrid, isEmpty);
+
+      await pair.transportCaster.disconnect();
+      await pair.transportVerifier.disconnect();
+    });
+
+    test('withered/reactivated position set — the exact live view the '
+        'graveyard UI polls — updates on both clients and clears on '
+        'reactivate', () async {
+      SpellAsset fireWitherSpell(String name) => fixtureSpell(
+        name,
+        formula: const ['fire', 'earth', 'fire'],
+        t: 3,
+        trajectory: const [1, 4, 1],
+      );
+      SpellAsset earthReactivateSpell(String name) => fixtureSpell(
+        name,
+        formula: const ['earth', 'earth', 'fire'],
+        t: 4,
+        trajectory: const [4, 0, 4, 1],
+      );
+
+      final fireSpell = fireWitherSpell('fire-wither-gy');
+      final earthA = earthReactivateSpell('earth-a-gy');
+      final earthB = earthReactivateSpell('earth-b-gy');
+      final chapter = [fireSpell, earthA, earthB];
+      final pair =
+          buildLoopPair(casterChapter: chapter, verifierChapter: [fixtureSpell('v')]);
+
+      await runTurnExpectingSuccess(
+        (caster: pair.caster, verifier: pair.verifier),
+        PassAction(),
+      );
+      expect(pair.caster.drawScheduleFor('caster')!.withered, isEmpty);
+
+      await runTurnExpectingSuccess(
+        (caster: pair.caster, verifier: pair.verifier),
+        SpellCastAction(spell: fireSpell, targetHex: const HexCoord(0, 0)),
+      );
+      final aWithered = pair.caster.isHandSpellWithered(earthA);
+      final withered = aWithered ? earthA : earthB;
+      final safe = aWithered ? earthB : earthA;
+      final witheredPosition = BookCommitment.proveMembership(
+        pair.casterCommitments,
+        withered.commitmentHex,
+      )!.leafIndex;
+
+      expect(pair.caster.drawScheduleFor('caster')!.withered, {witheredPosition});
+      expect(pair.verifier.drawScheduleFor('caster')!.withered, {witheredPosition});
+      // A currently-withered opponent position was, by construction, never
+      // cast, so its content is permanently unknown to the other client —
+      // the graveyard UI renders this as a face-down placeholder.
+      expect(pair.verifier.spellAt('caster', witheredPosition), isNull);
+
+      await runTurnExpectingSuccess(
+        (caster: pair.caster, verifier: pair.verifier),
+        SpellCastAction(spell: safe, targetHex: const HexCoord(0, 0)),
+      );
+      expect(pair.caster.drawScheduleFor('caster')!.withered, isEmpty,
+          reason: 'reactivate must clear the set the graveyard UI polls live');
+      expect(pair.verifier.drawScheduleFor('caster')!.withered, isEmpty);
+
+      await pair.transportCaster.disconnect();
+      await pair.transportVerifier.disconnect();
+    });
+  });
 }

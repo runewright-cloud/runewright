@@ -178,6 +178,63 @@ void main() {
     });
   });
 
+  // Velocity (Air loadout enhancement) is a per-cast choice, not an avatar
+  // stat, so it can't live inside effectiveSpellRange like rangeUp/rangeDown
+  // do — it has to be added to castRange itself in the SpellCastAction
+  // branch. Previously it wasn't wired in at all: isVelocity was carried
+  // end-to-end (wire encode/decode, claim verification) but nothing ever
+  // read it, so a "velocity" cast was mechanically identical to a plain one.
+  group('Velocity (Air) extends reach', () {
+    test('a velocity cast reaches beyond base range', () async {
+      final caster = _avatar('caster', const HexCoord(0, 0), range: 3);
+      final victim = _avatar('victim', const HexCoord(5, 0), teamId: 'b');
+      final state = _state([caster, victim]);
+
+      await _loop(state, 'caster').runTurn(TurnInput(
+        action: SpellCastAction(
+          spell: _blast(),
+          targetHex: victim.position,
+          isVelocity: true,
+        ),
+      ));
+
+      expect(victim.hp, lessThan(24),
+          reason: 'range 3 + velocityRangeBonus 2 = 5 — a plain range-3 cast '
+              'could not reach this target, a velocity one must');
+    });
+
+    test('without the flag, the same target is still out of reach', () async {
+      final caster = _avatar('caster', const HexCoord(0, 0), range: 3);
+      final victim = _avatar('victim', const HexCoord(5, 0), teamId: 'b');
+      final state = _state([caster, victim]);
+
+      await _loop(state, 'caster').runTurn(TurnInput(
+        action: SpellCastAction(spell: _blast(), targetHex: victim.position),
+      ));
+
+      expect(victim.hp, 24,
+          reason: 'fixture check: distance 5 really is beyond an unenhanced '
+              'range-3 cast');
+    });
+
+    test('one hex past the velocity-extended range still fails', () async {
+      final caster = _avatar('caster', const HexCoord(0, 0), range: 3);
+      final victim = _avatar('victim', const HexCoord(6, 0), teamId: 'b');
+      final state = _state([caster, victim]);
+
+      await _loop(state, 'caster').runTurn(TurnInput(
+        action: SpellCastAction(
+          spell: _blast(),
+          targetHex: victim.position,
+          isVelocity: true,
+        ),
+      ));
+
+      expect(victim.hp, 24,
+          reason: 'range 3 + 2 = 5, so distance 6 is still one hex too far');
+    });
+  });
+
   // Movement resolves in Phase 3, before action resolution, but the player
   // declared their target in Phase 1 from where they were standing THEN. A
   // check measured from the post-move tile would fizzle the perfectly legal

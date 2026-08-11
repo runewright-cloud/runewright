@@ -14,9 +14,10 @@
 //      fromSorcererQuality below.
 //
 // Potency:  bracketed values in the effect table become active.
-// Velocity: spell range +2. No engine-side range enforcement exists to hook
-//   this into yet (see turn_loop.dart/battle_screen.dart) — the flag is wired
-//   everywhere but currently has no mechanical effect; tracked as a follow-up.
+// Velocity: spell range +2 (CastingEnhancements.velocityRangeBonus), applied
+//   to `castRange` in TurnLoop._resolveActions' SpellCastAction branch, and
+//   mirrored by battle_screen._maxCastRange for the UI's own targeting gate
+//   and range highlight.
 // Efficiency: mana cost −1/3 (applied in _spellManaCost/_certifiedManaCost in
 //   turn_loop.dart, not here).
 //
@@ -48,8 +49,13 @@ class CastingEnhancements {
   /// Fire loadout enhancement — use bracketed values in the effect table.
   final bool isPotent;
 
-  /// Air loadout enhancement — spell range +2.
+  /// Air loadout enhancement — spell range +[velocityRangeBonus].
   final bool isVelocity;
+
+  /// Tiles added to spell range when [isVelocity] is active. Shared constant
+  /// so TurnLoop's engine-side enforcement and battle_screen's UI gate can't
+  /// drift apart on the magnitude.
+  static const int velocityRangeBonus = 2;
 
   /// Water loadout enhancement — mana cost −1/3, applied in
   /// TurnLoop._spellManaCost/_certifiedManaCost.

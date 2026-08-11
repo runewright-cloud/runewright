@@ -1064,6 +1064,53 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// is no peer chapter at all in that mode.
   final Map<String, DrawSchedule> _drawSchedules = {};
 
+  /// Cast spell contents revealed over the course of the match, keyed by
+  /// (playerId, chapter position) — unlike [lastResolvedSpells], never
+  /// cleared between turns. Populated once per cast, at the peer branch of
+  /// [_advanceDrawState]'s two call sites: the peer's cast is reconstructed
+  /// by [_decodeAction] with real name/formula/commitmentHex but an EMPTY
+  /// [SpellAsset.initialGrid] (the ZK model never transmits grid/segment
+  /// data, only a Merkle membership proof of which position was cast). The
+  /// local player's own entries are never written here — [spellAt] already
+  /// covers every local position via [localSpellAt], cast or not.
+  final Map<String, Map<int, SpellAsset>> _revealedCastContents = {};
+
+  /// Chapter positions [playerId] has permanently cast — i.e. left both
+  /// [DrawSchedule.hand] and [DrawSchedule.remaining] forever, which only
+  /// [DrawSchedule.useSlotAtPosition] does and never undoes. Derived, not
+  /// stored: the complement of hand ∪ remaining within [0, chapterSize) —
+  /// every non-deck-out cast moves exactly one position permanently out of
+  /// both, so this needs no new synced state. Empty until both the
+  /// schedule and this player's chapter size are known.
+  Set<int> usedChapterPositions(String playerId) {
+    final schedule = _drawSchedules[playerId];
+    if (schedule == null) return const <int>{};
+    final chapterSize = playerId == localPlayerId
+        ? localChapterSpells?.length
+        : (playerId == _peerId() ? peerBookLeafCount : null);
+    if (chapterSize == null) return const <int>{};
+    final known = <int>{...schedule.hand, ...schedule.remaining};
+    return {
+      for (var p = 0; p < chapterSize; p++)
+        if (!known.contains(p)) p,
+    };
+  }
+
+  /// Known content at [playerId]'s chapter [position], or null if unknown.
+  /// The local player is always fully known (delegates to [localSpellAt]
+  /// for every position, withered or not — withering never hides a card
+  /// from its own owner). Any other player is known ONLY at positions
+  /// they've actually cast (see [_revealedCastContents]) — a currently
+  /// withered opponent position has, by construction, never been cast
+  /// (once cast, a position can never become withered again), so it stays
+  /// permanently unknown to this client unless/until it's later cast. This
+  /// is a structural consequence of the ZK privacy model, not a bug — the
+  /// graveyard UI (battle_screen.dart) renders these as face-down.
+  SpellAsset? spellAt(String playerId, int position) {
+    if (playerId == localPlayerId) return localSpellAt(position);
+    return _revealedCastContents[playerId]?[position];
+  }
+
   /// Set once [_dealOpeningHandsIfNeeded] has dealt the opening hands, so a
   /// later turn never re-deals (chapter resolution is async and may not be
   /// ready on turn 1 — see that method's doc comment).
@@ -2454,6 +2501,14 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         merkleProof != null &&
         peerId != null) {
       _advanceDrawState(peerId, merkleProof.leafIndex, entropy);
+      final peerSpell = switch (action) {
+        SpellCastAction(:final spell) => spell,
+        MysterySpellCastAction(:final spell) => spell,
+        _ => null,
+      };
+      if (peerSpell != null) {
+        (_revealedCastContents[peerId] ??= {})[merkleProof.leafIndex] = peerSpell;
+      }
     }
 
     // For immediate mystery spells (delay=0), verify the commitment and
@@ -3651,9 +3706,18 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           final castOrigin = action.delayedOriginHex ??
               preMovPos[actor.playerId] ??
               actor.position;
-          final castRange = action.delayedRange ??
-              preMovRange[actor.playerId] ??
-              actor.effectiveSpellRange;
+          // Velocity (Air loadout enhancement) adds to reach on top of
+          // whichever base the three bullets above selected — it's a
+          // per-cast choice, not an avatar stat, so it can't live inside
+          // effectiveSpellRange/preMovRange like Earthen Inertia's rangeUp/
+          // rangeDown do. A delayed (Mystery) cast never carries isVelocity
+          // (Earth and Air are mutually-exclusive loadout picks — see
+          // casting_enhancements.dart), so this only ever adds to an
+          // immediate cast's own declared range.
+          final castRange = (action.delayedRange ??
+                  preMovRange[actor.playerId] ??
+                  actor.effectiveSpellRange) +
+              (isVelocity ? CastingEnhancements.velocityRangeBonus : 0);
           final outOfRange = hexDistance(castOrigin, targetHex) > castRange;
           if (enhancements.fizzle || ignoredCloudRestriction || outOfRange) {
             // Botched incantation, an illegal cast that ignored the cloud's
