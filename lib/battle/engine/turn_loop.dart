@@ -6598,6 +6598,25 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         'does not match wire value ${spell.commitmentHex} — match forfeit',
       );
     }
+    // Binds the ruleset epoch the proof attests to the one this match
+    // negotiated. [ProofIntake] has parsed `ruleset_version` since it was
+    // added, but nothing read it: the field named itself a negotiated
+    // consensus parameter while enforcing nothing.
+    //
+    // Defence-in-depth rather than a live hole — RULESET_VERSION is a circuit
+    // global, so it is baked into each tier's verification key and a proof
+    // under a different epoch cannot satisfy the bundled VK. That makes this
+    // unreachable between honest clients on matched builds, which is exactly
+    // why it must be explicit: the implicit guarantee evaporates the moment
+    // two VKs are bundled, and a silent cross-epoch acceptance is the sort of
+    // thing a version field exists to make impossible.
+    if (outputs.rulesetVersion != state.config.rulesetVersion) {
+      session.sendForfeit('ruleset_version_mismatch');
+      throw StateError(
+        'peer proof certifies ruleset_version ${outputs.rulesetVersion} but '
+        'the match negotiated ${state.config.rulesetVersion} — match forfeit',
+      );
+    }
 
     // Recompute formula triplets from the SNARK-certified trajectory (B-1 fix).
     // Replaces the untrusted wire spell.formula for both mana-cost deduction and

@@ -14,6 +14,7 @@
 
 import 'package:rune_duel/battle/models/wild_magic_effect.dart'
     show kDefaultCommunitySeed, normalizeCommunitySeed;
+import 'package:rune_duel/spells/inscribe.dart' show kRulesetVersion;
 
 // ── Win condition ─────────────────────────────────────────────────────────────
 
@@ -33,7 +34,7 @@ class MatchConfig {
     this.playerHp = 24,
     this.gridRadius = 4,
     this.baseRange = 3,
-    this.rulesetVersion = 2,
+    this.rulesetVersion = kRulesetVersion,
     this.tier = 24,
     this.accoutrementLoadoutId,
     this.innateManaPool = 100,
@@ -59,8 +60,14 @@ class MatchConfig {
   /// Base attack range in tiles.
   final int baseRange;
 
-  /// Negotiated ruleset epoch. Must match on both sides.
-  /// See CIRCUIT_IO.md §6; currently 2.
+  /// Negotiated ruleset epoch. Must match on both sides, AND must match the
+  /// `ruleset_version` every cast spell's proof attests — [TurnLoop]
+  /// forfeits the match on a mismatch, so this is a real gate, not a label.
+  ///
+  /// Defaults to [kRulesetVersion] (inscribe.dart), the single canonical
+  /// definition shared with the circuits. It used to default to a hardcoded 2
+  /// while the circuits were on 3, which made the negotiated value meaningless.
+  /// See CIRCUIT_IO.md §6.
   final int rulesetVersion;
 
   /// Circuit tier (12 / 24 / 48) — smallest covering the declared max T.
@@ -210,7 +217,7 @@ class MatchConfig {
         playerHp: j['playerHp'] as int? ?? 24,
         gridRadius: j['gridRadius'] as int? ?? 4,
         baseRange: j['baseRange'] as int? ?? 3,
-        rulesetVersion: j['rulesetVersion'] as int? ?? 2,
+        rulesetVersion: j['rulesetVersion'] as int? ?? kRulesetVersion,
         tier: j['tier'] as int? ?? 24,
         accoutrementLoadoutId: j['accoutrementLoadoutId'] as String?,
         innateManaPool: j['innateManaPool'] as int? ?? 100,

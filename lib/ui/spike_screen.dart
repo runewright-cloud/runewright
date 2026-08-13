@@ -16,6 +16,7 @@ import 'package:flutter/services.dart' show rootBundle;
 
 import '../ffi/prover.dart';
 import '../ffi/srs_cache.dart';
+import '../spells/inscribe.dart' show rulesetVersionHex;
 
 // poseidon2_hash2(0, 0) — the interim dummy owner_pubkey used throughout
 // test_vectors/seeds.json and scripts/gen_vectors.dart until the identity
@@ -108,7 +109,7 @@ class _SpikeScreenState extends State<SpikeScreen> {
         keyLoHex: '0x0',
         tHex: '0x1',
         ownerPubkeyHex: _ownerPubkeyHex,
-        rulesetVersionHex: '0x3',
+        rulesetVersionHex: rulesetVersionHex,
         vkBytes: vk,
       );
 

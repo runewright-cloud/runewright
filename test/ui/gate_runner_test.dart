@@ -21,6 +21,7 @@ import 'package:rune_duel/identity/identity.dart';
 import 'package:rune_duel/protocol/lan_socket_transport.dart';
 import 'package:rune_duel/protocol/match_session.dart';
 import 'package:rune_duel/protocol/wire.dart';
+import 'package:rune_duel/spells/inscribe.dart' show rulesetVersionHex;
 import 'package:rune_duel/ui/gate_runner.dart';
 
 import '../identity/fake_secure_storage.dart';
@@ -136,7 +137,7 @@ void main() {
         keyLoHex: alice.keyLoHex,
         tHex: kGateTHex,
         ownerPubkeyHex: ownerPubkeyHex,
-        rulesetVersionHex: kGateRulesetVersionHex,
+        rulesetVersionHex: rulesetVersionHex,
         vkBytes: vk,
       );
       final realProofBytes = timedResult.proofBytes;

@@ -17,6 +17,7 @@
 import 'dart:typed_data';
 
 import '../ffi/prover.dart' as prover;
+import '../spells/inscribe.dart' show rulesetVersionHex;
 import '../identity/identity.dart';
 import '../protocol/match_session.dart';
 
@@ -58,7 +59,6 @@ class GateStep {
 /// real identity's key_hi/key_lo/owner_pubkey instead of the zero stub.
 final List<int> kGateGrid = List<int>.filled(469, 0);
 const kGateTHex = '0x1';
-const kGateRulesetVersionHex = '0x3';
 const kGateCircuitAsset = 'assets/circuits/ca_v2_4_tier12.json';
 const kGateVkAsset = 'assets/circuits/ca_v2_4_tier12.vk';
 
@@ -111,7 +111,7 @@ class GateRunner {
         keyLoHex: identity.keyLoHex,
         tHex: kGateTHex,
         ownerPubkeyHex: ownerPubkeyHex,
-        rulesetVersionHex: kGateRulesetVersionHex,
+        rulesetVersionHex: rulesetVersionHex,
         vkBytes: vk,
       );
       _step('proof_generated', GateStepState.pass, 'wall_ms=${result.wallMs} proof_len=${result.proofBytes.length}B');

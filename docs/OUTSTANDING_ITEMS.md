@@ -138,6 +138,15 @@ later. See §9 of the plan for the two calls needed before coding.
 
 ## 6. Worth double-checking (unconfirmed, lower priority): ruleset_version cross-check
 
+**Status: FIXED 2026-08-13** (see `M4_findings.md` M4.14). The instinct below was right
+on both counts: the VK *is* the real binding (so it was never exploitable), and the
+`MatchConfig` default *had* drifted to a stale 2. `kRulesetVersion` in `inscribe.dart` is
+now the single canonical definition that inscription, the gate runner, the benchmark
+screen and `MatchConfig` all derive from, and `_verifyPeerSpellCast` forfeits on
+`outputs.rulesetVersion != state.config.rulesetVersion`. Kept explicit rather than left
+to the VK because the implicit guarantee disappears as soon as two VKs are bundled —
+which is what a ruleset bump is for. Original report below.
+
 While wiring Stage 2's proof verification, I noticed `_verifyPeerSpellCast`
 (`turn_loop.dart`) never explicitly compares the proof's certified
 `outputs.rulesetVersion` against `MatchConfig.rulesetVersion` — VK selection

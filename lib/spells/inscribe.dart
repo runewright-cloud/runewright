@@ -29,10 +29,23 @@ class InscribeException implements Exception {
 const List<int> kInscribeTiers = [12, 24, 48];
 const int kMaxInscribableSteps = 48;
 
-/// `RULESET_VERSION` -- CIRCUIT_IO.md CIRCUIT_IO 6, same fixed value used
-/// throughout (gate_runner.dart's kGateRulesetVersionHex, spike_screen.dart).
+/// `RULESET_VERSION` -- CIRCUIT_IO.md CIRCUIT_IO 6. **The single canonical
+/// definition**: the circuits' `global RULESET_VERSION` must equal this, and
+/// everything Dart-side (inscription, the gate runner, the benchmark screen,
+/// [MatchConfig.rulesetVersion]) derives from it rather than restating it.
+///
 /// Bumped to 3 for deterministic geometry outputs (segment_count, dot_count).
-const String kRulesetVersionHex = '0x3';
+/// Per CLAUDE.md, this must bump on any consensus-visible CA rule change; it is
+/// a deliberate VK-breaking mechanism. When it does, update the three
+/// `circuits/ca_v2_4_tier*/src/main.nr` globals in the same commit.
+const int kRulesetVersion = 3;
+
+/// [kRulesetVersion] as the hex Field string the prover FFI expects.
+///
+/// Computed rather than written out: a hand-maintained `'0x3'` beside an int 3
+/// is exactly the drift this constant exists to prevent, and naive
+/// interpolation would silently emit `0x10` for version 10.
+String get rulesetVersionHex => '0x${kRulesetVersion.toRadixString(16)}';
 
 /// Smallest tier covering [t] generations, or null if [t] is outside the
 /// circuit's supported range (`1 <= T <= 48`).
@@ -137,7 +150,7 @@ Future<SpellAsset> inscribeSpell({
     keyLoHex: identity.keyLoHex,
     tHex: tHex,
     ownerPubkeyHex: ownerPubkeyHex,
-    rulesetVersionHex: kRulesetVersionHex,
+    rulesetVersionHex: rulesetVersionHex,
     vkBytes: vkBytes,
   );
 

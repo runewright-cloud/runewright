@@ -5451,3 +5451,58 @@ options, none of them free, for whoever picks this up:
 cost-modifying statuses, or HP between the action commit (Phase 1) and the action reveal
 (Phase 5) is a lockstep bug by construction.** That window has two different charging
 orders in it and always will, until one of the three options above is taken.
+
+---
+
+## M4.14 — The ruleset epoch that negotiated nothing (2026-08-13)
+
+Flagged independently twice: by `OUTSTANDING_ITEMS.md` §6 while wiring Stage 2, and by an
+outside architecture review (`docs/Runewright Architecture Review — August 2026.md`).
+Both were right.
+
+`ProofIntake` has parsed `ruleset_version` since it was added and **nothing ever read
+it**, while `MatchConfig.rulesetVersion` still defaulted to a hardcoded `2` — the
+circuits having moved to `3`. So the "negotiated" epoch was a field that negotiated
+nothing: both peers agreed on a stale value, and no code compared it to what any proof
+actually attested.
+
+**Not exploitable, and the reason matters.** `RULESET_VERSION` is a circuit global, so it
+is baked into each tier's verification key; a proof from another epoch cannot satisfy the
+bundled key. The property held — it was just being enforced by accident, as a side effect
+of VK selection, rather than by anything that knew it was enforcing it.
+
+That is precisely why it needed to become explicit. **The implicit guarantee evaporates
+the moment two VKs are bundled**, which is exactly what a ruleset bump is for. A version
+field whose only enforcement is a coincidence of key selection will pick the worst
+possible moment to stop working.
+
+### What changed
+
+- `kRulesetVersion` (inscribe.dart) is now the **single canonical definition**.
+  Inscription, the gate runner, the benchmark screen and `MatchConfig` all derive from it
+  instead of restating `3` / `'0x3'` / `2` in five places.
+- `rulesetVersionHex` is **computed** (`toRadixString(16)`), not hand-written beside the
+  int. A literal `'0x3'` next to a `3` is the drift this constant exists to prevent, and
+  naive interpolation would silently emit `0x10` for version 10.
+- `_verifyPeerSpellCast` forfeits on
+  `outputs.rulesetVersion != state.config.rulesetVersion`, beside the existing `t` and
+  commitment binds.
+
+**When bumping `kRulesetVersion`, update the three `circuits/ca_v2_4_tier*/src/main.nr`
+globals in the same commit.** Nothing enforces that pairing but this note.
+
+### Wire-visible consequence
+
+`MatchConfig.rulesetVersion` moving 2 → 3 changes an exchanged config field, and config
+agreement is field-by-field. **A device on an older build and one on this build will no
+longer agree and will not start a match.** Nothing has shipped, so this is free now — but
+it is the reason this landed as its own commit rather than folded into a larger one: a
+future "our phones stopped pairing" bisect should land on a commit whose message says so.
+
+### Verification
+
+`test/battle/engine/ruleset_version_bind_test.dart`, sharing
+`certified_cast_fixture.dart` with M4.15. Verification is stubbed to `alwaysOk`
+deliberately — the point is to reach *past* the VK's implicit guarantee and prove the
+explicit check exists. Confirmed to fail against the pre-fix engine (the cross-epoch
+proof was accepted without complaint) before being accepted.
