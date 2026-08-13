@@ -50,6 +50,23 @@ void main() {
         reason: 'a replay harness with no scripts asserts nothing');
   });
 
+  test('no golden is orphaned', () {
+    // A golden with no script behind it is worse than no golden: it looks like
+    // coverage in the directory listing and asserts nothing. This catches the
+    // leftovers from a script that was renamed or withdrawn.
+    final dir = Directory(_goldenDir);
+    if (!dir.existsSync()) return;
+    final names = {for (final s in scripts) '${s.name}.json'};
+    final orphans = [
+      for (final f in dir.listSync().whereType<File>())
+        if (f.path.endsWith('.json') && !names.contains(f.uri.pathSegments.last))
+          f.uri.pathSegments.last,
+    ];
+    expect(orphans, isEmpty,
+        reason: 'goldens with no script: $orphans — delete them, or restore '
+            'the script that produced them');
+  });
+
   test('every script replays to its golden transcript', () async {
     final failures = <String>[];
 

@@ -1,0 +1,260 @@
+{
+  "name": "draw_and_refill",
+  "description": "Both players cast from a real dealt hand over four turns, draining five-card chapters. Covers the opening deal, hand refill on cast, the per-player DrawSchedule both devices maintain, and _drawSeedNonce advancing — none of which the canonical state hash can see.",
+  "turns": [
+    {
+      "turn": 1,
+      "note": "hands were dealt by startBattle, so turn 1 casts from slot 0 and takes the first refill",
+      "stateHash": "dae6a38cb87cd3f7c4efca53acb40777a76577b63510889e23df4ff636a8ecb1",
+      "events": {
+        "castEvents": 2,
+        "resolvedSpells": 2,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "drawState": {
+        "player_a": {
+          "hand": [
+            3,
+            2,
+            0
+          ],
+          "remaining": 1,
+          "withered": 0
+        },
+        "player_b": {
+          "hand": [
+            4,
+            1,
+            0
+          ],
+          "remaining": 1,
+          "withered": 0
+        }
+      },
+      "summary": {
+        "turnNumber": 1,
+        "avatars": {
+          "player_a": {
+            "hp": 20,
+            "mana": 480,
+            "chain": "fire",
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 20,
+            "mana": 480,
+            "chain": "fire",
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 2,
+      "note": "slot 0 now holds a different card; casting it again drains the deck a second time",
+      "stateHash": "bd40c9b82f59c7ee8130361601ed32472f9724885b5698a17d2ce74419c0b4c2",
+      "events": {
+        "castEvents": 2,
+        "resolvedSpells": 2,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "drawState": {
+        "player_a": {
+          "hand": [
+            2,
+            0,
+            4
+          ],
+          "remaining": 0,
+          "withered": 0
+        },
+        "player_b": {
+          "hand": [
+            1,
+            0,
+            2
+          ],
+          "remaining": 0,
+          "withered": 0
+        }
+      },
+      "summary": {
+        "turnNumber": 2,
+        "avatars": {
+          "player_a": {
+            "hp": 16,
+            "mana": 462,
+            "chain": "fire",
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 16,
+            "mana": 462,
+            "chain": "fire",
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 3,
+      "note": "a quiet turn — draw state must NOT advance when nobody casts",
+      "stateHash": "ac73ab63a2e1f18d0e0750fced3572f8e02c857b9ae686ac845d59e1221d99ec",
+      "events": {
+        "castEvents": 0,
+        "resolvedSpells": 0,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "drawState": {
+        "player_a": {
+          "hand": [
+            2,
+            0,
+            4
+          ],
+          "remaining": 0,
+          "withered": 0
+        },
+        "player_b": {
+          "hand": [
+            1,
+            0,
+            2
+          ],
+          "remaining": 0,
+          "withered": 0
+        }
+      },
+      "summary": {
+        "turnNumber": 3,
+        "avatars": {
+          "player_a": {
+            "hp": 16,
+            "mana": 462,
+            "chain": null,
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 16,
+            "mana": 462,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 4,
+      "note": "cast again after the pause; the nonce must pick up where it left off rather than replaying an earlier draw",
+      "stateHash": "9cb55492f423467c45990b9db5268a6c77315dfbd00f905032a5133d4c27a1bd",
+      "events": {
+        "castEvents": 2,
+        "resolvedSpells": 2,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "drawState": {
+        "player_a": {
+          "hand": [
+            0,
+            4
+          ],
+          "remaining": 0,
+          "withered": 0
+        },
+        "player_b": {
+          "hand": [
+            0,
+            2
+          ],
+          "remaining": 0,
+          "withered": 0
+        }
+      },
+      "summary": {
+        "turnNumber": 4,
+        "avatars": {
+          "player_a": {
+            "hp": 12,
+            "mana": 442,
+            "chain": "fire",
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 12,
+            "mana": 442,
+            "chain": "fire",
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    }
+  ]
+}

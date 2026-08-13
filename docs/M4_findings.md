@@ -5594,3 +5594,67 @@ been caught by any amount of lockstep testing.
 
 A two-device pass. By CLAUDE.md's verification hierarchy this work sits at
 integration-test level, and it touches the peer battle path.
+
+---
+
+## M4.16 — Peer summons never replicate: creatures exist on one device only (2026-08-13)
+
+**Found by the replay corpus on its first attempt at a summon script.** A real, live bug,
+not a harness artifact.
+
+### The bug
+
+`_encodeAction` does not encode `SpellAsset.isSummon` or `summonPersonality`, and
+`_decodeAction` rebuilds the peer's `SpellAsset` with those fields at their defaults
+(`isSummon: false`). A summon cast therefore arrives at the opponent's device as an
+**ordinary incantation**: the caster takes `_applySpell`'s summon branch and spawns a
+creature, while the verifier takes the formula-effect branch and spawns nothing.
+
+Measured on a two-loop paired run, honest fixture, proof verification live:
+
+```
+caster device   minions: 1
+verifier device minions: 0
+→ Bad state: state hash mismatch on turn 1
+```
+
+The match forfeits on the very turn a summon is cast. **Summons are unusable in any real
+two-device duel.**
+
+### Why nothing caught it
+
+Every existing summon test (`summon_cast_test.dart`) runs in **solo mode** — its fixture
+comment even says "never verified in solo mode". Solo has no second device, so the peer
+decode path never executes and the missing wire fields cannot matter. The feature is
+thoroughly tested in the one configuration where the bug is invisible.
+
+This is the M4.x lesson again, in a new place: **a seam that only exists between two
+devices cannot be tested on one.** Compare M4.6, where the two-device gate found a bug no
+automated test had.
+
+### Reproduction
+
+`test/battle/engine/peer_summon_replication_test.dart`, currently `skip:`ped with a
+pointer here. It asserts the verifier spawns the creature and fails today for exactly the
+right reason. **Un-skip it with the fix — it is the regression test.**
+
+### The fix, and why it was not done here
+
+Carry `isSummon` and `summonPersonality` in the action encoding, and read them back in
+`_decodeAction`. Small in itself, but:
+
+- The action bytes are **inside the action commit hash**, so this changes the wire format.
+  Both devices must run the same version or every turn's reveal verification fails.
+- That means a **battle protocol version bump** (`docs/BATTLE_PROTOCOL.md`), which is a
+  deliberate, consensus-visible act of the same family as a `RULESET_VERSION` bump.
+- `summonPersonality` is a string; the encoding needs a length-prefixed field or an enum
+  index. An enum index is cheaper and less forgeable, but pins the personality list into
+  the wire format.
+
+Escalated rather than guessed, per CLAUDE.md's rule about consensus-visible changes.
+
+### Corpus status
+
+The summon script is written and ready but **held out of the corpus**. Recording its
+golden today would enshrine a desync as expected behaviour — the corpus asserts what the
+engine *should* do, and a transcript of a forfeit is not that.

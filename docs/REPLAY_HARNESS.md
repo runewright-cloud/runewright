@@ -1,6 +1,6 @@
 # Replay Harness — a golden corpus for the battle engine
 
-*Status: built 2026-08-13, three scripts in the corpus. This is the safety net that
+*Status: built 2026-08-13, four scripts in the corpus. This is the safety net that
 makes the `TurnLoop` split safe to attempt; it is not itself that refactor.*
 
 ---
@@ -66,6 +66,17 @@ status change, which looked like a script that wasn't exercising anything. The e
 counts showed `resolvedSpells: 2` — the casts *were* resolving; an Earth Barrier
 (`earth/earth` → `EffectKind.barrier`) simply has nothing to reinforce on a battlefield
 with no terrain. Without events that would have been an hour of debugging a non-problem.
+
+### Why draw state is recorded separately
+
+`_drawSchedules` is deliberately **excluded** from `toCanonicalBytes()` — draw positions
+are publicly recomputable by both clients rather than transmitted — so the state hash is
+structurally blind to them, while they still steer later turns by deciding which card a
+refill hands you. That is the §7 latent-divergence case in its purest form.
+
+So the transcript records them explicitly, from **both** devices, and flags any player
+whose two devices disagree. Omitted from the golden entirely for scripts with no
+chapters, so resolution-only scripts are unaffected.
 
 ### Why the summary is not authoritative
 
@@ -177,6 +188,7 @@ Three scripts today:
 | `delayed_cast_and_chain` | Mystery declared turn 1, fired turn 2; pending-spell carry across a turn boundary, duplicate-grid set, chain advance/break |
 | `fire_damage_exchange` | HP mutation, simultaneous casts in one turn, chain discount on a repeat same-affinity cast, three distinct grids |
 | `terrain_and_clouds` | Board objects that persist and decay across turns — the cloud expires on turn 3 while the tile effect does not |
+| `draw_and_refill` | Opening deal, refill on cast, per-player `DrawSchedule` on both devices, `_drawSeedNonce` advancing, and the deck-out path — **none of it visible to the state hash** |
 
 The second and third both earned their place immediately by covering things the first
 could not: `delayed_cast_and_chain`'s Earth Barriers resolve but change nothing on a
@@ -186,9 +198,9 @@ terrain-free battlefield, so board mutation was entirely uncovered until
 A script earns its place by exercising something that **spans turns**. Per-feature
 coverage is what the engine unit tests are for. Still worth adding before the refactor:
 
-- **Draw/refill across several turns**, to pin `_drawSchedules` and `_drawSeedNonce` —
-  the largest remaining gap, and the one most likely to break silently.
-- **A summon that survives and acts** on later turns.
+- **A summon that survives and acts** on later turns. Written and ready, but **blocked**:
+  peer summons do not replicate to the opponent's device at all (M4.16 — found by this
+  corpus). Recording its golden now would enshrine a desync as expected behaviour.
 - **A counter charm** intercepting a delayed fire.
 - **A forfeit path** — duplicate grid, or an unbacked enhancement claim.
 
@@ -208,6 +220,11 @@ Step 2 is where most of the value is: the review notes that simply *making deter
 game resolution independently callable* is most of the benefit, without breaking every
 effect into its own class.
 
-**Do not begin step 2 until draw/refill is covered.** The corpus is the only thing
-standing between that refactor and a silent lockstep bug, and `_drawSchedules` /
-`_drawSeedNonce` are the cross-turn state most likely to break without anything noticing.
+Draw/refill is now covered, which was the stated gate. The remaining judgement call is
+whether four scripts are broad enough — the corpus currently exercises resolution,
+board mutation, persistence/decay and the draw machinery, but not counter charms,
+forfeits, or summons (blocked on M4.16).
+
+**A note on what the corpus is already worth:** it found a live two-device bug (M4.16)
+before being used for its actual purpose. Scripts that merely *attempt* a feature end to
+end across two devices are evidently valuable on their own.

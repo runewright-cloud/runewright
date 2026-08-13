@@ -66,6 +66,8 @@ SpellAsset _spell({
   int? rulesetVersion,
   int commitmentByte = 0xab,
   List<BorderZone>? certifiedElements,
+  bool isSummon = false,
+  String summonPersonality = 'aggressive',
 }) {
   // What the PROOF attests. Defaults to the earth triplet the trust tests are
   // built around; scripts that need a different effect pass their own.
@@ -111,6 +113,8 @@ SpellAsset _spell({
     commitmentHex: commitmentHex,
     spellHashHex: '',
     formula: formula,
+    isSummon: isSummon,
+    summonPersonality: summonPersonality,
   );
 }
 
@@ -130,6 +134,8 @@ SpellAsset spellFromElements({
   required List<BorderZone> elements,
   required int variant,
   String? name,
+  bool isSummon = false,
+  String summonPersonality = 'aggressive',
 }) {
   assert(elements.length % kElementsPerFormula == 0,
       'a residual activation changes effectCount; keep script spells to whole '
@@ -140,6 +146,8 @@ SpellAsset spellFromElements({
     formula: [for (final e in elements) e.name],
     commitmentByte: 0x40 + variant,
     certifiedElements: elements,
+    isSummon: isSummon,
+    summonPersonality: summonPersonality,
   );
 }
 
@@ -228,7 +236,15 @@ bool bytesEqual(List<int> a, List<int> b) {
 }
 
 /// Two wizards, adjacent, with mana to spare.
-BattleState makeDuelState() {
+///
+/// [bookmarks] drives hand size (`handSize == bookmarkCount + 1`), so a script
+/// that needs a hand bigger than one card must ask for them. Defaults to zero
+/// to keep every existing golden byte-identical.
+BattleState makeDuelState({int bookmarks = 0}) {
+  List<Accoutrement> bookmarksFor(String id) => [
+        for (var i = 0; i < bookmarks; i++)
+          Accoutrement(id: '${id}_bm$i', kind: AccoutrementKind.bookmark),
+      ];
   final battlefield = Battlefield();
   const posA = HexCoord(0, 0);
   const posB = HexCoord(1, 0);
@@ -247,6 +263,7 @@ BattleState makeDuelState() {
         position: posA,
         teamId: 'team_a',
         baseSpellRange: 3,
+        accoutrements: bookmarksFor('player_a'),
       ),
       WizardAvatar(
         playerId: 'player_b',
@@ -257,6 +274,7 @@ BattleState makeDuelState() {
         position: posB,
         teamId: 'team_b',
         baseSpellRange: 3,
+        accoutrements: bookmarksFor('player_b'),
       ),
     ],
     teams: [

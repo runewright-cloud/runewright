@@ -52,8 +52,11 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' show sha256;
+import 'package:rune_duel/battle/engine/book_commitment.dart';
+import 'package:rune_duel/battle/engine/draw_schedule.dart';
 import 'package:rune_duel/battle/engine/turn_loop.dart';
 import 'package:rune_duel/battle/models/battle_state.dart';
+import 'package:rune_duel/spells/spell_asset.dart';
 
 import '../engine/certified_cast_fixture.dart';
 import '../engine/turn_session_pair.dart';
@@ -65,11 +68,28 @@ import '../engine/turn_session_pair.dart';
 class ScriptedTurn {
   const ScriptedTurn({required this.local, required this.peer, this.note});
 
-  /// player_a's input (the loop whose `localPlayerId` is `player_a`).
-  final TurnInput local;
+  /// Fixed inputs, for turns that do not depend on live state.
+  factory ScriptedTurn.fixed({
+    required TurnInput local,
+    required TurnInput peer,
+    String? note,
+  }) =>
+      ScriptedTurn(local: (_) => local, peer: (_) => peer, note: note);
 
-  /// player_b's input.
-  final TurnInput peer;
+  /// player_a's input, built from its own loop at the moment the turn runs.
+  ///
+  /// A builder rather than a value because some inputs cannot be known when
+  /// the script is written: casting from a dealt hand means naming the card
+  /// currently in a slot, and the deal has not happened yet. A script that
+  /// hardcoded the answer would be pinning the deal instead of the refill.
+  ///
+  /// Determinism is preserved because the builder is a pure function of state
+  /// the harness already controls — it reads the loop, never a clock or an
+  /// unseeded RNG.
+  final TurnInput Function(TurnLoop loop) local;
+
+  /// player_b's input, likewise.
+  final TurnInput Function(TurnLoop loop) peer;
 
   /// Human note, carried into the golden file so a reader can follow the
   /// story without reading the script source.
@@ -85,6 +105,10 @@ class MatchScript {
     required this.turns,
     this.localChapterCommitments = const [],
     this.peerChapterCommitments = const [],
+    this.localChapter,
+    this.peerChapter,
+    this.bookmarks = 0,
+    this.startBattle = false,
   });
 
   /// Stable identifier; also the golden file's basename.
@@ -97,8 +121,36 @@ class MatchScript {
   final List<ScriptedTurn> turns;
 
   /// Grids each side is allowed to cast (the chapter/book membership check).
+  ///
+  /// Ignored when [localChapter] / [peerChapter] are supplied — the full
+  /// chapter implies its own commitment list, and keeping two sources of truth
+  /// for the same thing is how they drift apart.
   final List<String> localChapterCommitments;
   final List<String> peerChapterCommitments;
+
+  /// Full chapter contents, when the script needs the draw machinery.
+  ///
+  /// Supplying these turns on the parts of the engine that only exist once a
+  /// player has a deck: the opening deal, hand refill on cast, and the public
+  /// per-player [DrawSchedule] both devices maintain for each other. Leave
+  /// null for scripts that only care about resolution — a chapter also brings
+  /// Merkle book-membership proving with it, which is a different subsystem.
+  final List<SpellAsset>? localChapter;
+  final List<SpellAsset>? peerChapter;
+
+  /// Bookmarks per wizard, which set hand size (`handSize == bookmarks + 1`).
+  final int bookmarks;
+
+  /// Run the battle-start entropy exchange before turn 1.
+  ///
+  /// Production always does this: it deals the opening hands and picks the
+  /// component start seat, so turn 1 is fully castable
+  /// (SPELL_DRAW_WIRING_PLAN.md §3). Headless callers that skip it fall back to
+  /// dealing from turn-1 entropy, which leaves turn 1 unable to cast from hand.
+  ///
+  /// Off by default only because turning it on for the existing scripts would
+  /// change their goldens for no gain — they have no chapters to deal.
+  final bool startBattle;
 }
 
 /// One turn's recorded outcome.
@@ -109,6 +161,7 @@ class TurnRecord {
     required this.peerStateHash,
     required this.summary,
     required this.events,
+    this.drawState = const {},
     this.note,
   });
 
@@ -135,6 +188,18 @@ class TurnRecord {
   /// the canonical state looks entirely plausible.
   final Map<String, int> events;
 
+  /// Public per-player draw positions, as **this device** computes them.
+  ///
+  /// Deliberately recorded even though `_drawSchedules` is NOT in
+  /// `toCanonicalBytes()` — that exclusion is the whole point. Draw positions
+  /// are publicly recomputable by both clients and steer later turns (which
+  /// card a refill hands you), so they are exactly the "two clients hold
+  /// identical canonical hashes while differing in secondary state" case the
+  /// architecture review flags in §7. The state hash cannot see them; this
+  /// can. Omitted from the golden entirely when a script has no chapters, so
+  /// resolution-only scripts stay unaffected.
+  final Map<String, Object?> drawState;
+
   final String? note;
 
   bool get inLockstep => localStateHash == peerStateHash;
@@ -144,6 +209,7 @@ class TurnRecord {
         if (note != null) 'note': note,
         'stateHash': localStateHash,
         'events': events,
+        if (drawState.isNotEmpty) 'drawState': drawState,
         // Recorded separately only when it diverges: an equal pair is the
         // normal case and would double the file for nothing, while an unequal
         // pair is a failure worth shouting about in the artifact itself.
@@ -202,8 +268,22 @@ class _ScriptedNonces {
 /// the sender and so cannot see a divergence, which is half of what this
 /// harness is for.
 Future<MatchTranscript> runMatchScript(MatchScript script) async {
-  final localState = makeDuelState();
-  final peerState = makeDuelState();
+  final localState = makeDuelState(bookmarks: script.bookmarks);
+  final peerState = makeDuelState(bookmarks: script.bookmarks);
+
+  // Chapters must be sorted by commitmentHex before anything derives positions
+  // from them: DrawSchedule positions only line up with BookCommitment's
+  // Merkle leaf indices when both sort by the same key
+  // (SPELL_DRAW_WIRING_PLAN.md §2 consequence 3). Getting this wrong produces
+  // a script that casts a card it does not hold.
+  List<SpellAsset>? sortChapter(List<SpellAsset>? c) => c == null
+      ? null
+      : (List<SpellAsset>.from(c)
+        ..sort((a, b) => a.commitmentHex.compareTo(b.commitmentHex)));
+  final localChapter = sortChapter(script.localChapter);
+  final peerChapter = sortChapter(script.peerChapter);
+  List<String> hexes(List<SpellAsset> c) =>
+      [for (final s in c) s.commitmentHex];
 
   // Separate counters per side: the two loops draw independently in
   // production too, and sharing one would couple them in a way real devices
@@ -219,6 +299,9 @@ Future<MatchTranscript> runMatchScript(MatchScript script) async {
     verifyProof: alwaysOk,
     vkBytes: Uint8List(0),
     commitNonceSource: localNonces.call,
+    peerBookRoot:
+        peerChapter == null ? null : BookCommitment.computeRoot(hexes(peerChapter)),
+    peerBookLeafCount: peerChapter?.length,
   );
   final peerLoop = TurnLoop(
     state: peerState,
@@ -227,20 +310,45 @@ Future<MatchTranscript> runMatchScript(MatchScript script) async {
     verifyProof: alwaysOk,
     vkBytes: Uint8List(0),
     commitNonceSource: peerNonces.call,
+    // Each side verifies the OTHER's book membership, so the roots cross over.
+    peerBookRoot:
+        localChapter == null ? null : BookCommitment.computeRoot(hexes(localChapter)),
+    peerBookLeafCount: localChapter?.length,
   );
-  localLoop.localChapterCommitments = script.localChapterCommitments;
-  peerLoop.localChapterCommitments = script.peerChapterCommitments;
+  if (localChapter != null) {
+    localLoop
+      ..localChapterCommitments = hexes(localChapter)
+      ..localChapterSpells = localChapter;
+  } else {
+    localLoop.localChapterCommitments = script.localChapterCommitments;
+  }
+  if (peerChapter != null) {
+    peerLoop
+      ..localChapterCommitments = hexes(peerChapter)
+      ..localChapterSpells = peerChapter;
+  } else {
+    peerLoop.localChapterCommitments = script.peerChapterCommitments;
+  }
+
+  if (script.startBattle) {
+    // Paired commit-reveal, same shape as a turn's — both sides must run it
+    // concurrently or they deadlock waiting on each other.
+    await Future.wait([localLoop.startBattle(), peerLoop.startBattle()])
+        .timeout(const Duration(seconds: 30));
+    pair.reset();
+  }
 
   final records = <TurnRecord>[];
   for (var i = 0; i < script.turns.length; i++) {
     final scripted = script.turns[i];
     if (i > 0) {
       // The pair's exchange slots are one-shot Completers, one set per turn.
+      // (startBattle already reset after its own exchange.)
       pair.reset();
     }
     await Future.wait([
-      localLoop.runTurn(scripted.local),
-      peerLoop.runTurn(scripted.peer),
+      localLoop.runTurn(scripted.local(localLoop)),
+      peerLoop.runTurn(scripted.peer(peerLoop)),
     ], eagerError: true).timeout(const Duration(seconds: 30));
 
     records.add(TurnRecord(
@@ -249,6 +357,7 @@ Future<MatchTranscript> runMatchScript(MatchScript script) async {
       peerStateHash: _hashOf(peerState),
       summary: summarize(localState),
       events: eventCounts(localLoop),
+      drawState: drawStateOf(localLoop, peerLoop),
       note: scripted.note,
     ));
   }
@@ -277,6 +386,38 @@ Map<String, int> eventCounts(TurnLoop loop) => {
       'wildMagic': loop.lastWildMagicEvents.length,
       'conveyorChains': loop.lastConveyorChainEvents.length,
     };
+
+/// Public draw positions for every player both loops know about.
+///
+/// Records what the LOCAL device computed, and flags any player whose two
+/// devices disagree. That disagreement is invisible to the state hash by
+/// design — draw schedules are excluded from `toCanonicalBytes()` — so
+/// without this the corpus would happily record a match in which the two
+/// clients had silently diverged on which cards each player is holding.
+Map<String, Object?> drawStateOf(TurnLoop local, TurnLoop peer) {
+  final out = <String, Object?>{};
+  for (final playerId in const ['player_a', 'player_b']) {
+    final mine = local.drawScheduleFor(playerId);
+    if (mine == null) continue;
+    final theirs = peer.drawScheduleFor(playerId);
+    out[playerId] = {
+      'hand': mine.hand,
+      'remaining': mine.remaining.length,
+      'withered': mine.withered.length,
+      if (theirs != null && !_sameSchedule(mine, theirs))
+        'DIVERGED_peerView': {
+          'hand': theirs.hand,
+          'remaining': theirs.remaining.length,
+        },
+    };
+  }
+  return out;
+}
+
+bool _sameSchedule(DrawSchedule a, DrawSchedule b) =>
+    a.hand.join(',') == b.hand.join(',') &&
+    a.remaining.length == b.remaining.length &&
+    a.withered.length == b.withered.length;
 
 /// The readable half of a record.
 ///

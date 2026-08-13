@@ -39,7 +39,111 @@ Future<List<MatchScript>> allScripts() async => [
       await _delayedCastAndChain(),
       _fireDamageExchange(),
       _terrainAndClouds(),
+      _drawAndRefill(),
+      // A summon script belongs here and is written and ready — it is held
+      // back because peer summons do not replicate to the opponent's device
+      // at all (docs/M4_findings.md M4.16). Recording a golden now would
+      // enshrine a desync as expected behaviour. Restore it with the fix; the
+      // regression test is peer_summon_replication_test.dart.
     ];
+
+
+/// Casting from a real hand, turn after turn, so the deck actually drains.
+///
+/// The largest gap the corpus had. `_drawSchedules` and `_drawSeedNonce` are
+/// cross-turn state that is **deliberately excluded from the canonical hash**
+/// — draw positions are publicly recomputable by both clients rather than
+/// transmitted — so the state hash is blind to them and every other script
+/// leaves them untouched. They still steer later turns: which card a refill
+/// hands you decides what you can cast next.
+///
+/// That makes this the sharpest instance of the architecture review's §7
+/// concern in the codebase: two clients can agree on every canonical byte
+/// while disagreeing about what each player is holding. The harness records
+/// both devices' view and flags a mismatch, so this script is the one that
+/// would catch it.
+///
+/// Both sides carry a chapter, so book-membership proving is live too and the
+/// peer's schedule advances off the Merkle leaf index rather than off trust.
+MatchScript _drawAndRefill() {
+  // Five each. Enough that a three-card hand leaves a deck to refill from for
+  // several turns without decking out, which is a different code path.
+  final aChapter = [
+    for (var i = 0; i < 5; i++)
+      spellFromElements(
+        elements: List.filled(3, BorderZone.fire),
+        variant: 30 + i,
+        name: 'A Card $i',
+      ),
+  ];
+  final bChapter = [
+    for (var i = 0; i < 5; i++)
+      spellFromElements(
+        elements: List.filled(3, BorderZone.fire),
+        variant: 40 + i,
+        name: 'B Card $i',
+      ),
+  ];
+
+  // Cast whatever is in hand slot 0, whatever that turns out to be. The slot
+  // index is stable; the CARD in it changes as refills land, which is the
+  // behaviour being pinned. Naming a spell explicitly would pin the deal
+  // instead of the refill, and would break the moment the deal changed.
+  //
+  // Falls back to passing if the hand is empty (decked out), so the script
+  // degrades into a legal move rather than throwing.
+  TurnInput castHandSlotZero(TurnLoop loop, HexCoord target) {
+    final draw = loop.localSpellDraw;
+    if (draw == null || draw.hand.isEmpty) {
+      return TurnInput(action: PassAction());
+    }
+    return TurnInput(
+      action: SpellCastAction(
+        spell: draw.hand.first,
+        targetHex: target,
+        handIndex: 0,
+      ),
+    );
+  }
+
+  return MatchScript(
+    name: 'draw_and_refill',
+    description:
+        'Both players cast from a real dealt hand over four turns, draining '
+        'five-card chapters. Covers the opening deal, hand refill on cast, '
+        'the per-player DrawSchedule both devices maintain, and _drawSeedNonce '
+        'advancing — none of which the canonical state hash can see.',
+    localChapter: aChapter,
+    peerChapter: bChapter,
+    bookmarks: 2, // handSize == bookmarkCount + 1 == 3
+    startBattle: true, // deal before turn 1, as production does
+    turns: [
+      ScriptedTurn(
+        note: 'hands were dealt by startBattle, so turn 1 casts from slot 0 '
+            'and takes the first refill',
+        local: (loop) => castHandSlotZero(loop, const HexCoord(1, 0)),
+        peer: (loop) => castHandSlotZero(loop, const HexCoord(0, 0)),
+      ),
+      ScriptedTurn(
+        note: 'slot 0 now holds a different card; casting it again drains the '
+            'deck a second time',
+        local: (loop) => castHandSlotZero(loop, const HexCoord(1, 0)),
+        peer: (loop) => castHandSlotZero(loop, const HexCoord(0, 0)),
+      ),
+      ScriptedTurn.fixed(
+        note: 'a quiet turn — draw state must NOT advance when nobody casts',
+        local: TurnInput(action: PassAction()),
+        peer: TurnInput(action: PassAction()),
+      ),
+      ScriptedTurn(
+        note: 'cast again after the pause; the nonce must pick up where it '
+            'left off rather than replaying an earlier draw',
+        local: (loop) => castHandSlotZero(loop, const HexCoord(1, 0)),
+        peer: (loop) => castHandSlotZero(loop, const HexCoord(0, 0)),
+      ),
+    ],
+  );
+}
 
 /// Two wizards trading Fire Damage until HP actually moves.
 ///
@@ -77,14 +181,14 @@ MatchScript _fireDamageExchange() {
     localChapterCommitments: [aFirst.commitmentHex, aSecond.commitmentHex],
     peerChapterCommitments: [bReply.commitmentHex],
     turns: [
-      ScriptedTurn(
+      ScriptedTurn.fixed(
         note: 'player_a opens; player_b passes — one-sided damage',
         local: TurnInput(
           action: SpellCastAction(spell: aFirst, targetHex: const HexCoord(1, 0)),
         ),
         peer: TurnInput(action: PassAction()),
       ),
-      ScriptedTurn(
+      ScriptedTurn.fixed(
         note: 'both cast at once — resolution order decides who lands first',
         local: TurnInput(
           action: SpellCastAction(spell: aSecond, targetHex: const HexCoord(1, 0)),
@@ -93,7 +197,7 @@ MatchScript _fireDamageExchange() {
           action: SpellCastAction(spell: bReply, targetHex: const HexCoord(0, 0)),
         ),
       ),
-      ScriptedTurn(
+      ScriptedTurn.fixed(
         note: 'both idle, so both chains regress',
         local: TurnInput(action: PassAction()),
         peer: TurnInput(action: PassAction()),
@@ -131,7 +235,7 @@ MatchScript _terrainAndClouds() {
     localChapterCommitments: [tileSpell.commitmentHex],
     peerChapterCommitments: [cloudSpell.commitmentHex],
     turns: [
-      ScriptedTurn(
+      ScriptedTurn.fixed(
         note: 'player_a reshapes a tile; player_b raises a cloud',
         local: TurnInput(
           action: SpellCastAction(spell: tileSpell, targetHex: const HexCoord(1, 0)),
@@ -140,12 +244,12 @@ MatchScript _terrainAndClouds() {
           action: SpellCastAction(spell: cloudSpell, targetHex: const HexCoord(0, 0)),
         ),
       ),
-      ScriptedTurn(
+      ScriptedTurn.fixed(
         note: 'quiet turn — whatever was created must persist or decay by rule',
         local: TurnInput(action: PassAction()),
         peer: TurnInput(action: PassAction()),
       ),
-      ScriptedTurn(
+      ScriptedTurn.fixed(
         note: 'second quiet turn, to catch a decay that is off by one',
         local: TurnInput(action: PassAction()),
         peer: TurnInput(action: PassAction()),
@@ -190,7 +294,7 @@ Future<MatchScript> _delayedCastAndChain() async {
     ],
     peerChapterCommitments: [peerCast.commitmentHex],
     turns: [
-      ScriptedTurn(
+      ScriptedTurn.fixed(
         note: 'player_a declares a Mystery (delay 1); player_b passes',
         local: TurnInput(
           action: MysterySpellCastAction(
@@ -200,7 +304,7 @@ Future<MatchScript> _delayedCastAndChain() async {
         ),
         peer: TurnInput(action: PassAction()),
       ),
-      ScriptedTurn(
+      ScriptedTurn.fixed(
         note: 'the delayed spell fires while player_b casts — both resolve '
             'this turn, so resolution order is under test',
         local: TurnInput(
@@ -218,12 +322,12 @@ Future<MatchScript> _delayedCastAndChain() async {
           action: SpellCastAction(spell: peerCast, targetHex: const HexCoord(0, 0)),
         ),
       ),
-      ScriptedTurn(
+      ScriptedTurn.fixed(
         note: 'both move; chain state should regress on the non-casting turn',
         local: TurnInput(action: PassAction(), movePath: const [HexCoord(0, 1)]),
         peer: TurnInput(action: PassAction(), movePath: const [HexCoord(2, 0)]),
       ),
-      ScriptedTurn(
+      ScriptedTurn.fixed(
         note: 'player_a casts a second, distinct grid — the duplicate-grid set '
             'must accept it while still remembering the first',
         local: TurnInput(
