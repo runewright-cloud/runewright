@@ -5506,3 +5506,91 @@ future "our phones stopped pairing" bisect should land on a commit whose message
 deliberately — the point is to reach *past* the VK's implicit guarantee and prove the
 explicit check exists. Confirmed to fail against the pre-fix engine (the cross-epoch
 proof was accepted without complaint) before being accepted.
+
+---
+
+## M4.15 — A Mystery delay was laundering the wire formula (2026-08-13)
+
+The live half of the same architecture review that produced M4.14. A real trust hole that
+the entire test suite was structurally incapable of catching.
+
+### The hole
+
+`_verifyPeerSpellCast` re-derives a peer cast's formulas, element sequence and wild-magic
+triggers from the VERIFIED proof outputs — the B-1 fix — because nothing binds
+`SpellAsset.formula` to the proof. **The commitment is grid-only (CLAUDE.md invariant 2),
+so every non-proof field on a peer's `SpellAsset` is free text.**
+
+That certified data lived only in `runTurn`'s three turn-scoped maps, keyed by
+`commitmentHex` and cleared at the top of every turn. Fine for a cast that resolves on the
+turn it is revealed. A Mystery cast resolves **up to three turns later**, by which point
+the maps are long gone, so `_applySpell` hit its `certFormulas ?? _parsedFormulas(spell)`
+fallback and resolved from the wire formula.
+
+### Why nothing caught it, and why the delay specifically
+
+This is the part worth internalising:
+
+> **Both devices fell back identically, so the state hash never fired.** The honest
+> verifier read the same forged `spell.formula` the attacker sent, agreed with itself,
+> and played on. Desync-safe, and therefore invisible to every lockstep test we own —
+> but not trust-safe.
+
+The contrast with an *immediate* cast makes it sharp. Forge the formula on an immediate
+cast and the verifier resolves certified (earth) while the caster resolves its own wire
+value (fire): `_exchangeStateHash` catches the difference and forfeits. The forgery only
+pays if it is routed through a Mystery delay, where the certified data has expired and
+both sides fall back to the same lie. **The delay was not incidental to the exploit; it
+was the exploit.**
+
+This surfaced concretely while writing the tests: the first positive-path test used the
+forged fixture on an immediate cast and failed with a state-hash mismatch. That failure
+was the fix's own logic working correctly, and it is now `honestSpell()` in the fixture,
+with the reasoning recorded there.
+
+### The fix
+
+`PendingDelayedSpell` now carries a `CertifiedCast` (formulas + element sequence + wild
+magic), captured on the declaration turn while the verification that produced it is still
+in scope. Three things made it fall out cleanly:
+
+1. **Both devices already had a derivation path.** The owner parses its own proof
+   (`ProofIntake.parseOwn`), the verifier reuses what `_verifyPeerSpellCast` derived from
+   the verified outputs. Same bytes, same tier, same result — so the field costs nothing
+   on the wire and is not in `toCanonicalBytes()`, exactly like `origin` and
+   `declaredRange` beside it.
+2. **`_wildMagicFromOwnProof` was already most of the derivation.** It now delegates to
+   `_certifiedFromProofBytes`, so there is still one derivation, not two.
+3. The three certified maps stay as they are for current-turn casts; the delayed entry is
+   simply preferred over them at resolution.
+
+**Trap worth remembering:** the certified lookup for a delayed fire is keyed by **object
+identity** (`Map<TurnAction, CertifiedCast>.identity()`), not by `commitmentHex`. The
+commitment is grid-only, so the same grid proven at two different `T`s shares a
+commitment — a delayed fire and a same-grid current-turn cast would otherwise collide and
+hand one the other's certified data. For the same reason the declaration site branches on
+**ownership** (`actor.playerId == localPlayerId`) rather than on map presence.
+
+### What is left of TODO(B-1)
+
+Only `kAllowProoflessSpells`. A spell with no proof bytes has nothing to derive from, so
+it still resolves from the wire formula on both devices. Closing the TODO for good means
+deleting that flag first, then making a null `CertifiedCast` for any peer spell a forfeit
+rather than a fallback.
+
+### Verification
+
+`test/battle/engine/delayed_spell_certified_test.dart`, built as negative vectors per
+§10/§11. The fixture's proof attests three supreme **earth** activations while its wire
+`formula` claims **fire**; `activeChainElement` (consensus state, derived straight from
+the resolved formulas) reports which source resolution actually read.
+
+Confirmed to fail against the pre-fix engine before being accepted — the delayed fire
+resolved as `SpellAffinity.fire`, the wire lie. **A negative vector that has never been
+seen to fail is not evidence of anything**, and this one in particular could not have
+been caught by any amount of lockstep testing.
+
+### Still open
+
+A two-device pass. By CLAUDE.md's verification hierarchy this work sits at
+integration-test level, and it touches the peer battle path.

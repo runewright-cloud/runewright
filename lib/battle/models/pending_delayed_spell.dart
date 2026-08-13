@@ -18,6 +18,8 @@ import 'package:cryptography/cryptography.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
 
+import 'certified_cast.dart';
+
 class PendingDelayedSpell {
   PendingDelayedSpell({
     required this.id,
@@ -27,6 +29,7 @@ class PendingDelayedSpell {
     required this.castTurn,
     required this.origin,
     required this.declaredRange,
+    this.certified,
     this.isPotent = false,
     this.isVelocity = false,
   });
@@ -65,6 +68,28 @@ class PendingDelayedSpell {
   /// peers construct this record independently from the same resolution, so
   /// it stays in lockstep without being transmitted.
   final int declaredRange;
+
+  /// The proof-attested semantics of this cast, captured on the declaration
+  /// turn while the verification that produced them was still in scope.
+  ///
+  /// This is what closes TODO(B-1) for delayed fires. A Mystery cast resolves
+  /// up to three turns after it is declared, long after `runTurn`'s turn-scoped
+  /// certified maps have been cleared; without this field the fire fell back to
+  /// `spell.formula`, a wire value no proof attests. Both devices fell back
+  /// identically, so it was desync-safe but not trust-safe — a peer could prove
+  /// a cheap grid, attach arbitrary formulas, and have them resolve.
+  ///
+  /// Derived from opposite sides of the trust boundary and therefore identical
+  /// on both devices: the owner parses its own proof
+  /// ([ProofIntake.parseOwn]), the verifier reuses what
+  /// [TurnLoop._verifyPeerSpellCast] already derived from the verified outputs.
+  /// Not in [BattleState.toCanonicalBytes] — same reasoning as [origin] and
+  /// [declaredRange]: reconstructed independently, never transmitted.
+  ///
+  /// Null only when there is no proof to derive from (a proofless dev-flag
+  /// spell), which resolves from the wire formula on both devices exactly as
+  /// it did before.
+  final CertifiedCast? certified;
 
   final bool isPotent;
   final bool isVelocity;

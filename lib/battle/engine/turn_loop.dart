@@ -139,6 +139,7 @@ import 'package:rune_duel/spells/spell_permission.dart';
 
 import '../models/battle_state.dart';
 import '../models/casting_enhancements.dart';
+import '../models/certified_cast.dart';
 import '../models/component_order.dart';
 import '../models/creature_spec.dart'
     show CreatureSpec, ResistanceTier, resistanceTierOf;
@@ -3536,7 +3537,8 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     HashRng rng,
     Uint8List entropy, {
     Map<String, List<HexCoord>> traversedPaths = const {},
-    List<(WizardAvatar, SpellCastAction)> delayedFires = const [],
+    List<(WizardAvatar, SpellCastAction, CertifiedCast?)> delayedFires =
+        const [],
     Map<String, List<ParsedFormula>> certifiedPeerFormulas = const {},
     Map<String, List<BorderZone>> certifiedPeerElementSequences = const {},
     Map<String, List<WildMagicTrigger>> certifiedPeerWildMagic = const {},
@@ -3551,6 +3553,16 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       if (peerAvatar != null) (peerAvatar, peerAction),
       ...delayedFires.map((f) => (f.$1, f.$2 as TurnAction)),
     ];
+
+    // A delayed fire carries its own certified semantics, captured on the turn
+    // it was declared (TODO(B-1) closure — see [PendingDelayedSpell.certified]).
+    // Keyed by object IDENTITY, not by commitmentHex: each fire builds a fresh
+    // SpellCastAction, so identity is unique, while commitmentHex is grid-only
+    // and a same-grid current-turn cast would collide with it.
+    final delayedCertified = Map<TurnAction, CertifiedCast>.identity();
+    for (final f in delayedFires) {
+      if (f.$3 != null) delayedCertified[f.$2] = f.$3!;
+    }
 
     // Extract the spell from any spell-like action for sort comparisons.
     SpellAsset? extractSpell(TurnAction a) => switch (a) {
@@ -3651,6 +3663,22 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           // Broken here, before resolution, so it covers a fizzled or
           // countered cast too: the wizard still chose to cast.
           _breakStatuesque(actor.playerId);
+          // The proof-attested semantics of THIS cast, resolved once for every
+          // consumer below (counter-charm matching, _applySpell, mana, chain
+          // state) so they can never disagree about what the proof said.
+          //
+          // A delayed fire brings its own, captured on its declaration turn;
+          // a current-turn peer cast reads what _verifyPeerSpellCast derived
+          // moments ago. The delayed entry is checked FIRST: its commitmentHex
+          // may well collide with a same-grid cast this turn, and the pending
+          // record is the one that belongs to this action.
+          final delayedCert = delayedCertified[action];
+          final certFormulas = delayedCert?.formulas ??
+              certifiedPeerFormulas[spell.commitmentHex];
+          final certElementSequence = delayedCert?.elementSequence ??
+              certifiedPeerElementSequences[spell.commitmentHex];
+          final certWildMagic = delayedCert?.wildMagic ??
+              certifiedPeerWildMagic[spell.commitmentHex];
           // Recall NEVER gates the loadout enhancement and never fizzles a
           // cast (VOCAL_RECALL_PLAN.md §4: getting words wrong costs mana,
           // full stop). The only fizzle left is a cast whose recall-inflated
@@ -3751,12 +3779,11 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
             }
             // Counter charms match the cast's certified element sequence, so
             // the trigger test reads exactly what _applySpell would resolve:
-            // the certified sequence for a verified peer cast, the local wire
-            // formula for our own spell (the same fallback every other
-            // consumer of this data uses — see _applySpell's certFormulas).
-            final castSequence =
-                certifiedPeerElementSequences[spell.commitmentHex] ??
-                    _elementSequence(spell);
+            // the certified sequence for a verified peer cast or a delayed
+            // fire, the local wire formula for our own spell (the same
+            // fallback every other consumer of this data uses — see
+            // _applySpell's certFormulas).
+            final castSequence = certElementSequence ?? _elementSequence(spell);
             final counterHit = _findCounteringCharm(castSequence);
             // Whether the charm swallowed the WHOLE cast. Measured in
             // formulas for an incantation and in elements for a summon,
@@ -3826,10 +3853,9 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
                 rng,
                 entropy,
                 traversedPaths: traversedPaths,
-                certFormulas: certifiedPeerFormulas[spell.commitmentHex],
-                certElementSequence:
-                    certifiedPeerElementSequences[spell.commitmentHex],
-                certWildMagic: certifiedPeerWildMagic[spell.commitmentHex],
+                certFormulas: certFormulas,
+                certElementSequence: certElementSequence,
+                certWildMagic: certWildMagic,
                 conveyorDirection: conveyorDirection,
                 witherRng: witherRng,
                 // A charm matched a prefix of this cast but not all of it:
@@ -3903,6 +3929,35 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           // Immediate mystery spells were converted to SpellCastAction by
           // _verifyMysteryAction before reaching here. A MysterySpellCastAction
           // at this point is always the non-immediate (delayed) variant.
+          //
+          // TODO(B-1) closure for delayed fires: capture the proof-attested
+          // semantics NOW, while the verification that produced them is still
+          // in scope. Up to three turns from now the turn-scoped certified maps
+          // are long cleared, and resolving from `spell.formula` would mean
+          // resolving from a wire value no proof attests — a peer could prove a
+          // cheap grid, attach arbitrary formulas, and have them resolve.
+          //
+          // The two arms sit on opposite sides of the trust boundary but read
+          // the same proof bytes at the same tier, so both devices store
+          // identical values for the same pending spell: the owner parses its
+          // own proof, the verifier reuses what _verifyPeerSpellCast already
+          // derived from the VERIFIED outputs. Branching on ownership rather
+          // than on map presence matters — the maps are keyed by commitmentHex,
+          // and the commitment is grid-only (CLAUDE.md invariant 2), so a peer
+          // casting the same grid at a different T this turn would otherwise
+          // hand the local caster the peer's certified data.
+          final certifiedDeclaration = actor.playerId == localPlayerId
+              ? _certifiedFromProofBytes(spell)
+              : _certifiedPeerCast(
+                    spell,
+                    certifiedPeerFormulas,
+                    certifiedPeerElementSequences,
+                    certifiedPeerWildMagic,
+                  ) ??
+                  // Verification not wired up (solo/dev): parse unverified, the
+                  // same way the owner's device does. No weaker than the wire
+                  // formula this replaces, and identical on both devices.
+                  _certifiedFromProofBytes(spell);
           state.pendingDelayedSpells.add(
             PendingDelayedSpell(
               id: PendingDelayedSpell.idFromCommitment(mysteryCommitment),
@@ -3912,6 +3967,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
               castTurn: state.turnNumber,
               origin: actor.position,
               declaredRange: actor.effectiveSpellRange,
+              certified: certifiedDeclaration,
               isPotent: isPotent,
               isVelocity: isVelocity,
             ),
@@ -3948,15 +4004,21 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   }
 
   /// Parses a delayed-reveal payload, verifies each entry against pending state,
-  /// and returns the validated fires as (actor, SpellCastAction) pairs.
-  /// Matching [PendingDelayedSpell]s are removed from state.
-  Future<List<(WizardAvatar, SpellCastAction)>> _verifyAndCollectDelayedFires(
+  /// and returns the validated fires as (actor, SpellCastAction, certified)
+  /// triples. Matching [PendingDelayedSpell]s are removed from state.
+  ///
+  /// The third element is the [CertifiedCast] captured when the spell was
+  /// declared (see [PendingDelayedSpell.certified]) — the proof-attested
+  /// semantics this fire must resolve from, rather than the wire
+  /// `spell.formula` it used to fall back to.
+  Future<List<(WizardAvatar, SpellCastAction, CertifiedCast?)>>
+      _verifyAndCollectDelayedFires(
     Uint8List payload,
     String ownerId,
   ) async {
     if (payload.isEmpty) return [];
     final count = payload[0];
-    final fires = <(WizardAvatar, SpellCastAction)>[];
+    final fires = <(WizardAvatar, SpellCastAction, CertifiedCast?)>[];
     var pos = 1;
     for (var i = 0; i < count; i++) {
       if (pos + 37 > payload.length)
@@ -4000,6 +4062,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           delayedOriginHex: pending.origin,
           delayedRange: pending.declaredRange,
         ),
+        pending.certified,
       ));
     }
     return fires;
@@ -4369,10 +4432,13 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       return minion;
     }
 
-    // TODO(B-1): null certFormulas means either a local spell (trusted wire
-    // formula) or a peer delayed-fire (not yet on the certified path). When
-    // the wiring pass enables full verification, a null entry for a
-    // current-turn peer spell must forfeit rather than fall through here.
+    // Null certFormulas now means a local spell (trusted wire formula) or a
+    // proofless dev-flag spell. Peer delayed fires used to land here too —
+    // they carry their declaration-turn [CertifiedCast] now, so a peer can no
+    // longer launder an unattested formula list through a Mystery delay.
+    // TODO(B-1): the last of it is kAllowProoflessSpells. Once that flag is
+    //   deleted, a null entry for any peer spell must forfeit rather than
+    //   fall through here.
     final allFormulas = certFormulas ?? _parsedFormulas(spell);
     // Partial counter: the charm cancelled the leading formulas outright, so
     // they never reach EffectResolver. Chain state below still reads the full
@@ -4566,8 +4632,9 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// order, then drains any forced casts they queued.
   ///
   /// [certified] is the peer path: triggers derived by [_verifyPeerSpellCast]
-  /// from the peer's VERIFIED proof public outputs. Null means the local
-  /// player's own cast (or a delayed fire / the kAllowProoflessSpells dev
+  /// from the peer's VERIFIED proof public outputs, or — for a delayed fire —
+  /// carried on the [PendingDelayedSpell] from the turn it was declared. Null
+  /// means the local player's own cast (or the kAllowProoflessSpells dev
   /// flag) — see [_wildMagicFromOwnProof].
   Future<void> _fireWildMagic(
     WizardAvatar actor,
@@ -4608,43 +4675,84 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     await _drainForcedCasts(entropy);
   }
 
-  /// Wild-magic triggers for a spell whose proof this device authored.
+  /// The full certified semantics of a spell, derived from proof bytes this
+  /// device already holds.
   ///
-  /// Parses our OWN proof bytes (verification skipped — see
-  /// [ProofIntake.parseOwn]) and re-derives the formulas from the certified
-  /// trajectory rather than the wire `spell.formula`, so this produces
-  /// byte-identical triggers to the peer path for the same proof. One
-  /// derivation, two call sites — §10 invariant 2.
+  /// Parses the proof bytes (signature verification skipped — see
+  /// [ProofIntake.parseOwn]) and re-derives formulas, element sequence, and
+  /// wild-magic triggers from the certified trajectory rather than the wire
+  /// `spell.formula`, so this produces byte-identical results to the peer path
+  /// ([_verifyPeerSpellCast]) for the same proof. One derivation, every call
+  /// site — §10 invariant 2.
   ///
-  /// Returns empty when there are no proof bytes. That covers the peer
-  /// delayed-fire and `kAllowProoflessSpells` cases, which already fall
-  /// through with `certFormulas == null`: both devices see the same (absent)
-  /// proof bytes and both fire nothing, so it is desync-SAFE even though it is
-  /// not trust-safe. That is precisely the pre-existing TODO(B-1) hole — do
-  /// not widen it and do not invent a second policy for it.
-  // TODO(B-1): once full peer verification lands, a null certWildMagic for a
-  //   current-turn peer spell must forfeit rather than fall through here.
-  List<WildMagicTrigger> _wildMagicFromOwnProof(SpellAsset spell) {
-    if (spell.proofBytes.isEmpty) return const [];
+  /// Returns null when there are no proof bytes: the `kAllowProoflessSpells`
+  /// dev flag. Both devices see the same (absent) proof bytes and both fall
+  /// back to the wire formula, so it is desync-SAFE even though it is not
+  /// trust-safe. That residue of TODO(B-1) is load-bearing for the dev flag —
+  /// do not widen it and do not invent a second policy for it.
+  // TODO(B-1): the remaining hole is the kAllowProoflessSpells flag. Closing it
+  //   means deleting the flag, then making a null CertifiedCast for a
+  //   current-turn peer spell a forfeit rather than a wire-formula fallback.
+  ///
+  /// For our own spell this is the authoritative derivation. For a peer's, it
+  /// is a *fallback* used only when [_verifyPeerSpellCast] never ran (solo, or
+  /// verification not wired up) — it parses without verifying, so it is no
+  /// stronger than the bytes it was handed. When verification IS wired, the
+  /// verified derivation always wins; see [_certifiedPeerCast]. Both devices
+  /// parse the same bytes either way, so this arm stays in lockstep.
+  CertifiedCast? _certifiedFromProofBytes(SpellAsset spell) {
+    if (spell.proofBytes.isEmpty) return null;
     try {
       // The spell's OWN tier, not the match ceiling — parsing at the wrong
       // tier_max reads the trajectory arrays at the wrong offsets and would
-      // derive different wild-magic triggers than the peer does from the same
-      // proof (§10 invariant 2). This is a local asset, so its recorded tier
-      // is authoritative; fall back to deriving it from T for assets written
+      // derive different formulas and wild-magic triggers than the peer does
+      // from the same proof (§10 invariant 2). The spell's recorded tier is
+      // authoritative; fall back to deriving it from T for assets written
       // before the field was trustworthy.
       final ownTier = _tierForSpell(spell.t) ?? spell.tier;
       final outputs = ProofIntake.parseOwn(spell.proofBytes, ownTier);
-      return WildMagic.triggersFor(
-        outputs,
-        TrajectoryParser.parse(outputs).formulas,
-        state.config.communitySeed,
+      final formulas = TrajectoryParser.parse(outputs).formulas;
+      return CertifiedCast(
+        formulas: formulas,
+        elementSequence: TrajectoryParser.certifiedElementSequence(outputs),
+        wildMagic: WildMagic.triggersFor(
+          outputs,
+          formulas,
+          state.config.communitySeed,
+        ),
       );
     } on ProofIntakeException {
-      // A malformed local proof is a bug, not an attack; firing no wild magic
-      // is the same outcome on both devices (they parse the same bytes).
-      return const [];
+      // A malformed local proof is a bug, not an attack; falling back is the
+      // same outcome on both devices (they parse the same bytes).
+      return null;
     }
+  }
+
+  /// Wild-magic triggers for a spell whose proof this device authored.
+  List<WildMagicTrigger> _wildMagicFromOwnProof(SpellAsset spell) =>
+      _certifiedFromProofBytes(spell)?.wildMagic ?? const [];
+
+  /// The [CertifiedCast] [_verifyPeerSpellCast] derived for [spell] earlier in
+  /// this turn, or null if it never ran for it.
+  ///
+  /// Keyed by `commitmentHex` exactly as the three maps are — safe here because
+  /// this is only ever asked about the peer's own current-turn action, which
+  /// [_verifyPeerSpellCast] populates at most once per turn.
+  CertifiedCast? _certifiedPeerCast(
+    SpellAsset spell,
+    Map<String, List<ParsedFormula>> certifiedPeerFormulas,
+    Map<String, List<BorderZone>> certifiedPeerElementSequences,
+    Map<String, List<WildMagicTrigger>> certifiedPeerWildMagic,
+  ) {
+    final formulas = certifiedPeerFormulas[spell.commitmentHex];
+    final sequence = certifiedPeerElementSequences[spell.commitmentHex];
+    if (formulas == null || sequence == null) return null;
+    return CertifiedCast(
+      formulas: formulas,
+      elementSequence: sequence,
+      // An empty trigger list is the normal case, not an absent one.
+      wildMagic: certifiedPeerWildMagic[spell.commitmentHex] ?? const [],
+    );
   }
 
   /// Phoenix (wild magic, row 3 Fire): a player in the phoenix set who would
