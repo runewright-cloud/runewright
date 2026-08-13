@@ -240,10 +240,27 @@ bool bytesEqual(List<int> a, List<int> b) {
 /// [bookmarks] drives hand size (`handSize == bookmarkCount + 1`), so a script
 /// that needs a hand bigger than one card must ask for them. Defaults to zero
 /// to keep every existing golden byte-identical.
-BattleState makeDuelState({int bookmarks = 0}) {
-  List<Accoutrement> bookmarksFor(String id) => [
+BattleState makeDuelState({
+  int bookmarks = 0,
+  List<List<BorderZone>> localCharms = const [],
+  List<List<BorderZone>> peerCharms = const [],
+}) {
+  List<Accoutrement> accoutrementsFor(
+    String id,
+    List<List<BorderZone>> charms,
+  ) =>
+      [
         for (var i = 0; i < bookmarks; i++)
           Accoutrement(id: '${id}_bm$i', kind: AccoutrementKind.bookmark),
+        // Ids are zero-padded because _findCounteringCharm's tie-break sorts
+        // accoutrements by id as a STRING. Unpadded, 'c10' would sort before
+        // 'c2' and the tie-break would stop meaning what it reads as.
+        for (var i = 0; i < charms.length; i++)
+          Accoutrement(
+            id: '${id}_charm${i.toString().padLeft(2, '0')}',
+            kind: AccoutrementKind.counterCharm,
+            charmTrajectory: charms[i],
+          ),
       ];
   final battlefield = Battlefield();
   const posA = HexCoord(0, 0);
@@ -263,7 +280,7 @@ BattleState makeDuelState({int bookmarks = 0}) {
         position: posA,
         teamId: 'team_a',
         baseSpellRange: 3,
-        accoutrements: bookmarksFor('player_a'),
+        accoutrements: accoutrementsFor('player_a', localCharms),
       ),
       WizardAvatar(
         playerId: 'player_b',
@@ -274,7 +291,7 @@ BattleState makeDuelState({int bookmarks = 0}) {
         position: posB,
         teamId: 'team_b',
         baseSpellRange: 3,
-        accoutrements: bookmarksFor('player_b'),
+        accoutrements: accoutrementsFor('player_b', peerCharms),
       ),
     ],
     teams: [

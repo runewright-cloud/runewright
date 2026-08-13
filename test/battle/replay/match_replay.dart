@@ -56,6 +56,7 @@ import 'package:rune_duel/battle/engine/book_commitment.dart';
 import 'package:rune_duel/battle/engine/draw_schedule.dart';
 import 'package:rune_duel/battle/engine/turn_loop.dart';
 import 'package:rune_duel/battle/models/battle_state.dart';
+import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
 
 import '../engine/certified_cast_fixture.dart';
@@ -109,6 +110,8 @@ class MatchScript {
     this.peerChapter,
     this.bookmarks = 0,
     this.startBattle = false,
+    this.localCharms = const [],
+    this.peerCharms = const [],
   });
 
   /// Stable identifier; also the golden file's basename.
@@ -151,6 +154,13 @@ class MatchScript {
   /// Off by default only because turning it on for the existing scripts would
   /// change their goldens for no gain — they have no chapters to deal.
   final bool startBattle;
+
+  /// Counter-charm trajectories each wizard carries into the match.
+  ///
+  /// A charm fires on any cast — by either side, including its own owner —
+  /// whose certified element sequence OPENS with the charm's trajectory.
+  final List<List<BorderZone>> localCharms;
+  final List<List<BorderZone>> peerCharms;
 }
 
 /// One turn's recorded outcome.
@@ -162,6 +172,7 @@ class TurnRecord {
     required this.summary,
     required this.events,
     this.drawState = const {},
+    this.counters = const [],
     this.note,
   });
 
@@ -200,6 +211,19 @@ class TurnRecord {
   /// resolution-only scripts stay unaffected.
   final Map<String, Object?> drawState;
 
+  /// What the counter charms did this turn, if anything.
+  ///
+  /// Recorded because a counter is otherwise nearly invisible in a transcript:
+  /// a fully-countered cast produces the same *absence* of damage as a cast
+  /// that fizzled, was out of range, or never resolved at all. The state hash
+  /// proves the two devices agree; only this proves they agree that an
+  /// interception is what happened.
+  ///
+  /// Also carries the charm owner's remaining mana, since a charm charges its
+  /// full cost on every trigger regardless of how much it actually cancelled —
+  /// the balance rule that makes a long charm a real trade.
+  final List<Map<String, Object?>> counters;
+
   final String? note;
 
   bool get inLockstep => localStateHash == peerStateHash;
@@ -210,6 +234,7 @@ class TurnRecord {
         'stateHash': localStateHash,
         'events': events,
         if (drawState.isNotEmpty) 'drawState': drawState,
+        if (counters.isNotEmpty) 'counters': counters,
         // Recorded separately only when it diverges: an equal pair is the
         // normal case and would double the file for nothing, while an unequal
         // pair is a failure worth shouting about in the artifact itself.
@@ -268,8 +293,16 @@ class _ScriptedNonces {
 /// the sender and so cannot see a divergence, which is half of what this
 /// harness is for.
 Future<MatchTranscript> runMatchScript(MatchScript script) async {
-  final localState = makeDuelState(bookmarks: script.bookmarks);
-  final peerState = makeDuelState(bookmarks: script.bookmarks);
+  final localState = makeDuelState(
+    bookmarks: script.bookmarks,
+    localCharms: script.localCharms,
+    peerCharms: script.peerCharms,
+  );
+  final peerState = makeDuelState(
+    bookmarks: script.bookmarks,
+    localCharms: script.localCharms,
+    peerCharms: script.peerCharms,
+  );
 
   // Chapters must be sorted by commitmentHex before anything derives positions
   // from them: DrawSchedule positions only line up with BookCommitment's
@@ -358,6 +391,7 @@ Future<MatchTranscript> runMatchScript(MatchScript script) async {
       summary: summarize(localState),
       events: eventCounts(localLoop),
       drawState: drawStateOf(localLoop, peerLoop),
+      counters: countersOf(localLoop, localState),
       note: scripted.note,
     ));
   }
@@ -386,6 +420,30 @@ Map<String, int> eventCounts(TurnLoop loop) => {
       'wildMagic': loop.lastWildMagicEvents.length,
       'conveyorChains': loop.lastConveyorChainEvents.length,
     };
+
+/// Counter-charm outcomes for the turn just resolved.
+///
+/// `counteredFormulas` is the load-bearing number: 0 means no charm matched,
+/// a value below the cast's formula count means a PARTIAL counter (the leading
+/// formulas were cancelled and the rest still resolved), and a value equal to
+/// it means the cast was swallowed whole and `_applySpell` never ran at all.
+/// Those three outcomes are behaviourally different and a bare state hash
+/// cannot tell them apart.
+List<Map<String, Object?>> countersOf(TurnLoop loop, BattleState state) => [
+      for (final r in loop.lastResolvedSpells)
+        if (r.counteredFormulas > 0 || r.wasCountered)
+          {
+            'spell': r.spell.name,
+            'caster': r.casterId,
+            'wasFullyCountered': r.wasCountered,
+            'counteredFormulas': r.counteredFormulas,
+            'charmOwner': r.counterCharmOwnerId,
+            'charmOwnerMana': state.avatars
+                .where((a) => a.playerId == r.counterCharmOwnerId)
+                .map((a) => a.mana)
+                .firstOrNull,
+          },
+    ];
 
 /// Public draw positions for every player both loops know about.
 ///

@@ -1,6 +1,6 @@
 # Replay Harness — a golden corpus for the battle engine
 
-*Status: built 2026-08-13, five scripts in the corpus. This is the safety net that
+*Status: built 2026-08-13, six scripts in the corpus. This is the safety net that
 makes the `TurnLoop` split safe to attempt; it is not itself that refactor.*
 
 ---
@@ -190,6 +190,7 @@ Three scripts today:
 | `terrain_and_clouds` | Board objects that persist and decay across turns — the cloud expires on turn 3 while the tile effect does not |
 | `draw_and_refill` | Opening deal, refill on cast, per-player `DrawSchedule` on both devices, `_drawSeedNonce` advancing, and the deck-out path — **none of it visible to the state hash** |
 | `summon_acts_over_turns` | A creature spawning on **both** devices (M4.16), then pursuing and attacking on its own for three turns — the engine's only long-lived autonomous actor |
+| `counter_charm_intercepts_delayed_fire` | A charm intercepting a Mystery cast: full counter (whole cast swallowed) on one turn, partial counter (damage cancelled, cloud still lands) on another; charm selection by longest match, consumption, and full cost on every trigger |
 
 The second and third both earned their place immediately by covering things the first
 could not: `delayed_cast_and_chain`'s Earth Barriers resolve but change nothing on a
@@ -199,7 +200,6 @@ terrain-free battlefield, so board mutation was entirely uncovered until
 A script earns its place by exercising something that **spans turns**. Per-feature
 coverage is what the engine unit tests are for. Still worth adding before the refactor:
 
-- **A counter charm** intercepting a delayed fire.
 - **A forfeit path** — duplicate grid, or an unbacked enhancement claim.
 
 ---
@@ -227,6 +227,21 @@ forfeits, or summons (blocked on M4.16).
 peer summons never replicated, making summons unusable in any real duel) before being
 used for its actual purpose. Scripts that merely *attempt* a feature end to end across
 two devices are evidently valuable on their own.
+
+### Measure that the thing you are testing changes the outcome
+
+A counter script in which the intercepted spell would have done nothing anyway is green
+and worthless. The counter-charm script was checked by re-running it with
+`peerCharms: const []` and nothing else changed:
+
+| | turn 2 | turn 4 |
+|---|---|---|
+| no charms | player_b 24 → 20 hp, cloud appears | 20 → 16 hp |
+| with charms | 24 hp, **no cloud** (full counter) | 24 hp, **cloud lands** (partial) |
+
+Eight damage removed, and the full and partial outcomes distinguishable from each other.
+That measurement is cheap and belongs in the script's doc comment, where the next reader
+can see the counter is load-bearing without re-deriving it.
 
 ### Check that your script's actor can actually act
 

@@ -41,7 +41,180 @@ Future<List<MatchScript>> allScripts() async => [
       _terrainAndClouds(),
       _drawAndRefill(),
       _summonActsOverTurns(),
+      await _counterCharmInterceptsDelayedFire(),
     ];
+
+/// A counter charm intercepting a Mystery (delayed) cast — twice, differently.
+///
+/// ## What the interaction actually is
+///
+/// A charm carries an elemental TRAJECTORY, not a bound spell. It fires on any
+/// cast whose certified element sequence **opens with** that trajectory, and
+/// cancels whole formulas for as long as the two sequences agree
+/// (`counterCharmFormulaMatch`). The longest matching charm wins; at most one
+/// fires per cast; it is consumed (`counterCharmRevealed`) and charges its
+/// owner the full triangular cost whatever fraction it actually cancelled.
+///
+/// Two outcomes are behaviourally different and this script covers both:
+///
+///   * **Full counter** — the charm covers every formula. `_applySpell` never
+///     runs. Nothing resolves, no wild magic fires (invariant A1), and the
+///     caster's chain regresses as if they had passed.
+///   * **Partial counter** — the charm covers a leading prefix. The cast DOES
+///     resolve, with `suppressedFormulas` skipping the cancelled prefix, so the
+///     later formulas still land.
+///
+/// ## Why the spell is shaped the way it is
+///
+/// Certified sequence `[fire, fire, fire, earth, water, fire]` — two formulas
+/// that produce *visibly different* things:
+///
+///   * `(fire, fire, fire)` → affinity fire, pair (fire, fire) → **damage**
+///   * `(earth, water, fire)` → affinity earth, pair (water, fire) → **clouds**
+///
+/// That split is what makes the counter load-bearing rather than decorative.
+/// A full counter leaves HP untouched AND no cloud; a partial counter cancels
+/// only the damage, so the cloud still appears. If both formulas produced the
+/// same effect — or an effect with no board footprint, as an Earth Barrier has
+/// on terrain-free ground — the two outcomes would be indistinguishable in the
+/// transcript and the script would prove nothing.
+///
+/// The earth element is not decorative either: a Mystery cast must be backed
+/// by certified supreme dominance in the **earth** zone
+/// (`certifiedSupremeTags`), so a pure-fire spell cannot legally be delayed at
+/// all and would forfeit at `unbacked_enhancement_claim`.
+///
+/// ## The charms are load-bearing, measured
+///
+/// Same script with `peerCharms: const []` and nothing else changed:
+///
+/// | | turn 2 | turn 4 |
+/// |---|---|---|
+/// | no charms | player_b 24 → 20 hp, cloud appears | 20 → 16 hp |
+/// | with charms | 24 hp, **no cloud** (full counter) | 24 hp, **cloud lands** (partial) |
+///
+/// So the charms remove 8 damage across the match, and the full and partial
+/// outcomes are distinguishable from each other by the cloud alone. This is
+/// the check worth repeating for any future counter script: a green script in
+/// which the intercepted effect would not have happened anyway proves nothing.
+///
+/// ## Why delayed rather than immediate
+///
+/// For a delayed fire, the sequence the charm matches against is the
+/// [CertifiedCast] captured on the DECLARATION turn (M4.15) — not the wire
+/// formula, and not anything recomputed at fire time. So this script also
+/// pins the join between the B-1 fix and counter-charm matching: if a delayed
+/// fire ever reverted to its wire formula, a charm attuned to the certified
+/// trajectory would stop matching and this transcript would move.
+Future<MatchScript> _counterCharmInterceptsDelayedFire() async {
+  const damageThenCloud = [
+    BorderZone.fire, BorderZone.fire, BorderZone.fire,
+    BorderZone.earth, BorderZone.water, BorderZone.fire,
+  ];
+  // Two distinct grids: the duplicate-grid guard forfeits a second cast of the
+  // same commitment, and both are cast in one match.
+  final firstMystery = spellFromElements(
+    elements: damageThenCloud,
+    variant: 60,
+    name: 'Emberfall I',
+  );
+  final secondMystery = spellFromElements(
+    elements: damageThenCloud,
+    variant: 61,
+    name: 'Emberfall II',
+  );
+
+  const target = HexCoord(1, 0);
+  const delay = 1;
+  // Fixed nonces, distinct per cast: a replayable script cannot contain
+  // entropy the golden does not also contain.
+  final nonceOne = Uint8List.fromList(List.generate(16, (i) => i + 41));
+  final nonceTwo = Uint8List.fromList(List.generate(16, (i) => i + 97));
+  final commitOne = await PendingDelayedSpell.commitmentHash(
+    target: target, delay: delay, nonce: nonceOne);
+  final commitTwo = await PendingDelayedSpell.commitmentHash(
+    target: target, delay: delay, nonce: nonceTwo);
+
+  return MatchScript(
+    name: 'counter_charm_intercepts_delayed_fire',
+    description:
+        'player_b holds two charms — a two-formula one covering the whole '
+        'cast and a one-formula one covering only its damage. player_a casts '
+        'two Mystery spells, each delayed a turn. The long charm fires first '
+        '(longest match wins) and swallows the first cast whole; once spent, '
+        'the short charm intercepts the second, cancelling the damage while '
+        'the cloud still lands. Covers full vs partial counters, charm '
+        'selection and consumption, and interception of a spell declared on '
+        'an earlier turn.',
+    localChapterCommitments: [
+      firstMystery.commitmentHex,
+      secondMystery.commitmentHex,
+    ],
+    // Deliberately given in short-then-long order: selection must pick by
+    // MATCH LENGTH, not by scan order, so listing the weaker charm first is
+    // the arrangement that would expose a selection bug.
+    peerCharms: const [
+      [BorderZone.fire, BorderZone.fire, BorderZone.fire],
+      damageThenCloud,
+    ],
+    turns: [
+      ScriptedTurn(
+        note: 'player_a declares Mystery I (delay 1); no charm can fire yet — '
+            'nothing has been cast to match against',
+        local: (_) => TurnInput(
+          action: MysterySpellCastAction(
+            spell: firstMystery,
+            mysteryCommitment: commitOne,
+          ),
+        ),
+        peer: (_) => TurnInput(action: PassAction()),
+      ),
+      ScriptedTurn(
+        note: 'Mystery I fires and the TWO-formula charm swallows it whole: '
+            'no damage, no cloud, chain regresses as if player_a had passed',
+        local: (_) => TurnInput(
+          action: PassAction(),
+          delayedSpellReveals: [
+            DelayedSpellReveal(
+              pendingSpellId: PendingDelayedSpell.idFromCommitment(commitOne),
+              targetTile: target,
+              delay: delay,
+              nonce: nonceOne,
+            ),
+          ],
+        ),
+        peer: (_) => TurnInput(action: PassAction()),
+      ),
+      ScriptedTurn(
+        note: 'player_a declares Mystery II — same trajectory, different grid',
+        local: (_) => TurnInput(
+          action: MysterySpellCastAction(
+            spell: secondMystery,
+            mysteryCommitment: commitTwo,
+          ),
+        ),
+        peer: (_) => TurnInput(action: PassAction()),
+      ),
+      ScriptedTurn(
+        note: 'Mystery II fires. The long charm is spent, so the ONE-formula '
+            'charm takes it: the damage is cancelled but the cloud lands — '
+            'the partial counter, visibly different from turn 2',
+        local: (_) => TurnInput(
+          action: PassAction(),
+          delayedSpellReveals: [
+            DelayedSpellReveal(
+              pendingSpellId: PendingDelayedSpell.idFromCommitment(commitTwo),
+              targetTile: target,
+              delay: delay,
+              nonce: nonceTwo,
+            ),
+          ],
+        ),
+        peer: (_) => TurnInput(action: PassAction()),
+      ),
+    ],
+  );
+}
 
 /// A summoned creature that outlives the turn that made it.
 ///

@@ -1,0 +1,202 @@
+{
+  "name": "counter_charm_intercepts_delayed_fire",
+  "description": "player_b holds two charms — a two-formula one covering the whole cast and a one-formula one covering only its damage. player_a casts two Mystery spells, each delayed a turn. The long charm fires first (longest match wins) and swallows the first cast whole; once spent, the short charm intercepts the second, cancelling the damage while the cloud still lands. Covers full vs partial counters, charm selection and consumption, and interception of a spell declared on an earlier turn.",
+  "turns": [
+    {
+      "turn": 1,
+      "note": "player_a declares Mystery I (delay 1); no charm can fire yet — nothing has been cast to match against",
+      "stateHash": "63b9faf445449c5232b0da7afc47690028664278952baf1a69d7e5bc40158ab8",
+      "events": {
+        "castEvents": 0,
+        "resolvedSpells": 0,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 1,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 466,
+            "chain": null,
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 24,
+            "mana": 500,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 1,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 2,
+      "note": "Mystery I fires and the TWO-formula charm swallows it whole: no damage, no cloud, chain regresses as if player_a had passed",
+      "stateHash": "b61173c9866868ec13e322f29ae1e401841de817ebe7fae8d7702904a480ef83",
+      "events": {
+        "castEvents": 1,
+        "resolvedSpells": 1,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "counters": [
+        {
+          "spell": "Emberfall I",
+          "caster": "player_a",
+          "wasFullyCountered": true,
+          "counteredFormulas": 2,
+          "charmOwner": "player_b",
+          "charmOwnerMana": 470
+        }
+      ],
+      "summary": {
+        "turnNumber": 2,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 466,
+            "chain": null,
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 24,
+            "mana": 470,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 3,
+      "note": "player_a declares Mystery II — same trajectory, different grid",
+      "stateHash": "7d2ceb1ebbda7c6964506ffff98845930cfa04cc8e27bcec6c51fb95bd990feb",
+      "events": {
+        "castEvents": 0,
+        "resolvedSpells": 0,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 3,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 432,
+            "chain": null,
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 24,
+            "mana": 470,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 1,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 4,
+      "note": "Mystery II fires. The long charm is spent, so the ONE-formula charm takes it: the damage is cancelled but the cloud lands — the partial counter, visibly different from turn 2",
+      "stateHash": "174539ff8c90783bcae0a58945459fd7e6abb71c0a274c573f8ad5e157c06bbc",
+      "events": {
+        "castEvents": 1,
+        "resolvedSpells": 1,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "counters": [
+        {
+          "spell": "Emberfall II",
+          "caster": "player_a",
+          "wasFullyCountered": false,
+          "counteredFormulas": 1,
+          "charmOwner": "player_b",
+          "charmOwnerMana": 460
+        }
+      ],
+      "summary": {
+        "turnNumber": 4,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 432,
+            "chain": null,
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 24,
+            "mana": 460,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 1,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    }
+  ]
+}
