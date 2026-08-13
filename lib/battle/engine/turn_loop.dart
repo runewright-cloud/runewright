@@ -6196,6 +6196,43 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// include a trailing proof tail:
   ///   [proof_len:4 BE][proof_bytes:N][merkle_depth:1][merkle_path:depth*(32+1)]
   /// The receiver must parse this tail when [withProof] is true in [_decodeAction].
+  /// Appends the two summon fields: `[isSummon:1][personalityIndex:1]`.
+  ///
+  /// Without these a summon cast arrived at the opponent as an ordinary
+  /// incantation — the caster spawned a creature, the verifier resolved
+  /// formula effects, and the match forfeited on the turn's state hash. See
+  /// M4_findings M4.16; peer_summon_replication_test.dart is the regression.
+  ///
+  /// The personality travels as a [SummonPersonality] **index**, not its name:
+  /// one byte instead of a length-prefixed string, and it cannot carry an
+  /// arbitrary value. The cost is that **the enum's declaration order is now
+  /// wire-visible — never reorder or remove a case, only append.** Same rule
+  /// the element order already lives under (CLAUDE.md).
+  static void _appendSummonBytes(BytesBuilder buf, SpellAsset spell) {
+    buf.addByte(spell.isSummon ? 1 : 0);
+    final idx = SummonPersonality.values
+        .indexWhere((p) => p.name == spell.summonPersonality);
+    buf.addByte(idx < 0 ? SummonPersonality.aggressive.index : idx);
+  }
+
+  /// Reads what [_appendSummonBytes] wrote, tolerating a truncated buffer the
+  /// same way every other field here does.
+  static ({bool isSummon, String personality}) _readSummonBytes(
+    Uint8List bytes,
+    int pos,
+  ) {
+    final isSummon = pos < bytes.length && bytes[pos] == 1;
+    final rawIdx = pos + 1 < bytes.length ? bytes[pos + 1] : 0;
+    // An out-of-range index means a peer built by a version that appended a
+    // personality this build does not have. Falling back keeps both devices
+    // agreeing on SOMETHING rather than throwing, and the protocol-version
+    // gate is what actually prevents the mismatch reaching here.
+    final personality = rawIdx < SummonPersonality.values.length
+        ? SummonPersonality.values[rawIdx].name
+        : SummonPersonality.aggressive.name;
+    return (isSummon: isSummon, personality: personality);
+  }
+
   Uint8List _encodeAction(TurnAction action) {
     final buf = BytesBuilder();
     switch (action) {
@@ -6228,6 +6265,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         buf.addByte(isEfficiency ? 1 : 0);
         buf.addByte(conveyorDirection != null ? 1 : 0);
         if (conveyorDirection != null) buf.add(_encodeCoord(conveyorDirection));
+        _appendSummonBytes(buf, spell);
         _appendSpellProofTail(buf, spell, handIndex);
         if (isVocalComponents) _appendSorcererBytes(buf, recall);
 
@@ -6266,6 +6304,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         }
         buf.addByte(isPotent ? 1 : 0);
         buf.addByte(isVelocity ? 1 : 0);
+        _appendSummonBytes(buf, spell);
         _appendSpellProofTail(buf, spell, handIndex);
         if (isVocalComponents) _appendSorcererBytes(buf, recall);
     }
@@ -6436,6 +6475,9 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           }
         }
 
+        final summon01 = _readSummonBytes(bytes, pos);
+        pos += 2;
+
         // Parse proof bytes from the tail (needed for verification).
         Uint8List decodedProofBytes = Uint8List(0);
         if (withProof && pos + 4 <= bytes.length) {
@@ -6462,6 +6504,10 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           commitmentHex: commitmentHex,
           spellHashHex: '',
           formula: formula,
+          // M4.16: without these the peer resolved a summon as an ordinary
+          // incantation and the match desynced on the spot.
+          isSummon: summon01.isSummon,
+          summonPersonality: summon01.personality,
         );
         final merkle = parseProofTail(bytes, pos, commitmentHex);
         // [KEY STRUCTURAL CONSTRAINT — no local recalculation]
@@ -6531,6 +6577,8 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         }
         final isPotent3 = pos3 < bytes.length && bytes[pos3++] == 1;
         final isVelocity3 = pos3 < bytes.length && bytes[pos3++] == 1;
+        final summon3 = _readSummonBytes(bytes, pos3);
+        pos3 += 2;
 
         Uint8List decodedProofBytes3 = Uint8List(0);
         final commitmentHex3 =
@@ -6559,6 +6607,10 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
           commitmentHex: commitmentHex3,
           spellHashHex: '',
           formula: formulaStr3.isEmpty ? [] : formulaStr3.split(','),
+          // M4.16, same as the immediate-cast branch: a delayed summon has to
+          // survive the wire too, or it desyncs when it eventually fires.
+          isSummon: summon3.isSummon,
+          summonPersonality: summon3.personality,
         );
         final merkle3 = parseProofTail(bytes, pos3, commitmentHex3);
         // Same no-local-recalculation constraint as case 0x01 above.

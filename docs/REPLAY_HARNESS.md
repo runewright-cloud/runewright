@@ -1,6 +1,6 @@
 # Replay Harness — a golden corpus for the battle engine
 
-*Status: built 2026-08-13, four scripts in the corpus. This is the safety net that
+*Status: built 2026-08-13, five scripts in the corpus. This is the safety net that
 makes the `TurnLoop` split safe to attempt; it is not itself that refactor.*
 
 ---
@@ -189,6 +189,7 @@ Three scripts today:
 | `fire_damage_exchange` | HP mutation, simultaneous casts in one turn, chain discount on a repeat same-affinity cast, three distinct grids |
 | `terrain_and_clouds` | Board objects that persist and decay across turns — the cloud expires on turn 3 while the tile effect does not |
 | `draw_and_refill` | Opening deal, refill on cast, per-player `DrawSchedule` on both devices, `_drawSeedNonce` advancing, and the deck-out path — **none of it visible to the state hash** |
+| `summon_acts_over_turns` | A creature spawning on **both** devices (M4.16), then pursuing and attacking on its own for three turns — the engine's only long-lived autonomous actor |
 
 The second and third both earned their place immediately by covering things the first
 could not: `delayed_cast_and_chain`'s Earth Barriers resolve but change nothing on a
@@ -198,9 +199,6 @@ terrain-free battlefield, so board mutation was entirely uncovered until
 A script earns its place by exercising something that **spans turns**. Per-feature
 coverage is what the engine unit tests are for. Still worth adding before the refactor:
 
-- **A summon that survives and acts** on later turns. Written and ready, but **blocked**:
-  peer summons do not replicate to the opponent's device at all (M4.16 — found by this
-  corpus). Recording its golden now would enshrine a desync as expected behaviour.
 - **A counter charm** intercepting a delayed fire.
 - **A forfeit path** — duplicate grid, or an unbacked enhancement claim.
 
@@ -225,6 +223,17 @@ whether four scripts are broad enough — the corpus currently exercises resolut
 board mutation, persistence/decay and the draw machinery, but not counter charms,
 forfeits, or summons (blocked on M4.16).
 
-**A note on what the corpus is already worth:** it found a live two-device bug (M4.16)
-before being used for its actual purpose. Scripts that merely *attempt* a feature end to
-end across two devices are evidently valuable on their own.
+**A note on what the corpus is already worth:** it found a live two-device bug (M4.16 —
+peer summons never replicated, making summons unusable in any real duel) before being
+used for its actual purpose. Scripts that merely *attempt* a feature end to end across
+two devices are evidently valuable on their own.
+
+### Check that your script's actor can actually act
+
+The summon script's first draft used three earths — the obvious "plain creature" choice.
+That produces `MinionStats(hp: 3, dmg: 0, move: 0, range: 0)`: a creature that spawns and
+then does nothing, forever. The script passed while covering nothing but the spawn.
+
+Stats come straight from element counts (`CreatureSpec._statsOf`). `EEFFAA` gives
+hp 2 / dmg 1 / move 1 and actually pursues. **A script whose actor is inert is a green
+test that asserts nothing** — the event counts are what expose it (`minionMoves: 0`).

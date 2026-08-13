@@ -51,7 +51,19 @@ import '../../protocol/transport.dart';
 /// trailing length byte. A v3 client would read a v4 recall's bytes as a score
 /// and charge wildly wrong mana — a silent desync, which is worse than a
 /// refused handshake.
-const kBattleProtocolVersion = 4;
+///
+/// v5 (2026-08-13, summon replication): a spell action now carries two extra
+/// bytes, `[isSummon:1][personalityIndex:1]`, on both the immediate (0x01) and
+/// Mystery (0x03) encodings. Before this the fields were never transmitted at
+/// all, so a peer's summon arrived as an ordinary incantation: the caster
+/// spawned a creature, the opponent spawned nothing, and the match forfeited
+/// on that turn's state hash (M4_findings M4.16 — summons were unusable in any
+/// real duel). A v4 client would read the two new bytes as the start of the
+/// proof tail, so this MUST fail the handshake rather than proceed.
+///
+/// The personality is a [SummonPersonality] index, which makes that enum's
+/// declaration order wire-visible: **append only, never reorder or remove.**
+const kBattleProtocolVersion = 5;
 
 /// The max circuit tier (12 / 24 / 48) this device can reliably prove.
 ///

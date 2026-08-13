@@ -40,12 +40,81 @@ Future<List<MatchScript>> allScripts() async => [
       _fireDamageExchange(),
       _terrainAndClouds(),
       _drawAndRefill(),
-      // A summon script belongs here and is written and ready — it is held
-      // back because peer summons do not replicate to the opponent's device
-      // at all (docs/M4_findings.md M4.16). Recording a golden now would
-      // enshrine a desync as expected behaviour. Restore it with the fix; the
-      // regression test is peer_summon_replication_test.dart.
+      _summonActsOverTurns(),
     ];
+
+/// A summoned creature that outlives the turn that made it.
+///
+/// Every other script's effects land and are done. A minion is the engine's
+/// only long-lived autonomous actor: it is created on one turn and then, on
+/// each turn after, decides where to move and whether to attack — entirely
+/// without player input. That per-turn decision reads live board state and
+/// draws from the seeded RNG, so it is exactly the kind of thing a resolver
+/// refactor can reorder without any single-turn test noticing.
+///
+/// ## Choosing the element sequence
+///
+/// Creature stats come straight from element counts (`CreatureSpec._statsOf`):
+/// `hp = nEarth`, `damage = nFire ~/ 2`, `moveSpeed = nAir ~/ 2`,
+/// `attackRange = nWater ~/ 3`. Three earths — the obvious "plain creature"
+/// choice, and what this script was first written with — produces
+/// `MinionStats(hp: 3, dmg: 0, move: 0, range: 0)`: a creature that cannot
+/// move or attack, so the script covered nothing but the spawn.
+///
+/// `EEFFAA` gives hp 2 / dmg 1 / move 1, which actually pursues and hits, and
+/// dodges every ability pattern in `kSummonAbilityPattern` (AAAA, FFFF, EEEE,
+/// WWWW, FAFA, AWAW, WEWE, EFEF) — an accidental ability would make this a
+/// script about that ability instead.
+///
+/// This script is why M4.16 was found: writing it was the first time anything
+/// had put a summon across a two-device boundary.
+MatchScript _summonActsOverTurns() {
+  final summon = spellFromElements(
+    elements: const [
+      BorderZone.earth, BorderZone.earth,
+      BorderZone.fire, BorderZone.fire,
+      BorderZone.air, BorderZone.air,
+    ],
+    variant: 50,
+    name: 'Stone Sentinel',
+    isSummon: true,
+  );
+
+  return MatchScript(
+    name: 'summon_acts_over_turns',
+    description:
+        'player_a summons a creature on turn 1, then does nothing for three '
+        'turns while it acts on its own. Covers minion spawn on BOTH devices '
+        '(M4.16), per-turn minion movement and attack decisions, and the '
+        'creature persisting across turn boundaries as an autonomous actor.',
+    localChapterCommitments: [summon.commitmentHex],
+    turns: [
+      ScriptedTurn.fixed(
+        note: 'player_a summons; player_b retreats a tile',
+        local: TurnInput(
+          action: SpellCastAction(spell: summon, targetHex: const HexCoord(1, 1)),
+        ),
+        peer: TurnInput(action: PassAction(), movePath: const [HexCoord(2, 0)]),
+      ),
+      ScriptedTurn.fixed(
+        note: 'nobody acts — the creature moves and fights on its own',
+        local: TurnInput(action: PassAction()),
+        peer: TurnInput(action: PassAction()),
+      ),
+      ScriptedTurn.fixed(
+        note: 'player_b keeps retreating; the creature should keep pursuing',
+        local: TurnInput(action: PassAction()),
+        peer: TurnInput(action: PassAction(), movePath: const [HexCoord(3, 0)]),
+      ),
+      ScriptedTurn.fixed(
+        note: 'a fourth turn, to catch a pursuit or attack cadence that is '
+            'off by one',
+        local: TurnInput(action: PassAction()),
+        peer: TurnInput(action: PassAction()),
+      ),
+    ],
+  );
+}
 
 
 /// Casting from a real hand, turn after turn, so the deck actually drains.

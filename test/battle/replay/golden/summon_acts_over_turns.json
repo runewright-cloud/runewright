@@ -1,0 +1,182 @@
+{
+  "name": "summon_acts_over_turns",
+  "description": "player_a summons a creature on turn 1, then does nothing for three turns while it acts on its own. Covers minion spawn on BOTH devices (M4.16), per-turn minion movement and attack decisions, and the creature persisting across turn boundaries as an autonomous actor.",
+  "turns": [
+    {
+      "turn": 1,
+      "note": "player_a summons; player_b retreats a tile",
+      "stateHash": "a13246343f43458a809c54eac07fb14499938cc6f3d447e600ebcdf6ce43e681",
+      "events": {
+        "castEvents": 1,
+        "resolvedSpells": 1,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 1,
+        "minionAttacks": 1,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 1,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 466,
+            "chain": "earth",
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 23,
+            "mana": 500,
+            "chain": null,
+            "position": "2,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 1,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 2,
+      "note": "nobody acts — the creature moves and fights on its own",
+      "stateHash": "38ede32308f5958e3696afab18d382a1bc15435637620a3bd5bd2df9fc42cd9b",
+      "events": {
+        "castEvents": 0,
+        "resolvedSpells": 0,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 1,
+        "minionAttacks": 1,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 2,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 466,
+            "chain": null,
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 22,
+            "mana": 500,
+            "chain": null,
+            "position": "2,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 1,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 3,
+      "note": "player_b keeps retreating; the creature should keep pursuing",
+      "stateHash": "821281ce5b99d2023b6c2c37ad3a9324b4f12114c4ea93251148e2ad6a8ade14",
+      "events": {
+        "castEvents": 0,
+        "resolvedSpells": 0,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 1,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 3,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 466,
+            "chain": null,
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 22,
+            "mana": 500,
+            "chain": null,
+            "position": "3,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 1,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 4,
+      "note": "a fourth turn, to catch a pursuit or attack cadence that is off by one",
+      "stateHash": "977c0bbf898dc181ca56fcfe6660e2aeeb3c9c59652931ebda7c5c4055c2717e",
+      "events": {
+        "castEvents": 0,
+        "resolvedSpells": 0,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 1,
+        "minionAttacks": 1,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 4,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 466,
+            "chain": null,
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 21,
+            "mana": 500,
+            "chain": null,
+            "position": "3,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 1,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    }
+  ]
+}

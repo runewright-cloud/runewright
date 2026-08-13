@@ -115,13 +115,39 @@ reassembly logic.
 | `haymaker` | 0x33 | both→both | JSON: `{"targetPlayerId":"…"}` | declares haymaker in place of spell |
 | `stateHash` | 0x34 | both→both | 32 bytes: SHA-256(BattleState canonical serialisation) + TODO: Ed25519 signature | per-turn lockstep check |
 | `actionCommit` | 0x35 | both→both | 32 bytes: SHA-256(action\_bytes ‖ nonce) | action sealed before entropy; nonce is 16 bytes (`_kRevealNonceBytes`) |
-| `actionReveal` | 0x36 | both→both | nonce(16) ‖ action\_bytes | reveal after entropy exchange; verified against earlier commit |
+| `actionReveal` | 0x36 | both→both | nonce(16) ‖ action\_bytes | reveal after entropy exchange; verified against earlier commit. `action_bytes` layout is `_encodeAction`/`_decodeAction` in `turn_loop.dart`; see §2b for the summon fields |
 | `delayedSpellReveal` | 0x37 | both→both | `[count:1][id:16, coord:4, delay:1, nonce:16 per entry]` | pending delayed spells firing this turn; `[0x00]` if none |
 | `forcedReveal` | 0x43 | both→both | `[count:1]` then per entry: `[position:2][commitment:32][t:2][formula_len:2+bytes][name_len:2+bytes][isSummon:1][personality_len:2+bytes][proof_len:4+bytes][merkle_depth:1][depth × (sibling:32, direction:1)]` | wild magic's Spontaneous Combustion (docs/WILD_MAGIC_PLAN.md §9.5). **Not a uniform per-turn slot** — sent only on turns where a forced cast fires. Both clients derive the triggering wild magic from the same certified proof outputs, so they always reach it together. Slots are chosen PUBLICLY first from the position-only `DrawSchedule`, so the revealer cannot shop for a favourable spell; the receiver forfeits on a slot mismatch, a short count (`withheld_forced_reveal`), or a malformed payload |
 | `artifactCommit` | 0x44 | both→both | 32 bytes: SHA-256(activation\_bytes ‖ nonce) | **Phase 0** — the FIRST exchange of the turn, ahead of `actionCommit` (docs/ARTIFACT_SYSTEM_PLAN.md §4). Sent uniformly every turn |
 | `artifactReveal` | 0x45 | both→both | nonce(16) ‖ `[0x00]` (none) or `[0x01][kind:1]` | `kind` is the `AccoutrementKind` index. The declaration names a KIND, never an accoutrement id — the engine consumes the owner's first match by sorted id, so a peer cannot name an id it does not own. Commit-reveal rather than a plain exchange because it is a simultaneous decision: a plain send-then-await would let a peer stall, read the other's declaration, then choose. An invalid declaration (a kind not held, `counterCharm`, a summon-only kind) is silently discarded as no-activation on BOTH devices rather than forfeiting — a desync here is indistinguishable from a stale client |
 | `forfeit` | 0x40 | sender→peer | UTF-8 reason: `"withheld_reveal"` \| `"concede"` | ends match; peer wins |
 | `matchEnd` | 0x41 | both→both | JSON: `{"winningTeamId":"…","finalStateHash":"…"}` | both send after win condition met |
+
+### 2b. Summon fields in `action_bytes` (protocol v5)
+
+Both spell-cast encodings — immediate (`0x01`) and Mystery (`0x03`) — carry two
+extra bytes immediately before the proof tail:
+
+```
+[isSummon:1][personalityIndex:1]
+```
+
+**Added in `kBattleProtocolVersion` 5 (2026-08-13).** Before this the fields were
+never transmitted at all: `_decodeAction` rebuilt the peer's `SpellAsset` with
+`isSummon: false`, so a summon arrived at the opponent as an ordinary
+incantation. The caster spawned a creature, the opponent spawned nothing, and
+the match forfeited on that turn's state hash — **summons were unusable in any
+real duel** (`M4_findings.md` M4.16).
+
+`personalityIndex` is a `SummonPersonality` **enum index**, so that enum's
+declaration order is wire-visible: **append only, never reorder or remove a
+case.** Same rule the element order already lives under (CLAUDE.md).
+
+> **Known inconsistency:** `forcedReveal` (0x43) carries the same two facts as
+> `[isSummon:1][personality_len:2+bytes]` — a length-prefixed *string* rather
+> than an index. Two encodings for one field is drift worth removing, but
+> harmonising them is a cleanup with its own test surface and was deliberately
+> not bundled into the M4.16 bug fix. Tracked in `OUTSTANDING_ITEMS.md`.
 
 ---
 

@@ -5638,23 +5638,43 @@ automated test had.
 pointer here. It asserts the verifier spawns the creature and fails today for exactly the
 right reason. **Un-skip it with the fix — it is the regression test.**
 
-### The fix, and why it was not done here
+### The fix (2026-08-13)
 
-Carry `isSummon` and `summonPersonality` in the action encoding, and read them back in
-`_decodeAction`. Small in itself, but:
+Both spell-cast encodings — immediate (`0x01`) and Mystery (`0x03`) — now carry
+`[isSummon:1][personalityIndex:1]` immediately before the proof tail.
+`kBattleProtocolVersion` 4 → **5**: the action bytes are inside the action commit hash,
+so a v4 client would read the two new bytes as the start of the proof tail. This has to
+fail the handshake rather than proceed.
 
-- The action bytes are **inside the action commit hash**, so this changes the wire format.
-  Both devices must run the same version or every turn's reveal verification fails.
-- That means a **battle protocol version bump** (`docs/BATTLE_PROTOCOL.md`), which is a
-  deliberate, consensus-visible act of the same family as a `RULESET_VERSION` bump.
-- `summonPersonality` is a string; the encoding needs a length-prefixed field or an enum
-  index. An enum index is cheaper and less forgeable, but pins the personality list into
-  the wire format.
+The personality travels as a `SummonPersonality` **index**, not its name — one byte
+instead of a length-prefixed string, and it cannot carry an arbitrary value. The cost is
+that **the enum's declaration order is now wire-visible: append only, never reorder or
+remove a case.** Same rule the element order already lives under.
 
-Escalated rather than guessed, per CLAUDE.md's rule about consensus-visible changes.
+`peer_summon_replication_test.dart` is un-skipped and passing: both devices spawn the
+creature.
 
-### Corpus status
+**Telling detail:** `forcedReveal` (0x43) *already* carried `isSummon` and the
+personality — the wild-magic path knew these fields were needed. The ordinary action
+encoding simply never got them. That is what an oversight looks like rather than a
+design decision, and it is why the gap survived: nobody re-derived the requirement when
+writing the normal path.
 
-The summon script is written and ready but **held out of the corpus**. Recording its
-golden today would enshrine a desync as expected behaviour — the corpus asserts what the
-engine *should* do, and a transcript of a forfeit is not that.
+It does leave two encodings for one field (0x43 uses a length-prefixed string, the action
+bytes use an index). Harmonising them is a cleanup with its own test surface and was
+deliberately not bundled into a bug fix — tracked in `OUTSTANDING_ITEMS.md`.
+
+### A second trap, found while writing the script
+
+The obvious "plain creature" fixture — three earths, chosen to dodge the four-element
+ability grant — produces `MinionStats(hp: 3, dmg: 0, move: 0, range: 0)`. Stats come
+straight from element counts (`CreatureSpec._statsOf`): `hp = nEarth`,
+`damage = nFire ~/ 2`, `moveSpeed = nAir ~/ 2`, `attackRange = nWater ~/ 3`. A
+three-earth creature **cannot move or attack** — it spawns and then does nothing forever.
+
+The first version of the summon script therefore passed while covering nothing but the
+spawn. `EEFFAA` (hp 2 / dmg 1 / move 1) actually pursues and hits, and dodges every
+pattern in `kSummonAbilityPattern`.
+
+**A script whose actor is inert is a green test that asserts nothing.** Check that the
+entity you summoned can actually do the thing the script claims to cover.

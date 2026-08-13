@@ -3,28 +3,22 @@
 // peer_summon_replication_test.dart — a peer's summon must spawn on BOTH
 // devices.
 //
-// ## SKIPPED: this documents a live bug (docs/M4_findings.md M4.16)
+// ## Regression test for M4.16 (docs/M4_findings.md)
 //
-// `_encodeAction` does not encode `SpellAsset.isSummon` or
-// `summonPersonality`, and `_decodeAction` rebuilds the peer's SpellAsset with
-// those fields at their defaults. So a summon cast arrives at the opponent's
-// device as an ordinary incantation: the caster spawns a creature, the
-// verifier resolves formula effects instead, and `_exchangeStateHash` forfeits
-// the match on the turn the summon is cast.
+// `_encodeAction` used to omit `SpellAsset.isSummon` and `summonPersonality`,
+// and `_decodeAction` rebuilt the peer's SpellAsset with those fields at their
+// defaults. A summon cast therefore arrived at the opponent's device as an
+// ordinary incantation: the caster spawned a creature, the verifier resolved
+// formula effects instead, and `_exchangeStateHash` forfeited the match on the
+// turn the summon was cast.
 //
-// Measured: caster device 1 minion, verifier device 0.
+// Measured before the fix: caster device 1 minion, verifier device 0.
+// **Summons were unusable in any real two-device duel.**
 //
-// **Summons are unusable in any real two-device duel.** Nothing caught it
-// because every existing summon test (summon_cast_test.dart) runs in solo
-// mode, where there is no second device to disagree — the peer decode path
-// never executes.
-//
-// Found by the replay corpus (docs/REPLAY_HARNESS.md) on its first attempt at
-// a summon script.
-//
-// Un-skip this the moment the wire carries the summon fields. It is the
-// regression test for the fix, and it fails today for exactly the right
-// reason.
+// Nothing caught it because every existing summon test
+// (summon_cast_test.dart) runs in solo mode, where there is no second device
+// to disagree — the peer decode path never executes. Found by the replay
+// corpus (docs/REPLAY_HARNESS.md) on its first attempt at a summon script.
 
 import 'dart:typed_data';
 
@@ -83,7 +77,5 @@ void main() {
           reason: 'the opponent must see the same creature — a summon that '
               'exists on only one device desyncs the match immediately');
     },
-    skip: 'BUG: summon fields are not carried on the wire — see '
-        'docs/M4_findings.md M4.16. Un-skip with the fix.',
   );
 }

@@ -5,7 +5,7 @@
     {
       "turn": 1,
       "note": "player_a reshapes a tile; player_b raises a cloud",
-      "stateHash": "85e34c3a6c9c34e51a0c1d88dc26b539eb63ae08000c6602ce0d8f525122b6e1",
+      "stateHash": "c3b88515be4806873b7c278cef65f5204b309a785b90b3776613f462b2fb6b05",
       "events": {
         "castEvents": 2,
         "resolvedSpells": 2,
@@ -49,7 +49,7 @@
     {
       "turn": 2,
       "note": "quiet turn — whatever was created must persist or decay by rule",
-      "stateHash": "8ef11b729643fff942a5e58563a493b0416b1bbfd71d9257c8fe14b85148afd8",
+      "stateHash": "700dc28f6dc834f499b69c231a3933cde310519e9006e9903e75a1c84f2c3c72",
       "events": {
         "castEvents": 0,
         "resolvedSpells": 0,

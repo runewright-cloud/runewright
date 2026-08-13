@@ -192,3 +192,29 @@ surfaced it, and Sync Art already requires a completed pairing handshake
 (not reachable by an arbitrary unpaired peer). Worth a size-cap check
 mirroring `kSpellArtMaxImportBytes` before decoding, next time this file is
 touched for other reasons.
+
+---
+
+## 8. Two wire encodings for the same summon fields
+
+**Opened 2026-08-13** alongside the M4.16 fix (`M4_findings.md`).
+
+`isSummon` and the summon personality now travel on two different paths, encoded two
+different ways:
+
+| Path | Encoding |
+|---|---|
+| `action_bytes` (0x01 / 0x03) | `[isSummon:1][personalityIndex:1]` — enum index |
+| `forcedReveal` (0x43) | `[isSummon:1][personality_len:2+bytes]` — length-prefixed string |
+
+Both are correct and both work. Two encodings for one field is drift, though, and the
+index form pins `SummonPersonality`'s declaration order into the wire while the string
+form does not — so the two paths now have *different* rules about reordering that enum,
+which is exactly the kind of asymmetry that produces a subtle bug later.
+
+Deliberately not bundled into the M4.16 fix: harmonising them is a cleanup with its own
+test surface, and mixing it into a bug fix would have made the fix harder to review and
+to revert. It is free to do inside any future protocol bump.
+
+Recommended direction: move `forcedReveal` to the index form, and state the
+append-only rule for `SummonPersonality` in one place.
