@@ -1,0 +1,138 @@
+{
+  "name": "terrain_and_clouds",
+  "description": "A tile modification and a cloud, then two quiet turns. Covers board objects that persist and decay across turn boundaries, which instantaneous damage does not reach.",
+  "turns": [
+    {
+      "turn": 1,
+      "note": "player_a reshapes a tile; player_b raises a cloud",
+      "stateHash": "85e34c3a6c9c34e51a0c1d88dc26b539eb63ae08000c6602ce0d8f525122b6e1",
+      "events": {
+        "castEvents": 2,
+        "resolvedSpells": 2,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 1,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 480,
+            "chain": "earth",
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 24,
+            "mana": 480,
+            "chain": "water",
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 1,
+        "tileEffects": 1,
+        "terrainBarriers": 0,
+        "terrainHp": 1,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 2,
+      "note": "quiet turn — whatever was created must persist or decay by rule",
+      "stateHash": "8ef11b729643fff942a5e58563a493b0416b1bbfd71d9257c8fe14b85148afd8",
+      "events": {
+        "castEvents": 0,
+        "resolvedSpells": 0,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 2,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 480,
+            "chain": null,
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 24,
+            "mana": 480,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 1,
+        "tileEffects": 1,
+        "terrainBarriers": 0,
+        "terrainHp": 1,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 3,
+      "note": "second quiet turn, to catch a decay that is off by one",
+      "stateHash": "4bbf3a866f6222e2d4c5165e32d970fa4d3ac73fd08dd0336b5a787d68680bf3",
+      "events": {
+        "castEvents": 0,
+        "resolvedSpells": 0,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 3,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 480,
+            "chain": null,
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 24,
+            "mana": 480,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 1,
+        "terrainBarriers": 0,
+        "terrainHp": 1,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    }
+  ]
+}

@@ -1,0 +1,138 @@
+{
+  "name": "fire_damage_exchange",
+  "description": "Both wizards cast Fire Damage at each other across three turns. Covers HP mutation, simultaneous casts resolving in one turn, chain accumulation on repeated same-affinity casts, and the duplicate-grid set accepting three distinct grids.",
+  "turns": [
+    {
+      "turn": 1,
+      "note": "player_a opens; player_b passes — one-sided damage",
+      "stateHash": "757b31f72e24b5769f1778bd9c668ca76c3419c79a777c1eae03a1ad9fa8b0e9",
+      "events": {
+        "castEvents": 1,
+        "resolvedSpells": 1,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 1,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 1,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 480,
+            "chain": "fire",
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 20,
+            "mana": 500,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 2,
+      "note": "both cast at once — resolution order decides who lands first",
+      "stateHash": "24d8f3703d14b5b98ca39629bf5728e6bcb3c1266ef21e603713c903732f506d",
+      "events": {
+        "castEvents": 2,
+        "resolvedSpells": 2,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 2,
+        "avatars": {
+          "player_a": {
+            "hp": 20,
+            "mana": 462,
+            "chain": "fire",
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 16,
+            "mana": 480,
+            "chain": "fire",
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 3,
+      "note": "both idle, so both chains regress",
+      "stateHash": "2b299f2eea74471bea26ac4009d62256071c2c868b6f4d0f44da76485b844f93",
+      "events": {
+        "castEvents": 0,
+        "resolvedSpells": 0,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 3,
+        "avatars": {
+          "player_a": {
+            "hp": 20,
+            "mana": 462,
+            "chain": null,
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 16,
+            "mana": 480,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    }
+  ]
+}

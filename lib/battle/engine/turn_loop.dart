@@ -839,7 +839,30 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     this.signMessage,
     this.peerRawPubkey,
     this.allowProoflessSpells = false,
+    this.commitNonceSource,
   });
+
+  /// Test seam: overrides the source of commit-reveal salts.
+  ///
+  /// Production leaves this null and gets `Random.secure()`, which is the only
+  /// correct answer — a commit salt an opponent can predict defeats the whole
+  /// commit-reveal scheme, so this must NEVER be set outside tests.
+  ///
+  /// It exists because those salts make a turn **unreplayable**. The action
+  /// phase RNG is seeded from `myCommit ^ peerCommit` (see [_actionPhaseSeed]),
+  /// the commits are hashes of these salts, and anything drawn from that RNG —
+  /// entity ids, tie-breaks, percentage rolls — therefore differs on every run
+  /// even though both devices agree with each other within a run. The replay
+  /// corpus (docs/REPLAY_HARNESS.md) pins them so a transcript is reproducible.
+  ///
+  /// Takes the byte count, returns exactly that many bytes.
+  final Uint8List Function(int length)? commitNonceSource;
+
+  /// A commit-reveal salt of [length] bytes: [commitNonceSource] when a test
+  /// has pinned it, `Random.secure()` otherwise.
+  Uint8List _commitNonce(int length) =>
+      commitNonceSource?.call(length) ??
+      CommitRevealEntropy.generateNonce().sublist(0, length);
 
   /// DEV FLAG — see [kAllowProoflessSpells] in lib/dev_flags.dart for the
   /// full rationale and the removal checklist. Defaults to false so every
@@ -1731,10 +1754,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         ? null
         : await artifactActivationPicker(available);
 
-    final nonce = CommitRevealEntropy.generateNonce().sublist(
-      0,
-      _kRevealNonceBytes,
-    );
+    final nonce = _commitNonce(_kRevealNonceBytes);
     final bytes = _encodeActivation(localChoice);
     final commit = await Sha256()
         .hash(Uint8List.fromList([...bytes, ...nonce]))
@@ -1955,14 +1975,8 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     // that already ran it explicitly (the intended flow) pays nothing here.
     await beginArtifactPhase();
 
-    final saltA = CommitRevealEntropy.generateNonce().sublist(
-      0,
-      _kRevealNonceBytes,
-    );
-    final saltB = CommitRevealEntropy.generateNonce().sublist(
-      0,
-      _kRevealNonceBytes,
-    );
+    final saltA = _commitNonce(_kRevealNonceBytes);
+    final saltB = _commitNonce(_kRevealNonceBytes);
     final actionBytes = _encodeAction(action);
     final actionCommit = await _splitActionCommit(actionBytes, saltA, saltB);
     final peerActionCommit = await session.exchangeActionCommit(actionCommit);
@@ -2257,10 +2271,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     final localPath = input.meditateInMove
         ? const <HexCoord>[]
         : input.movePath;
-    final moveNonce = CommitRevealEntropy.generateNonce().sublist(
-      0,
-      _kRevealNonceBytes,
-    );
+    final moveNonce = _commitNonce(_kRevealNonceBytes);
     final moveBytes = _encodeMovePayload(
       isDashing: iAmDashing,
       meditateInMove: input.meditateInMove,
@@ -2372,10 +2383,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     final localMeleeTarget = localMeleeCandidates.isEmpty
         ? null
         : await meleeTargetPicker(localMeleeCandidates);
-    final meleeNonce = CommitRevealEntropy.generateNonce().sublist(
-      0,
-      _kRevealNonceBytes,
-    );
+    final meleeNonce = _commitNonce(_kRevealNonceBytes);
     final meleeBytes = _encodeOptionalTarget(localMeleeTarget);
     final meleeCommit = await Sha256()
         .hash(Uint8List.fromList([...meleeBytes, ...meleeNonce]))
@@ -5575,7 +5583,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   // ── Entropy + state hash ──────────────────────────────────────────────────
 
   Future<Uint8List> _resolveEntropy() async {
-    final ourNonce = CommitRevealEntropy.generateNonce();
+    final ourNonce = _commitNonce(32);
     final ourCommit = await CommitRevealEntropy.commit(ourNonce);
 
     final (:theirNonce, :theirCommit) = await session.exchangeNonce(
@@ -7544,10 +7552,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     final localPath = (localGrant.isEmpty || !hasSomewhereToGo)
         ? null
         : await freeMoveDirectionPicker(localGrant);
-    final nonce = CommitRevealEntropy.generateNonce().sublist(
-      0,
-      _kRevealNonceBytes,
-    );
+    final nonce = _commitNonce(_kRevealNonceBytes);
     final bytes = _encodePath(localPath ?? const []);
     final commit = await Sha256()
         .hash(Uint8List.fromList([...bytes, ...nonce]))

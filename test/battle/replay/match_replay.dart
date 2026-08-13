@@ -169,6 +169,31 @@ class MatchTranscript {
       '${const JsonEncoder.withIndent('  ').convert(toJson())}\n';
 }
 
+/// A deterministic stand-in for `Random.secure()`, so a transcript replays.
+///
+/// Commit-reveal salts are the one genuinely random input a turn takes, and
+/// they are load-bearing for determinism far beyond the commit itself: the
+/// action-phase RNG is seeded from `myCommit ^ peerCommit`, so entity ids,
+/// tie-breaks and percentage rolls all move when the salts do. Both devices
+/// exchange the commits and therefore agree with each other within a run —
+/// which is why this never showed up as a lockstep failure — but no two runs
+/// agreed, so a golden could not be reproduced.
+///
+/// Counter-based rather than a fixed constant: each call must differ, exactly
+/// as real salts do, or distinct commits would collide.
+class _ScriptedNonces {
+  int _counter = 0;
+
+  Uint8List call(int length) {
+    final n = _counter++;
+    // Spread the counter across the bytes so successive salts differ
+    // throughout, not only in a trailing byte.
+    return Uint8List.fromList(
+      List.generate(length, (i) => (n * 31 + i * 7 + 11) & 0xFF),
+    );
+  }
+}
+
 /// Runs [script] through two real, paired [TurnLoop]s and records what
 /// happened.
 ///
@@ -180,6 +205,12 @@ Future<MatchTranscript> runMatchScript(MatchScript script) async {
   final localState = makeDuelState();
   final peerState = makeDuelState();
 
+  // Separate counters per side: the two loops draw independently in
+  // production too, and sharing one would couple them in a way real devices
+  // are not.
+  final localNonces = _ScriptedNonces();
+  final peerNonces = _ScriptedNonces();
+
   final pair = TurnSessionPair();
   final localLoop = TurnLoop(
     state: localState,
@@ -187,6 +218,7 @@ Future<MatchTranscript> runMatchScript(MatchScript script) async {
     localPlayerId: 'player_a',
     verifyProof: alwaysOk,
     vkBytes: Uint8List(0),
+    commitNonceSource: localNonces.call,
   );
   final peerLoop = TurnLoop(
     state: peerState,
@@ -194,6 +226,7 @@ Future<MatchTranscript> runMatchScript(MatchScript script) async {
     localPlayerId: 'player_b',
     verifyProof: alwaysOk,
     vkBytes: Uint8List(0),
+    commitNonceSource: peerNonces.call,
   );
   localLoop.localChapterCommitments = script.localChapterCommitments;
   peerLoop.localChapterCommitments = script.peerChapterCommitments;

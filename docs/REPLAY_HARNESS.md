@@ -1,6 +1,6 @@
 # Replay Harness — a golden corpus for the battle engine
 
-*Status: built 2026-08-13, one script in the corpus. This is the safety net that
+*Status: built 2026-08-13, three scripts in the corpus. This is the safety net that
 makes the `TurnLoop` split safe to attempt; it is not itself that refactor.*
 
 ---
@@ -136,19 +136,58 @@ corpus, pick a perturbation you have confirmed is observable in the scripts you 
 
 ---
 
+## Commit salts, and why a turn is not replayable by default
+
+**The single most important thing to know about this harness.**
+
+Building the second and third scripts immediately produced a corpus that could not
+reproduce *its own freshly generated golden*. The summary fields were identical run to
+run; only the state hash moved.
+
+The cause: commit-reveal salts. `_actionPhaseSeed` seeds the action-phase RNG from
+`myCommit ^ peerCommit`, the commits are hashes of salts drawn from `Random.secure()`,
+and anything that RNG feeds — entity ids, tie-breaks, percentage rolls — therefore differs
+on **every run**. Both devices exchange the commits and so agree with *each other* within
+a run, which is exactly why this never surfaced as a lockstep failure and why the whole
+existing test suite is blind to it.
+
+`Random.secure()` is the correct production answer — a predictable commit salt defeats
+commit-reveal entirely — so the fix is not to weaken it but to make it injectable.
+`TurnLoop.commitNonceSource` is a test-only seam alongside the existing `verifyProof` /
+`vkBytes` injection points. **It must never be set outside tests.**
+
+Two lessons worth keeping:
+
+- **A script that happens to pass is not a script that is deterministic.** The first
+  script (`delayed_cast_and_chain`) reproduced fine before the salts were pinned, purely
+  because nothing in it drew from the action RNG. Its golden is byte-identical before and
+  after. Determinism that holds by accident will stop holding the moment a script touches
+  a new code path.
+- **Run a new script two or three times before trusting its golden.** Generating once and
+  committing would have checked in an expectation that fails on the next run.
+
+---
+
 ## Corpus roadmap
 
-One script today: `delayed_cast_and_chain` — a Mystery declared turn 1 and fired turn 2,
-with ordinary casts either side. Chosen first because it puts the most cross-turn
-machinery in one place.
+Three scripts today:
+
+| Script | Covers |
+|---|---|
+| `delayed_cast_and_chain` | Mystery declared turn 1, fired turn 2; pending-spell carry across a turn boundary, duplicate-grid set, chain advance/break |
+| `fire_damage_exchange` | HP mutation, simultaneous casts in one turn, chain discount on a repeat same-affinity cast, three distinct grids |
+| `terrain_and_clouds` | Board objects that persist and decay across turns — the cloud expires on turn 3 while the tile effect does not |
+
+The second and third both earned their place immediately by covering things the first
+could not: `delayed_cast_and_chain`'s Earth Barriers resolve but change nothing on a
+terrain-free battlefield, so board mutation was entirely uncovered until
+`fire_damage_exchange` landed.
 
 A script earns its place by exercising something that **spans turns**. Per-feature
-coverage is what the engine unit tests are for. Worth adding before the refactor starts:
+coverage is what the engine unit tests are for. Still worth adding before the refactor:
 
-- **Spells that move the board.** The current script's Earth Barriers resolve but change
-  no terrain, so board mutation is currently uncovered. This wants a fixture whose
-  formula produces damage or terrain.
-- **Draw/refill across several turns**, to pin `_drawSchedules` and `_drawSeedNonce`.
+- **Draw/refill across several turns**, to pin `_drawSchedules` and `_drawSeedNonce` —
+  the largest remaining gap, and the one most likely to break silently.
 - **A summon that survives and acts** on later turns.
 - **A counter charm** intercepting a delayed fire.
 - **A forfeit path** — duplicate grid, or an unbacked enhancement claim.
@@ -169,5 +208,6 @@ Step 2 is where most of the value is: the review notes that simply *making deter
 game resolution independently callable* is most of the benefit, without breaking every
 effect into its own class.
 
-**Do not begin step 2 while the corpus is one script.** The corpus is the only thing
-standing between that refactor and a silent lockstep bug.
+**Do not begin step 2 until draw/refill is covered.** The corpus is the only thing
+standing between that refactor and a silent lockstep bug, and `_drawSchedules` /
+`_drawSeedNonce` are the cross-turn state most likely to break without anything noticing.

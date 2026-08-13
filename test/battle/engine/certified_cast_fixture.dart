@@ -16,12 +16,14 @@
 import 'dart:typed_data';
 
 import 'package:rune_duel/battle/models/battle_state.dart';
+import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/battle/models/hex_battlefield.dart' show Battlefield;
 import 'package:rune_duel/battle/models/match_config.dart';
 import 'package:rune_duel/battle/models/wizard_avatar.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/spells/inscribe.dart'
     show kRulesetVersion, tierForSteps;
+import 'package:rune_duel/spells/counter_charm.dart' show kElementsPerFormula;
 import 'package:rune_duel/spells/spell_asset.dart';
 
 /// Dominance indices, CLAUDE.md: [0=neutral, 1=fire, 2=air, 3=water, 4=earth].
@@ -63,18 +65,29 @@ SpellAsset _spell({
   required List<String> formula,
   int? rulesetVersion,
   int commitmentByte = 0xab,
+  List<BorderZone>? certifiedElements,
 }) {
-  const t = kActivations;
+  // What the PROOF attests. Defaults to the earth triplet the trust tests are
+  // built around; scripts that need a different effect pass their own.
+  final elements =
+      certifiedElements ?? List.filled(kActivations, BorderZone.earth);
+  final t = elements.length;
   final tier = tierForSteps(t)!;
   final commitmentBytes = Uint8List.fromList(List.filled(32, commitmentByte));
   final commitmentHex =
       '0x${commitmentBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join()}';
 
   // Matches _certifiedManaCost: (5*seg + dot) * 1.05^T * 1.5^effectCount,
-  // effectCount = max(0, formulas - 1) = 0 for a single complete formula.
+  // effectCount = max(0, completeFormulas - 1). Must agree with what the
+  // verifier computes or the two devices charge different amounts and the
+  // state hash forfeits the match — see M4_findings M4.10.
+  final effectCount = (t ~/ kElementsPerFormula - 1).clamp(0, 1 << 30);
   var cost = (5 * kSegmentCount + kDotCount).toDouble();
   for (var i = 0; i < t; i++) {
     cost *= 1.05;
+  }
+  for (var i = 0; i < effectCount; i++) {
+    cost *= 1.5;
   }
 
   return SpellAsset(
@@ -92,11 +105,41 @@ SpellAsset _spell({
       t: t,
       commitmentBytes: commitmentBytes,
       rulesetVersion: rulesetVersion ?? kRulesetVersion,
+      elements: elements,
     ),
     name: name,
     commitmentHex: commitmentHex,
     spellHashHex: '',
     formula: formula,
+  );
+}
+
+/// An honest spell whose certified trajectory is exactly [elements].
+///
+/// The wire formula is derived from the same list, so this is a spell that
+/// tells the truth about itself — the ordinary case, and what replay scripts
+/// want. Distinct [variant] values produce distinct grids, which matters
+/// because the duplicate-grid guard forfeits a peer who casts the same grid
+/// twice.
+///
+/// Element order within a triplet is (affinity, effectType1, effectType2), and
+/// the pair (effectType1, effectType2) selects the effect kind — so
+/// `[fire, fire, fire]` is Fire Damage while `[earth, earth, earth]` is an
+/// Earth Barrier. See effectKindFromPair in effect_kind.dart.
+SpellAsset spellFromElements({
+  required List<BorderZone> elements,
+  required int variant,
+  String? name,
+}) {
+  assert(elements.length % kElementsPerFormula == 0,
+      'a residual activation changes effectCount; keep script spells to whole '
+      'formulas so their cost is unambiguous');
+  return _spell(
+    id: 'script-spell-$variant',
+    name: name ?? 'Script Spell $variant',
+    formula: [for (final e in elements) e.name],
+    commitmentByte: 0x40 + variant,
+    certifiedElements: elements,
   );
 }
 
@@ -141,7 +184,9 @@ Uint8List syntheticProof({
   required int t,
   required Uint8List commitmentBytes,
   required int rulesetVersion,
+  List<BorderZone>? elements,
 }) {
+  final zones = elements ?? List.filled(kActivations, BorderZone.earth);
   final count = 10 + 2 * tier;
   final bytes = Uint8List(4 + count * 32 + 1);
   final data = ByteData.sublistView(bytes);
@@ -151,16 +196,28 @@ Uint8List syntheticProof({
   setField(0, t);
   setField(2, rulesetVersion);
   bytes.setRange(4 + 3 * 32, 4 + 3 * 32 + 32, commitmentBytes);
-  for (var gen = 0; gen < kActivations; gen++) {
-    setField(8 + gen, kEarthDominance);
-    // Supreme earth is doing double duty: it makes the activations count, and
-    // it is what backs the Mystery enhancement claim itself.
+  for (var gen = 0; gen < zones.length; gen++) {
+    setField(8 + gen, dominanceIndexOf(zones[gen]));
+    // Supreme on every generation: one activation per generation, and (for the
+    // earth fixtures) what backs the Mystery enhancement claim itself.
     setField(8 + tier + gen, 1);
   }
   setField(8 + 2 * tier, kSegmentCount);
   setField(8 + 2 * tier + 1, kDotCount);
   return bytes;
 }
+
+/// Zone → dominance index as the circuit emits it:
+/// `[0=neutral, 1=fire, 2=air, 3=water, 4=earth]` (CLAUDE.md). The BorderZone
+/// enum happens to run fire/air/water/earth, so this is `index + 1` — written
+/// out rather than relying on that coincidence, since the two orderings are
+/// independent and old docs proposed others.
+int dominanceIndexOf(BorderZone zone) => switch (zone) {
+      BorderZone.fire => 1,
+      BorderZone.air => 2,
+      BorderZone.water => 3,
+      BorderZone.earth => 4,
+    };
 
 bool bytesEqual(List<int> a, List<int> b) {
   if (a.length != b.length) return false;
