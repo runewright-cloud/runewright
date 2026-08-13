@@ -62,10 +62,11 @@ SpellAsset _spell({
   required String name,
   required List<String> formula,
   int? rulesetVersion,
+  int commitmentByte = 0xab,
 }) {
   const t = kActivations;
   final tier = tierForSteps(t)!;
-  final commitmentBytes = Uint8List.fromList(List.filled(32, 0xab));
+  final commitmentBytes = Uint8List.fromList(List.filled(32, commitmentByte));
   final commitmentHex =
       '0x${commitmentBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join()}';
 
@@ -116,6 +117,19 @@ SpellAsset honestSpell() => _spell(
       id: 'honest-earth',
       name: 'Honest Earth',
       formula: List.filled(kActivations, 'earth'),
+    );
+
+/// A distinct honest spell per [variant].
+///
+/// The duplicate-grid guard forfeits a peer who casts the same grid twice, so
+/// any script that casts more than once needs grids that differ. The
+/// commitment is grid-only, so varying its bytes is what makes two fixtures
+/// count as different spells.
+SpellAsset honestSpellVariant(int variant) => _spell(
+      id: 'honest-earth-$variant',
+      name: 'Honest Earth $variant',
+      formula: List.filled(kActivations, 'earth'),
+      commitmentByte: 0x20 + variant,
     );
 
 /// `[4 BE bytes: field count N][N × 32-byte fields][proof body]`, the wire

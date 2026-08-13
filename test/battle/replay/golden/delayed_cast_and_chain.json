@@ -1,0 +1,182 @@
+{
+  "name": "delayed_cast_and_chain",
+  "description": "Mystery declared turn 1 and fired turn 2, with ordinary casts either side of it. Covers pending-delayed-spell carry across a turn boundary, the duplicate-grid set, chain advance/break, and two actors resolving on the same turn.",
+  "turns": [
+    {
+      "turn": 1,
+      "note": "player_a declares a Mystery (delay 1); player_b passes",
+      "stateHash": "e23501786e4c9c27b711da583e12bb35d8af4c84fcc08c22801431d4e8418384",
+      "events": {
+        "castEvents": 0,
+        "resolvedSpells": 0,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 1,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 480,
+            "chain": null,
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 24,
+            "mana": 500,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 1,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 2,
+      "note": "the delayed spell fires while player_b casts — both resolve this turn, so resolution order is under test",
+      "stateHash": "b21f0b1147d979dbe60379e301ab0e10f4d125d6b55ae58c08819473d7c3e6f7",
+      "events": {
+        "castEvents": 2,
+        "resolvedSpells": 2,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 2,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 480,
+            "chain": "earth",
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 24,
+            "mana": 480,
+            "chain": "earth",
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 3,
+      "note": "both move; chain state should regress on the non-casting turn",
+      "stateHash": "073c4f6bc74303d9b70dcb43cdac9400841a223c395ca064874c1ec9f1ed84bf",
+      "events": {
+        "castEvents": 0,
+        "resolvedSpells": 0,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 3,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 480,
+            "chain": null,
+            "position": "0,1",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 24,
+            "mana": 480,
+            "chain": null,
+            "position": "2,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 4,
+      "note": "player_a casts a second, distinct grid — the duplicate-grid set must accept it while still remembering the first",
+      "stateHash": "3bfe22c5a13bc1aea1b41282ce4141f57faac14df5c40528e50d0df182bc4b21",
+      "events": {
+        "castEvents": 1,
+        "resolvedSpells": 1,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 4,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 460,
+            "chain": "earth",
+            "position": "0,1",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 24,
+            "mana": 480,
+            "chain": null,
+            "position": "2,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    }
+  ]
+}
