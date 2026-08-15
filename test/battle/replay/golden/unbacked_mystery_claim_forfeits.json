@@ -1,0 +1,100 @@
+{
+  "name": "unbacked_mystery_claim_forfeits",
+  "description": "player_a casts an honest spell, then declares a Mystery on a spell whose proof certifies supreme dominance only in fire — no earth, so nothing backs the delay. player_b re-derives the certified tags, rejects the cast and forfeits with unbacked_enhancement_claim. Pins that the semantic enhancement check fires, that it fires on the receiving device, that the turn aborts before resolving anything, and that no later turn runs.",
+  "turns": [
+    {
+      "turn": 1,
+      "note": "an ordinary backed cast — the match is live and in lockstep",
+      "stateHash": "757b31f72e24b5769f1778bd9c668ca76c3419c79a777c1eae03a1ad9fa8b0e9",
+      "events": {
+        "castEvents": 1,
+        "resolvedSpells": 1,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 1,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 480,
+            "chain": "fire",
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 20,
+            "mana": 500,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    }
+  ],
+  "terminal": {
+    "turn": 2,
+    "note": "player_a claims Mystery on a fire-only proof; player_b rejects it and forfeits. Neither side moves, so nothing but the turn counter may change on the detecting device",
+    "reason": "unbacked_enhancement_claim",
+    "detectedBy": "player_b",
+    "offender": "player_a",
+    "error": "peer claimed a cast-time enhancement not backed by certified supreme-dominance data — match forfeit (commitmentHex=0x8787878787878787878787878787878787878787878787878787878787878787)",
+    "detectorStateHash": "b4e704b4fa200c34d7bb82f6fd22e8082f12559d819b0c2a72a1528497fcddd5",
+    "detectorStateUnchangedApartFromTurnCounter": true,
+    "detectorEvents": {
+      "castEvents": 0,
+      "resolvedSpells": 0,
+      "counterCharmProcs": 0,
+      "avatarMoves": 2,
+      "minionMoves": 0,
+      "minionAttacks": 0,
+      "meleeAttacks": 0,
+      "wildMagic": 0,
+      "conveyorChains": 0
+    },
+    "turnsNotRun": 1,
+    "detectorSummary": {
+      "turnNumber": 2,
+      "avatars": {
+        "player_a": {
+          "hp": 24,
+          "mana": 480,
+          "chain": "fire",
+          "position": "0,0",
+          "statuses": 0
+        },
+        "player_b": {
+          "hp": 20,
+          "mana": 500,
+          "chain": null,
+          "position": "1,0",
+          "statuses": 0
+        }
+      },
+      "pendingDelayedSpells": 0,
+      "minions": 0,
+      "clouds": 0,
+      "tileEffects": 0,
+      "terrainBarriers": 0,
+      "terrainHp": 0,
+      "reflectionLinks": 0,
+      "divinationLinks": 0,
+      "wizardIllusions": 0
+    }
+  }
+}

@@ -42,7 +42,141 @@ Future<List<MatchScript>> allScripts() async => [
       _drawAndRefill(),
       _summonActsOverTurns(),
       await _counterCharmInterceptsDelayedFire(),
+      await _unbackedMysteryClaimForfeits(),
     ];
+
+/// A Mystery claimed on a spell whose proof does not back it — the match ends.
+///
+/// ## Why the corpus needed a forfeit at all
+///
+/// Every other script asks "does the engine compute the right thing?". This one
+/// asks the question the trust boundary actually turns on: **does the engine
+/// refuse?** Those are different code paths and only one of them was covered.
+/// A refactor that moved verification after resolution, or dropped a claim from
+/// the check, or forfeited on the wrong device, would leave every existing
+/// golden byte-identical — resolution is unchanged for honest play — while
+/// silently opening the hole the check exists to close.
+///
+/// ## Why `unbacked_enhancement_claim` rather than a duplicate grid
+///
+/// The duplicate-grid guard is a *bookkeeping* check: it compares a commitment
+/// against a set this device already built. `unbacked_enhancement_claim` is a
+/// *semantic* one — it re-derives what the SNARK actually certified
+/// (`TrajectoryParser.certifiedSupremeTags`) and confronts the peer's wire
+/// claim with it. That makes it the same B-1 trust-boundary shape as the rest
+/// of the corpus, and it is the check with real reach: Potency, Velocity,
+/// Efficiency and Mystery are all gated by the one branch at
+/// turn_loop.dart's step 2b, so pinning one of them pins the branch.
+///
+/// ## What makes the fixture illegal
+///
+/// `spellFromElements` marks every generation supreme-dominant, so the
+/// certified tag set is exactly the set of elements in the trajectory. A
+/// `[fire, fire, fire]` spell therefore certifies `{fire}` — enough to back a
+/// Potency claim, and *not* enough to back a Mystery, which requires certified
+/// supreme dominance in the **earth** zone because that is what buys the
+/// delay. Casting it as a `MysterySpellCastAction` is exactly the modified
+/// client the check is written against: nothing about the proof is forged, the
+/// peer simply claims an enhancement it did not earn.
+///
+/// Note that only the RECEIVING device objects. `TurnLoop` has no check on the
+/// local player's own enhancement claims — the UI declines to offer the button
+/// (battle_screen.dart) but the engine does not second-guess itself, which is
+/// the correct division: a client cannot be trusted to police itself, so the
+/// enforcement that matters is the peer's.
+///
+/// ## The three things this pins that state hashes cannot
+///
+///   1. **The forfeit fires at all, with that tag, from player_b's device.**
+///   2. **The turn aborts before resolving anything** —
+///      `detectorStateUnchangedApartFromTurnCounter` is the assertion, and it
+///      is a real one: verification sits at Phase 5, after movement has already
+///      been applied, so a script that moved on this turn would legitimately
+///      record `false`. Neither side moves, so any `false` here means
+///      resolution leaked in ahead of the check.
+///   3. **No later turn runs.** Turn 3 would take 4 HP off player_a if it ever
+///      executed; `turnsNotRun: 1` and its absence from the golden are the
+///      record that it did not.
+Future<MatchScript> _unbackedMysteryClaimForfeits() async {
+  // Turn 1: an ordinary, fully-backed cast. The match must be genuinely under
+  // way before the violation, so the golden shows the forfeit interrupting a
+  // live match rather than failing at the first thing the engine ever did.
+  final opener = spellFromElements(
+    elements: List.filled(3, BorderZone.fire),
+    variant: 70,
+    name: 'Opening Ember',
+  );
+  // Turn 2: certifies {fire}. Legal as an immediate cast; illegal as a Mystery.
+  final unbacked = spellFromElements(
+    elements: List.filled(3, BorderZone.fire),
+    variant: 71,
+    name: 'Borrowed Patience',
+  );
+  // Turn 3: never cast. Present so that "the match stopped" is distinguishable
+  // from "the script ran out of turns" — this one would visibly damage
+  // player_a, so its absence from the transcript is evidence rather than
+  // assumption.
+  final neverCast = spellFromElements(
+    elements: List.filled(3, BorderZone.fire),
+    variant: 72,
+    name: 'Reply That Never Comes',
+  );
+
+  const target = HexCoord(1, 0);
+  const delay = 1;
+  final nonce = Uint8List.fromList(List.generate(16, (i) => i + 131));
+  final commitment = await PendingDelayedSpell.commitmentHash(
+    target: target,
+    delay: delay,
+    nonce: nonce,
+  );
+
+  return MatchScript(
+    name: 'unbacked_mystery_claim_forfeits',
+    description:
+        'player_a casts an honest spell, then declares a Mystery on a spell '
+        'whose proof certifies supreme dominance only in fire — no earth, so '
+        'nothing backs the delay. player_b re-derives the certified tags, '
+        'rejects the cast and forfeits with unbacked_enhancement_claim. Pins '
+        'that the semantic enhancement check fires, that it fires on the '
+        "receiving device, that the turn aborts before resolving anything, "
+        'and that no later turn runs.',
+    localChapterCommitments: [
+      opener.commitmentHex,
+      unbacked.commitmentHex,
+    ],
+    peerChapterCommitments: [neverCast.commitmentHex],
+    turns: [
+      ScriptedTurn.fixed(
+        note: 'an ordinary backed cast — the match is live and in lockstep',
+        local: TurnInput(
+          action: SpellCastAction(spell: opener, targetHex: target),
+        ),
+        peer: TurnInput(action: PassAction()),
+      ),
+      ScriptedTurn.fixed(
+        note: 'player_a claims Mystery on a fire-only proof; player_b rejects '
+            'it and forfeits. Neither side moves, so nothing but the turn '
+            'counter may change on the detecting device',
+        local: TurnInput(
+          action: MysterySpellCastAction(
+            spell: unbacked,
+            mysteryCommitment: commitment,
+          ),
+        ),
+        peer: TurnInput(action: PassAction()),
+      ),
+      ScriptedTurn.fixed(
+        note: 'MUST NOT RUN — player_b answering with damage. If this ever '
+            "appears in the golden, the forfeit stopped nothing",
+        local: TurnInput(action: PassAction()),
+        peer: TurnInput(
+          action: SpellCastAction(spell: neverCast, targetHex: const HexCoord(0, 0)),
+        ),
+      ),
+    ],
+  );
+}
 
 /// A counter charm intercepting a Mystery (delayed) cast — twice, differently.
 ///

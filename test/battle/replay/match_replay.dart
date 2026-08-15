@@ -48,6 +48,7 @@
 // hashes while differing in secondary state that steers a later turn. A
 // multi-turn transcript is the cheapest thing that can catch it.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -243,17 +244,127 @@ class TurnRecord {
       };
 }
 
+/// How a match ended early, when it did.
+///
+/// ## Why this is not a [TurnRecord]
+///
+/// A forfeit is the one outcome the canonical state cannot express. Every
+/// forfeit condition in the engine is **one-sided by construction**: the
+/// device that detects the violation calls `session.sendForfeit(reason)` and
+/// then throws, while the offending device — which by definition thinks its
+/// own cast was fine — sails on into the next exchange and blocks there
+/// forever. Production tears the match down at that point
+/// (`battle_screen.dart`'s `peerForfeit` handler); nothing resumes it.
+///
+/// So there are three things a transcript must say that no state hash can:
+///
+///   * **which side detected it and which side offended.** Both devices are
+///     running the same code; a bug that made the wrong side forfeit would
+///     leave every canonical byte plausible.
+///   * **the reason tag.** These strings are a wire contract — the peer's UI
+///     switches on them (`_forfeitExplanation`) — so a renamed tag is a real
+///     behaviour change, not a refactor.
+///   * **that the turn aborted before resolving anything**, and that no later
+///     turn ran at all.
+///
+/// The offending device's state is deliberately NOT recorded. Its loop is
+/// abandoned mid-turn with no defined stopping point, so whatever it holds is
+/// an artifact of where it happened to block, not an observable the engine
+/// promises. Recording it would pin scheduling, not behaviour.
+class TerminalRecord {
+  const TerminalRecord({
+    required this.turn,
+    required this.reason,
+    required this.detectedBy,
+    required this.offender,
+    required this.error,
+    required this.detectorStateHash,
+    required this.detectorStateUnchangedApartFromTurnCounter,
+    required this.detectorSummary,
+    required this.detectorEvents,
+    required this.turnsNotRun,
+    this.note,
+  });
+
+  /// The turn on which the match ended. 1-based, matching [TurnRecord.turn] —
+  /// this turn has NO TurnRecord, because it never completed.
+  final int turn;
+
+  /// The tag passed to `sendForfeit` (e.g. `unbacked_enhancement_claim`).
+  final String reason;
+
+  /// The player whose device rejected the turn and sent the forfeit frame.
+  final String detectedBy;
+
+  /// The player whose action was rejected.
+  final String offender;
+
+  /// The `StateError` the detecting device threw, verbatim. Carries the
+  /// specific commitment, which is what makes a broken golden diagnosable.
+  final String error;
+
+  final String detectorStateHash;
+
+  /// True when the detecting device's canonical state is byte-identical to
+  /// its state at the end of the previous turn, apart from the turn counter.
+  ///
+  /// This is the load-bearing check for "the turn aborted before resolving
+  /// anything". `runTurn` increments `state.turnNumber` on its very first
+  /// line and `toCanonicalBytes` writes it as the leading uint32, so a bare
+  /// hash comparison would always differ and prove nothing; skipping those
+  /// four bytes asks the question actually worth asking. If a future change
+  /// ever let a forfeit land *after* partial resolution, this flips to false.
+  final bool detectorStateUnchangedApartFromTurnCounter;
+
+  final Map<String, Object?> detectorSummary;
+
+  /// Events on the detecting device for the aborted turn. `resolvedSpells: 0`
+  /// is the direct statement that the offending cast never took effect.
+  final Map<String, int> detectorEvents;
+
+  /// Scripted turns after [turn] that were never run, because the match was
+  /// over. Must be > 0 for the script to prove anything about later turns —
+  /// a forfeit on the final turn cannot distinguish "stopped" from "finished".
+  final int turnsNotRun;
+
+  final String? note;
+
+  Map<String, Object?> toJson() => {
+        'turn': turn,
+        if (note != null) 'note': note,
+        'reason': reason,
+        'detectedBy': detectedBy,
+        'offender': offender,
+        'error': error,
+        'detectorStateHash': detectorStateHash,
+        'detectorStateUnchangedApartFromTurnCounter':
+            detectorStateUnchangedApartFromTurnCounter,
+        'detectorEvents': detectorEvents,
+        'turnsNotRun': turnsNotRun,
+        'detectorSummary': detectorSummary,
+      };
+}
+
 /// A whole scripted match's recorded outcome.
 class MatchTranscript {
-  const MatchTranscript({required this.script, required this.records});
+  const MatchTranscript({
+    required this.script,
+    required this.records,
+    this.terminal,
+  });
 
   final MatchScript script;
   final List<TurnRecord> records;
+
+  /// Set when the match ended early on a forfeit. Null for a script that ran
+  /// every turn to completion.
+  final TerminalRecord? terminal;
 
   Map<String, Object?> toJson() => {
         'name': script.name,
         'description': script.description,
         'turns': [for (final r in records) r.toJson()],
+        if (terminal != null) 'terminal': terminal!.toJson(),
       };
 
   String toPrettyJson() =>
@@ -363,6 +474,22 @@ Future<MatchTranscript> runMatchScript(MatchScript script) async {
     peerLoop.localChapterCommitments = script.peerChapterCommitments;
   }
 
+  // Which side sent a forfeit, latched as it happens.
+  //
+  // `sendForfeit` on one session completes the OTHER session's `peerForfeit`,
+  // so a completion on sessionA's future means player_b was the one who
+  // detected the violation and sent the frame.
+  String? forfeitReason;
+  String? forfeitDetectedBy;
+  unawaited(pair.sessionA.peerForfeit.then((r) {
+    forfeitReason ??= r;
+    forfeitDetectedBy ??= 'player_b';
+  }));
+  unawaited(pair.sessionB.peerForfeit.then((r) {
+    forfeitReason ??= r;
+    forfeitDetectedBy ??= 'player_a';
+  }));
+
   if (script.startBattle) {
     // Paired commit-reveal, same shape as a turn's — both sides must run it
     // concurrently or they deadlock waiting on each other.
@@ -372,6 +499,12 @@ Future<MatchTranscript> runMatchScript(MatchScript script) async {
   }
 
   final records = <TurnRecord>[];
+  TerminalRecord? terminal;
+  // Canonical bytes at the end of the last COMPLETED turn, per device, so a
+  // forfeit can be compared against the position it aborted from.
+  var localBefore = localState.toCanonicalBytes();
+  var peerBefore = peerState.toCanonicalBytes();
+
   for (var i = 0; i < script.turns.length; i++) {
     final scripted = script.turns[i];
     if (i > 0) {
@@ -379,10 +512,53 @@ Future<MatchTranscript> runMatchScript(MatchScript script) async {
       // (startBattle already reset after its own exchange.)
       pair.reset();
     }
-    await Future.wait([
-      localLoop.runTurn(scripted.local(localLoop)),
-      peerLoop.runTurn(scripted.peer(peerLoop)),
-    ], eagerError: true).timeout(const Duration(seconds: 30));
+    try {
+      await Future.wait([
+        localLoop.runTurn(scripted.local(localLoop)),
+        peerLoop.runTurn(scripted.peer(peerLoop)),
+      ], eagerError: true).timeout(const Duration(seconds: 30));
+    } on StateError catch (e) {
+      // A forfeit. `sendForfeit` runs synchronously just before the throw, so
+      // the completer is already completed — but its listener is a microtask,
+      // so yield once to let the latch above run before reading it.
+      await Future<void>.delayed(Duration.zero);
+      final reason = forfeitReason;
+      final detectedBy = forfeitDetectedBy;
+      if (reason == null || detectedBy == null) {
+        // A StateError that is NOT a forfeit is a genuine harness or engine
+        // failure — a malformed script, a deadlock, a real crash. Swallowing
+        // it as "the match ended" would turn every such bug into a green run.
+        rethrow;
+      }
+      final detectorIsLocal = detectedBy == 'player_a';
+      final detectorState = detectorIsLocal ? localState : peerState;
+      final detectorLoop = detectorIsLocal ? localLoop : peerLoop;
+      final detectorBefore = detectorIsLocal ? localBefore : peerBefore;
+
+      terminal = TerminalRecord(
+        turn: i + 1,
+        reason: reason,
+        detectedBy: detectedBy,
+        offender: detectorIsLocal ? 'player_b' : 'player_a',
+        error: e.message.toString(),
+        detectorStateHash: _hashOf(detectorState),
+        detectorStateUnchangedApartFromTurnCounter: _sameApartFromTurnCounter(
+          detectorBefore,
+          detectorState.toCanonicalBytes(),
+        ),
+        detectorSummary: summarize(detectorState),
+        detectorEvents: eventCounts(detectorLoop),
+        turnsNotRun: script.turns.length - (i + 1),
+        note: scripted.note,
+      );
+      // The offending loop is still mid-turn, blocked on an exchange its peer
+      // will never reach. Running another turn against it would deadlock, and
+      // production would not run one either — the match is over.
+      break;
+    }
+
+    localBefore = localState.toCanonicalBytes();
+    peerBefore = peerState.toCanonicalBytes();
 
     records.add(TurnRecord(
       turn: i + 1,
@@ -396,7 +572,25 @@ Future<MatchTranscript> runMatchScript(MatchScript script) async {
     ));
   }
 
-  return MatchTranscript(script: script, records: records);
+  return MatchTranscript(
+    script: script,
+    records: records,
+    terminal: terminal,
+  );
+}
+
+/// Whether two canonical encodings agree on everything except the leading
+/// turn-number field.
+///
+/// `toCanonicalBytes` writes `turnNumber` as its first uint32 and nothing else
+/// is fixed-width ahead of it, so dropping four bytes is a complete and exact
+/// way to ask "did anything other than the clock move?".
+bool _sameApartFromTurnCounter(Uint8List before, Uint8List after) {
+  if (before.length != after.length) return false;
+  for (var i = 4; i < before.length; i++) {
+    if (before[i] != after[i]) return false;
+  }
+  return true;
 }
 
 String _hashOf(BattleState state) =>

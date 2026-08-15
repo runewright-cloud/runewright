@@ -85,6 +85,24 @@ void main() {
                 'test — fix it before looking at the golden.');
       }
 
+      // A forfeit script only asserts something if the match actually stopped
+      // early. Checked structurally rather than left to the golden: a golden
+      // records what happened, but cannot say that what happened was still
+      // the thing the script set out to prove.
+      final terminal = transcript.terminal;
+      if (terminal != null) {
+        expect(terminal.turnsNotRun, greaterThan(0),
+            reason: 'script "${script.name}" forfeited on its LAST turn, so '
+                'the transcript cannot distinguish "the match stopped" from '
+                '"the script ran out of turns". Add a turn after the '
+                'violation that would visibly change state if it ran.');
+        expect(transcript.records.length + 1 + terminal.turnsNotRun,
+            script.turns.length,
+            reason: 'script "${script.name}": turns recorded, plus the '
+                'aborted one, plus those skipped, must account for every '
+                'scripted turn');
+      }
+
       final actual = transcript.toPrettyJson();
 
       if (_regenerating) {
@@ -145,6 +163,21 @@ String _firstDifference(String expected, String actual) {
           '--- actual ---\n${encoder.convert(actualTurns[i])}';
     }
   }
-  return 'turn counts differ: golden has ${expectedTurns.length}, '
-      'actual has ${actualTurns.length}';
+  if (expectedTurns.length != actualTurns.length) {
+    return 'turn counts differ: golden has ${expectedTurns.length}, '
+        'actual has ${actualTurns.length}';
+  }
+
+  // Every recorded turn matched, so the difference is in how the match ENDED.
+  // Reported explicitly because the alternative — falling through to "turn
+  // counts differ: golden has 1, actual has 1" — is actively misleading, and
+  // this is the branch a forfeit script lands in.
+  final expectedEnd = parse(expected)['terminal'];
+  final actualEnd = parse(actual)['terminal'];
+  if (encoder.convert(expectedEnd) != encoder.convert(actualEnd)) {
+    return 'turns are identical; the match ENDED differently:\n'
+        '--- golden ---\n${encoder.convert(expectedEnd)}\n'
+        '--- actual ---\n${encoder.convert(actualEnd)}';
+  }
+  return 'no per-turn difference found — the header (name/description) moved';
 }
