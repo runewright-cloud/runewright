@@ -5727,3 +5727,72 @@ should *look* like (a second playback callback in Phase 5, or carrying the event
 to Phase 5b's walk and accepting that the animation plays late) — a design question, and
 one for whoever does the `_resolveActions` extraction, since that is where the call site
 lives.
+
+---
+
+## M4.18 — The free-move window applied both runs in device-relative order (found 2026-08-16, FIXED)
+
+Found by inspection while extracting the free-move rules behind the deterministic seam,
+then reproduced before being believed. `_runFreeMoveRound` ended with:
+
+```dart
+// Local first, then peer, on both devices — the order matters because the
+// second walk sees the first one's occupancy.
+if (localPath != null && localPath.isNotEmpty) _applyFreeMove(_localAvatar(), ...);
+if (peerId != null && peerPath.isNotEmpty)     _applyFreeMove(peerAvatar, ...);
+```
+
+The comment is self-contradicting: "local first, then peer" is not the same order **on
+both devices**. Device A ran A-then-B; device B ran B-then-A. Two things depend on that
+order, and both are consensus-visible:
+
+1. **Live occupancy.** The window is sequential — one avatar walks at a time — so the
+   second run sees where the first one stopped. Two wizards declaring the same
+   destination tile hand it to whoever is applied first.
+2. **The shared phase RNG.** Both runs draw from the one `HashRng` the window was seeded
+   with. A closed conveyor loop rolls its exit tile (`tile_entry_resolver._findLoopExit`),
+   so the two devices bind different draws to different wizards.
+
+This is exactly the melee bug from `ARTIFACT_SYSTEM_PLAN.md` §6.1, in a second place. The
+melee round was fixed by sorting on `playerId`; the free-move window never was.
+
+**Reproduced** in `test/battle/engine/free_move_ordering_test.dart` on `TurnSessionPair`
+(the genuine two-client fixture — `SoloBattleSession` echoes state hashes back and hides
+this entire class of bug, which is why nothing caught it for so long). Both flavours fail
+as `StateError: state hash mismatch on turn 1`. The control test in the same file — same
+terrain, same grants, only ONE wizard moving — passes on the unfixed code, which is what
+rules out the fixture as the cause.
+
+**Fixed** by ordering the two applications on ascending canonical `owner_pubkey` bytes.
+Notes on the choice:
+
+- **Bytes, not the hex string.** `key_packing._leBytesToFieldHex` emits
+  `toRadixString(16)` with no zero padding, so the same key can be spelled `0x2` or
+  `0x02`, and a *shorter* string can hold a *larger* number (`'0x2' > '0x10'` as text,
+  `2 < 16` as a value). `compareCanonicalPubkeyHex` decodes both to a common fixed-width
+  big-endian form first, which makes lexicographic byte order and unsigned numeric order
+  the same thing — and agrees with the BigInt ordering `duel_battle_setup.dart` already
+  uses to assign spawns, so there is no second notion of "lower player".
+- **`owner_pubkey`, not `playerId`.** The pubkey is the identity both devices
+  authenticated. `playerId` is the tiebreak only, so the order stays total for solo/test
+  states where both avatars carry the same all-zero sentinel key; that also means the fix
+  never depends on `List.sort` stability.
+- **The RNG assignment changed on purpose.** Under local-first, device A's local wizard
+  took the first draw. Now the lower pubkey does, on both devices. Preserving the old
+  single-device assignment was never an option — it is the broken half.
+
+### Other sites with a device-independent-but-different convention (recorded, unchanged)
+
+These all sort on `playerId.compareTo`, which is a *textual* compare of what is, in a real
+duel, an unpadded hex pubkey — so their order is arbitrary rather than numerically
+meaningful. **None of them is a desync**: both devices compute the same string compare on
+the same strings and agree. Left alone deliberately; changing them is a consensus-visible
+reordering that needs its own reproduction and its own corpus run.
+
+- `turn_loop.dart` Phase 4b melee applications
+- `turn_loop.dart` Phase 0 artifact-activation declarations
+- `turn_loop.dart` `_artifactEntropyImpl`'s rod-of-wind rolls
+- `_findCounteringCharm`'s avatar sweep
+
+If these are ever unified on the canonical-pubkey rule, it is a `RULESET_VERSION`-visible
+change and wants a two-device pass, not just a green suite.

@@ -154,6 +154,7 @@ import '../models/wild_magic_effect.dart';
 import '../models/wizard_avatar.dart';
 import '../networking/battle_session.dart';
 import '../../identity/identity.dart';
+import '../../identity/key_packing.dart' show compareCanonicalPubkeyHex;
 import '../../protocol/match_session.dart' show ProofVerifier;
 import 'battle_events.dart';
 import 'book_commitment.dart';
@@ -6278,16 +6279,36 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     await _verifyReveal(peerReveal, peerCommit, 'freeMove');
     final peerPath = _decodePath(peerReveal, _kRevealNonceBytes);
 
-    // Local first, then peer, on both devices — the order matters because the
-    // second walk sees the first one's occupancy.
-    if (localPath != null && localPath.isNotEmpty) {
-      _applyFreeMove(_localAvatar(), localPath, rng);
-    }
-    if (peerId != null && peerPath.isNotEmpty) {
-      final peerAvatar = _avatarById(peerId);
-      if (peerAvatar != null) {
-        _applyFreeMove(peerAvatar, peerPath, rng);
-      }
+    // Applied in ascending canonical owner_pubkey byte order, NOT local-first.
+    // This used to run the local wizard first and the peer second, which is a
+    // device-relative order: device A ran A-then-B while device B ran B-then-A.
+    // Both runs draw from this one [rng] (a closed conveyor loop rolls its exit
+    // tile) and both resolve against live occupancy (the second walk sees where
+    // the first one stopped), so whenever both players moved in the same window
+    // the two devices could bind different draws to different wizards, or hand
+    // a contested tile to different players, and diverge on the turn's state
+    // hash. Reproduced in free_move_ordering_test.dart.
+    //
+    // Ordered on the owner_pubkey rather than the playerId that
+    // [_findCounteringCharm] and the Phase 4b melee round sort on: the pubkey
+    // is the identity both devices authenticated, and comparing its canonical
+    // BYTES is immune to how either side spelled the hex (see
+    // key_packing.dart's canonical-ordering note). playerId is the tiebreak
+    // only, for solo/test states where both avatars carry the same sentinel
+    // key — it keeps the order total, so this never depends on sort stability.
+    final freeMoveApplications = <(WizardAvatar, List<HexCoord>)>[
+      if (localPath != null && localPath.isNotEmpty) (_localAvatar(), localPath),
+      if (peerId != null && peerPath.isNotEmpty)
+        if (_avatarById(peerId) case final peerAvatar?) (peerAvatar, peerPath),
+    ]..sort((a, b) {
+      final byKey = compareCanonicalPubkeyHex(
+        a.$1.ownerPubkeyHex,
+        b.$1.ownerPubkeyHex,
+      );
+      return byKey != 0 ? byKey : a.$1.playerId.compareTo(b.$1.playerId);
+    });
+    for (final (avatar, path) in freeMoveApplications) {
+      _applyFreeMove(avatar, path, rng);
     }
     // One-shot opportunity: clear regardless of whether it was used, so it
     // never rolls over to a later window or a later turn.

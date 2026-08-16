@@ -43,4 +43,65 @@ void main() {
       expect(() => splitPubkeyToFieldHex(List<int>.filled(33, 0)), throwsArgumentError);
     });
   });
+
+  // Canonical identity ordering — the tie-break-free order two devices use to
+  // serialize simultaneous deterministic effects. The free-move window
+  // (turn_loop.dart's _runFreeMoveRound) is the first consumer; see
+  // test/battle/engine/free_move_ordering_test.dart for the lockstep half.
+  group('canonical pubkey ordering', () {
+    test('canonicalPubkeyBytes is fixed-width big-endian', () {
+      final bytes = canonicalPubkeyBytes('0x01');
+      expect(bytes, hasLength(kCanonicalPubkeyByteWidth));
+      expect(bytes.last, 1);
+      expect(bytes.take(kCanonicalPubkeyByteWidth - 1), everyElement(0));
+    });
+
+    test('ignores 0x prefix, case, and leading zeros', () {
+      final forms = ['0xAB', '0xab', 'ab', '0x00ab', '0x000000AB'];
+      for (final form in forms) {
+        expect(canonicalPubkeyBytes(form), canonicalPubkeyBytes('0xab'),
+            reason: '$form must canonicalize to the same bytes');
+        expect(compareCanonicalPubkeyHex(form, '0xab'), 0);
+      }
+    });
+
+    // The reason this compares bytes rather than the hex string it is carried
+    // in: key_packing's _leBytesToFieldHex emits toRadixString(16) with NO
+    // zero padding, so a shorter string can hold the larger number. A textual
+    // compare gets this pair backwards.
+    test('orders by value, not by string — "0x2" sorts before "0x10"', () {
+      expect(compareCanonicalPubkeyHex('0x2', '0x10'), lessThan(0));
+      expect(compareCanonicalPubkeyHex('0x10', '0x2'), greaterThan(0));
+      // ...which is the opposite of what comparing the text would say.
+      expect('0x2'.compareTo('0x10'), greaterThan(0));
+    });
+
+    test('is antisymmetric and total over realistic owner_pubkey hexes', () {
+      final keys = [
+        '',
+        '0x0',
+        '0x${'0' * 64}',
+        '0x11',
+        '0x${'11' * 32}',
+        '0x${'ff' * 32}',
+      ];
+      for (final a in keys) {
+        for (final b in keys) {
+          expect(compareCanonicalPubkeyHex(a, b).sign,
+              -compareCanonicalPubkeyHex(b, a).sign,
+              reason: 'compare($a, $b) must be the negation of compare($b, $a)');
+        }
+      }
+      // The empty string (AuthenticatedPeer.none) and an all-zero key are the
+      // same value: zero. Callers break that tie on playerId.
+      expect(compareCanonicalPubkeyHex('', '0x${'0' * 64}'), 0);
+    });
+
+    test('a value wider than the default width still compares correctly', () {
+      // 33 bytes: both sides widen to a common width rather than truncating.
+      final wide = '0x${'ff' * 33}';
+      expect(compareCanonicalPubkeyHex(wide, '0x${'ff' * 32}'), greaterThan(0));
+      expect(compareCanonicalPubkeyHex('0x${'ff' * 32}', wide), lessThan(0));
+    });
+  });
 }

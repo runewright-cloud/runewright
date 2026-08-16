@@ -60,3 +60,80 @@ Uint8List fieldHexToLeBytes(String hex, int byteLength) {
   }
   return out;
 }
+
+// ── Canonical ordering of two identities ──────────────────────────────────────
+//
+// Any point where two players' deterministic effects must be SERIALIZED needs
+// an order both devices compute identically, with no notion of which side is
+// local, host, or initiator. The owner_pubkey is the only identity both
+// devices provably share (it comes out of `exchangeIdentityAuth`), so it is
+// what the order is derived from.
+//
+// It has to be compared as BYTES, not as the hex string it is carried in.
+// [_leBytesToFieldHex] emits `toRadixString(16)` with no zero padding, so the
+// same key can legitimately appear as "0x2" on one path and "0x02" on another,
+// and a shorter string can hold a larger number ("0x2" > "0x10" as text, but
+// 2 < 16 as a value). Decoding to a fixed-width big-endian form makes
+// lexicographic byte order and unsigned numeric order the same thing — which
+// is also what duel_battle_setup.dart's BigInt spawn ordering already means,
+// so this introduces no second, conflicting notion of "lower player".
+
+/// Width of the canonical big-endian form two identities are compared in.
+/// 32 bytes holds any BN254 field element, which is what an owner_pubkey is.
+const int kCanonicalPubkeyByteWidth = 32;
+
+/// Canonical big-endian bytes of an owner_pubkey hex: "0x"-prefix optional,
+/// case-insensitive, leading zeros irrelevant, always [width] bytes long.
+///
+/// A value that cannot be read as hex at all — the empty string
+/// (`AuthenticatedPeer.none`) or a solo/test sentinel — canonicalizes to all
+/// zeroes rather than throwing. Ordering runs inside a live turn, where a
+/// throw would drop the match; callers that care about identity validity
+/// check it at authentication time, which is where that belongs.
+Uint8List canonicalPubkeyBytes(
+  String ownerPubkeyHex, {
+  int width = kCanonicalPubkeyByteWidth,
+}) =>
+    _bigIntToBeBytes(_parsePubkeyHex(ownerPubkeyHex), width);
+
+/// Compares two owner_pubkey hexes in ascending canonical byte order.
+/// Returns <0 if [a] sorts first, >0 if [b] does, 0 if they are the same key.
+///
+/// Both are decoded to a common width first, so the comparison is a true
+/// lexicographic byte comparison and never depends on how either side chose
+/// to spell the key.
+int compareCanonicalPubkeyHex(String a, String b) {
+  final va = _parsePubkeyHex(a);
+  final vb = _parsePubkeyHex(b);
+  final width = [
+    kCanonicalPubkeyByteWidth,
+    _byteWidthOf(va),
+    _byteWidthOf(vb),
+  ].reduce((x, y) => x > y ? x : y);
+  final ba = _bigIntToBeBytes(va, width);
+  final bb = _bigIntToBeBytes(vb, width);
+  for (var i = 0; i < width; i++) {
+    if (ba[i] != bb[i]) return ba[i] < bb[i] ? -1 : 1;
+  }
+  return 0;
+}
+
+BigInt _parsePubkeyHex(String hex) {
+  var s = hex.trim();
+  if (s.startsWith('0x') || s.startsWith('0X')) s = s.substring(2);
+  if (s.isEmpty) return BigInt.zero;
+  return BigInt.tryParse(s, radix: 16) ?? BigInt.zero;
+}
+
+int _byteWidthOf(BigInt value) => (value.bitLength + 7) ~/ 8;
+
+Uint8List _bigIntToBeBytes(BigInt value, int width) {
+  final out = Uint8List(width);
+  var v = value;
+  final mask = BigInt.from(0xff);
+  for (var i = width - 1; i >= 0 && v > BigInt.zero; i--) {
+    out[i] = (v & mask).toInt();
+    v = v >> 8;
+  }
+  return out;
+}
