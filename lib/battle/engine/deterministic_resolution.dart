@@ -87,6 +87,7 @@ import '../models/reflection_link.dart';
 import '../models/status_effect_ids.dart';
 import '../models/terrain.dart'
     show
+        CloudObject,
         ConveyorTile,
         DustCloud,
         FloorIsLava,
@@ -448,6 +449,61 @@ class DeterministicResolution {
   void breakStatuesque(String playerId) {
     state.wildMagic.statuesquePlayerIds.remove(playerId);
     state.wildMagic.pendingStatuesquePlayerIds.remove(playerId);
+  }
+
+  // ── Phase 4: Cloud drift ──────────────────────────────────────────────────
+
+  /// Air-flavor Clouds (Water-Fire) auto-seek: move 1 tile toward the nearest
+  /// enemy of the cloud owner's team during the Summons step each turn.
+  void moveClouds() {
+    for (final cloud in state.clouds) {
+      moveCloud(cloud);
+    }
+  }
+
+  /// Single-cloud step used both by [moveClouds] (every Mobile Cloud, each
+  /// turn's Phase 4) and, once, by `TurnLoop._resolveActions` right after a
+  /// spell creates a new cloud (Phase 5) — otherwise a cloud born this turn
+  /// would sit dead-still until *next* turn's Phase 4, since Phase 4 already
+  /// ran before this turn's spells resolved. Fully deterministic
+  /// (distance-only, no RNG), so it's safe to call outside the phase-seeded
+  /// RNG flow — which is why it takes no [HashRng] where every other phase
+  /// here does.
+  void moveCloud(CloudObject cloud) {
+    if (cloud.kind is! MobileCloud) return;
+    final ownerTeamId = avatarById(cloud.ownerId)?.teamId;
+    if (ownerTeamId == null) return;
+    final nearestEnemy = _nearestEnemyTarget(ownerTeamId, cloud.position);
+    if (nearestEnemy == null) return;
+    final step = _greedyStep(cloud.position, nearestEnemy);
+    if (step != null) cloud.position = step;
+  }
+
+  /// Move one step from [from] toward [to], avoiding impassable tiles.
+  /// Returns null if no valid step found.
+  HexCoord? _greedyStep(HexCoord from, HexCoord to) {
+    HexCoord? best;
+    var bestDist = hexDistance(from, to);
+    for (final n in state.battlefield.neighbors(from)) {
+      if (tileBlocksMovement(state.tileEffects[n])) continue;
+      final d = hexDistance(n, to);
+      if (d < bestDist) {
+        bestDist = d;
+        best = n;
+      }
+    }
+    return best;
+  }
+
+  HexCoord? _nearestEnemyTarget(String minionTeamId, HexCoord from) {
+    final candidates = <(int dist, HexCoord pos)>[];
+    for (final av in state.avatars) {
+      if (!av.isAlive || av.teamId == minionTeamId) continue;
+      candidates.add((hexDistance(from, av.position), av.position));
+    }
+    if (candidates.isEmpty) return null;
+    candidates.sort((a, b) => a.$1.compareTo(b.$1));
+    return candidates.first.$2;
   }
 
   // ── Phase 5b: Summons act ─────────────────────────────────────────────────

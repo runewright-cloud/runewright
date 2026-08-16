@@ -150,7 +150,7 @@ import '../models/hex_battlefield.dart' show hexDistance, hexNeighbors;
 import '../models/minion.dart';
 import '../models/status_effect_ids.dart';
 import '../models/terrain.dart'
-    show ImpassableTile, MobileCloud, CloudObject, tileBlocksMovement;
+    show ImpassableTile, CloudObject, tileBlocksMovement;
 import '../models/wild_magic_effect.dart';
 import '../models/wizard_avatar.dart';
 import '../networking/battle_session.dart';
@@ -2269,7 +2269,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     // too) now runs as Phase 5b, after Action resolution — see this file's
     // header comment for why.
     onPhase?.call(TurnPhase.summons);
-    _moveClouds();
+    _resolution.moveClouds();
 
     // ── Phase 4b: Melee commit-reveal ──────────────────────────────────────
     // Post-movement, post-cloud-move: final positions are known for
@@ -2684,29 +2684,12 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     );
   }
 
-  /// Air-flavor Clouds (Water-Fire) auto-seek: move 1 tile toward the nearest
-  /// enemy of the cloud owner's team during the Summons step each turn.
-  void _moveClouds() {
-    for (final cloud in state.clouds) {
-      _moveCloud(cloud);
-    }
-  }
+  // Cloud drift moved behind the deterministic seam — see
+  // [DeterministicResolution.moveClouds]. This forwarder stays because
+  // [_resolveActions] steps a single newly-born cloud from inside Phase 5.
 
-  /// Single-cloud step used both by [_moveClouds] (every Mobile Cloud, each
-  /// turn's Phase 4) and, once, by [_resolveActions] right after a spell
-  /// creates a new cloud (Phase 5) — otherwise a cloud born this turn would
-  /// sit dead-still until *next* turn's Phase 4, since Phase 4 already ran
-  /// before this turn's spells resolved. Fully deterministic (distance-only,
-  /// no RNG), so it's safe to call outside the phase-seeded RNG flow.
-  void _moveCloud(CloudObject cloud) {
-    if (cloud.kind is! MobileCloud) return;
-    final ownerTeamId = _avatarById(cloud.ownerId)?.teamId;
-    if (ownerTeamId == null) return;
-    final nearestEnemy = _nearestEnemyTarget(ownerTeamId, cloud.position);
-    if (nearestEnemy == null) return;
-    final step = _greedyStep(cloud.position, nearestEnemy);
-    if (step != null) cloud.position = step;
-  }
+  /// See [DeterministicResolution.moveCloud].
+  void _moveCloud(CloudObject cloud) => _resolution.moveCloud(cloud);
 
   // ── Personality AI (design doc "Personalities") ───────────────────────────
   //
@@ -6201,24 +6184,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       ) <=
       _localAvatar().mana;
 
-  // ── Greedy pathfinding helpers ─────────────────────────────────────────────
-
-  /// Move one step from [from] toward [to], avoiding impassable tiles.
-  /// Returns null if no valid step found.
-  HexCoord? _greedyStep(HexCoord from, HexCoord to) {
-    HexCoord? best;
-    var bestDist = hexDistance(from, to);
-    for (final n in _neighbors(from)) {
-      if (tileBlocksMovement(state.tileEffects[n])) continue;
-      final d = hexDistance(n, to);
-      if (d < bestDist) {
-        bestDist = d;
-        best = n;
-      }
-    }
-    return best;
-  }
-
   // ── Game state helpers ────────────────────────────────────────────────────
 
   WizardAvatar _localAvatar() => state.avatars.firstWhere(
@@ -6239,17 +6204,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
   List<Minion> _minionsAt(HexCoord hex) =>
       state.minions.where((m) => m.isAlive && m.position == hex).toList();
-
-  HexCoord? _nearestEnemyTarget(String minionTeamId, HexCoord from) {
-    final candidates = <(int dist, HexCoord pos)>[];
-    for (final av in state.avatars) {
-      if (!av.isAlive || av.teamId == minionTeamId) continue;
-      candidates.add((hexDistance(from, av.position), av.position));
-    }
-    if (candidates.isEmpty) return null;
-    candidates.sort((a, b) => a.$1.compareTo(b.$1));
-    return candidates.first.$2;
-  }
 
   static bool _isAdjacent(HexCoord a, HexCoord b) =>
       DeterministicResolution.isAdjacent(a, b);
