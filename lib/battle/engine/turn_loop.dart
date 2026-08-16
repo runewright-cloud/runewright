@@ -154,9 +154,6 @@ import '../models/status_effect_ids.dart';
 import '../models/terrain.dart'
     show
         ImpassableTile,
-        ToxicCloud,
-        DustCloud,
-        WaterCloud,
         FloorIsLava,
         MobileCloud,
         CloudObject,
@@ -171,12 +168,12 @@ import '../../identity/identity.dart';
 import '../../protocol/match_session.dart' show ProofVerifier;
 import 'book_commitment.dart';
 import 'commit_reveal.dart';
+import 'deterministic_resolution.dart';
 import 'draw_schedule.dart';
 import 'effect_applicator.dart';
 import 'hash_rng.dart';
 import 'effect_resolver.dart';
 import 'line_of_sight.dart';
-import 'terrain_ops.dart';
 import 'proof_intake.dart';
 import 'spell_draw.dart';
 import 'tile_entry_resolver.dart';
@@ -841,6 +838,20 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     this.allowProoflessSpells = false,
     this.commitNonceSource,
   });
+
+  /// The deterministic half of the engine: rules that are a pure function of
+  /// [state] plus a seeded RNG, with no session, no suspension points and no
+  /// notion of which device is running them.
+  ///
+  /// The seam the architecture review §5 asks for. `TurnLoop` keeps the
+  /// network sequencing and the trust validation; everything on the far side
+  /// of this field is independently callable without a `BattleSession` at all.
+  /// It is deliberately narrow for now — end of turn and the helpers that
+  /// phase shares — and is meant to grow as the suspending phases are untangled.
+  ///
+  /// Shares [state] by reference rather than owning a copy: both halves mutate
+  /// one battle, and a second copy would be a desync surface, not a boundary.
+  late final DeterministicResolution _resolution = DeterministicResolution(state);
 
   /// Test seam: overrides the source of commit-reveal salts.
   ///
@@ -2613,7 +2624,15 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     final eotRng = HashRng(
       _phaseSeed(entropy, matchId, state.turnNumber, 0x03),
     );
-    _endOfTurn(preMovPos, eotRng);
+    // The one phase with no network exchange and no host callback inside it,
+    // so it lives behind the deterministic-resolution seam rather than in this
+    // class. See deterministic_resolution.dart for what the seam is for.
+    _resolution.resolveEndOfTurn(
+      preMovPos: preMovPos,
+      rng: eotRng,
+      conveyorChainEvents: lastConveyorChainEvents,
+      wildMagicEvents: lastWildMagicEvents,
+    );
 
     // ── Phase 6.5: Second free-move window ────────────────────────────────
     // Phase 6 deals damage too — fire-barrier aura, FloorIsLava, conveyor
@@ -3134,19 +3153,8 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     return best;
   }
 
-  bool _footprintValid(HexCoord center, Minion creature) {
-    final flying = creature.abilities.contains(SummonAbility.flying);
-    for (final t in footprintFor(center, creature.abilities)) {
-      if (!state.battlefield.isInBounds(t)) return false;
-      if (!flying && tileBlocksMovement(state.tileEffects[t])) return false;
-      // Bodies are exclusive (see [tileOccupied]). Flying gets no exemption
-      // here the way a wizard's walk does: a creature's AI moves one tile at a
-      // time and each of those tiles is somewhere it comes to rest, so there
-      // is no "passing through" to distinguish from landing.
-      if (tileOccupied(state, t, ignoreMinionId: creature.id)) return false;
-    }
-    return true;
-  }
+  bool _footprintValid(HexCoord center, Minion creature) =>
+      _resolution.footprintValid(center, creature);
 
   /// The hex direction (of the 6) that points most directly from [from]
   /// toward [to]. Null if [from] == [to].
@@ -3256,19 +3264,8 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     return null;
   }
 
-  /// Removes dead minions, first giving Morphic (WWWW) ones a chance to
-  /// reform (design doc: "reform into new creature with half the number of
-  /// elements... at random"). Must run after every point minions can die so
-  /// reforms happen on both battle clients identically (uses [rng]).
-  void _reapDead(HashRng rng) {
-    final dead = state.minions.where((m) => !m.isAlive).toList();
-    if (dead.isEmpty) return;
-    state.minions.removeWhere((m) => !m.isAlive);
-    var seq = 0;
-    for (final m in dead) {
-      state.minions.addAll(m.onDeath(rng.nextInt, '${m.id}_reform${seq++}'));
-    }
-  }
+  /// See [DeterministicResolution.reapDead].
+  void _reapDead(HashRng rng) => _resolution.reapDead(rng);
 
   // ── Phase 3 helpers: movement ─────────────────────────────────────────────
 
@@ -4119,21 +4116,9 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     }
   }
 
-  /// Apply mana gain to [av] and fire the manaMirror trigger on any active
-  /// Reflections links where [av] is the link's target.
-  void _applyManaGain(WizardAvatar av, int amount) {
-    if (amount <= 0) return;
-    av.mana = (av.mana + amount).clamp(0, av.maxMana);
-    for (final link in state.reflectionLinks) {
-      if (link.targetId != av.playerId) continue;
-      if (!link.activeTriggers.contains(ReflectionTrigger.manaMirror)) continue;
-      final mirror = state.avatars
-          .where((a) => a.playerId == link.casterId && a.isAlive)
-          .firstOrNull;
-      if (mirror == null) continue;
-      mirror.mana = (mirror.mana + amount).clamp(0, mirror.maxMana);
-    }
-  }
+  /// See [DeterministicResolution.applyManaGain].
+  void _applyManaGain(WizardAvatar av, int amount) =>
+      _resolution.applyManaGain(av, amount);
 
   static Uint8List _buildDelayedRevealPayload(
     List<DelayedSpellReveal> reveals,
@@ -4763,36 +4748,10 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     );
   }
 
-  /// Phoenix (wild magic, row 3 Fire): a player in the phoenix set who would
-  /// die instead respawns at 1 HP, consuming their one-shot save.
-  ///
-  /// Called everywhere avatar HP can reach zero — beside every [_reapDead]
-  /// (which only reaps minions) and immediately before the win check, so a
-  /// save can never be missed by the match ending first.
-  void _applyPhoenixSaves() {
-    if (state.wildMagic.phoenixPlayerIds.isEmpty) return;
-    // Sorted so the (rare) case of two simultaneous saves consumes the set in
-    // one order on both devices.
-    final saved = <String>[];
-    for (final av in List<WizardAvatar>.from(state.avatars)
-      ..sort((a, b) => a.playerId.compareTo(b.playerId))) {
-      if (av.isAlive) continue;
-      if (!state.wildMagic.phoenixPlayerIds.remove(av.playerId)) continue;
-      av.hp = 1;
-      saved.add(av.playerId);
-    }
-    for (final id in saved) {
-      lastWildMagicEvents.add(
-        WildMagicEvent(
-          effect: WildMagicEffectKind.phoenix,
-          casterId: id,
-          bracketSteps: 0,
-          affectedPlayerIds: [id],
-          note: 'risen from the ashes at 1 HP',
-        ),
-      );
-    }
-  }
+  /// See [DeterministicResolution.applyPhoenixSaves]. The event sink is this
+  /// turn's `lastWildMagicEvents`, which the resolver appends to in place.
+  void _applyPhoenixSaves() =>
+      _resolution.applyPhoenixSaves(lastWildMagicEvents);
 
   /// Statuesque (wild magic, row 3 Earth): the latch breaks the moment a
   /// player *chooses* to move or cast. Involuntary movement (knockback,
@@ -5287,297 +5246,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     }
     final cost = counterCharmManaCost(hit.charm.charmTrajectory ?? const []);
     owner.mana = (owner.mana - cost).clamp(0, owner.maxMana);
-  }
-
-  // ── Phase 5: End of turn ──────────────────────────────────────────────────
-
-  void _endOfTurn(
-    Map<String, HexCoord> preMovPos,
-    HashRng rng,
-  ) {
-    // Fire barrier aura: deal 1 damage to all adjacent entities per fire-barrier holder.
-    for (final av in state.avatars) {
-      final fb = av.barriers[SpellAffinity.fire];
-      if (fb == null || !fb.isAlive || !fb.fireAura) continue;
-      for (final other in state.avatars) {
-        if (other.playerId == av.playerId) continue;
-        if (_isAdjacent(av.position, other.position)) other.absorbDamage(1);
-      }
-      for (final m in state.minions) {
-        if (_isAdjacent(av.position, m.position)) m.takeDamage(1);
-      }
-    }
-
-    // FloorIsLava: damage entities standing on lava tiles (spirits exempt).
-    for (final entry in state.tileEffects.entries) {
-      if (entry.value is! FloorIsLava) continue;
-      final lava = entry.value as FloorIsLava;
-      final tile = entry.key;
-      for (final av in state.avatars.where(
-        (a) => a.isAlive && a.position == tile,
-      )) {
-        av.absorbDamage(lava.damage);
-      }
-      for (final m in state.minions.where(
-        (m) => m.isAlive && m.occupiedTiles.contains(tile),
-      )) {
-        if (m.abilities.contains(SummonAbility.flying)) continue;
-        m.takeDamage(lava.damage);
-      }
-    }
-
-    // ConveyorTile: entities still standing on a conveyor at end of turn get
-    // pushed again. Without this, a conveyor summoned directly under someone
-    // (they never "entered" it -- it just appeared under their feet) or one
-    // whose earlier push failed mid-cascade would sit there doing nothing.
-    // applyEntryLava is irrelevant here (the tile they're already on is by
-    // construction a ConveyorTile, never lava -- one effect per tile).
-    for (final av in state.avatars) {
-      if (!av.isAlive) continue;
-      if (state.tileEffects[av.position] is! ConveyorTile) continue;
-      final outcome = resolveTileEntry(
-        state: state,
-        rng: rng,
-        enteredTile: av.position,
-        flying: false,
-        currentHp: av.hp,
-        applyEntryLava: false,
-      );
-      av.position = outcome.finalPosition;
-      state.battlefield.occupancy[av.playerId] = outcome.finalPosition;
-      if (outcome.totalDamage > 0) av.absorbDamage(outcome.totalDamage);
-      if (outcome.animationPath.length > 1) {
-        lastConveyorChainEvents.add(
-          ConveyorChainEvent(
-            entityId: av.playerId,
-            path: outcome.animationPath,
-            damage: outcome.totalDamage,
-            killed: outcome.killed,
-          ),
-        );
-      }
-    }
-    for (final m in state.minions) {
-      if (!m.isAlive) continue;
-      if (m.abilities.contains(SummonAbility.flying)) continue;
-      if (state.tileEffects[m.position] is! ConveyorTile) continue;
-      final outcome = resolveTileEntry(
-        state: state,
-        rng: rng,
-        enteredTile: m.position,
-        flying: false,
-        currentHp: m.hp,
-        applyEntryLava: false,
-        footprintValid: (t) => _footprintValid(t, m),
-      );
-      m.position = outcome.finalPosition;
-      if (outcome.totalDamage > 0) m.takeDamage(outcome.totalDamage);
-      if (outcome.animationPath.length > 1) {
-        lastConveyorChainEvents.add(
-          ConveyorChainEvent(
-            entityId: m.id,
-            path: outcome.animationPath,
-            damage: outcome.totalDamage,
-            killed: outcome.killed,
-          ),
-        );
-      }
-    }
-
-    // Cloud effects. Base effect (all flavors): entities within cloud.radius
-    // may only target/be targeted by adjacent entities -- enforced live by
-    // position at cast-target-selection time (battle_screen.dart), not here.
-    for (final cloud in state.clouds) {
-      switch (cloud.kind) {
-        case ToxicCloud(:final damagePerTurn):
-          for (final av in state.avatars.where(
-            (a) =>
-                a.isAlive &&
-                hexDistance(a.position, cloud.position) <= cloud.radius,
-          )) {
-            av.absorbDamage(damagePerTurn);
-          }
-          for (final m in state.minions.where(
-            (m) =>
-                m.isAlive &&
-                hexDistance(m.position, cloud.position) <= cloud.radius,
-          )) {
-            m.takeDamage(damagePerTurn);
-          }
-
-        case DustCloud(:final restrictionTurnsAfterLeaving):
-          // The adjacent-only targeting restriction lingers on avatars who
-          // LEFT this cloud's radius this turn -- except an Earthen Scrying
-          // Pool bearer, who is immune to it (the status is skipped rather
-          // than added-and-ignored so the UI chip stays honest).
-          for (final av in state.avatars) {
-            if (av.activeStatusEffects.any(
-              (fx) =>
-                  !fx.isDormant &&
-                  fx.effectTypeId == StatusEffectId.scryingSight,
-            )) {
-              continue;
-            }
-            final wasIn =
-                hexDistance(
-                  preMovPos[av.playerId] ?? av.position,
-                  cloud.position,
-                ) <=
-                cloud.radius;
-            final isOut =
-                hexDistance(av.position, cloud.position) > cloud.radius;
-            if (wasIn && isOut) {
-              _addStatus(
-                av,
-                StatusEffectId.cloudBoundTargeting,
-                {},
-                restrictionTurnsAfterLeaving,
-              );
-            }
-          }
-
-        case WaterCloud():
-          break; // no kind-specific tick behaviour -- just a bigger radius
-
-        case MobileCloud():
-          break; // movement handled by _moveClouds during the Summons step
-      }
-    }
-
-    // Mana regeneration (gems + Water barrier bonus). There is no innate
-    // regen: a gemless wizard regains mana only by meditating.
-    for (final av in state.avatars) {
-      if (!av.isAlive) continue;
-      final regen =
-          av.manaRegenFor(state.config) + av.barrierManaRegenFor(av.maxMana);
-      _applyManaGain(av, regen);
-    }
-
-    // Terrain-barrier riders (WALL_LOS_PLAN.md §2.6): a Firey barrier turns
-    // its tile into a burning wall that scorches every adjacent tile, and a
-    // Watery one pays mana to whoever is standing on the tile — live on lava,
-    // slow, and conveyor tiles, inert on a wall nobody can stand in. Runs
-    // alongside the avatar mana regen above so both use _applyManaGain and
-    // the same clamping.
-    tickTerrainBarrierAuras(state, rng, _applyManaGain);
-
-    // Haymaker DoT tick: deal damage = remainingTurns per active haymakerDot.
-    for (final av in state.avatars) {
-      final dot = av.activeStatusEffects
-          .where((fx) => fx.effectTypeId == StatusEffectId.haymakerDot)
-          .firstOrNull;
-      if (dot != null && !dot.isDormant) {
-        av.absorbDamage(dot.remainingTurns); // damage = turns remaining
-      }
-    }
-
-    // ── Wild magic, end of turn ─────────────────────────────────────────
-    //
-    // Statuesque (row 3, Earth). A6: the latch begins at the END of the turn
-    // it fires, so the triggering cast cannot break its own effect — promote
-    // the pending set here, then refill everyone still standing. Sorted, since
-    // both sets are Sets and their iteration order is insertion order.
-    if (state.wildMagic.pendingStatuesquePlayerIds.isNotEmpty) {
-      final promoted = state.wildMagic.pendingStatuesquePlayerIds.toList()..sort();
-      state.wildMagic.statuesquePlayerIds.addAll(promoted);
-      state.wildMagic.pendingStatuesquePlayerIds.clear();
-    }
-    for (final id in state.wildMagic.statuesquePlayerIds.toList()..sort()) {
-      final av = _avatarById(id);
-      if (av == null || !av.isAlive) continue;
-      av.hp = state.config.playerHp;
-      _applyManaGain(av, av.maxMana - av.mana);
-    }
-    // A dead player can never break the latch by moving or casting, so drop
-    // them rather than leaving a permanent entry in the state hash.
-    state.wildMagic.statuesquePlayerIds.removeWhere(
-      (id) => !(_avatarById(id)?.isAlive ?? false),
-    );
-
-    // Expiring terrain (Mountains, Chasm, Glacier). expiringTiles maps a coord
-    // to the LAST turn its effect is active, so sweep once that turn ends.
-    // Sorted so the two devices remove in one order (the map is keyed by
-    // coord, so the result is order-independent — but the habit is cheap and
-    // the next expiring effect may not be).
-    if (state.expiringTiles.isNotEmpty) {
-      final expired = state.expiringTiles.entries
-          .where((e) => e.value <= state.turnNumber)
-          .map((e) => e.key)
-          .toList()
-        ..sort((a, b) {
-          final qc = a.q.compareTo(b.q);
-          return qc != 0 ? qc : a.r.compareTo(b.r);
-        });
-      for (final tile in expired) {
-        state.expiringTiles.remove(tile);
-        // removeTerrain, not tileEffects.remove: a Mountains wall carries an
-        // HP entry and possibly barriers, and leaving either behind would let
-        // the next tile on that coord inherit ghosts (WALL_LOS_PLAN.md §5.0).
-        state.removeTerrain(tile);
-      }
-    }
-
-    // Tick all status effects, barriers, clouds, and illusions.
-    for (final av in state.avatars) {
-      final freeMove = av.tickBarriers();
-      if (freeMove) {
-        // Air barrier collapsed — grant free extra movement.
-        // TODO(ui): signal free move grant to the UI so the player can use it.
-      }
-      av.tickStatusEffects();
-    }
-    // Terrain barriers age out the same way avatar barriers do; an Airy one
-    // that runs out of TIME still collapses, and §2.6's knockback says "on
-    // collapse", not "on burst".
-    tickTerrainBarriers(state, rng);
-    state.tickClouds();
-
-    // Rod of Wind's movement passive and the bookmark burn's hand redraw
-    // used to resolve here (ARTIFACT_SYSTEM_PLAN.md §§2.7-2.8's original
-    // "Phase 6, effective next turn" timing). Amended 2026-07-31: both now
-    // resolve at Phase 0, via [beginArtifactEntropy] / [_applyArtifactActivation],
-    // so they're usable the same turn they're decided. See those for why.
-
-    _reapDead(rng);
-    _applyPhoenixSaves();
-
-    // Expire mystery spells whose reveal window has passed (castTurn + 3).
-    // Mana is already spent; caster chose not to reveal.
-    state.pendingDelayedSpells.removeWhere(
-      (p) => p.maxTurn <= state.turnNumber,
-    );
-
-    // Tick Reflections links; remove expired or dead-participant links.
-    final alive = state.avatars
-        .where((a) => a.isAlive)
-        .map((a) => a.playerId)
-        .toSet();
-    for (final l in state.reflectionLinks) {
-      l.remainingTurns--;
-    }
-    state.reflectionLinks.removeWhere(
-      (l) =>
-          l.remainingTurns <= 0 ||
-          !alive.contains(l.casterId) ||
-          !alive.contains(l.targetId),
-    );
-
-    // Tick Divination links (Air-Water); same expiry rule as Reflections.
-    for (final l in state.divinationLinks) {
-      l.remainingTurns--;
-    }
-    state.divinationLinks.removeWhere(
-      (l) =>
-          l.remainingTurns <= 0 ||
-          !alive.contains(l.casterId) ||
-          !alive.contains(l.targetId),
-    );
-
-    // Backstop sweep: end-of-turn damage, conveyor pushes and cloud drift all
-    // rearrange the field after Phase 5.5's window has closed. Runs after the
-    // status tick above, so a scrying that expired this turn no longer
-    // dispels anything.
-    _dispelIllusionsNearScryers();
   }
 
   // ── Entropy + state hash ──────────────────────────────────────────────────
@@ -7337,8 +7005,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         throw StateError('local player $localPlayerId not found in state'),
   );
 
-  WizardAvatar? _avatarById(String id) =>
-      state.avatars.where((av) => av.playerId == id).firstOrNull;
+  WizardAvatar? _avatarById(String id) => _resolution.avatarById(id);
 
   String? _peerId() => state.avatars
       .where((av) => av.playerId != localPlayerId)
@@ -7362,7 +7029,8 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     return candidates.first.$2;
   }
 
-  static bool _isAdjacent(HexCoord a, HexCoord b) => hexDistance(a, b) == 1;
+  static bool _isAdjacent(HexCoord a, HexCoord b) =>
+      DeterministicResolution.isAdjacent(a, b);
 
   /// True if [caster] casting at [targetHex] is subject to a cloud's
   /// adjacent-only targeting restriction: either [caster] is standing inside
@@ -7654,9 +7322,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     String typeId,
     Map<String, int> mods,
     int turns,
-  ) {
-    StatusEffect.applyTo(av.activeStatusEffects, typeId, mods, turns);
-  }
+  ) => _resolution.addStatus(av, typeId, mods, turns);
 
   // ── Formula helpers ───────────────────────────────────────────────────────
 
