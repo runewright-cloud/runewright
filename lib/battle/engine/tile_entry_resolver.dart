@@ -274,7 +274,7 @@ class TileEntryPrediction {
   final bool enteredIndeterminateLoop;
 }
 
-/// Client-side prediction of [DeterministicResolution.walkAvatar]'s real walk,
+/// Client-side prediction of DeterministicResolution's avatar walk,
 /// for
 /// interactive move-path planning. Mirrors the same budget/terrain rules
 /// (SlowTile cost, ImpassableTile blocking, ConveyorTile pushes -- via

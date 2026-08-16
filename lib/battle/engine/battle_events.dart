@@ -36,7 +36,7 @@ class AvatarMoveEvent {
   /// (so `path.first` is where the token starts and `path.last` is where it
   /// ends). Length 1 means "did not move" — no animation needed.
   ///
-  /// This is [DeterministicResolution.walkAvatar]'s return value verbatim, so
+  /// This is DeterministicResolution's avatar walk return value verbatim, so
   /// it includes free displacement the walk picked up along the way (conveyor
   /// pushes, ice slides): the token follows the real route, not the declared
   /// one.

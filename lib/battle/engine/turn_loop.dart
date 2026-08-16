@@ -149,8 +149,7 @@ import '../models/effect_descriptor.dart'; // exports SpellAffinity, spellAffini
 import '../models/hex_battlefield.dart' show hexDistance, hexNeighbors;
 import '../models/minion.dart';
 import '../models/status_effect_ids.dart';
-import '../models/terrain.dart'
-    show ImpassableTile, CloudObject, tileBlocksMovement;
+import '../models/terrain.dart' show CloudObject, tileBlocksMovement;
 import '../models/wild_magic_effect.dart';
 import '../models/wizard_avatar.dart';
 import '../networking/battle_session.dart';
@@ -180,6 +179,12 @@ import '../../sorcerer/vocal_slot.dart';
 // Re-exported so every existing `import '.../turn_loop.dart'` naming them
 // keeps compiling.
 export 'battle_events.dart';
+
+// FreeMoveGrant (and the Boost price constant it is quoted in) moved to the
+// deterministic seam alongside the operations that derive them. Re-exported so
+// every existing `import '.../turn_loop.dart'` naming them keeps compiling —
+// BattleScreen holds a TurnLoop and prices its free-move preview off this.
+export 'deterministic_resolution.dart' show FreeMoveGrant, kBoostManaPerTile;
 
 // ── Turn input / action types ─────────────────────────────────────────────────
 
@@ -473,18 +478,6 @@ const _kRevealNonceBytes = 16;
 // cannot diverge between the local and verifier paths.
 const _kMaxMana = 9999;
 
-/// Mana charged per chargeable tile-unit of a Watery Boost run, before the
-/// `n(n+1)/2` triangular multiplier (design v3.0 §Effect Table, Air-Air).
-/// One tile costs a whole innate mana pool ([MatchConfig.innateManaPool] is
-/// 100) — the effect is meant to be an expensive escape, not a commute.
-const kBoostManaPerTile = 100;
-
-/// Hard ceiling on chargeable Boost tiles, independent of how deep the
-/// wizard's pockets are. Triangular cost makes 5 paid tiles cost 1500 mana /
-/// 15 HP already; the cap exists so [TurnLoop.freeMoveGrantFor]'s search
-/// terminates in bounded time no matter what a future mana pool looks like.
-const _kMaxBoostPaidTiles = 8;
-
 /// Mana restored by a single Meditate choice (main phase or move phase).
 /// Taking both in the same turn grants 2 × this amount — see
 /// [TurnInput.meditateInMove] and [MeditateAction].
@@ -525,53 +518,6 @@ typedef MeleeTargetPicker =
     Future<HexCoord?> Function(List<HexCoord> candidates);
 
 Future<HexCoord?> _defaultNoMelee(List<HexCoord> candidates) async => null;
-
-/// What the post-resolution free-move window is offering one wizard this turn:
-/// an Airy Barrier's burst step, a Boost's paid run, or both at once.
-///
-/// Derived from state by [TurnLoop.freeMoveGrantFor] on *both* devices — never
-/// sent over the wire. The wire carries only the path the player chose, and the
-/// receiver re-derives this grant to price and validate it (same trust-boundary
-/// rule as `_certifiedManaCost`: a peer's claim about what it may do and what
-/// that costs is never taken at face value).
-class FreeMoveGrant {
-  const FreeMoveGrant({
-    required this.burstStep,
-    required this.boostResource,
-    required this.boostFreeTiles,
-    required this.maxTiles,
-  });
-
-  static const none = FreeMoveGrant(
-    burstStep: false,
-    boostResource: null,
-    boostFreeTiles: 0,
-    maxTiles: 0,
-  );
-
-  /// An Airy Barrier burst this turn: one adjacent step, free
-  /// (see [WizardAvatar.pendingFreeMoveBurst]).
-  final bool burstStep;
-
-  /// A Boost resolved this turn ([WizardAvatar.pendingBoostMove]):
-  /// [SpellAffinity.fire] charges HP, [SpellAffinity.water] charges mana.
-  /// Null when no boost is pending.
-  final SpellAffinity? boostResource;
-
-  /// Boost tiles that cost nothing — 0 base, 1 under Potency. Stacks *after*
-  /// [burstStep]'s free step.
-  final int boostFreeTiles;
-
-  /// Total movement budget on offer, already capped by what the wizard can
-  /// actually pay for (see [TurnLoop.boostMoveCost]). 0 means nothing to offer
-  /// and no prompt is shown.
-  final int maxTiles;
-
-  bool get isEmpty => maxTiles <= 0;
-
-  /// Steps that cost nothing: the burst step plus the boost's free tiles.
-  int get freeTiles => (burstStep ? 1 : 0) + (boostResource == null ? 0 : boostFreeTiles);
-}
 
 /// Asks the local UI how far to move in the post-resolution free-move window,
 /// given what [grant] is offering. Returns the declared path (step-adjacent
@@ -2711,32 +2657,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
   /// See [DeterministicResolution.reapDead].
   void _reapDead(HashRng rng) => _resolution.reapDead(rng);
-
-  // ── Phase 3 helpers: movement ─────────────────────────────────────────────
-  //
-  // Avatar movement itself moved behind the deterministic seam — see
-  // [DeterministicResolution.resolveAvatarMovement] and the Phase 3 section of
-  // deterministic_resolution.dart. This forwarder stays because the free-move
-  // window (Phase 5.5/6.5) walks one avatar at a time through the same
-  // terrain-aware walker, with this class's conveyor-event list as its sink.
-
-  /// See [DeterministicResolution.walkAvatar].
-  ({List<HexCoord> path, int spent}) _walkAvatar(
-    WizardAvatar av,
-    HexCoord origin,
-    List<HexCoord> declaredPath,
-    int budget,
-    HashRng rng, {
-    bool Function(HexCoord)? blocked,
-  }) => _resolution.walkAvatar(
-    av,
-    origin,
-    declaredPath,
-    budget,
-    rng,
-    conveyorChainEvents: lastConveyorChainEvents,
-    blocked: blocked,
-  );
 
   // ── Phase 4: Action resolution ────────────────────────────────────────────
 
@@ -6287,137 +6207,44 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     return true;
   }
 
-  /// [_freeMoveCandidates] for the avatar with [playerId] — the legal first
-  /// steps of a free-move run, for BattleScreen's prompt highlight. Empty for
-  /// an unknown or dead player.
-  List<HexCoord> freeMoveCandidatesFor(String playerId) {
-    final av = _avatarById(playerId);
-    return av == null ? const [] : _freeMoveCandidates(av);
-  }
+  // ── Phase 5.5 / 6.5 helpers: the free-move window ─────────────────────────
+  //
+  // The rules of the window — what a wizard is offered, where it may step,
+  // what a Boost run costs, and what happens when it walks — live behind the
+  // deterministic seam (deterministic_resolution.dart, "Phase 5.5 / 6.5"),
+  // because none of them needs a session, an await, or a notion of which
+  // device this is. What stays here is the protocol around them: the prompt,
+  // the commit-reveal exchange, the reveal verification, the order the two
+  // runs are applied in, and the end-of-round clearing.
+  //
+  // The forwarders below are kept for two reasons. BattleScreen holds a
+  // [TurnLoop], not a resolution, and needs the *identical* grant and the
+  // *identical* price the engine will charge, so it must reach the same code
+  // (B-1/B-8 — one price, one code path). And [_applyFreeMove] is where this
+  // turn's shared conveyor-event list is injected as the walk's sink, exactly
+  // as the movement phase does.
 
-  /// Adjacent tiles a post-resolution free-move run may step onto: in
-  /// bounds, not [ImpassableTile], and unoccupied by any living avatar or
-  /// minion. Mirrors the footprint check in [_findCreatureSpawnTile].
-  List<HexCoord> _freeMoveCandidates(WizardAvatar actor) {
-    if (!actor.isAlive) return const [];
-    final candidates = <HexCoord>[];
-    for (final tile in hexNeighbors(actor.position)) {
-      if (!state.battlefield.isInBounds(tile)) continue;
-      if (tileBlocksMovement(state.tileEffects[tile])) continue;
-      if (tileOccupied(state, tile, ignoreAvatarId: actor.playerId)) continue;
-      candidates.add(tile);
-    }
-    return candidates;
-  }
+  /// See [DeterministicResolution.freeMoveCandidatesFor].
+  List<HexCoord> freeMoveCandidatesFor(String playerId) =>
+      _resolution.freeMoveCandidatesFor(playerId);
 
-  /// Price of a Boost run that spends [paidTiles] chargeable tiles (i.e. tiles
-  /// beyond [FreeMoveGrant.freeTiles]), in the units of [resource]:
-  /// `n(n+1)/2` HP for Fire, `n(n+1)/2 × 100` mana for Water (design v3.0
-  /// §Effect Table, Air-Air).
-  ///
-  /// Static and total, so the engine's charge and the UI's preview are the
-  /// same arithmetic in the same order — the `_certifiedManaCost` lesson
-  /// (B-1/B-8): one price, one code path, never two that agree by inspection.
-  static int boostMoveCost(SpellAffinity resource, int paidTiles) {
-    if (paidTiles <= 0) return 0;
-    final triangular = paidTiles * (paidTiles + 1) ~/ 2;
-    return resource == SpellAffinity.water
-        ? triangular * kBoostManaPerTile
-        : triangular;
-  }
+  /// See [DeterministicResolution.boostMoveCost].
+  static int boostMoveCost(SpellAffinity resource, int paidTiles) =>
+      DeterministicResolution.boostMoveCost(resource, paidTiles);
 
-  /// What the free-move window is offering [av] right now, priced against the
-  /// resource they actually hold.
-  ///
-  /// Both devices call this on the same state and must agree — it reads only
-  /// [WizardAvatar.pendingFreeMoveBurst], [WizardAvatar.pendingBoostMove],
-  /// current HP/mana, and the board. Public because BattleScreen needs the
-  /// identical grant to draw the prompt and the cost preview.
-  ///
-  /// A Fire boost can never be taken below 1 HP: paying your last life for a
-  /// step is a suicide button, not a decision, and the design calls this a
-  /// *cost* rather than damage.
-  FreeMoveGrant freeMoveGrantFor(WizardAvatar av) {
-    if (!av.isAlive) return FreeMoveGrant.none;
-    final burst = av.pendingFreeMoveBurst;
-    final resource = av.pendingBoostMove;
-    if (!burst && resource == null) return FreeMoveGrant.none;
+  /// See [DeterministicResolution.freeMoveGrantFor].
+  FreeMoveGrant freeMoveGrantFor(WizardAvatar av) =>
+      _resolution.freeMoveGrantFor(av);
 
-    final freeTiles =
-        (burst ? 1 : 0) + (resource == null ? 0 : av.pendingBoostFreeTiles);
-    var maxTiles = freeTiles;
-    if (resource != null) {
-      final budget = resource == SpellAffinity.water ? av.mana : av.hp - 1;
-      // Triangular growth, so this terminates fast (4 paid tiles already cost
-      // 1000 mana / 10 HP); the guard is belt-and-braces against a future
-      // resource pool large enough to matter.
-      var paid = 1;
-      while (paid <= _kMaxBoostPaidTiles &&
-          boostMoveCost(resource, paid) <= budget) {
-        maxTiles = freeTiles + paid;
-        paid++;
-      }
-    }
-    return FreeMoveGrant(
-      burstStep: burst,
-      boostResource: resource,
-      boostFreeTiles: resource == null ? 0 : av.pendingBoostFreeTiles,
-      maxTiles: maxTiles,
-    );
-  }
-
-  /// Applies a post-resolution free-move run for [av] along [declaredPath],
-  /// charging the Boost resource for whatever the walk actually consumed.
-  ///
-  /// Re-validates independently of the wire claim (defense-in-depth, matching
-  /// [_applyHaymaker]'s adjacency check): the grant is re-derived from state
-  /// via [freeMoveGrantFor] rather than taken from the peer's message, so a
-  /// peer can neither claim a burst it didn't earn nor walk further than it
-  /// can pay for. An over-long or illegal path is walked as far as it is legal
-  /// and priced on that, never rejected wholesale — the two devices run this
-  /// same truncation on the same state and land on the same answer.
-  ///
-  /// [rng] resolves the terrain the walk crosses (ice slides, closed conveyor
-  /// loops); it is phase-seeded by the caller so both devices roll alike.
-  void _applyFreeMove(WizardAvatar av, List<HexCoord> declaredPath, HashRng rng) {
-    if (declaredPath.isEmpty) return;
-    final grant = freeMoveGrantFor(av);
-    if (grant.isEmpty) return;
-
-    final origin = av.position;
-    // Unlike the movement phase, this window is sequential — one avatar walks
-    // at a time, with everyone else standing still — so live positions are the
-    // right blocker set and no snapshot is needed.
-    final walk = _walkAvatar(
-      av,
-      origin,
-      declaredPath,
-      grant.maxTiles,
-      rng,
-      blocked: (hex) => tileOccupied(state, hex, ignoreAvatarId: av.playerId),
-    );
-    if (walk.path.length <= 1) return; // blocked before the first step landed
-
-    av.position = walk.path.last;
-    state.battlefield.occupancy[av.playerId] = walk.path.last;
-    // A free-move run is voluntary movement, exactly like a declared move
-    // path — see resolveAvatarMovement's matching call.
-    _breakStatuesque(av.playerId);
-
-    final resource = grant.boostResource;
-    if (resource == null) return;
-    final paidTiles = max(0, walk.spent - grant.freeTiles);
-    final cost = boostMoveCost(resource, paidTiles);
-    if (cost <= 0) return;
-    if (resource == SpellAffinity.water) {
-      av.mana = (av.mana - cost).clamp(0, _kMaxMana).toInt();
-    } else {
-      // Deliberately NOT absorbDamage: this is a price the wizard pays, and
-      // letting a barrier soak it would make the tiles free. Clamped to leave
-      // 1 HP, matching the cap freeMoveGrantFor already applied.
-      av.hp = max(1, av.hp - cost);
-    }
-  }
+  /// See [DeterministicResolution.applyFreeMove]. The event sink is this
+  /// turn's `lastConveyorChainEvents`, which the walk appends to in place.
+  void _applyFreeMove(WizardAvatar av, List<HexCoord> declaredPath, HashRng rng) =>
+      _resolution.applyFreeMove(
+        av,
+        declaredPath,
+        rng,
+        conveyorChainEvents: lastConveyorChainEvents,
+      );
 
   /// One free-move commit-reveal round: prompt the local player if they have a
   /// grant (an Airy Barrier burst, a Boost, or both), exchange with the peer,
@@ -6434,7 +6261,8 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// while round 1 was still resolving.
   Future<void> _runFreeMoveRound(String? peerId, HashRng rng) async {
     final localGrant = freeMoveGrantFor(_localAvatar());
-    final hasSomewhereToGo = _freeMoveCandidates(_localAvatar()).isNotEmpty;
+    final hasSomewhereToGo =
+        _resolution.freeMoveCandidates(_localAvatar()).isNotEmpty;
     final localPath = (localGrant.isEmpty || !hasSomewhereToGo)
         ? null
         : await freeMoveDirectionPicker(localGrant);
