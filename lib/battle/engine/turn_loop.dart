@@ -141,8 +141,7 @@ import '../models/battle_state.dart';
 import '../models/casting_enhancements.dart';
 import '../models/certified_cast.dart';
 import '../models/component_order.dart';
-import '../models/creature_spec.dart'
-    show CreatureSpec, ResistanceTier, resistanceTierOf;
+import '../models/creature_spec.dart' show CreatureSpec;
 import '../models/pending_delayed_spell.dart';
 import '../models/reflection_link.dart';
 import '../models/divination_link.dart';
@@ -166,6 +165,7 @@ import '../models/wizard_avatar.dart';
 import '../networking/battle_session.dart';
 import '../../identity/identity.dart';
 import '../../protocol/match_session.dart' show ProofVerifier;
+import 'battle_events.dart';
 import 'book_commitment.dart';
 import 'commit_reveal.dart';
 import 'deterministic_resolution.dart';
@@ -183,6 +183,11 @@ import 'wild_magic_applicator.dart';
 import 'forced_cast.dart';
 import '../../sorcerer/incantation_recall.dart';
 import '../../sorcerer/vocal_slot.dart';
+
+// MinionMoveEvent and AttackEvent moved to battle_events.dart so the
+// deterministic seam can emit them without importing this file. Re-exported so
+// every existing `import '.../turn_loop.dart'` naming them keeps compiling.
+export 'battle_events.dart';
 
 // ── Turn input / action types ─────────────────────────────────────────────────
 
@@ -377,70 +382,8 @@ class AvatarMoveEvent {
   final HexCoord? wonContestAt;
 }
 
-/// One summon's movement this turn — the [AvatarMoveEvent] of the Summons
-/// phase, and UI-only in exactly the same way: a creature that crossed three
-/// tiles should be seen crossing them, not blink to its destination. Carries
-/// no gameplay effect; [TurnLoop] never reads these back. See
-/// [TurnLoop.lastMinionMoveEvents].
-class MinionMoveEvent {
-  const MinionMoveEvent({
-    required this.minionId,
-    required this.path,
-    this.lungeTile,
-  });
-
-  final String minionId;
-
-  /// Every tile actually visited, in order, starting with the pre-move tile —
-  /// including free displacement picked up along the way (conveyor pushes), so
-  /// the token follows the real route. Length 1 means "did not move", which is
-  /// still worth emitting when [lungeTile] is set.
-  final List<HexCoord> path;
-
-  /// The enemy tile a melee (range 0) creature stepped onto to land its blow.
-  /// It cannot stay there — bodies are exclusive — so the UI reaches the token
-  /// onto that tile and shoves it back to [path]'s last tile, which is the
-  /// whole visible form the attack takes. Null for a creature with reach, and
-  /// for one that had no movement left to strike with.
-  final HexCoord? lungeTile;
-}
-
-/// One ordinary attack that landed this turn — a wizard's haymaker or a
-/// creature's strike — so the UI can show the blow itself rather than only its
-/// consequences. UI-only bookkeeping, exactly like [MinionMoveEvent]: the
-/// damage has already been applied by the time this is emitted and [TurnLoop]
-/// never reads these back.
-///
-/// [range] is the attacker's *effective* attack range at the moment it struck
-/// (a wizard haymaker is always 1), which is what decides the form the attack
-/// takes on screen: reach 0/1 is a blow at arm's length, reach 2+ is something
-/// thrown across the intervening tiles. [affinity] is the attacker's element,
-/// null for a wizard — wizards punch, they don't have an elemental flavour.
-class AttackEvent {
-  const AttackEvent({
-    required this.from,
-    required this.to,
-    required this.range,
-    this.affinity,
-  });
-
-  /// The attacker's tile at the moment of the blow (post-movement).
-  final HexCoord from;
-
-  /// The tile struck. For a melee creature this is the tile it lunges onto —
-  /// the same tile as [MinionMoveEvent.lungeTile] — so the two animations line
-  /// up on the same target.
-  final HexCoord to;
-
-  final int range;
-
-  final SpellAffinity? affinity;
-
-  /// Whether this blow was struck within arm's reach. Reach 1 counts: the
-  /// attacker is standing next to its target either way, and only a creature
-  /// that can strike from 2+ tiles away has anything to throw.
-  bool get isMelee => range <= 1;
-}
+// MinionMoveEvent and AttackEvent live in battle_events.dart (re-exported
+// below) so the deterministic seam can emit them without importing this file.
 
 /// One spell resolved this turn, in resolution order — drives the UI's
 /// MtG-style card reveal sequence (battle_screen.dart): each entry is shown
@@ -561,17 +504,6 @@ enum TurnPhase {
 // ── Resolution group (step 4 ordering) ───────────────────────────────────────
 
 enum _ResolutionGroup { quickSpell, normalSpell, sluggishSpell }
-
-// ── Summon AI target ──────────────────────────────────────────────────────────
-
-/// One resolved AI target for a creature's turn: a position plus whichever
-/// of avatar/minion is the actual entity there.
-class _AiTarget {
-  const _AiTarget({required this.position, this.avatar, this.minion});
-  final HexCoord position;
-  final WizardAvatar? avatar;
-  final Minion? minion;
-}
 
 // ── TurnLoop ──────────────────────────────────────────────────────────────────
 
@@ -2758,23 +2690,25 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
   // ── Phase 5b: Summons act ─────────────────────────────────────────────────
 
+  /// Pure playback. The creature AI, the movement, the blows and the deaths
+  /// are all decided by [DeterministicResolution.resolveSummonActions] before
+  /// this method shows anybody anything, and the aftermath is decided by
+  /// [DeterministicResolution.resolveSummonAftermath] after. Nothing between
+  /// those two calls can influence either — the host callback in the middle
+  /// only animates an outcome that already happened.
   Future<void> _resolveSummons(HashRng rng) async {
-    // Both clients run the same deterministic AI for all minions (creation
-    // order maintained by state.minions list). A summon cast this very turn
-    // (Potent or not) starts with actedThisTurn=false, so it's included in
-    // this sweep — its first action is always this same turn, here. A
-    // Potent summon additionally got an immediate bonus action during Phase
-    // 5 (see _castSummon), so it acts a second time right here.
-    lastMinionMoveEvents = [];
-    lastMinionAttackEvents = [];
-    final living = state.minions
-        .where((m) => m.isAlive && !m.actedThisTurn)
-        .toList();
-    for (final creature in living) {
-      _creatureTurn(creature, rng);
-      creature.actedThisTurn = true;
-    }
-    state.resetMinionActions();
+    final outcome = _resolution.resolveSummonActions(
+      rng: rng,
+      conveyorChainEvents: lastConveyorChainEvents,
+    );
+    // Replaces (rather than clears-and-fills) the two UI lists, exactly as the
+    // old in-place `= []` did: whatever a Potent summon's Phase-5 bonus action
+    // appended is discarded here either way — that is a real (pre-existing,
+    // presentation-only) bug, recorded as M4.17 in docs/M4_findings.md and
+    // deliberately preserved rather than fixed inside a no-behaviour-change
+    // extraction.
+    lastMinionMoveEvents = outcome.moveEvents;
+    lastMinionAttackEvents = outcome.attackEvents;
     // Walk the tokens before anything reaps or dispels: a creature that lunged
     // in and died to a Molten Carapace should be seen making the lunge, not
     // vanish from the tile it never visibly left. Same await-the-UI contract
@@ -2786,11 +2720,10 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         List<AttackEvent>.unmodifiable(lastMinionAttackEvents),
       );
     }
-    _reapDead(rng);
-    _applyPhoenixSaves();
-    // Creature AI moves illusory clones too — one that closes on a scryer
-    // is unmade the moment it arrives.
-    _dispelIllusionsNearScryers();
+    _resolution.resolveSummonAftermath(
+      rng: rng,
+      wildMagicEvents: lastWildMagicEvents,
+    );
   }
 
   /// Air-flavor Clouds (Water-Fire) auto-seek: move 1 tile toward the nearest
@@ -2818,451 +2751,22 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   }
 
   // ── Personality AI (design doc "Personalities") ───────────────────────────
+  //
+  // The creature AI, its movement and its attacks moved behind the
+  // deterministic seam — see [DeterministicResolution.creatureTurn] and the
+  // Phase 5b section of deterministic_resolution.dart. This forwarder stays
+  // because a Potent summon acts once immediately at cast time, from inside
+  // Phase 5's [_castSummon], and that call site keeps this class's event
+  // lists as its sinks.
 
-  void _creatureTurn(Minion creature, HashRng rng) {
-    // Illusions (Water-Air, Fire flavor) clones always close in and attack
-    // rather than following their copied personality's normal positioning.
-    // Obedient creatures fall through to aggressive AI this pass — see
-    // SummonPersonality.obedient's doc comment: live manual control needs a
-    // protocol change (Summons phase can't move ahead of the B-5 entropy
-    // reveal without reopening the look-ahead hole) and is deliberately
-    // deferred.
-    final personality =
-        (creature.forceCloseToAttack ||
-            creature.personality == SummonPersonality.obedient)
-        ? SummonPersonality.aggressive
-        : creature.personality;
-
-    final target = switch (personality) {
-      SummonPersonality.tactical => _tacticalTarget(creature),
-      SummonPersonality.protective => () {
-        final owner = _avatarById(creature.ownerId);
-        final from = (owner != null && owner.isAlive)
-            ? owner.position
-            : creature.position;
-        return _nearestEnemyEntity(from, creature.teamId, rng);
-      }(),
-      SummonPersonality.aggressive ||
-      SummonPersonality.evasive ||
-      // Unreachable: reassigned to aggressive above. Listed only to keep
-      // this switch exhaustive over the full enum.
-      SummonPersonality.obedient => _nearestEnemyEntity(
-        creature.position,
-        creature.teamId,
-        rng,
-      ),
-    };
-    if (target == null) return;
-
-    final before = creature.position;
-    // Tiles actually visited, for the UI to walk the token rather than
-    // teleport it. See [MinionMoveEvent].
-    final route = <HexCoord>[before];
-    final int unspent;
-    switch (personality) {
-      case SummonPersonality.evasive:
-        unspent = _evasiveMove(creature, target.position, rng, route);
-      case SummonPersonality.protective:
-        final owner = _avatarById(creature.ownerId);
-        if (owner != null && owner.isAlive) {
-          // Interpose: aim for the tile between the owner and the threat.
-          final dir = _directionTowards(owner.position, target.position);
-          final interpose = dir == null
-              ? owner.position
-              : HexCoord(owner.position.q + dir.q, owner.position.r + dir.r);
-          unspent = _aggressiveMove(creature, interpose, rng, route);
-        } else {
-          unspent = _aggressiveMove(creature, target.position, rng, route);
-        }
-      case SummonPersonality.aggressive:
-      case SummonPersonality.tactical:
-      case SummonPersonality.obedient: // unreachable — see above
-        unspent = _aggressiveMove(creature, target.position, rng, route);
-    }
-    final movedTiles = hexDistance(before, creature.position);
-
-    final range = creature.effectiveAttackRange;
-    HexCoord? lunge;
-    if (range == 0) {
-      // A melee creature has no reach at all: to land a blow it has to stand
-      // on its target, which costs it a movement point and which it cannot
-      // keep (bodies are exclusive — see [tileOccupied]), so it is shoved
-      // straight back out onto the tile it came from. Spent its whole budget
-      // closing the distance? Then it arrives with nothing left to strike
-      // with, and waits for next turn.
-      if (creature.isAlive &&
-          unspent > 0 &&
-          creature.distanceTo(target.position) == 1) {
-        lunge = target.position;
-        _recordAttack(creature, target.position, range);
-        // The lunge step is real movement, so Charger (FAFA) counts it.
-        _creatureAttack(creature, target, rng, movedTiles: movedTiles + 1);
-      }
-    } else if (creature.distanceTo(target.position) <= range &&
-        _creatureHasLineTo(creature, target.position)) {
-      // A ranged summon used to be a bare distance test, so it would walk up
-      // to a wall and shoot straight through it (WALL_LOS_PLAN.md §1). Losing
-      // the line just costs it the shot — it has already moved this turn and
-      // will keep closing next turn.
-      _recordAttack(creature, target.position, range);
-      _creatureAttack(creature, target, rng, movedTiles: movedTiles);
-    }
-
-    if (route.length > 1 || lunge != null) {
-      lastMinionMoveEvents.add(
-        MinionMoveEvent(
-          minionId: creature.id,
-          path: List.unmodifiable(route),
-          lungeTile: lunge,
-        ),
-      );
-    }
-  }
-
-  /// Whether [creature] can actually see [to] — from ANY of its tiles, since
-  /// "its range, and the range of things affecting it, applies from any of its
-  /// tiles" (design doc, Big). Its own footprint never blocks it, which
-  /// [losBlockerTile] already handles.
-  bool _creatureHasLineTo(Minion creature, HexCoord to) => creature.occupiedTiles
-      .any((t) => losBlockerTile(state, t, to) == null);
-
-  /// Nearest living enemy of [teamId] to [from]: enemy players first, then
-  /// (if none) enemy minions — Stealthy (AWAW) ones excluded unless [from]
-  /// is already within 1 tile. Ties broken by [rng] (design doc: "Targets
-  /// that are both equally close and equal priority chosen at random").
-  ///
-  /// Targets in clear line of sight are preferred over walled-off ones at the
-  /// same priority; if every candidate is blocked the whole set stays in play,
-  /// so a creature keeps advancing on somebody rather than freezing in front
-  /// of a wall (WALL_LOS_PLAN.md §5.2).
-  _AiTarget? _nearestEnemyEntity(HexCoord from, String teamId, HashRng rng) {
-    var avatars = state.avatars
-        .where((av) => av.isAlive && av.teamId != teamId)
-        .toList();
-    final visibleAvatars = avatars
-        .where((av) => losBlockerTile(state, from, av.position) == null)
-        .toList();
-    if (visibleAvatars.isNotEmpty) avatars = visibleAvatars;
-    if (avatars.isNotEmpty) {
-      final dists = [for (final av in avatars) hexDistance(av.position, from)];
-      final bestDist = dists.reduce(min);
-      final tied = [
-        for (var i = 0; i < avatars.length; i++)
-          if (dists[i] == bestDist) avatars[i],
-      ];
-      final chosen = tied[rng.nextInt(tied.length)];
-      return _AiTarget(position: chosen.position, avatar: chosen);
-    }
-    var minions = state.minions
-        .where(
-          (m) =>
-              m.isAlive &&
-              m.teamId != teamId &&
-              (!m.abilities.contains(SummonAbility.stealthy) ||
-                  m.distanceTo(from) <= 1),
-        )
-        .toList();
-    if (minions.isEmpty) return null;
-    final visibleMinions = minions
-        .where((m) => m.occupiedTiles
-            .any((t) => losBlockerTile(state, from, t) == null))
-        .toList();
-    if (visibleMinions.isNotEmpty) minions = visibleMinions;
-    final dists = [for (final m in minions) m.distanceTo(from)];
-    final bestDist = dists.reduce(min);
-    final tied = [
-      for (var i = 0; i < minions.length; i++)
-        if (dists[i] == bestDist) minions[i],
-    ];
-    final chosen = tied[rng.nextInt(tied.length)];
-    return _AiTarget(position: chosen.position, minion: chosen);
-  }
-
-  /// Tactical personality: lowest effective HP wins, factoring the
-  /// resistance wheel against [creature]'s own attack type (design doc:
-  /// "slay targets with the fewest hitpoints... factoring in resistances").
-  /// Compares avatars and minions on one uniform scale (no player-first
-  /// priority — that tiebreak is specific to Evasive).
-  _AiTarget? _tacticalTarget(Minion creature) {
-    _AiTarget? best;
-    var bestHp = double.infinity;
-    for (final av in state.avatars.where(
-      (a) => a.isAlive && a.teamId != creature.teamId,
-    )) {
-      if (av.hp < bestHp) {
-        bestHp = av.hp.toDouble();
-        best = _AiTarget(position: av.position, avatar: av);
-      }
-    }
-    final minions = state.minions.where(
-      (m) =>
-          m.isAlive &&
-          m.teamId != creature.teamId &&
-          (!m.abilities.contains(SummonAbility.stealthy) ||
-              m.distanceTo(creature.position) <= 1),
-    );
-    for (final m in minions) {
-      final factor = switch (resistanceTierOf(creature.affinity, m.affinity)) {
-        ResistanceTier.resistant => 2.0,
-        ResistanceTier.vulnerable => 0.5,
-        ResistanceTier.normal => 1.0,
-      };
-      final effHp = m.hp * factor;
-      if (effHp < bestHp) {
-        bestHp = effHp;
-        best = _AiTarget(position: m.position, minion: m);
-      }
-    }
-    return best;
-  }
-
-  // ── Personality movement ──────────────────────────────────────────────────
-
-  /// Aggressive (and Tactical's approach, and Protective's interpose): move
-  /// directly toward [target], one tile at a time, up to move speed. Entering
-  /// a conveyor tile pushes immediately (see _resolveMinionConveyorPush) and
-  /// the creature keeps walking with whatever budget remains.
-  ///
-  /// Appends every tile entered to [route] (which starts with the creature's
-  /// pre-move tile) and returns the movement budget left unspent — a melee
-  /// creature needs one more point to lunge onto its target, so "did it arrive
-  /// with anything left?" is part of the answer, not just where it stopped.
-  int _aggressiveMove(
-    Minion creature,
-    HexCoord target,
-    HashRng rng,
-    List<HexCoord> route,
-  ) {
-    final flying = creature.abilities.contains(SummonAbility.flying);
-    var steps = creature.effectiveMoveSpeed;
-    while (steps > 0 && creature.isAlive && creature.distanceTo(target) > 0) {
-      final step = _creatureGreedyStep(creature, target);
-      if (step == null) break;
-      creature.position = step;
-      route.add(step);
-      steps -= _terrainMoveCost(creature, step, flying);
-      _resolveMinionConveyorPush(creature, flying, rng, route);
-    }
-    return max(0, steps);
-  }
-
-  /// Evasive: back away while closer than attack range, approach while
-  /// farther, stop once at ideal range — using the full move-speed budget.
-  /// Same immediate-push-then-continue conveyor behavior, [route] recording
-  /// and unspent-budget return as [_aggressiveMove].
-  int _evasiveMove(
-    Minion creature,
-    HexCoord target,
-    HashRng rng,
-    List<HexCoord> route,
-  ) {
-    final flying = creature.abilities.contains(SummonAbility.flying);
-    final range = creature.effectiveAttackRange;
-    var steps = creature.effectiveMoveSpeed;
-    while (steps > 0 && creature.isAlive) {
-      final dist = creature.distanceTo(target);
-      final HexCoord? step;
-      if (dist < range) {
-        step = _creatureGreedyStep(creature, target, away: true);
-      } else if (dist > range) {
-        step = _creatureGreedyStep(creature, target);
-      } else {
-        break;
-      }
-      if (step == null) break;
-      creature.position = step;
-      route.add(step);
-      steps -= _terrainMoveCost(creature, step, flying);
-      _resolveMinionConveyorPush(creature, flying, rng, route);
-    }
-    return max(0, steps);
-  }
-
-  /// Applies FloorIsLava damage (unless flying) for [step] just entered, and
-  /// returns the movement-budget cost of entering it: a SlowTile costs
-  /// [SlowTile.extraMoveCost] total (default 2 -- "costs two movement",
-  /// replacing the usual 1, not additive to it); everything else costs 1.
-  /// No mana-drain equivalent -- minions have no mana resource.
-  int _terrainMoveCost(Minion creature, HexCoord step, bool flying) {
-    final effect = state.tileEffects[step];
-    if (flying) return 1;
-    if (effect is FloorIsLava) creature.takeDamage(effect.damage);
-    if (effect is SlowTile) return effect.extraMoveCost;
-    return 1;
-  }
-
-  /// Called immediately after the creature enters a new tile mid-walk: if
-  /// that tile is a conveyor, resolves the cascading/looping push
-  /// (tile_entry_resolver.dart) right away. No-op if flying. Every tile the
-  /// push carried the creature through is appended to [route], so the walk
-  /// animation follows the real journey rather than the declared one.
-  void _resolveMinionConveyorPush(
-    Minion creature,
-    bool flying,
-    HashRng rng,
-    List<HexCoord> route,
-  ) {
-    if (flying) return;
-    if (state.tileEffects[creature.position] is! ConveyorTile) return;
-    final outcome = resolveTileEntry(
-      state: state,
-      rng: rng,
-      enteredTile: creature.position,
-      flying: false,
-      currentHp: creature.hp,
-      applyEntryLava: false, // already charged per-step above
-      footprintValid: (t) => _footprintValid(t, creature),
-    );
-    creature.position = outcome.finalPosition;
-    route.addAll(outcome.animationPath.skip(1));
-    if (outcome.totalDamage > 0) creature.takeDamage(outcome.totalDamage);
-    if (outcome.animationPath.length > 1) {
-      lastConveyorChainEvents.add(
-        ConveyorChainEvent(
-          entityId: creature.id,
-          path: outcome.animationPath,
-          damage: outcome.totalDamage,
-          killed: outcome.killed,
-        ),
-      );
-    }
-  }
-
-  /// One greedy step of [creature]'s own footprint toward (or, if [away],
-  /// away from) [toward]. Flying (AAAA) ignores ImpassableTile; Big (EEEE)
-  /// requires the whole footprint to be valid at the candidate center.
-  HexCoord? _creatureGreedyStep(
-    Minion creature,
-    HexCoord toward, {
-    bool away = false,
-  }) {
-    HexCoord? best;
-    var bestDist = creature.distanceTo(toward);
-    for (final n in _neighbors(creature.position)) {
-      if (!_footprintValid(n, creature)) continue;
-      final candidateDist = footprintFor(
-        n,
-        creature.abilities,
-      ).map((t) => hexDistance(t, toward)).reduce(min);
-      final better = away ? candidateDist > bestDist : candidateDist < bestDist;
-      if (better) {
-        bestDist = candidateDist;
-        best = n;
-      }
-    }
-    return best;
-  }
-
-  bool _footprintValid(HexCoord center, Minion creature) =>
-      _resolution.footprintValid(center, creature);
-
-  /// The hex direction (of the 6) that points most directly from [from]
-  /// toward [to]. Null if [from] == [to].
-  HexCoord? _directionTowards(HexCoord from, HexCoord to) {
-    const dirs = [
-      HexCoord(1, 0),
-      HexCoord(1, -1),
-      HexCoord(0, -1),
-      HexCoord(-1, 0),
-      HexCoord(-1, 1),
-      HexCoord(0, 1),
-    ];
-    final dq = to.q - from.q;
-    final dr = to.r - from.r;
-    if (dq == 0 && dr == 0) return null;
-    var bestDot = -999999;
-    HexCoord best = dirs[0];
-    for (final d in dirs) {
-      final dot = dq * d.q + dr * d.r;
-      if (dot > bestDot) {
-        bestDot = dot;
-        best = d;
-      }
-    }
-    return best;
-  }
-
-  // ── Attack resolution + abilities ─────────────────────────────────────────
-
-  /// Notes one creature strike for the UI. Recorded *before* the damage is
-  /// applied, from the attacker's pre-lunge tile: a melee creature ends the
-  /// turn back where it started, and an attacker that dies to the blow it just
-  /// landed (Molten Carapace) should still be seen throwing it.
-  void _recordAttack(Minion attacker, HexCoord target, int range) {
-    lastMinionAttackEvents.add(
-      AttackEvent(
-        from: attacker.position,
-        to: target,
-        range: range,
-        affinity: attacker.affinity,
-      ),
-    );
-  }
-
-  void _creatureAttack(
-    Minion attacker,
-    _AiTarget target,
-    HashRng rng, {
-    int movedTiles = 0,
-  }) {
-    var damage = attacker.stats.damage;
-    // Charger (FAFA): bonus damage = half the distance moved before
-    // attacking, rounded up.
-    if (attacker.abilities.contains(SummonAbility.charger)) {
-      damage += (movedTiles / 2).ceil();
-    }
-    final muddy = attacker.abilities.contains(SummonAbility.muddy);
-
-    if (target.avatar != null) {
-      final av = target.avatar!;
-      av.absorbDamage(damage);
-      if (muddy)
-        _addStatus(av, StatusEffectId.speedDown, {'speedDelta': -1}, 1);
-    } else if (target.minion != null) {
-      final m = target.minion!;
-      m.takeDamage(damage, attackType: attacker.affinity);
-      // Molten Carapace (EFEF): a hit from within 1 range reflects 1 fire
-      // damage back to the attacker.
-      if (m.abilities.contains(SummonAbility.moltenCarapace) &&
-          attacker.distanceTo(m.position) <= 1) {
-        attacker.takeDamage(1, attackType: SpellAffinity.fire);
-      }
-      if (muddy) {
-        StatusEffect.applyTo(m.activeStatusEffects, StatusEffectId.speedDown,
-            const {'speedDelta': -1}, 1);
-      }
-    }
-
-    // Cleave (FFFF): a second enemy adjacent to both the primary target and
-    // this creature takes the same damage.
-    if (attacker.abilities.contains(SummonAbility.cleave)) {
-      final secondary = _cleaveTarget(attacker, target);
-      if (secondary?.avatar != null) {
-        secondary!.avatar!.absorbDamage(damage);
-      } else if (secondary?.minion != null) {
-        secondary!.minion!.takeDamage(damage, attackType: attacker.affinity);
-      }
-    }
-  }
-
-  _AiTarget? _cleaveTarget(Minion attacker, _AiTarget primary) {
-    bool adjacentToBoth(HexCoord pos) =>
-        hexDistance(pos, primary.position) == 1 &&
-        attacker.distanceTo(pos) == 1;
-    for (final av in state.avatars) {
-      if (!av.isAlive || av.teamId == attacker.teamId) continue;
-      if (av == primary.avatar) continue;
-      if (adjacentToBoth(av.position))
-        return _AiTarget(position: av.position, avatar: av);
-    }
-    for (final m in state.minions) {
-      if (!m.isAlive || m.teamId == attacker.teamId) continue;
-      if (m == primary.minion) continue;
-      if (adjacentToBoth(m.position))
-        return _AiTarget(position: m.position, minion: m);
-    }
-    return null;
-  }
+  /// See [DeterministicResolution.creatureTurn].
+  void _creatureTurn(Minion creature, HashRng rng) => _resolution.creatureTurn(
+    creature,
+    rng,
+    moveEvents: lastMinionMoveEvents,
+    attackEvents: lastMinionAttackEvents,
+    conveyorChainEvents: lastConveyorChainEvents,
+  );
 
   /// See [DeterministicResolution.reapDead].
   void _reapDead(HashRng rng) => _resolution.reapDead(rng);

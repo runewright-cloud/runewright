@@ -5678,3 +5678,52 @@ pattern in `kSummonAbilityPattern`.
 
 **A script whose actor is inert is a green test that asserts nothing.** Check that the
 entity you summoned can actually do the thing the script claims to cover.
+
+---
+
+## M4.17 — A Potent summon's bonus action is invisible (found 2026-08-16, NOT fixed)
+
+Found while extracting the Summons phase behind the deterministic seam. Recorded rather
+than fixed: the extraction's whole claim is "no behaviour change", and this is a
+behaviour change.
+
+`_castSummon` gives a Potent summon an immediate bonus action the moment it is cast, in
+Phase 5:
+
+```dart
+if (enhancements.isPotent) {
+  _creatureTurn(creature, rng);
+}
+```
+
+`_creatureTurn` appends the walk to `lastMinionMoveEvents` and any blow to
+`lastMinionAttackEvents`. Phase 5b then opened with:
+
+```dart
+lastMinionMoveEvents = [];
+lastMinionAttackEvents = [];
+```
+
+— which throws both away before `onSummonMovementResolved` ever sees them. The creature's
+free first action is **fully resolved in state** (it really moved, it really dealt the
+damage) but the UI never animates it: the token appears at its spawn tile, then jumps to
+wherever the bonus action left it as part of the Phase 5b walk, and the bonus blow lands
+with no attack animation at all. The conveyor half of the same action *is* visible —
+`lastConveyorChainEvents` is not reset in Phase 5b, so a Potent summon shoved by a
+conveyor on its bonus step animates while its own steps do not.
+
+**Not a desync.** Both devices run `_castSummon` identically and discard identically, and
+none of the three lists feeds the state hash. It is a presentation bug only.
+
+Nothing caught it because the events are UI-only bookkeeping: no test asserts on the
+Potent path's move events, and the replay transcript records `minionMoves` /
+`minionAttacks` as *counts taken after* Phase 5b, so the corpus is blind to it by
+construction.
+
+The extraction preserved the behaviour exactly — `resolveSummonActions` fills fresh lists
+and `_resolveSummons` assigns them over the old ones, which discards the same events at
+the same moment. Fixing it properly means deciding what a Potent summon's bonus action
+should *look* like (a second playback callback in Phase 5, or carrying the events through
+to Phase 5b's walk and accepting that the animation plays late) — a design question, and
+one for whoever does the `_resolveActions` extraction, since that is where the call site
+lives.
