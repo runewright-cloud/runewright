@@ -86,7 +86,8 @@ class MovementContest {
 /// purposes) and ConveyorTile entirely -- the real, terrain-aware walk
 /// (budget consumption, SlowTile mana drain, FloorIsLava damage, and
 /// ConveyorTile pushes/cascades/loops) runs afterward in
-/// TurnLoop._walkAvatar, which needs a seeded RNG (loop-exit randomness,
+/// DeterministicResolution.walkAvatar, which needs a seeded RNG (loop-exit
+/// randomness,
 /// see tile_entry_resolver.dart) and BattleState (occupancy/avatars/minions)
 /// this self-contained Battlefield class deliberately doesn't reference.
 class MovementResult {
@@ -143,7 +144,8 @@ class Battlefield {
   /// player's naive intended destination, then arbitrates any tile two or
   /// more players would land on simultaneously. This does NOT mutate
   /// [occupancy] or apply any terrain side-effect (budget cost aside, for
-  /// arbitration purposes) -- the caller (TurnLoop._resolveAvatarMovement)
+  /// arbitration purposes) -- the caller
+  /// (DeterministicResolution.resolveAvatarMovement)
   /// does the real walk afterward, along the arbitrated
   /// [MovementResult.paths] rather than the raw declared ones.
   ///
@@ -168,10 +170,11 @@ class Battlefield {
   ///
   /// [flyingPlayerIds] are wizards under wild magic's Updraft: they ignore
   /// terrain entirely while moving (WILD_MAGIC_PLAN.md A11), matching
-  /// TurnLoop._walkAvatar. They still contest destination tiles normally, and
+  /// DeterministicResolution.walkAvatar. They still contest destination tiles
+  /// normally, and
   /// they alone may path through [blockedTiles] (design v3.0 §Flying: move
   /// through other entities, but never come to rest on one — the real walk in
-  /// TurnLoop._walkAvatar is what enforces the second half).
+  /// DeterministicResolution.walkAvatar is what enforces the second half).
   ///
   /// [blockedTiles] are tiles held by a body at the START of the movement
   /// phase — every living avatar's tile and every living minion's footprint.
@@ -184,7 +187,8 @@ class Battlefield {
   ///
   /// **Ice sliding is deliberately NOT modelled here.** The returned
   /// [MovementResult.paths] are re-walked verbatim as DECLARED STEPS by
-  /// TurnLoop._walkAvatar, so injecting the slid-through tiles would make that
+  /// DeterministicResolution.walkAvatar, so injecting the slid-through tiles
+  /// would make that
   /// walk re-enter each of them — sliding the avatar back and forth. So this
   /// preview arbitrates on the pre-slide destination and the real walk slides
   /// afterwards. That costs a little arbitration accuracy on iced ground (two

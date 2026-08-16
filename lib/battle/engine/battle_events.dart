@@ -8,6 +8,8 @@
 // deterministic core import the orchestrator would point the seam's dependency
 // the wrong way round. `turn_loop.dart` re-exports this file, so every existing
 // `import '.../turn_loop.dart'` that names these types keeps working unchanged.
+// [AvatarMoveEvent] followed for the same reason when Phase 3's avatar
+// movement moved across.
 //
 // Everything here is playback bookkeeping: the state transition has already
 // happened by the time an event is emitted, and nothing reads them back.
@@ -15,6 +17,45 @@
 import 'package:rune_duel/engine/hex_grid.dart';
 
 import '../models/effect_descriptor.dart' show SpellAffinity;
+
+/// One avatar's movement this turn — UI-only bookkeeping so the battlefield
+/// can *walk* a wizard along the tiles they actually traversed instead of
+/// teleporting their token to the final position. Carries no gameplay effect;
+/// [TurnLoop] never reads these back. See [TurnLoop.lastAvatarMoveEvents].
+class AvatarMoveEvent {
+  const AvatarMoveEvent({
+    required this.playerId,
+    required this.path,
+    this.lungeTile,
+    this.wonContestAt,
+  });
+
+  final String playerId;
+
+  /// Every tile actually visited, in order, starting with the pre-move origin
+  /// (so `path.first` is where the token starts and `path.last` is where it
+  /// ends). Length 1 means "did not move" — no animation needed.
+  ///
+  /// This is [DeterministicResolution.walkAvatar]'s return value verbatim, so
+  /// it includes free displacement the walk picked up along the way (conveyor
+  /// pushes, ice slides): the token follows the real route, not the declared
+  /// one.
+  final List<HexCoord> path;
+
+  /// A contested tile this avatar reached for and lost (out-sped, or tied for
+  /// fastest so nobody claimed it). The UI lunges the token partway toward it
+  /// and recoils to [path]'s last tile. Null when no collision touched them.
+  ///
+  /// Only set when the recoil is geometrically sensible — the real walk ended
+  /// adjacent to the contested tile. If terrain carried the avatar somewhere
+  /// else entirely (conveyor, ice), a lunge would be a lie, so it's dropped.
+  final HexCoord? lungeTile;
+
+  /// A contested tile this avatar reached for and *kept*, by being strictly
+  /// faster than everyone else who wanted it. The UI marks the impact so a
+  /// speed win reads as a win rather than as the opponent simply stopping.
+  final HexCoord? wonContestAt;
+}
 
 /// One summon's movement this turn — the [AvatarMoveEvent] of the Summons
 /// phase, and UI-only in exactly the same way: a creature that crossed three

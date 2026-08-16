@@ -52,6 +52,11 @@
 // hard one: it suspends repeatedly, for peer verification, and the answers
 // change what resolves.
 //
+// Avatar movement (Phase 3) came third and needed no split at all: its
+// playback callback is the *last* thing in the phase, with nothing after it to
+// decide, so the whole phase is one synchronous method and the await stays put
+// in TurnLoop directly after it.
+//
 // ## Event sinks are parameters, not fields
 //
 // `TurnLoop` reassigns its `lastConveyorChainEvents` / `lastWildMagicEvents`
@@ -64,10 +69,10 @@
 //
 // ## What is NOT here yet
 //
-// Avatar movement, spell application, melee, cloud drift and the free-move
-// rounds are all still in `TurnLoop`. Several of them are deterministic too;
-// they are just entangled with suspension points, and moving them is a
-// separate change with its own corpus run.
+// Spell application, melee, cloud drift and the free-move rounds are all still
+// in `TurnLoop`. Several of them are deterministic too; they are just entangled
+// with suspension points, and moving them is a separate change with its own
+// corpus run.
 
 import 'dart:math' show max, min;
 
@@ -76,7 +81,7 @@ import 'package:rune_duel/engine/hex_grid.dart';
 import '../models/battle_state.dart';
 import '../models/creature_spec.dart' show ResistanceTier, resistanceTierOf;
 import '../models/effect_descriptor.dart'; // exports SpellAffinity
-import '../models/hex_battlefield.dart' show hexDistance;
+import '../models/hex_battlefield.dart' show MovementContest, hexDistance;
 import '../models/minion.dart';
 import '../models/reflection_link.dart';
 import '../models/status_effect_ids.dart';
@@ -85,6 +90,7 @@ import '../models/terrain.dart'
         ConveyorTile,
         DustCloud,
         FloorIsLava,
+        IceTile,
         MobileCloud,
         SlowTile,
         ToxicCloud,
@@ -142,6 +148,307 @@ class DeterministicResolution {
   DeterministicResolution(this.state);
 
   final BattleState state;
+
+  // ── Phase 3: Avatar movement ──────────────────────────────────────────────
+  //
+  // Third across the seam, and the same shape as Phase 5b: TurnLoop resolves
+  // the walk, awaits its playback callback, and continues. The difference is
+  // that here there was nothing to split — every decision the phase makes is
+  // made by [resolveAvatarMovement], and the callback is the last thing that
+  // happens. So the whole phase moves as one method and the `await
+  // onMovementResolved` stays exactly where it was, immediately after it.
+  //
+  // [walkAvatar] and [breakStatuesque] are public because the free-move window
+  // (Phase 5.5/6.5) and the haymaker still call them from TurnLoop through
+  // one-line delegators — same forwarding convention as the shared helpers at
+  // the bottom of this file.
+
+  /// Resolves this turn's avatar movement: a deterministic (no-RNG)
+  /// collision preview -- Battlefield.resolveMovement's naive walk +
+  /// contested-tile arbitration, ignoring conveyor tiles, just to decide who
+  /// wins a contested destination -- then a full terrain-aware walk
+  /// ([walkAvatar]) for each avatar from their real origin, along the
+  /// arbitrated path the preview cleared them for. A collision loser walks
+  /// their declared path minus the tile(s) they were pushed back off, so
+  /// they stop one tile short rather than forfeiting the whole move.
+  /// Returns each avatar's actually-walked path, for knockback's move-path
+  /// bounce reference.
+  ///
+  /// One [AvatarMoveEvent] per avatar is appended to [moveEvents] (in
+  /// `state.avatars` order) for the caller to play back, and conveyor pushes
+  /// picked up mid-walk land in [conveyorChainEvents]; both sinks belong to the
+  /// caller and are shared across the turn — see this file's header.
+  Map<String, List<HexCoord>> resolveAvatarMovement({
+    required Map<String, List<HexCoord>> movePaths,
+    required Map<String, int> speeds,
+    required HashRng rng,
+    required List<AvatarMoveEvent> moveEvents,
+    required List<ConveyorChainEvent> conveyorChainEvents,
+  }) {
+    // Snapshot of every body on the board before anyone moves. Movement is
+    // simultaneous, so both the arbitration preview and each avatar's real
+    // walk resolve against this one fixed set rather than against positions
+    // that mutate as the loop below walks each avatar in turn -- otherwise the
+    // first player in iteration order could walk through a tile the second
+    // player is about to vacate, and the second could not. See [tileOccupied].
+    final bodies = occupiedTiles();
+    final preview = state.battlefield.resolveMovement(
+      movePaths,
+      speeds,
+      tileEffects: state.tileEffects,
+      flyingPlayerIds: {
+        for (final av in state.avatars)
+          if (av.isFlying) av.playerId,
+      },
+      blockedTiles: bodies,
+    );
+    final walked = <String, List<HexCoord>>{};
+    for (final av in state.avatars) {
+      final origin = av.position;
+      // Everyone else's body. Rebuilt per avatar so nobody blocks themselves.
+      final blockers = bodies.difference({origin});
+      final budget = max(0, speeds[av.playerId] ?? av.effectiveMoveSpeed);
+      // Fall back to the declared path only for an avatar the battlefield
+      // didn't know about (absent from occupancy, so absent from the preview).
+      final clearedPath = preview.paths[av.playerId] ??
+          movePaths[av.playerId] ??
+          const <HexCoord>[];
+      final path = walkAvatar(
+        av,
+        origin,
+        clearedPath,
+        budget,
+        rng,
+        conveyorChainEvents: conveyorChainEvents,
+        blocked: blockers.contains,
+      ).path;
+      // Statuesque (wild magic, row 3 Earth) breaks on a VOLUNTARY move. A
+      // path longer than [origin] means at least one declared step was taken;
+      // involuntary displacement (knockback, ice slide, Zephyr) happens
+      // elsewhere and deliberately does not break the latch. A conveyor push
+      // appended to a voluntary step is already a move they chose to make.
+      if (path.length > 1) breakStatuesque(av.playerId);
+      av.position = path.last;
+      state.battlefield.occupancy[av.playerId] = path.last;
+      walked[av.playerId] = path;
+      moveEvents.add(_moveEventFor(av.playerId, path, preview.contests));
+    }
+    return walked;
+  }
+
+  /// Builds one avatar's UI movement record from their real walked [path] and
+  /// this turn's arbitration [contests]. Cosmetic only — see [AvatarMoveEvent].
+  ///
+  /// A player pushed back repeatedly appears in several contests; the FIRST one
+  /// they lost is the one they visibly reached furthest for, so that's the tile
+  /// the token lunges at. The lunge is dropped unless the walk actually ended
+  /// next to that tile: a conveyor or ice slide can carry the avatar somewhere
+  /// unrelated afterwards, and recoiling onto a tile they're nowhere near would
+  /// read as a rendering bug rather than as a collision.
+  AvatarMoveEvent _moveEventFor(
+    String playerId,
+    List<HexCoord> path,
+    List<MovementContest> contests,
+  ) {
+    HexCoord? lunge;
+    HexCoord? won;
+    for (final contest in contests) {
+      if (!contest.contestants.contains(playerId)) continue;
+      if (contest.winnerId == playerId) {
+        won ??= contest.tile;
+      } else {
+        lunge ??= contest.tile;
+      }
+    }
+    if (lunge != null && hexDistance(path.last, lunge) != 1) lunge = null;
+    // Likewise: a "win" the avatar didn't actually end up standing on (terrain
+    // moved them on afterwards) has nothing to mark.
+    if (won != null && path.last != won) won = null;
+    return AvatarMoveEvent(
+      playerId: playerId,
+      path: List.unmodifiable(path),
+      lungeTile: lunge,
+      wonContestAt: won,
+    );
+  }
+
+  /// Walks [declaredPath] from [origin] for [av], tile by tile, up to
+  /// [budget] movement points: ImpassableTile blocks; SlowTile costs
+  /// 1 + [SlowTile.extraMoveCost] and drains mana on entry; FloorIsLava
+  /// damages per tile entered; and ConveyorTile pushes *immediately* --
+  /// cascading, possibly into a closed loop (tile_entry_resolver.dart) --
+  /// with [av] then continuing to walk the rest of [declaredPath] from
+  /// wherever the push left it, using whatever budget remains (a push
+  /// itself is free -- it doesn't consume budget). Returns every tile
+  /// actually visited, in order, starting with [origin], alongside how much
+  /// of [budget] the walk consumed -- the free-move window prices a Boost run
+  /// off `spent`, so tiles a conveyor or ice slide handed over for free
+  /// correctly cost nothing.
+  ///
+  /// [blocked] reports tiles held by another body (see [tileOccupied]); a step
+  /// into one stops the walk, because bodies are exclusive. A flying wizard
+  /// (Updraft) is the design's one exception: it walks *through* other
+  /// entities and is only pulled back if it would come to rest on one, which
+  /// is the truncation after the loop. The caller supplies the predicate
+  /// rather than this reading live positions, so the simultaneous movement
+  /// phase can resolve every avatar against one pre-move snapshot.
+  ///
+  /// Public because the free-move window still drives it from TurnLoop.
+  ({List<HexCoord> path, int spent}) walkAvatar(
+    WizardAvatar av,
+    HexCoord origin,
+    List<HexCoord> declaredPath,
+    int budget,
+    HashRng rng, {
+    required List<ConveyorChainEvent> conveyorChainEvents,
+    bool Function(HexCoord)? blocked,
+  }) {
+    var current = origin;
+    var remaining = budget;
+    final path = <HexCoord>[origin];
+    bool isBlocked(HexCoord hex) =>
+        hex != origin && (blocked?.call(hex) ?? false);
+
+    // Updraft (wild magic, row 2 Air): a flying wizard ignores terrain
+    // entirely — chasms, walls, lava, slow tiles, ice sliding, and conveyor
+    // pushes (A11). Same semantics SummonAbility.flying already gives spirit
+    // minions, and the `flying:` flag resolveTileEntry already takes.
+    final flying = av.isFlying;
+
+    for (final step in declaredPath) {
+      if (remaining <= 0 || !av.isAlive) break;
+      if (!state.battlefield.isInBounds(step)) break;
+      if (hexDistance(current, step) != 1) break; // path must be step-adjacent
+      final effect = flying ? null : state.tileEffects[step];
+      // ChasmTile blocks movement exactly like a wall — but NOT targeting;
+      // that distinction is the entire reason it is its own class (A9).
+      if (tileBlocksMovement(effect)) break;
+      // So does another body, unless this wizard is flying over it.
+      if (!flying && isBlocked(step)) break;
+      final cost = 1 + (effect is SlowTile ? effect.extraMoveCost : 0);
+      if (cost > remaining) break;
+      remaining -= cost;
+      current = step;
+      path.add(current);
+
+      if (effect is SlowTile) {
+        av.mana = (av.mana - effect.manaDrainOnEntry).clamp(0, 9999).toInt();
+      }
+      if (effect is FloorIsLava) {
+        av.absorbDamage(effect.damage);
+      }
+      if (effect is IceTile) {
+        // Glacier: keep going in the entry direction, FREE of movement budget
+        // (A12 — mirroring ConveyorTile's free cascading push, the closest
+        // existing precedent), until the next tile is out of bounds, occupied,
+        // or not ice.
+        current = _slideOnIce(av, path, current, rng);
+      }
+      if (state.tileEffects[current] is ConveyorTile &&
+          (state.tileEffects[current] as ConveyorTile).directionSet &&
+          !flying) {
+        final outcome = resolveTileEntry(
+          state: state,
+          rng: rng,
+          enteredTile: current,
+          flying: false,
+          currentHp: av.hp,
+          applyEntryLava: false, // already charged just above
+          moverAvatarId: av.playerId,
+        );
+        current = outcome.finalPosition;
+        path.addAll(outcome.animationPath.skip(1));
+        if (outcome.totalDamage > 0) av.absorbDamage(outcome.totalDamage);
+        if (outcome.animationPath.length > 1) {
+          conveyorChainEvents.add(
+            ConveyorChainEvent(
+              entityId: av.playerId,
+              path: outcome.animationPath,
+              damage: outcome.totalDamage,
+              killed: outcome.killed,
+            ),
+          );
+        }
+      }
+    }
+
+    // A flying wizard walked through whatever was in the way; it may not
+    // *land* on it, though, so back it off along its own route to the last
+    // tile nobody is standing on. The origin is always such a tile, so this
+    // terminates. Budget already spent stays spent — bumping into a crowd
+    // mid-flight costs you the move, which is the point of the restriction.
+    while (path.length > 1 && isBlocked(path.last)) {
+      path.removeLast();
+    }
+    return (path: path, spent: budget - remaining);
+  }
+
+  /// Glacier's slide (wild magic, row 2 Water). [av] has just entered an
+  /// [IceTile] at [current], arriving from `path[path.length - 2]`; keep
+  /// stepping in that same direction, free of movement budget, until the next
+  /// tile is out of bounds, occupied, or not ice.
+  ///
+  /// Appends every slid-through tile to [path] — knockback's
+  /// bounce-back-along-your-path reference reads that list, so a slide the
+  /// path doesn't record would bounce the victim to the wrong tile. Returns
+  /// the final position.
+  ///
+  /// The iteration bound is belt-and-braces: the loop already terminates on
+  /// the board edge, but a coordinate-math slip becoming an infinite loop
+  /// would hang a live match mid-turn, which is much worse than stopping a
+  /// slide early.
+  HexCoord _slideOnIce(
+    WizardAvatar av,
+    List<HexCoord> path,
+    HexCoord current,
+    HashRng rng,
+  ) {
+    if (path.length < 2) return current;
+    final from = path[path.length - 2];
+    final delta = HexCoord(current.q - from.q, current.r - from.r);
+    if (delta.q == 0 && delta.r == 0) return current;
+
+    var pos = current;
+    final maxSteps = state.config.gridRadius * 4;
+    for (var i = 0; i < maxSteps; i++) {
+      final next = HexCoord(pos.q + delta.q, pos.r + delta.r);
+      if (!state.battlefield.isInBounds(next)) break;
+      if (state.tileEffects[next] is! IceTile) break;
+      if (state.avatars.any((a) => a.isAlive && a.playerId != av.playerId && a.position == next)) {
+        break;
+      }
+      if (state.minions.any((m) => m.isAlive && m.occupiedTiles.contains(next))) {
+        break;
+      }
+      pos = next;
+      path.add(pos);
+    }
+    // A slide that ends ON a conveyor hands off to the normal entry
+    // resolution, exactly as the conveyor path in [walkAvatar] does — the
+    // caller checks `state.tileEffects[current]` after this returns, so
+    // nothing extra is needed here. (rng is threaded for symmetry with that
+    // path and for any future slide-time randomness.)
+    return pos;
+  }
+
+  /// Every tile a living body stands on right now — each avatar's tile and
+  /// each minion's whole footprint. The blocker set for movement; see
+  /// [tileOccupied], which is the same rule stated one tile at a time.
+  Set<HexCoord> occupiedTiles() => {
+    for (final av in state.avatars)
+      if (av.isAlive) av.position,
+    for (final m in state.minions)
+      if (m.isAlive) ...m.occupiedTiles,
+  };
+
+  /// Statuesque (wild magic, row 3 Earth): the latch breaks the moment a
+  /// player *chooses* to move or cast. Involuntary movement (knockback,
+  /// conveyor, ice slide, Zephyr) does NOT break it — "if they move" reads as
+  /// a choice.
+  void breakStatuesque(String playerId) {
+    state.wildMagic.statuesquePlayerIds.remove(playerId);
+    state.wildMagic.pendingStatuesquePlayerIds.remove(playerId);
+  }
 
   // ── Phase 5b: Summons act ─────────────────────────────────────────────────
   //

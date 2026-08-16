@@ -2564,7 +2564,8 @@ class _BattleScreenState extends State<BattleScreen>
       final local = _local;
       if (local == null) return;
       final origin = local.position;
-      // Simulates TurnLoop._walkAvatar's real walk -- including any conveyor
+      // Simulates DeterministicResolution.walkAvatar's real walk -- including
+      // any conveyor
       // pushes along the way -- so the tap target the player sees matches
       // what will actually happen when the turn resolves. See
       // predictAvatarMove's doc comment for why this can't predict past a
