@@ -218,6 +218,71 @@ void main() {
       );
     });
 
+    test(
+        'row 2 drains the forced cast it queued: the victim really casts from '
+        'hand, mid-resolution', () async {
+      // The rest of the row-2 test above only proves the EVENT was emitted.
+      // This one closes the loop the event opens: the applicator queues, then
+      // `_fireWildMagic` awaits `_drainForcedCasts` → `ForcedCast.run` →
+      // `TurnLoop.resolveForcedCast` → `_applySpell` — a re-entry that leaves
+      // deterministic resolution, crosses the ForcedCastHost seam, and comes
+      // back in. Nothing else in the suite covers it end to end:
+      // `forced_cast_test.dart` drives the sequence against a fake host, and
+      // the test above gives the wizard no hand, so every player is skipped
+      // before a spell is ever chosen.
+      final ctx = _setup(seed: _seedRow2);
+      // A summon in the chapter, so "the forced cast resolved" is a creature
+      // on the board rather than damage on a tile the roll happened to pick.
+      //
+      // Its commitment must DIFFER from the trigger spell's: chapter membership
+      // is keyed on commitmentHex, and sharing one would make the trigger cast
+      // look like a cast of chapter position 0 and empty the very hand slot the
+      // forced cast reaches for. Proof bytes are empty because a forced cast
+      // fires no wild magic and resolves off the wire formula.
+      final forced = SpellAsset(
+        id: 'forced-summon',
+        createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+        tier: 12,
+        t: 5,
+        ownerPubkeyHex: '0x${'0' * 64}',
+        manaCost: 1,
+        segmentCount: 1,
+        dotCount: 1,
+        initialGrid: List<int>.filled(469, 0)..[234] = 1,
+        proofBytes: Uint8List(0),
+        name: 'Forced Summon',
+        commitmentHex: '0x${'c' * 64}',
+        spellHashHex: '0x${'d' * 64}',
+        formula: const ['earth', 'earth', 'earth'],
+        isSummon: true,
+        summonPersonality: 'aggressive',
+      );
+      ctx.loop
+        ..localChapterSpells = [forced]
+        ..localChapterCommitments = [forced.commitmentHex];
+
+      await ctx.loop.runTurn(TurnInput(
+        action: SpellCastAction(
+          // Deliberately NOT the chaptered spell: the trigger cast must not
+          // consume the hand slot the forced cast is going to reach for.
+          spell: _fireSpell(),
+          targetHex: ctx.local.position,
+        ),
+      ));
+
+      expect(
+        ctx.loop.lastWildMagicEvents.map((e) => e.effect),
+        contains(WildMagicEffectKind.spontaneousCombustion),
+      );
+      expect(ctx.state.minions, isNotEmpty,
+          reason: 'the forced free cast must have reached _applySpell');
+      expect(ctx.state.minions.first.ownerId, 'local');
+      // A8: the free cast neither builds the chain nor leaves hand state
+      // spent — only the trigger cast's own chain update may show.
+      expect(ctx.loop.drawScheduleFor('local')!.hand, [0],
+          reason: 'a forced cast is not consumed from hand');
+    });
+
     test('row 3 seed fires Phoenix on a pure-fire spell', () async {
       final ctx = _setup(seed: _seedRow3);
       await ctx.loop.runTurn(TurnInput(
