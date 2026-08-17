@@ -239,6 +239,15 @@ class FreeMoveGrant {
   int get freeTiles => (burstStep ? 1 : 0) + (boostResource == null ? 0 : boostFreeTiles);
 }
 
+/// Counter Charm passive: percentage points, per unspent charm, that a
+/// successful melee destroys one of the victim's mana gems or withers one of
+/// their in-hand spells (ARTIFACT_SYSTEM_PLAN.md §2.3). Linear and capped at
+/// 100, so a full 12-charm loadout procs 60% of the time.
+///
+/// `[TODO — playtest]` — 60% is only balanced if melee is hard to land against
+/// a kiting mage, which is a play question, not a math one.
+const _kCounterCharmProcPctPerCharm = 5;
+
 // ── Action resolution seam ────────────────────────────────────────────────────
 
 /// Mana a Meditate restores, main-phase or move-phase.
@@ -761,6 +770,238 @@ class DeterministicResolution {
     if (candidates.isEmpty) return null;
     candidates.sort((a, b) => a.$1.compareTo(b.$1));
     return candidates.first.$2;
+  }
+
+  // ── Phase 4b: The melee round ─────────────────────────────────────────────
+  //
+  // Sixth across the seam, and the free-move pattern again rather than the
+  // phase-shaped one: the *round* is prompt → commit → reveal → verify →
+  // apply, so it stays in TurnLoop with every await and the canonical
+  // application order. What came across is the four deterministic operations
+  // the round drives — which tiles may be punched, what a punch does, whether
+  // an illusion eats it, and what an attacker's charms take from whoever it
+  // hit. Each is a function of `(state, arguments, rng)` and any caller can
+  // reach it; none of them knows what a session is.
+  //
+  // The counter-charm proc's two mutable sinks — the victims' draw schedules
+  // and the UI's proc log — are parameters for the reason the header gives:
+  // TurnLoop owns both, reassigns the log each turn, and keys the schedules
+  // map for both players, so owning copies here would change either the
+  // identity of those objects or the order things land in them.
+
+  /// Adjacent tiles holding at least one living hostile entity (enemy avatar
+  /// or minion) — the melee-round prompt candidates for [actor]. Empty means
+  /// no prompt is shown (see `TurnLoop.meleeTargetPicker`).
+  List<HexCoord> meleeCandidates(WizardAvatar actor) {
+    if (!actor.isAlive) return const [];
+    final candidates = <HexCoord>[];
+    for (final tile in hexNeighbors(actor.position)) {
+      final hasHostile =
+          _avatarsAt(
+            tile,
+          ).any((av) => av.teamId != actor.teamId && av.isAlive) ||
+          _minionsAt(tile).any((m) => m.teamId != actor.teamId && m.isAlive);
+      if (hasHostile) candidates.add(tile);
+    }
+    return candidates;
+  }
+
+  List<WizardAvatar> _avatarsAt(HexCoord hex) =>
+      state.avatars.where((av) => av.isAlive && av.position == hex).toList();
+
+  List<Minion> _minionsAt(HexCoord hex) =>
+      state.minions.where((m) => m.isAlive && m.position == hex).toList();
+
+  /// Returns the avatars this punch actually damaged — i.e. the ones that did
+  /// NOT dodge onto an illusion decoy. That list is what makes "a *successful*
+  /// melee attack" precise for the counter-charm proc
+  /// ([applyCounterCharmProc]), which is applied by the caller rather than
+  /// here: this method is already doing four things.
+  List<WizardAvatar> applyHaymaker(
+    WizardAvatar actor,
+    HexCoord targetTile,
+    Map<String, List<HexCoord>> walked,
+    HashRng rng,
+  ) {
+    if (!isAdjacent(actor.position, targetTile)) return const [];
+
+    final hitAvatars = <WizardAvatar>[];
+    // Every avatar redirected onto an illusion decoy this punch — a dodge is
+    // a full absorb, not just a dodge of the base damage, so every later pass
+    // over this same tile (the Fire DoT sweep below) must also skip them.
+    // Without the melee redirect's old position-teleport (removed 2026-07-31,
+    // see _redirectIfIllusion), the real wizard stays put at [targetTile], so
+    // a naive re-query by position would otherwise apply the DoT to a wizard
+    // whose punch never actually landed.
+    final redirected = <String>{};
+    var damage = 1;
+
+    // Air haymaker: bonus damage = half the tiles actually traversed this
+    // turn (path length, not net displacement), rounded down. Uses the
+    // walked path from resolveAvatarMovement so conveyor detours and
+    // winding routes count same as their tile length — rewards a longer
+    // path (e.g. riding conveyors) over a straight-line approach.
+    if (actor.hasHaymakerDistanceBonus) {
+      final tilesMoved = (walked[actor.playerId]?.length ?? 1) - 1;
+      damage += tilesMoved ~/ 2;
+    }
+
+    // Apply damage to entities on target tile.
+    for (final av in _avatarsAt(targetTile)) {
+      if (av.playerId != actor.playerId && _redirectIfIllusion(av, rng)) {
+        redirected.add(av.playerId);
+        continue;
+      }
+      av.absorbDamage(damage);
+      hitAvatars.add(av);
+
+      // Earth haymaker: slow target.
+      if (actor.hasHaymakerSlow) {
+        addStatus(av, StatusEffectId.speedDown, {'speedDelta': -1}, 2);
+      }
+
+      // Water haymaker: strip 1 turn from all target status effects.
+      if (actor.hasHaymakerStatusDrain) {
+        for (final fx in av.activeStatusEffects) {
+          fx.remainingTurns = (fx.remainingTurns - 1).clamp(0, 9999);
+        }
+        av.activeStatusEffects.removeWhere((fx) => fx.remainingTurns <= 0);
+      }
+    }
+    for (final m in _minionsAt(targetTile)) {
+      m.takeDamage(damage);
+    }
+
+    // Fire haymaker DoT: add stacks to each hit avatar — but skip anyone
+    // redirected above; their punch never landed. This stacked by hand long
+    // before durations stacked in general; it now just rides the shared rule
+    // (see StatusEffect.applyTo), which adds the same 3 turns to an existing
+    // DoT and starts a fresh one otherwise.
+    if (actor.hasHaymakerDot) {
+      for (final av in _avatarsAt(targetTile)) {
+        if (redirected.contains(av.playerId)) continue;
+        addStatus(av, StatusEffectId.haymakerDot, {'damagePerTick': 1}, 3);
+      }
+    }
+
+    return hitAvatars;
+  }
+
+  /// Water-Air Illusions (Water flavor), melee-punch path: if [target] has
+  /// active wizard decoys, roll 1/remaining -- on a hit the real wizard takes
+  /// it (returns false); otherwise a random decoy is destroyed and the punch
+  /// is fully absorbed (returns true) — **nothing else happens**: no damage,
+  /// no position change, no haymaker side effect (slow/DoT/status-drain).
+  /// The decoy dies regardless; the real wizard is untouched, full stop.
+  ///
+  /// Diverged from [EffectApplicator]'s illusion redirect (2026-07-31): the
+  /// formula-effect path still teleports the target onto the decoy's tile
+  /// on a dodge (a spell "chasing" the illusion's last-seen position reads as
+  /// intentional); a melee punch has no such framing, so a dodge is just a
+  /// dodge — no free reposition. Mirrors it only in shape, not in that detail;
+  /// duplicated here since the melee punch bypasses EffectApplicator either way.
+  bool _redirectIfIllusion(WizardAvatar target, HashRng rng) {
+    final set = state.wizardIllusions
+        .where(
+          (s) => s.ownerId == target.playerId && s.decoyPositions.isNotEmpty,
+        )
+        .firstOrNull;
+    if (set == null) return false;
+    final n = set.decoyPositions.length;
+    if (rng.nextInt(n) == 0) return false; // chance 1/n: real wizard is hit
+    final idx = rng.nextInt(n);
+    set.decoyPositions.removeAt(idx); // the illusion dies; nothing else moves
+    if (set.decoyPositions.isEmpty) state.wizardIllusions.remove(set);
+    return true;
+  }
+
+  /// Counter Charm passive (ARTIFACT_SYSTEM_PLAN.md §2.3): each of [attacker]'s
+  /// **unspent** charms gives 5% for a successful melee to destroy one of the
+  /// victim's mana gems or wither one of their in-hand spells. Linear, so `n`
+  /// charms is `n × 5%`, capped at 100.
+  ///
+  /// This is the passive that makes an Eldritch Knight / Mage Slayer archetype
+  /// real: dump all 12 loadout slots into charms, run on the innate 100 mana
+  /// pool with no gems at all, spend your limited casting on cheap self-buffs,
+  /// and force mages into a kiting game. It replaced an earlier "1% chance to
+  /// negate an incantation" proposal, which was swingy, invisible, and
+  /// unlearnable.
+  ///
+  /// **Draws from the shared melee [rng], deliberately — do NOT give it its
+  /// own stream.** That stream is already joint-entropy-seeded and sequenced at
+  /// the right point in the turn. It is also what makes the melee round's
+  /// sorted-playerId application order load-bearing rather than cosmetic: with
+  /// this proc, *every* melee consumes the stream, so any turn with two melees
+  /// would desync under the old local-first ordering (§6.1).
+  ///
+  /// Note this is NOT gated on [WizardAvatar.declaredActivation]: §2.2's gate
+  /// suppresses charms *firing their counter*, not the passive they radiate
+  /// while carried.
+  ///
+  /// Withers land in [drawSchedules] and the UI record in [procEvents]; both
+  /// are the caller's turn-scoped state, see this file's header.
+  void applyCounterCharmProc(
+    WizardAvatar attacker,
+    List<WizardAvatar> victims,
+    HashRng rng, {
+    required Map<String, DrawSchedule> drawSchedules,
+    required List<CounterCharmProcEvent> procEvents,
+  }) {
+    // Only UNSPENT charms count (§2.4): a charm that has fired its counter is
+    // used up and stops feeding the proc, so the 12-charm build self-limits
+    // (60% → 55% → 50%) instead of getting full counter coverage AND a full
+    // proc rate for free.
+    final charms = attacker.activeCounterCharmCount;
+    if (charms == 0) return;
+    final chancePct = min(charms * _kCounterCharmProcPctPerCharm, 100);
+
+    final sortedVictims = List<WizardAvatar>.from(victims)
+      ..sort((a, b) => a.playerId.compareTo(b.playerId));
+    for (final victim in sortedVictims) {
+      if (victim.playerId == attacker.playerId) continue;
+      // The roll is drawn whether or not the victim has anything to lose, so
+      // both devices consume the stream identically — a victim with nothing
+      // destructible fizzles AFTER the draw, never instead of it.
+      if (rng.nextInt(100) >= chancePct) continue;
+
+      final schedule = drawSchedules[victim.playerId];
+      // "Wither a bookmarked spell" is implemented as "wither a uniformly
+      // chosen in-hand, not-already-withered position": handSize is
+      // bookmarkCount + 1 and DrawSchedule.hand is a flat position list — no
+      // bookmark *owns* a slot, so there is no bookmark→position mapping to
+      // consult and none is needed.
+      final witherable = schedule == null
+          ? const <int>[]
+          : schedule.hand.where((p) => !schedule.withered.contains(p)).toList();
+
+      final options = <CounterCharmProcKind>[
+        if (victim.manaGemsEquipped > 0) CounterCharmProcKind.gemDestroyed,
+        if (witherable.isNotEmpty) CounterCharmProcKind.spellWithered,
+      ];
+      if (options.isEmpty) continue; // nothing to take — fizzles cleanly
+
+      final outcome = options[rng.nextInt(options.length)];
+      switch (outcome) {
+        case CounterCharmProcKind.gemDestroyed:
+          // Gems die permanently, hand slots do not (§2.5). The asymmetry is
+          // deliberate: gems are the engine, hand disruption is tempo.
+          consumeAccoutrement(victim, AccoutrementKind.manaGem);
+          syncMaxMana(victim);
+        case CounterCharmProcKind.spellWithered:
+          // Withering lasts until reactivated, identical to FuelTransmutation
+          // Fire's existing behaviour (§2.6) — no duration bookkeeping, and
+          // Earth's existing "reactivate 1 withered spell" already undoes it.
+          final position = witherable[rng.nextInt(witherable.length)];
+          drawSchedules[victim.playerId] = schedule!.witherPositions([position]);
+      }
+      procEvents.add(
+        CounterCharmProcEvent(
+          attackerId: attacker.playerId,
+          victimId: victim.playerId,
+          outcome: outcome,
+        ),
+      );
+    }
   }
 
   // ── Phase 5b: Summons act ─────────────────────────────────────────────────

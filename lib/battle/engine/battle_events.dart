@@ -121,3 +121,22 @@ class AttackEvent {
   /// that can strike from 2+ tiles away has anything to throw.
   bool get isMelee => range <= 1;
 }
+
+/// What a counter-charm melee proc took from its victim.
+enum CounterCharmProcKind { gemDestroyed, spellWithered }
+
+/// One counter-charm melee proc that landed this turn — UI-only bookkeeping so
+/// the battle screen can say *why* a gem vanished or a card greyed out. The
+/// state change itself has already been applied; [TurnLoop] never reads these
+/// back. An invisible proc reads as a bug rather than a mechanic.
+class CounterCharmProcEvent {
+  const CounterCharmProcEvent({
+    required this.attackerId,
+    required this.victimId,
+    required this.outcome,
+  });
+
+  final String attackerId;
+  final String victimId;
+  final CounterCharmProcKind outcome;
+}
