@@ -121,7 +121,7 @@
 // never gets to name an id. Commit/reveal shape identical to movement's.
 
 import 'dart:convert' show jsonDecode, jsonEncode, utf8;
-import 'dart:math' show max, min, pow;
+import 'dart:math' show max, pow;
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' show sha256;
@@ -181,7 +181,8 @@ export 'battle_events.dart';
 // deterministic seam alongside the operations that derive them. Re-exported so
 // every existing `import '.../turn_loop.dart'` naming them keeps compiling —
 // BattleScreen holds a TurnLoop and prices its free-move preview off this.
-export 'deterministic_resolution.dart' show FreeMoveGrant, kBoostManaPerTile;
+export 'deterministic_resolution.dart'
+    show FreeMoveGrant, kActivatableArtifactKinds, kBoostManaPerTile;
 
 // The TurnAction hierarchy and the two events action resolution emits moved to
 // turn_actions.dart, so deterministic_resolution.dart can name them without
@@ -278,15 +279,8 @@ const _kMaxMana = 9999;
 // The Counter Charm proc rate moved to the deterministic seam with the melee
 // application it prices (deterministic_resolution.dart, "Phase 4b").
 
-/// Rod of Wind passive: percentage points, per carried rod, of ONE
-/// end-of-turn roll for +1 movement on the following turn
-/// (ARTIFACT_SYSTEM_PLAN.md §2.8/§3.2). Capped at 100, so 10+ rods is a
-/// guaranteed extra tile every turn — an archetype-defining passive parallel
-/// to the mage slayer's.
-///
-/// `[TODO — playtest]` — both the rate and whether that 100% cap is the
-/// archetype it should be.
-const _kRodMovementPctPerRod = 10;
+// The Rod of Wind's per-rod movement chance moved to the deterministic seam
+// with the roll it prices (deterministic_resolution.dart, "Phase 0").
 
 /// Domain-separation tag for the per-turn signed state-hash (Phase D,
 /// BATTLE_AUTH_PLAN.md §6). Distinct from battle_session.dart's
@@ -376,25 +370,18 @@ typedef SummonMovementPlayback =
 /// so headless callers animate nothing.
 typedef AttackPlayback = Future<void> Function(List<AttackEvent> attacks);
 
-/// The loadout artifacts a player may declare at Phase 0.
-///
-/// [AccoutrementKind.counterCharm] is deliberately absent — charms self-trigger
-/// at Phase 5 and have no voluntary activation, which is exactly why an
-/// all-charm "mage slayer" loadout is never off-guard (§2.3). The summon-only
-/// kind ([AccoutrementKind.absorptionRod]) is absent because it has no
-/// loadout presence at all and keeps its existing on-hit behaviour untouched.
-const kActivatableArtifactKinds = <AccoutrementKind>[
-  AccoutrementKind.manaGem,
-  AccoutrementKind.bookmark,
-  AccoutrementKind.rodOfSpreading,
-];
+// `kActivatableArtifactKinds` — which loadout artifacts may be declared at
+// Phase 0 — moved to the deterministic seam with the validation that reads it
+// (deterministic_resolution.dart, "Phase 0"), and is re-exported above for the
+// UI, which long-presses against the same list.
 
 /// Both players' settled Phase-0 declarations for one turn — what
 /// [TurnLoop.beginArtifactPhase] returns and [TurnLoop.lastArtifactActivations]
 /// holds.
 ///
 /// Post-validation: a field is non-null only if that player really held the
-/// declared artifact (see [TurnLoop._validateActivation]), so the UI can render
+/// declared artifact (see [DeterministicResolution.validateActivation]), so the
+/// UI can render
 /// these directly without re-checking. A non-null [peer] is the information the
 /// whole Phase-0 design exists to deliver — their counter charms are down this
 /// turn, and the local player still has time to act on it.
@@ -1314,7 +1301,7 @@ class TurnLoop
   /// nothing into the look-ahead-sensitive systems (spell retargeting, burn
   /// targeting, summon collision) because it is never used for any of them —
   /// only for a player's own rod roll and their own bookmark redraw (see
-  /// [_applyArtifactActivation]'s bookmark case).
+  /// [DeterministicResolution.applyArtifactActivation]'s bookmark case).
   ///
   /// Unconditional every turn — the rod passive isn't gated on a Phase-0
   /// declaration at all, so this can't wait for one. Memoized and safe to
@@ -1332,21 +1319,21 @@ class TurnLoop
     final avatars = List<WizardAvatar>.from(state.avatars)
       ..sort((a, b) => a.playerId.compareTo(b.playerId));
     for (final av in avatars) {
-      if (!av.isAlive) continue;
-      // One roll at min(rods × 10, 100)%, not one roll per rod (§3.2).
-      final rods = av.rodOfSpreadingCount;
-      if (rods == 0) continue;
-      final chancePct = min(rods * _kRodMovementPctPerRod, 100);
-      final roll = HashRng(
-        _playerPhaseSeed(entropy, matchId, state.turnNumber, 0x0A, av.playerId),
-      ).nextInt(100);
-      // remainingTurns: 1 is genuinely one-shot now: this status is read by
-      // this SAME turn's movement sizing (below, before Phase 6), then
-      // ticked away by this same turn's Phase 6 — it does not carry into
-      // next turn. That is correct: a fresh roll happens every turn.
-      if (roll < chancePct) {
-        _addStatus(av, StatusEffectId.rodMobility, {'speedDelta': 1}, 1);
-      }
+      // Each avatar's roll is its own phase-seeded stream, so building the RNG
+      // for a wizard who turns out to hold no rod costs a hash that is never
+      // drawn from and cannot shift anyone else's roll.
+      _resolution.applyRodMobilityRoll(
+        av,
+        HashRng(
+          _playerPhaseSeed(
+            entropy,
+            matchId,
+            state.turnNumber,
+            0x0A,
+            av.playerId,
+          ),
+        ),
+      );
     }
     return entropy;
   }
@@ -1361,7 +1348,7 @@ class TurnLoop
 
     final localAvatar = _localAvatar();
     final available = localAvatar.isAlive
-        ? _activatableKinds(localAvatar)
+        ? _resolution.activatableKinds(localAvatar)
         : const <AccoutrementKind>[];
     final localChoice = available.isEmpty
         ? null
@@ -1391,11 +1378,23 @@ class TurnLoop
     ]..sort((a, b) => a.$1.playerId.compareTo(b.$1.playerId));
 
     for (final (avatar, declared) in declarations) {
-      _applyArtifactActivation(
+      // Validation and application are both across the seam; the bookmark burn
+      // hands its redraw back because re-dealing a hand touches this device's
+      // private draw state (deterministic_resolution.dart, "Phase 0"). The
+      // redraw runs inside this same loop iteration, so it still lands between
+      // the two declarations exactly where it always did.
+      final redrawHandSize = _resolution.applyArtifactActivation(
         avatar,
-        _validateActivation(avatar, declared),
-        artifactEntropy,
+        _resolution.validateActivation(avatar, declared),
       );
+      if (redrawHandSize != null) {
+        _redrawHand(
+          avatar.playerId,
+          artifactEntropy,
+          handSize: redrawHandSize,
+          tag: 0x09,
+        );
+      }
     }
 
     final round = ArtifactActivationRound(
@@ -1406,121 +1405,14 @@ class TurnLoop
     return round;
   }
 
-  /// The artifact kinds [av] could legally declare right now: the
-  /// [kActivatableArtifactKinds] they actually carry at least one of.
-  List<AccoutrementKind> _activatableKinds(WizardAvatar av) => [
-    for (final kind in kActivatableArtifactKinds)
-      if (av.accoutrements.any((a) => a.kind == kind)) kind,
-  ];
-
-  /// **The Phase-0 trust boundary** (ARTIFACT_SYSTEM_PLAN.md §5), and the only
-  /// one — the local player's own declaration goes through this same call, so
-  /// there is never a second, laxer path (the B-1/B-8 lesson).
-  ///
-  /// Returns [declared] if [av] may really spend it this turn, else null. A
-  /// rejected declaration degrades to no-activation rather than forfeiting:
-  /// both devices run this check against the same state and reach the same
-  /// verdict, and a desync here would be indistinguishable from a stale
-  /// client, so a silent discard is the honest outcome.
-  AccoutrementKind? _validateActivation(
-    WizardAvatar av,
-    AccoutrementKind? declared,
-  ) {
-    if (declared == null) return null;
-    // A dead wizard spends nothing. Both devices agree on who is alive at
-    // Phase 0 (nothing has resolved yet this turn), so this is safe to gate on.
-    if (!av.isAlive) return null;
-    // Never counterCharm (charms self-trigger), never a summon-only kind.
-    if (!kActivatableArtifactKinds.contains(declared)) return null;
-    // At most one activation per player per turn.
-    if (av.declaredActivation != null) return null;
-    // A peer cannot spend what it does not hold. No sub-filter for manaGem:
-    // every gem is consumable now that the indestructible core gem is gone,
-    // including the last one (§2 derived rulings).
-    if (!av.accoutrements.any((a) => a.kind == declared)) return null;
-    return declared;
-  }
-
-  /// Records [kind] as [av]'s activation for this turn and applies whatever
-  /// takes effect immediately. Null is a no-op — [av] declared nothing, or
-  /// their declaration failed [_validateActivation]. [artifactEntropy] is
-  /// this turn's dedicated Phase-0 entropy (see [beginArtifactEntropy]),
-  /// needed by the bookmark redraw.
-  ///
-  /// Not every activation resolves here: the Rod of Wind's *activation* is
-  /// still realised at cast time by [_consumeRodOfSpreading] (single
-  /// rod-consumption path; its movement *passive* is unrelated and rolled by
-  /// [beginArtifactEntropy]). Mana gem and bookmark both resolve instantly —
-  /// amended 2026-07-31, ARTIFACT_SYSTEM_PLAN.md §2.7's original "resolves at
-  /// Phase 6, new hand next turn" is superseded, see [beginArtifactEntropy]'s
-  /// doc comment for why.
-  void _applyArtifactActivation(
-    WizardAvatar av,
-    AccoutrementKind? kind,
-    Uint8List artifactEntropy,
-  ) {
-    if (kind == null) return;
-    av.declaredActivation = kind;
-
-    switch (kind) {
-      case AccoutrementKind.manaGem:
-        // Order is load-bearing (ARTIFACT_SYSTEM_PLAN.md §6.2): shrink the
-        // pool FIRST, then grant. maxMana is stored state, not a live
-        // derivation, so removing the gem alone would leave a stale pool and
-        // desync the state hash — hence _syncMaxMana rather than an open-coded
-        // `maxMana -= 100`. Granting after the shrink is what makes the burst
-        // worthless at near-full mana: this is an emergency button, not free
-        // value. Spending your LAST gem is legal and drops you to the innate
-        // pool with zero passive regen — a real, self-inflicted cost, which is
-        // exactly the trade this activation is meant to be.
-        _consumeAccoutrement(av, AccoutrementKind.manaGem);
-        _syncMaxMana(av);
-        _applyManaGain(av, state.config.manaGemPoolPerGem);
-
-      case AccoutrementKind.bookmark:
-        // Burned AND redrawn immediately, both in this same Phase-0 step —
-        // the new hand is available for THIS turn's own action choice, using
-        // the dedicated artifact entropy rather than this turn's main
-        // entropy (which doesn't exist yet this early in the turn). §2.7's
-        // price is now just the permanent hand slot; the tempo cost is gone.
-        _consumeAccoutrement(av, AccoutrementKind.bookmark);
-        _redrawHand(
-          av.playerId,
-          artifactEntropy,
-          handSize: av.bookmarkCount + 1,
-          tag: 0x09,
-        );
-
-      case AccoutrementKind.rodOfSpreading:
-        // Not consumed here: _consumeRodOfSpreading remains the single
-        // consumption path, and it runs at cast time so a declared rod that
-        // never gets spent (no cast, a fizzle, a counter) is not destroyed —
-        // only the activation budget is wasted.
-        break;
-
-      case AccoutrementKind.counterCharm:
-      case AccoutrementKind.absorptionRod:
-        // Unreachable: _validateActivation rejects these kinds. Listed
-        // exhaustively so adding an AccoutrementKind is a compile error here
-        // rather than a silent no-op.
-        break;
-    }
-  }
-
-  /// See [DeterministicResolution.consumeAccoutrement].
-  bool _consumeAccoutrement(WizardAvatar av, AccoutrementKind kind) =>
-      _resolution.consumeAccoutrement(av, kind);
-
-  /// See [DeterministicResolution.syncMaxMana].
-  void _syncMaxMana(WizardAvatar av) => _resolution.syncMaxMana(av);
-
   static Uint8List _encodeActivation(AccoutrementKind? kind) => kind == null
       ? Uint8List.fromList([0x00])
       : Uint8List.fromList([0x01, kind.index]);
 
   /// Decodes an activation declaration from [data] at [offset]. Anything
   /// malformed — truncated, unknown lead byte, out-of-range kind index —
-  /// reads as "declared nothing", which [_validateActivation] would have
+  /// reads as "declared nothing", which
+  /// [DeterministicResolution.validateActivation] would have
   /// reduced it to anyway.
   static AccoutrementKind? _decodeActivation(Uint8List data, int offset) {
     if (offset >= data.length || data[offset] != 0x01) return null;
@@ -4802,13 +4694,6 @@ class TurnLoop
   /// individual mover having to remember it.
   void _dispelIllusionsNearScryers() =>
       EffectApplicator.dispelIllusionsNearScryers(state);
-
-  void _addStatus(
-    WizardAvatar av,
-    String typeId,
-    Map<String, int> mods,
-    int turns,
-  ) => _resolution.addStatus(av, typeId, mods, turns);
 
   // ── Formula helpers ───────────────────────────────────────────────────────
 

@@ -119,11 +119,16 @@
 //
 // ## What is NOT here yet
 //
-// Melee is still in `TurnLoop`: the haymaker, the illusion redirect, and the
-// counter-charm proc. It is deterministic underneath and has no suspension in
-// it at all — only the *prompt* and the commit-reveal around it do — so it
-// should come across the way the free-move window did, as operations rather
-// than as a phase.
+// Phase 0 (artifact activation) came seventh and last of the deterministic
+// islands, as operations again — see the "Phase 0" section below for the one
+// interesting wrinkle: the bookmark burn's hand redraw is device-relative, so
+// the operation *returns* the redraw it owes instead of calling back for it.
+//
+// What remains on the other side of the seam is not rules at all: trust
+// (proof intake and verification, book membership, certified-cast derivation),
+// wire codecs, and the protocol sequencing that drives them. Those are
+// TurnLoop's own three jobs and the next thing to look at, but none of them is
+// deterministic resolution and none of them belongs in this file.
 
 import 'dart:math' show max, min;
 import 'dart:typed_data';
@@ -171,6 +176,30 @@ import 'tile_entry_resolver.dart';
 import 'trajectory_parser.dart' show ParsedFormula;
 import 'turn_actions.dart';
 import 'wild_magic_applicator.dart';
+
+// ── Phase 0: Artifact activation ──────────────────────────────────────────────
+
+/// The loadout artifacts a player may declare at Phase 0.
+///
+/// [AccoutrementKind.counterCharm] is deliberately absent — charms self-trigger
+/// at Phase 5 and have no voluntary activation, which is exactly why an
+/// all-charm "mage slayer" loadout is never off-guard (§2.3). The summon-only
+/// kind ([AccoutrementKind.absorptionRod]) is absent because it has no
+/// loadout presence at all and keeps its existing on-hit behaviour untouched.
+const kActivatableArtifactKinds = <AccoutrementKind>[
+  AccoutrementKind.manaGem,
+  AccoutrementKind.bookmark,
+  AccoutrementKind.rodOfSpreading,
+];
+
+/// Rod of Wind passive: percentage points, per carried rod, of ONE
+/// roll for +1 movement (ARTIFACT_SYSTEM_PLAN.md §2.8/§3.2). Capped at 100, so
+/// 10+ rods is a guaranteed extra tile every turn — an archetype-defining
+/// passive parallel to the mage slayer's.
+///
+/// `[TODO — playtest]` — both the rate and whether that 100% cap is the
+/// archetype it should be.
+const _kRodMovementPctPerRod = 10;
 
 // ── Free-move window ──────────────────────────────────────────────────────────
 
@@ -412,6 +441,148 @@ class DeterministicResolution {
   DeterministicResolution(this.state);
 
   final BattleState state;
+
+  // ── Phase 0: Artifact activation ──────────────────────────────────────────
+  //
+  // Seventh across the seam, and the last phase-shaped deterministic island
+  // TurnLoop held. Phase 0 is a commit-reveal round whose *result* decides what
+  // is applied, so — like the free-move window and the melee round — the phase
+  // itself cannot come across; only its operations do. What a wizard may
+  // declare ([activatableKinds]), whether a declaration is really spendable
+  // ([validateActivation], the Phase-0 trust boundary), what spending it does
+  // ([applyArtifactActivation]), and the Rod of Wind's per-turn movement roll
+  // ([applyRodMobilityRoll]) are all functions of state. TurnLoop keeps the
+  // picker, both exchanges, the reveal verification, and the sorted order the
+  // two applications run in.
+  //
+  // The bookmark burn is the one effect that does not finish here: re-dealing a
+  // hand touches TurnLoop's draw schedules *and* `localSpellDraw` — the
+  // contents of a hand that are private to one device, i.e. exactly the "which
+  // device is this" knowledge this class refuses to have. Rather than take a
+  // host callback for it, [applyArtifactActivation] returns the hand size the
+  // burner must be re-dealt at and TurnLoop performs the redraw immediately
+  // after. That is the Phase-5b split applied to a host call instead of a
+  // playback callback: nothing after the redraw decides anything, so cutting
+  // there costs no ordering.
+
+  /// The artifact kinds [av] could legally declare right now: the
+  /// [kActivatableArtifactKinds] they actually carry at least one of.
+  List<AccoutrementKind> activatableKinds(WizardAvatar av) => [
+    for (final kind in kActivatableArtifactKinds)
+      if (av.accoutrements.any((a) => a.kind == kind)) kind,
+  ];
+
+  /// **The Phase-0 trust boundary** (ARTIFACT_SYSTEM_PLAN.md §5), and the only
+  /// one — the local player's own declaration goes through this same call, so
+  /// there is never a second, laxer path (the B-1/B-8 lesson).
+  ///
+  /// Returns [declared] if [av] may really spend it this turn, else null. A
+  /// rejected declaration degrades to no-activation rather than forfeiting:
+  /// both devices run this check against the same state and reach the same
+  /// verdict, and a desync here would be indistinguishable from a stale
+  /// client, so a silent discard is the honest outcome.
+  AccoutrementKind? validateActivation(
+    WizardAvatar av,
+    AccoutrementKind? declared,
+  ) {
+    if (declared == null) return null;
+    // A dead wizard spends nothing. Both devices agree on who is alive at
+    // Phase 0 (nothing has resolved yet this turn), so this is safe to gate on.
+    if (!av.isAlive) return null;
+    // Never counterCharm (charms self-trigger), never a summon-only kind.
+    if (!kActivatableArtifactKinds.contains(declared)) return null;
+    // At most one activation per player per turn.
+    if (av.declaredActivation != null) return null;
+    // A peer cannot spend what it does not hold. No sub-filter for manaGem:
+    // every gem is consumable now that the indestructible core gem is gone,
+    // including the last one (§2 derived rulings).
+    if (!av.accoutrements.any((a) => a.kind == declared)) return null;
+    return declared;
+  }
+
+  /// Records [kind] as [av]'s activation for this turn and applies whatever
+  /// takes effect immediately. Null is a no-op — [av] declared nothing, or
+  /// their declaration failed [validateActivation].
+  ///
+  /// Returns the hand size [av] must be re-dealt at, or null when no redraw is
+  /// owed: burning a bookmark re-deals its owner's hand one slot smaller, and
+  /// that redraw is the caller's to run (see this section's header). Every
+  /// other activation returns null.
+  ///
+  /// Not every activation resolves here: the Rod of Wind's *activation* is
+  /// still realised at cast time by [_consumeRodOfSpreading] (single
+  /// rod-consumption path; its movement *passive* is unrelated and rolled by
+  /// [applyRodMobilityRoll]). Mana gem and bookmark both resolve instantly —
+  /// amended 2026-07-31, ARTIFACT_SYSTEM_PLAN.md §2.7's original "resolves at
+  /// Phase 6, new hand next turn" is superseded, see `TurnLoop
+  /// .beginArtifactEntropy`'s doc comment for why.
+  int? applyArtifactActivation(WizardAvatar av, AccoutrementKind? kind) {
+    if (kind == null) return null;
+    av.declaredActivation = kind;
+
+    switch (kind) {
+      case AccoutrementKind.manaGem:
+        // Order is load-bearing (ARTIFACT_SYSTEM_PLAN.md §6.2): shrink the
+        // pool FIRST, then grant. maxMana is stored state, not a live
+        // derivation, so removing the gem alone would leave a stale pool and
+        // desync the state hash — hence _syncMaxMana rather than an open-coded
+        // `maxMana -= 100`. Granting after the shrink is what makes the burst
+        // worthless at near-full mana: this is an emergency button, not free
+        // value. Spending your LAST gem is legal and drops you to the innate
+        // pool with zero passive regen — a real, self-inflicted cost, which is
+        // exactly the trade this activation is meant to be.
+        _consumeAccoutrement(av, AccoutrementKind.manaGem);
+        _syncMaxMana(av);
+        applyManaGain(av, state.config.manaGemPoolPerGem);
+        return null;
+
+      case AccoutrementKind.bookmark:
+        // Burned AND redrawn immediately, both in this same Phase-0 step —
+        // the new hand is available for THIS turn's own action choice, using
+        // the dedicated artifact entropy rather than this turn's main
+        // entropy (which doesn't exist yet this early in the turn). §2.7's
+        // price is now just the permanent hand slot; the tempo cost is gone.
+        // The count is read AFTER the burn, so the returned size is already
+        // one slot smaller.
+        _consumeAccoutrement(av, AccoutrementKind.bookmark);
+        return av.bookmarkCount + 1;
+
+      case AccoutrementKind.rodOfSpreading:
+        // Not consumed here: _consumeRodOfSpreading remains the single
+        // consumption path, and it runs at cast time so a declared rod that
+        // never gets spent (no cast, a fizzle, a counter) is not destroyed —
+        // only the activation budget is wasted.
+        return null;
+
+      case AccoutrementKind.counterCharm:
+      case AccoutrementKind.absorptionRod:
+        // Unreachable: validateActivation rejects these kinds. Listed
+        // exhaustively so adding an AccoutrementKind is a compile error here
+        // rather than a silent no-op.
+        return null;
+    }
+  }
+
+  /// Rolls [av]'s Rod of Wind movement passive for this turn: one roll at
+  /// min(rods × [_kRodMovementPctPerRod], 100)%, not one roll per rod (§3.2).
+  ///
+  /// [rng] is seeded per-player by the caller from the turn's dedicated
+  /// Phase-0 entropy, so each avatar's roll is an independent stream and the
+  /// order this is called in cannot change any outcome. A dead or rodless
+  /// avatar draws nothing at all.
+  ///
+  /// `remainingTurns: 1` is genuinely one-shot: the status is read by THIS
+  /// turn's movement sizing and ticked away by this same turn's Phase 6 — it
+  /// does not carry over. That is correct; a fresh roll happens every turn.
+  void applyRodMobilityRoll(WizardAvatar av, HashRng rng) {
+    if (!av.isAlive) return;
+    final rods = av.rodOfSpreadingCount;
+    if (rods == 0) return;
+    final chancePct = min(rods * _kRodMovementPctPerRod, 100);
+    if (rng.nextInt(100) < chancePct) {
+      _addStatus(av, StatusEffectId.rodMobility, {'speedDelta': 1}, 1);
+    }
+  }
 
   // ── Phase 3: Avatar movement ──────────────────────────────────────────────
   //
@@ -857,7 +1028,7 @@ class DeterministicResolution {
 
       // Earth haymaker: slow target.
       if (actor.hasHaymakerSlow) {
-        addStatus(av, StatusEffectId.speedDown, {'speedDelta': -1}, 2);
+        _addStatus(av, StatusEffectId.speedDown, {'speedDelta': -1}, 2);
       }
 
       // Water haymaker: strip 1 turn from all target status effects.
@@ -880,7 +1051,7 @@ class DeterministicResolution {
     if (actor.hasHaymakerDot) {
       for (final av in _avatarsAt(targetTile)) {
         if (redirected.contains(av.playerId)) continue;
-        addStatus(av, StatusEffectId.haymakerDot, {'damagePerTick': 1}, 3);
+        _addStatus(av, StatusEffectId.haymakerDot, {'damagePerTick': 1}, 3);
       }
     }
 
@@ -985,8 +1156,8 @@ class DeterministicResolution {
         case CounterCharmProcKind.gemDestroyed:
           // Gems die permanently, hand slots do not (§2.5). The asymmetry is
           // deliberate: gems are the engine, hand disruption is tempo.
-          consumeAccoutrement(victim, AccoutrementKind.manaGem);
-          syncMaxMana(victim);
+          _consumeAccoutrement(victim, AccoutrementKind.manaGem);
+          _syncMaxMana(victim);
         case CounterCharmProcKind.spellWithered:
           // Withering lasts until reactivated, identical to FuelTransmutation
           // Fire's existing behaviour (§2.6) — no duration bookkeeping, and
@@ -1523,7 +1694,7 @@ class DeterministicResolution {
       final av = target.avatar!;
       av.absorbDamage(damage);
       if (muddy)
-        addStatus(av, StatusEffectId.speedDown, {'speedDelta': -1}, 1);
+        _addStatus(av, StatusEffectId.speedDown, {'speedDelta': -1}, 1);
     } else if (target.minion != null) {
       final m = target.minion!;
       m.takeDamage(damage, attackType: attacker.affinity);
@@ -1881,7 +2052,7 @@ class DeterministicResolution {
             final isOut =
                 hexDistance(av.position, cloud.position) > cloud.radius;
             if (wasIn && isOut) {
-              addStatus(
+              _addStatus(
                 av,
                 StatusEffectId.cloudBoundTargeting,
                 {},
@@ -2117,7 +2288,7 @@ class DeterministicResolution {
     }
   }
 
-  void addStatus(
+  void _addStatus(
     WizardAvatar av,
     String typeId,
     Map<String, int> mods,
@@ -3021,7 +3192,7 @@ class DeterministicResolution {
   /// not the artifact.
   int _consumeRodOfSpreading(WizardAvatar actor, bool requested) {
     if (!requested) return 0;
-    return consumeAccoutrement(actor, AccoutrementKind.rodOfSpreading) ? 1 : 0;
+    return _consumeAccoutrement(actor, AccoutrementKind.rodOfSpreading) ? 1 : 0;
   }
 
   // ── Summoning (design doc "Summons") ──────────────────────────────────────
@@ -3331,11 +3502,12 @@ class DeterministicResolution {
   //
   // Public because TurnLoop's mana costing still reads them — one derivation of
   // "what formulas does this spell have" for both the price and the effect, so
-  // the two cannot drift (B-1/B-8).
+  // the two cannot drift (B-1/B-8). [_zoneFromName] is the exception: the two
+  // helpers below are its only callers anywhere, so it is private.
 
   static List<ParsedFormula> parsedFormulas(SpellAsset spell) {
     final zones = spell.formula
-        .map(zoneFromName)
+        .map(_zoneFromName)
         .whereType<BorderZone>()
         .toList();
     final formulas = <ParsedFormula>[];
@@ -3366,7 +3538,7 @@ class DeterministicResolution {
     return first;
   }
 
-  static BorderZone? zoneFromName(String name) => switch (name.toLowerCase()) {
+  static BorderZone? _zoneFromName(String name) => switch (name.toLowerCase()) {
     'fire' => BorderZone.fire,
     'earth' => BorderZone.earth,
     'water' => BorderZone.water,
@@ -3378,21 +3550,21 @@ class DeterministicResolution {
   /// spell -- unlike [parsedFormulas], residuals are kept (see
   /// CreatureSpec.fromElements: every activation counts toward a creature).
   static List<BorderZone> elementSequence(SpellAsset spell) =>
-      spell.formula.map(zoneFromName).whereType<BorderZone>().toList();
+      spell.formula.map(_zoneFromName).whereType<BorderZone>().toList();
 
   // ── Accoutrement bookkeeping ──────────────────────────────────────────────
   //
-  // Public for the same reason: the melee counter-charm proc and the Phase-0
-  // artifact activation, both still in TurnLoop, consume accoutrements too, and
-  // a second copy of "remove one of this kind, deterministically" is exactly
-  // the kind of duplicate that drifts.
+  // Private now that Phase-0 artifact activation has crossed the seam: the
+  // melee counter-charm proc, the rod's cast-time consumption and the gem burn
+  // are all in this file, so "remove one of this kind, deterministically" has
+  // one copy and no external entry point that could grow a second.
 
   /// Removes one accoutrement of [kind] from [av], scanning the owner's
   /// accoutrements sorted by id and taking the first match — the same
   /// deterministic tie-break [_findCounteringCharm] uses, and the reason a wire
   /// declaration can name a kind instead of an id. Returns false if [av] holds
   /// none.
-  bool consumeAccoutrement(WizardAvatar av, AccoutrementKind kind) {
+  bool _consumeAccoutrement(WizardAvatar av, AccoutrementKind kind) {
     final match = (List<Accoutrement>.from(av.accoutrements)
           ..sort((a, b) => a.id.compareTo(b.id)))
         .where((a) => a.kind == kind)
@@ -3407,7 +3579,7 @@ class DeterministicResolution {
   /// EffectApplicator._syncMaxMana — [WizardAvatar.maxMana] is hashed state,
   /// not a live derivation, so any gem gained or lost must resync it or the two
   /// devices' state hashes drift.
-  void syncMaxMana(WizardAvatar av) {
+  void _syncMaxMana(WizardAvatar av) {
     av.maxMana = av.maxManaFor(state.config);
     if (av.mana > av.maxMana) av.mana = av.maxMana;
   }
