@@ -14,6 +14,8 @@
 
 import 'package:rune_duel/battle/models/wild_magic_effect.dart'
     show kDefaultCommunitySeed, normalizeCommunitySeed;
+import 'package:rune_duel/battle/engine/battle_engine_version.dart'
+    show kBattleEngineVersion, kUndeclaredBattleEngineVersion;
 import 'package:rune_duel/spells/inscribe.dart' show kRulesetVersion;
 
 // ── Win condition ─────────────────────────────────────────────────────────────
@@ -35,6 +37,7 @@ class MatchConfig {
     this.gridRadius = 4,
     this.baseRange = 3,
     this.rulesetVersion = kRulesetVersion,
+    this.battleEngineVersion = kBattleEngineVersion,
     this.tier = 24,
     this.accoutrementLoadoutId,
     this.innateManaPool = 100,
@@ -69,6 +72,23 @@ class MatchConfig {
   /// while the circuits were on 3, which made the negotiated value meaningless.
   /// See CIRCUIT_IO.md §6.
   final int rulesetVersion;
+
+  /// The deterministic battle-engine epoch this match is pinned to — which
+  /// rules both devices run to compute the same canonical [BattleState] from
+  /// the same inputs (ordering of simultaneous actions, RNG binding, effect
+  /// resolution).
+  ///
+  /// Deliberately NOT [rulesetVersion]. That one is the proof/circuit epoch: a
+  /// bump there invalidates every inscribed spell's VK. This one is battle-only
+  /// — the circuit certifies nothing about, say, which of two simultaneous
+  /// free-move runs walks first, so a proof-epoch check cannot see an engine
+  /// disagreement at all. See battle_engine_version.dart.
+  ///
+  /// Defaults to [kBattleEngineVersion], the single canonical definition. A
+  /// config decoded from a peer that predates this field reads as
+  /// [kUndeclaredBattleEngineVersion] (0) rather than silently adopting our own
+  /// value — `runDuelSetup` refuses the match on anything but an exact match.
+  final int battleEngineVersion;
 
   /// Circuit tier (12 / 24 / 48) — smallest covering the declared max T.
   /// Tier 48 requires ≥6 GB RAM; gated by DeviceCapabilities.ramTierCap.
@@ -175,6 +195,7 @@ class MatchConfig {
       gridRadius == other.gridRadius &&
       baseRange == other.baseRange &&
       rulesetVersion == other.rulesetVersion &&
+      battleEngineVersion == other.battleEngineVersion &&
       tier == other.tier &&
       innateManaPool == other.innateManaPool &&
       manaGemPoolPerGem == other.manaGemPoolPerGem &&
@@ -199,6 +220,7 @@ class MatchConfig {
         'gridRadius': gridRadius,
         'baseRange': baseRange,
         'rulesetVersion': rulesetVersion,
+        'battleEngineVersion': battleEngineVersion,
         'tier': tier,
         if (accoutrementLoadoutId != null) 'accoutrementLoadoutId': accoutrementLoadoutId,
         'innateManaPool': innateManaPool,
@@ -218,6 +240,12 @@ class MatchConfig {
         gridRadius: j['gridRadius'] as int? ?? 4,
         baseRange: j['baseRange'] as int? ?? 3,
         rulesetVersion: j['rulesetVersion'] as int? ?? kRulesetVersion,
+        // NOT defaulted to our own constant, unlike every other field here: a
+        // peer that omits this predates the engine-version gate, and reading
+        // its silence as "agrees with us" is precisely the failure this field
+        // exists to prevent.
+        battleEngineVersion:
+            j['battleEngineVersion'] as int? ?? kUndeclaredBattleEngineVersion,
         tier: j['tier'] as int? ?? 24,
         accoutrementLoadoutId: j['accoutrementLoadoutId'] as String?,
         innateManaPool: j['innateManaPool'] as int? ?? 100,

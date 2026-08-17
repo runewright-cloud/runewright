@@ -18,8 +18,10 @@
 // Sequence (fail-closed on every negative — forfeit + throw, never silent
 // accept, mirroring BattleSession.exchangeIdentityAuth's own discipline):
 //   1. Agree matchId (DECISION 1) — neither side unilaterally controls it.
-//   2. Exchange + check capabilities (protocol-version gate).
-//   3. Match config — host authoritative (DECISION 3).
+//   2. Exchange + check capabilities (wire-protocol gate, then the
+//      battle-engine consensus gate — battle_engine_version.dart).
+//   3. Match config — host authoritative (DECISION 3), and the engine epoch
+//      the agreed config pins is checked against this build's.
 //   4. Identity auth (BATTLE_AUTH_PLAN §3 — already built).
 //   5. Spell-permission exchange (BATTLE_AUTH_PLAN §5) — both our grants
 //      naming the peer (restricted to spells in our own chapter) and the
@@ -56,6 +58,7 @@ import '../../spells/spell_asset.dart' show SpellAsset;
 import '../../spells/spell_identity.dart'
     show SpellKinEntry, kinStackingLeaves, newKinRevealSalt;
 import '../../spells/spell_permission.dart' show SpellPermission;
+import '../engine/battle_engine_version.dart' show kBattleEngineVersion;
 import '../engine/book_commitment.dart';
 import '../models/battle_state.dart';
 import '../models/duel_battle_setup.dart';
@@ -184,6 +187,27 @@ Future<DuelSetupResult> runDuelSetup({
     );
   }
 
+  // Step 2b: battle-engine consensus gate (battle_engine_version.dart). The
+  // capabilities exchange is the only symmetric declaration in the handshake —
+  // both peers state their own build at once — so it is the only place either
+  // side can learn the OTHER's engine epoch. The config that follows is
+  // host-authored, and an old guest that adopted it would announce nothing at
+  // all.
+  //
+  // Both roles run the identical comparison (peer's declaration vs this
+  // build's constant), so the verdict does not depend on who is host, who
+  // connected first, or which device is asking. It runs before identity auth,
+  // before the config, before any state exists — an incompatible pair never
+  // reaches turn 1, rather than discovering it as a state-hash mismatch
+  // mid-duel with no way to tell an old build from a cheat.
+  if (peerCaps.battleEngineVersion != kBattleEngineVersion) {
+    session.sendForfeit('battle_engine_mismatch');
+    throw StateError(
+      'battle engine version mismatch (local=$kBattleEngineVersion, '
+      'peer=${peerCaps.battleEngineVersion}) — match aborted',
+    );
+  }
+
   // Step 3: match config — host authoritative (DECISION 3).
   final MatchConfig effectiveConfig;
   if (role == DuelRole.host) {
@@ -191,6 +215,22 @@ Future<DuelSetupResult> runDuelSetup({
     effectiveConfig = hostConfig;
   } else {
     effectiveConfig = await session.receiveHostMatchConfig();
+  }
+
+  // Step 3b: the engine epoch the match is PINNED to, which is a different
+  // question from what the peer's build is (step 2b). Both sides check the
+  // agreed config against this build's constant, so a config authored under
+  // rules this build does not implement — a stale stored config, a host on a
+  // build whose capabilities lied, a future negotiated downgrade — is refused
+  // here rather than silently played under whichever semantics happen to be
+  // compiled in.
+  if (effectiveConfig.battleEngineVersion != kBattleEngineVersion) {
+    session.sendForfeit('battle_engine_mismatch');
+    throw StateError(
+      'match config pins battle engine version '
+      '${effectiveConfig.battleEngineVersion} but this build implements '
+      '$kBattleEngineVersion — match aborted',
+    );
   }
 
   // Step 4: identity auth (BATTLE_AUTH_PLAN §3). Throws + forfeits internally

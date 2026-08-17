@@ -20,6 +20,8 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:nsd/nsd.dart' as nsd;
 
+import '../engine/battle_engine_version.dart'
+    show kBattleEngineVersion, kUndeclaredBattleEngineVersion;
 import '../../protocol/lan_discovery.dart';
 import '../../protocol/lan_socket_transport.dart';
 import '../../protocol/transport.dart';
@@ -73,6 +75,7 @@ class DeviceCapabilities {
   const DeviceCapabilities({
     required this.ramTierCap,
     this.battleProtocolVersion = kBattleProtocolVersion,
+    this.battleEngineVersion = kBattleEngineVersion,
   });
 
   final int ramTierCap; // 12 | 24 | 48
@@ -80,14 +83,33 @@ class DeviceCapabilities {
   /// See [kBattleProtocolVersion].
   final int battleProtocolVersion;
 
+  /// The deterministic engine epoch this device implements — see
+  /// [kBattleEngineVersion]. Declared here, alongside the wire-framing
+  /// version, because this is the one exchange in the whole handshake where
+  /// both peers state their own build simultaneously: the match config that
+  /// follows is host-authored (the guest adopts it), so it can pin what the
+  /// match runs under but can never reveal what the *guest* is running.
+  ///
+  /// Deliberately does NOT bump [battleProtocolVersion]: adding a JSON key an
+  /// older client ignores breaks no framing, and conflating "we disagree about
+  /// bytes" with "we disagree about rules" would make both numbers unreadable.
+  final int battleEngineVersion;
+
   // TODO(battle): probe actual device RAM; return 48 only on ≥6 GB devices.
   static DeviceCapabilities detect() => const DeviceCapabilities(ramTierCap: 24);
 
-  Map<String, dynamic> toJson() =>
-      {'ramTierCap': ramTierCap, 'battleProtocolVersion': battleProtocolVersion};
+  Map<String, dynamic> toJson() => {
+        'ramTierCap': ramTierCap,
+        'battleProtocolVersion': battleProtocolVersion,
+        'battleEngineVersion': battleEngineVersion,
+      };
   static DeviceCapabilities fromJson(Map<String, dynamic> j) => DeviceCapabilities(
         ramTierCap: j['ramTierCap'] as int? ?? 24,
         battleProtocolVersion: j['battleProtocolVersion'] as int? ?? 1,
+        // A peer that omits this predates the gate and has declared nothing —
+        // never read as agreement. See kUndeclaredBattleEngineVersion.
+        battleEngineVersion:
+            j['battleEngineVersion'] as int? ?? kUndeclaredBattleEngineVersion,
       );
 }
 
