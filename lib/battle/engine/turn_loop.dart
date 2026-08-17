@@ -129,7 +129,6 @@ import 'package:cryptography/cryptography.dart';
 import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/spells/basic_spells.dart' show isBasicGridAndT;
-import 'package:rune_duel/spells/counter_charm.dart';
 import 'package:rune_duel/spells/inscribe.dart'
     show kMaxInscribableSteps, tierForSteps;
 import 'package:rune_duel/spells/spell_asset.dart';
@@ -143,13 +142,11 @@ import '../models/certified_cast.dart';
 import '../models/component_order.dart';
 import '../models/creature_spec.dart' show CreatureSpec;
 import '../models/pending_delayed_spell.dart';
-import '../models/reflection_link.dart';
 import '../models/divination_link.dart';
 import '../models/effect_descriptor.dart'; // exports SpellAffinity, spellAffinityFromZone
 import '../models/hex_battlefield.dart' show hexDistance, hexNeighbors;
 import '../models/minion.dart';
 import '../models/status_effect_ids.dart';
-import '../models/terrain.dart' show CloudObject, tileBlocksMovement;
 import '../models/wild_magic_effect.dart';
 import '../models/wizard_avatar.dart';
 import '../networking/battle_session.dart';
@@ -163,12 +160,11 @@ import 'deterministic_resolution.dart';
 import 'draw_schedule.dart';
 import 'effect_applicator.dart';
 import 'hash_rng.dart';
-import 'effect_resolver.dart';
-import 'line_of_sight.dart';
 import 'proof_intake.dart';
 import 'spell_draw.dart';
 import 'tile_entry_resolver.dart';
 import 'trajectory_parser.dart';
+import 'turn_actions.dart';
 import 'wild_magic.dart';
 import 'wild_magic_applicator.dart';
 import 'forced_cast.dart';
@@ -186,6 +182,12 @@ export 'battle_events.dart';
 // every existing `import '.../turn_loop.dart'` naming them keeps compiling —
 // BattleScreen holds a TurnLoop and prices its free-move preview off this.
 export 'deterministic_resolution.dart' show FreeMoveGrant, kBoostManaPerTile;
+
+// The TurnAction hierarchy and the two events action resolution emits moved to
+// turn_actions.dart, so deterministic_resolution.dart can name them without
+// importing this file — the same split battle_events.dart made. Re-exported so
+// every existing `import '.../turn_loop.dart'` naming them keeps compiling.
+export 'turn_actions.dart';
 
 // ── Turn input / action types ─────────────────────────────────────────────────
 
@@ -238,218 +240,10 @@ class TurnInput {
   final List<DelayedSpellReveal> delayedSpellReveals;
 }
 
-/// One player's declared action for this turn.
-sealed class TurnAction {}
-
-class SpellCastAction extends TurnAction {
-  SpellCastAction({
-    required this.spell,
-    required this.targetHex,
-    this.isPotent = false,
-    this.isVelocity = false,
-    this.isEfficiency = false,
-    this.recall,
-    this.conveyorDirection,
-    this.delayedOriginHex,
-    this.delayedRange,
-    this.handIndex,
-  });
-
-  final SpellAsset spell;
-  final HexCoord targetHex;
-  final bool isPotent;
-  final bool isVelocity;
-  final bool isEfficiency;
-
-  /// The caster's own hand slot this cast came from, when known — the only
-  /// duplicate-safe key for building this cast's chapter-membership Merkle
-  /// proof (docs/BASIC_SPELLS_PLAN.md §7): a chapter may hold several copies
-  /// of the same Basic spell, so `spell.commitmentHex` alone cannot tell
-  /// [TurnLoop] WHICH copy's slot to prove. Null falls back to a
-  /// commitment-based lookup (BookCommitment.proveMembership), which is only
-  /// correct for a chapter with no duplicate of this spell — true for every
-  /// non-Basic spell today, and for solo/test construction sites that never
-  /// set this.
-  final int? handIndex;
-
-  /// What the caster's device heard them recite. Null in Wizard mode.
-  ///
-  /// Slot indices only, never words (VOCAL_RECALL_PLAN.md §8.10.1). Set by the
-  /// caster's device and committed inside the action hash; populated on the
-  /// receiving side by decoding the transmitted bytes. The peer scores it by
-  /// recomputing the EXPECTED sequence from the certified trajectory, which is
-  /// what makes recall verifiable where pronunciation quality never was.
-  final IncantationRecall? recall;
-
-  /// Set at commit time when the recall-inflated cost exceeded the caster's
-  /// mana: the cast fizzles and the mana is refunded, but the turn is spent
-  /// (§4). NOT transmitted — each device computes it from the same certified
-  /// cost and the same avatar mana, so both arrive at the same answer.
-  bool fizzledForMana = false;
-
-  /// The caster's chosen push direction, if this cast will create a
-  /// ConveyorTile (Air-flavor tileModification) and the caster picked one
-  /// via the battle_screen.dart direction prompt. Null falls back to a
-  /// random direction (EffectApplicator._randomDirection) -- always the case
-  /// for Mystery/delayed-fire casts this pass (see turn_loop.dart handoff
-  /// notes), and the seam for a future real-time choose-or-timeout mode.
-  final HexCoord? conveyorDirection;
-
-  /// Set only when this action is a delayed Mystery reveal firing this turn:
-  /// the caster's board position at the original cast turn, used as the
-  /// cast-animation launch origin instead of the caster's current position
-  /// (which may have moved many turns since). Null for a same-turn cast.
-  final HexCoord? delayedOriginHex;
-
-  /// Companion to [delayedOriginHex]: the caster's spell range on the turn
-  /// this Mystery cast was declared, carried through from
-  /// [PendingDelayedSpell.declaredRange]. The range check reads this instead
-  /// of the caster's range now, so a rangeDown landed while the spell was
-  /// pending cannot retroactively invalidate it. Null for a same-turn cast,
-  /// which uses the turn's pre-movement snapshot instead.
-  ///
-  /// Local-only, like [delayedOriginHex]: both peers rebuild this action from
-  /// their own copy of `state.pendingDelayedSpells`, so it never crosses the
-  /// wire.
-  final int? delayedRange;
-}
-
-/// Main-phase Dash: doubles the caster's movement budget for this turn's
-/// move phase. See turn_loop.dart's header comment for why the flag travels
-/// inside the movement commit-reveal rather than the action reveal.
-class DashAction extends TurnAction {}
-
-/// Main-phase Meditate: forgo casting for +25 mana. Independent of (and
-/// stacks with) a move-phase Meditate — see [TurnInput.meditateInMove].
-class MeditateAction extends TurnAction {}
-
-class PassAction extends TurnAction {}
-
-/// One elemental spell cast resolved this turn — UI-only bookkeeping for the
-/// cast animation (orb glows at the caster, flies to the target, bursts).
-/// Carries no gameplay effect; [TurnLoop] never reads these back.
-class SpellCastEvent {
-  const SpellCastEvent({
-    required this.casterId,
-    required this.fromHex,
-    required this.toHex,
-    required this.affinity,
-  });
-
-  final String casterId;
-  final HexCoord fromHex;
-  final HexCoord toHex;
-  final SpellAffinity affinity;
-}
 
 // AvatarMoveEvent, MinionMoveEvent and AttackEvent live in battle_events.dart
 // (re-exported above) so the deterministic seam can emit them without
 // importing this file.
-
-/// One spell resolved this turn, in resolution order — drives the UI's
-/// MtG-style card reveal sequence (battle_screen.dart): each entry is shown
-/// full-card for 2s, then becomes a thumbnail (neutral tray for incantations,
-/// on-grid for summons). [summonMinionId]/[summonPosition] are set only when
-/// [isSummon] is true and the summon actually spawned (null for a void/no-op
-/// summon cast — no thumbnail to place).
-///
-/// Counter charms are attuned to an elemental trajectory and cancel a cast
-/// FORMULA BY FORMULA while the charm's sequence and the spell's stay in
-/// lockstep (docs/COUNTER_CHARM_KINSHIP_PLAN.md §2.2/§2.3), so a counter is no
-/// longer all-or-nothing:
-///
-///   * [counteredFormulas] > 0 means a charm fired and cancelled that many
-///     leading formulas. [counterCharmOwnerId] then names who owns the
-///     triggered charm, which may equal [casterId] (a charm counters any
-///     matching cast, including its own owner's).
-///   * [wasCountered] is the FULL-counter case: the charm swallowed every
-///     formula, so the cast never resolved at all and this event has empty
-///     summon/created-effect fields.
-///
-/// A partially countered cast resolved for real — it has its created clouds,
-/// tiles and minions, and its wild magic fired — it just did less than it
-/// would have. UI that means "nothing happened" must test [wasCountered];
-/// UI that means "a charm fired" must test [counteredFormulas].
-class ResolvedSpellEvent {
-  const ResolvedSpellEvent({
-    required this.spell,
-    required this.casterId,
-    required this.targetHex,
-    required this.isSummon,
-    this.summonMinionId,
-    this.summonPosition,
-    this.createdCloudIds = const [],
-    this.createdTileHexes = const [],
-    this.createdMinionIds = const [],
-    this.wasCountered = false,
-    this.counteredFormulas = 0,
-    this.counterCharmOwnerId,
-  });
-
-  final SpellAsset spell;
-  final String casterId;
-  final HexCoord targetHex;
-  final bool isSummon;
-  final String? summonMinionId;
-  final HexCoord? summonPosition;
-  final bool wasCountered;
-
-  /// Leading formulas a counter charm cancelled — 0 when no charm fired.
-  /// Equal to the spell's whole formula count exactly when [wasCountered].
-  final int counteredFormulas;
-
-  final String? counterCharmOwnerId;
-
-  /// Battlefield effects this spell brought into being — purely for the UI's
-  /// resolution reveal, which holds them off the field until the spell's card
-  /// finishes, then blooms them out of [targetHex]. Computed by a before/after
-  /// diff around the spell's application (see TurnLoop._resolveActions); not
-  /// serialized, not gameplay-authoritative.
-  final List<String> createdCloudIds;
-  final List<HexCoord> createdTileHexes;
-  final List<String> createdMinionIds;
-}
-
-/// A mystery-enhanced spell. Target tile and delay are hidden in
-/// [mysteryCommitment] until revealed. If [delay] == 0 the player chose to
-/// fire immediately: [immediateTarget] and [immediateNonce] are also set and
-/// the spell resolves this turn. Otherwise the spell is held as a
-/// [PendingDelayedSpell] and fired by a future [DelayedSpellReveal].
-class MysterySpellCastAction extends TurnAction {
-  MysterySpellCastAction({
-    required this.spell,
-    required this.mysteryCommitment,
-    this.immediateTarget,
-    this.immediateNonce,
-    this.isPotent = false,
-    this.isVelocity = false,
-    this.recall,
-    this.handIndex,
-  });
-
-  final SpellAsset spell;
-
-  /// SHA-256(encodeCoord(target) ‖ delay_byte ‖ nonce_16). 32 bytes.
-  final Uint8List mysteryCommitment;
-
-  /// Non-null iff delay == 0 (fire this turn).
-  final HexCoord? immediateTarget;
-  final Uint8List? immediateNonce; // 16 bytes
-
-  final bool isPotent;
-  final bool isVelocity;
-
-  /// See [SpellCastAction.recall].
-  final IncantationRecall? recall;
-
-  /// See [SpellCastAction.fizzledForMana].
-  bool fizzledForMana = false;
-
-  /// See [SpellCastAction.handIndex].
-  final int? handIndex;
-
-  bool get isImmediate => immediateTarget != null;
-}
 
 // ── Turn phase enum ───────────────────────────────────────────────────────────
 
@@ -461,10 +255,6 @@ enum TurnPhase {
   endOfTurn,
   winCheck,
 }
-
-// ── Resolution group (step 4 ordering) ───────────────────────────────────────
-
-enum _ResolutionGroup { quickSpell, normalSpell, sluggishSpell }
 
 // ── TurnLoop ──────────────────────────────────────────────────────────────────
 
@@ -482,7 +272,8 @@ const _kMaxMana = 9999;
 /// Mana restored by a single Meditate choice (main phase or move phase).
 /// Taking both in the same turn grants 2 × this amount — see
 /// [TurnInput.meditateInMove] and [MeditateAction].
-const _kMeditateManaGain = 25;
+// Meditate's payout moved to the deterministic seam with the action phase
+// that spends it; the move-phase Meditate below still reads it.
 
 /// Counter Charm passive: percentage points, per unspent charm, that a
 /// successful melee destroys one of the victim's mana gems or withers one of
@@ -645,7 +436,8 @@ class ArtifactActivationRound {
 /// must re-enter turn-loop machinery (re-dealing a hand, forcing a reveal and
 /// cast) reach it through a narrow named seam instead of the applicator
 /// importing this file.
-class TurnLoop implements WildMagicHooks, ForcedCastHost {
+class TurnLoop
+    implements WildMagicHooks, ForcedCastHost, ActionResolutionHost {
   TurnLoop({
     required this.state,
     required this.session,
@@ -1740,30 +1532,12 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     }
   }
 
-  /// Consumes one accoutrement of [kind] from [av], chosen by sorting the
-  /// owner's accoutrements by id and taking the first match — the same
-  /// deterministic tie-break [_findCounteringCharm] uses, and the reason the
-  /// wire declaration can name a kind instead of an id. Returns false if [av]
-  /// holds none.
-  bool _consumeAccoutrement(WizardAvatar av, AccoutrementKind kind) {
-    final match = (List<Accoutrement>.from(av.accoutrements)
-          ..sort((a, b) => a.id.compareTo(b.id)))
-        .where((a) => a.kind == kind)
-        .firstOrNull;
-    if (match == null) return false;
-    av.accoutrements.removeWhere((a) => a.id == match.id);
-    return true;
-  }
+  /// See [DeterministicResolution.consumeAccoutrement].
+  bool _consumeAccoutrement(WizardAvatar av, AccoutrementKind kind) =>
+      _resolution.consumeAccoutrement(av, kind);
 
-  /// Recomputes [av]'s stored [WizardAvatar.maxMana] from its current gem count
-  /// and clamps current mana into the new pool. The engine-side twin of
-  /// EffectApplicator._syncMaxMana — [WizardAvatar.maxMana] is hashed state,
-  /// not a live derivation, so any gem gained or lost must resync it or the two
-  /// devices' state hashes drift.
-  void _syncMaxMana(WizardAvatar av) {
-    av.maxMana = av.maxManaFor(state.config);
-    if (av.mana > av.maxMana) av.mana = av.maxMana;
-  }
+  /// See [DeterministicResolution.syncMaxMana].
+  void _syncMaxMana(WizardAvatar av) => _resolution.syncMaxMana(av);
 
   static Uint8List _encodeActivation(AccoutrementKind? kind) => kind == null
       ? Uint8List.fromList([0x00])
@@ -2397,15 +2171,38 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
         state.turnNumber,
       ),
     );
-    await _resolveActions(
-      myAction,
-      peerAction,
-      preMovPos,
-      preMovRange,
-      actionRng,
-      entropy,
+
+    // Pair each current-turn action with its actor, then fold in delayed fires
+    // as SpellCastActions so they join the same resolution order. Built here,
+    // not behind the seam, because it is the one thing about Phase 5 that needs
+    // to know which device this is — and it is safe precisely because the sort
+    // inside [DeterministicResolution.resolveActions] is a TOTAL order, so a
+    // local-first input list cannot produce a device-relative output order.
+    final delayedFires = [...localFires, ...peerFires];
+    final peerAvatarForActions = peerId != null ? _avatarById(peerId) : null;
+    final actionPairs = <(WizardAvatar, TurnAction)>[
+      (_localAvatar(), myAction),
+      if (peerAvatarForActions != null) (peerAvatarForActions, peerAction),
+      ...delayedFires.map((f) => (f.$1, f.$2 as TurnAction)),
+    ];
+    // A delayed fire carries its own certified semantics, captured on the turn
+    // it was declared (TODO(B-1) closure — see [PendingDelayedSpell.certified]).
+    // Keyed by object IDENTITY, not by commitmentHex: each fire builds a fresh
+    // SpellCastAction, so identity is unique, while commitmentHex is grid-only
+    // and a same-grid current-turn cast would collide with it.
+    final delayedCertified = Map<TurnAction, CertifiedCast>.identity();
+    for (final f in delayedFires) {
+      if (f.$3 != null) delayedCertified[f.$2] = f.$3!;
+    }
+
+    await _resolution.resolveActions(
+      _castContext(entropy),
+      actions: actionPairs,
+      delayedCertified: delayedCertified,
+      preMovPos: preMovPos,
+      preMovRange: preMovRange,
+      rng: actionRng,
       traversedPaths: walked,
-      delayedFires: [...localFires, ...peerFires],
       certifiedPeerFormulas: certifiedPeerFormulas,
       certifiedPeerElementSequences: certifiedPeerElementSequences,
       certifiedPeerWildMagic: certifiedPeerWildMagic,
@@ -2631,489 +2428,100 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     );
   }
 
-  // Cloud drift moved behind the deterministic seam — see
-  // [DeterministicResolution.moveClouds]. This forwarder stays because
-  // [_resolveActions] steps a single newly-born cloud from inside Phase 5.
+  // Cloud drift, the creature AI and the death sweep all moved behind the
+  // deterministic seam. The forwarders that used to sit here existed only
+  // because Phase 5 was still in this class and reached back across for them —
+  // a newly-born cloud's immediate drift, a Potent summon's bonus action, the
+  // end-of-phase reap. Phase 5 moved too, so all three are gone and those
+  // operations are private to deterministic_resolution.dart again.
 
-  /// See [DeterministicResolution.moveCloud].
-  void _moveCloud(CloudObject cloud) => _resolution.moveCloud(cloud);
-
-  // ── Personality AI (design doc "Personalities") ───────────────────────────
+  // ── ActionResolutionHost ──────────────────────────────────────────────────
   //
-  // The creature AI, its movement and its attacks moved behind the
-  // deterministic seam — see [DeterministicResolution.creatureTurn] and the
-  // Phase 5b section of deterministic_resolution.dart. This forwarder stays
-  // because a Potent summon acts once immediately at cast time, from inside
-  // Phase 5's [_castSummon], and that call site keeps this class's event
-  // lists as its sinks.
+  // What Phase 5 still needs from this side of the seam, and nothing more. See
+  // [ActionResolutionHost] for why each member is here; the short version is
+  // that each one either needs to know which device this is, reads a proof, or
+  // suspends on the network.
 
-  /// See [DeterministicResolution.creatureTurn].
-  void _creatureTurn(Minion creature, HashRng rng) => _resolution.creatureTurn(
-    creature,
-    rng,
-    moveEvents: lastMinionMoveEvents,
-    attackEvents: lastMinionAttackEvents,
-    conveyorChainEvents: lastConveyorChainEvents,
+  /// The turn-scoped sinks and services a cast writes through.
+  ///
+  /// Built fresh per call rather than cached, so it always captures the CURRENT
+  /// `lastX` lists — [runTurn] reassigns them at the top of every turn, and a
+  /// stale context would silently append this turn's events to last turn's
+  /// lists.
+  ActionResolutionContext _castContext(Uint8List entropy) =>
+      ActionResolutionContext(
+        host: this,
+        entropy: entropy,
+        drawSchedules: _drawSchedules,
+        castEvents: lastCastEvents,
+        resolvedSpells: lastResolvedSpells,
+        conveyorChainEvents: lastConveyorChainEvents,
+        wildMagicEvents: lastWildMagicEvents,
+        minionMoveEvents: lastMinionMoveEvents,
+        minionAttackEvents: lastMinionAttackEvents,
+      );
+
+  @override
+  GameMode get componentsGameMode => _componentsGameMode;
+
+  @override
+  Uint8List witherSeed(Uint8List entropy, String playerId) => _playerPhaseSeed(
+    entropy,
+    matchId,
+    state.turnNumber,
+    0x06,
+    playerId,
+    _consumeDrawNonce(playerId),
   );
 
-  /// See [DeterministicResolution.reapDead].
-  void _reapDead(HashRng rng) => _resolution.reapDead(rng);
+  @override
+  Uint8List ripplingSeed(Uint8List entropy, String playerId) =>
+      _playerPhaseSeed(
+        entropy,
+        matchId,
+        state.turnNumber,
+        0x0A,
+        playerId,
+        _ripplingNonce++,
+      );
 
-  // ── Phase 4: Action resolution ────────────────────────────────────────────
+  @override
+  Uint8List turbulentSeed(Uint8List entropy, String playerId) =>
+      _playerPhaseSeed(
+        entropy,
+        matchId,
+        state.turnNumber,
+        0x0B,
+        playerId,
+        _turbulentNonce++,
+      );
 
-  /// Async because a wild-magic Spontaneous Combustion fires a forced
-  /// reveal-and-cast mid-resolution, which needs a protocol round trip for the
-  /// peer's private hand (docs/WILD_MAGIC_PLAN.md §9.5). Every other path
-  /// through here is still synchronous.
-  Future<void> _resolveActions(
-    TurnAction myAction,
-    TurnAction peerAction,
-    Map<String, HexCoord> preMovPos,
-    Map<String, int> preMovRange,
-    HashRng rng,
-    Uint8List entropy, {
-    Map<String, List<HexCoord>> traversedPaths = const {},
-    List<(WizardAvatar, SpellCastAction, CertifiedCast?)> delayedFires =
-        const [],
-    Map<String, List<ParsedFormula>> certifiedPeerFormulas = const {},
-    Map<String, List<BorderZone>> certifiedPeerElementSequences = const {},
-    Map<String, List<WildMagicTrigger>> certifiedPeerWildMagic = const {},
-  }) async {
-    final peerId = _peerId();
-    final peerAvatar = peerId != null ? _avatarById(peerId) : null;
+  @override
+  Uint8List wildMagicSeed(Uint8List entropy, String playerId) =>
+      _playerPhaseSeed(
+        entropy,
+        matchId,
+        state.turnNumber,
+        0x09,
+        playerId,
+        _consumeWildMagicNonce(),
+      );
 
-    // Pair each current-turn action with its actor, then fold in delayed fires
-    // as SpellCastActions so they join the same resolution order.
-    final pairs = <(WizardAvatar, TurnAction)>[
-      (_localAvatar(), myAction),
-      if (peerAvatar != null) (peerAvatar, peerAction),
-      ...delayedFires.map((f) => (f.$1, f.$2 as TurnAction)),
-    ];
+  @override
+  void redrawHand(String playerId, Uint8List entropy) =>
+      _redrawHand(playerId, entropy);
 
-    // A delayed fire carries its own certified semantics, captured on the turn
-    // it was declared (TODO(B-1) closure — see [PendingDelayedSpell.certified]).
-    // Keyed by object IDENTITY, not by commitmentHex: each fire builds a fresh
-    // SpellCastAction, so identity is unique, while commitmentHex is grid-only
-    // and a same-grid current-turn cast would collide with it.
-    final delayedCertified = Map<TurnAction, CertifiedCast>.identity();
-    for (final f in delayedFires) {
-      if (f.$3 != null) delayedCertified[f.$2] = f.$3!;
-    }
+  @override
+  void reconcileHandSize(
+    String playerId,
+    int beforeCount,
+    int afterCount,
+    Uint8List entropy,
+  ) => _reconcileHandSize(playerId, beforeCount, afterCount, entropy);
 
-    // Extract the spell from any spell-like action for sort comparisons.
-    SpellAsset? extractSpell(TurnAction a) => switch (a) {
-      SpellCastAction(:final spell) => spell,
-      MysterySpellCastAction(:final spell) => spell,
-      _ => null,
-    };
-
-    // Quick and Sluggish are *relative* orderings among the spells actually
-    // resolving this turn ("resolve first/last unless others are also
-    // quick/sluggish" — design doc §Effect Table, Fire-Air row). So when
-    // every such cast shares the modifier it cancels out and the group
-    // collapses to normal — which also covers the single-caster case: the
-    // lone caster is trivially "all of them", so a sluggish wizard casting
-    // alone still resolves at the front rather than being demoted behind
-    // the other player's Pass/Dash/Meditate.
-    //
-    // SpellCastAction only, deliberately: a MysterySpellCastAction still
-    // standing at this point is the *delayed* variant (the immediate one was
-    // rewritten by _verifyMysteryAction upstream), so it stashes a
-    // PendingDelayedSpell rather than resolving, and must not count as
-    // "another cast" this turn. Delayed spells actually firing now arrive as
-    // SpellCastActions via [delayedFires] and do count.
-    final casters = pairs
-        .where((p) => p.$2 is SpellCastAction)
-        .map((p) => p.$1)
-        .toList();
-    final allCastsQuick = casters.every((av) => av.isQuick);
-    final allCastsSluggish = casters.every((av) => av.isSluggish);
-
-    // Assign resolution group per action.
-    _ResolutionGroup group((WizardAvatar, TurnAction) pair) {
-      final av = pair.$1;
-      final action = pair.$2;
-      return switch (action) {
-        PassAction() ||
-        DashAction() ||
-        MeditateAction() => _ResolutionGroup.normalSpell,
-        SpellCastAction() || MysterySpellCastAction() =>
-          av.isQuick && !allCastsQuick
-              ? _ResolutionGroup.quickSpell
-              : av.isSluggish && !allCastsSluggish
-              ? _ResolutionGroup.sluggishSpell
-              : _ResolutionGroup.normalSpell,
-      };
-    }
-
-    // Sort: group first, then T ascending, then commitmentHex within group.
-    // The playerId fallback is what makes this a *total* order: without it,
-    // a cast and a non-cast (or two non-casts) in the same group compare
-    // equal, and since `pairs` is built local-actor-first the two clients
-    // would then stably sort them into different orders. Nothing a Pass/
-    // Dash/Meditate does is order-sensitive today, so that never actually
-    // diverged canonical state — but it's a lockstep landmine, and this
-    // change makes ties strictly more likely by collapsing groups.
-    final sorted = List.of(pairs)
-      ..sort((a, b) {
-        final dc = group(a).index.compareTo(group(b).index);
-        if (dc != 0) return dc;
-        final sa = extractSpell(a.$2);
-        final sb = extractSpell(b.$2);
-        if (sa != null && sb != null) {
-          final tc = sa.t.compareTo(sb.t);
-          if (tc != 0) return tc;
-          final cc = sa.commitmentHex.compareTo(sb.commitmentHex);
-          if (cc != 0) return cc;
-        }
-        return a.$1.playerId.compareTo(b.$1.playerId);
-      });
-
-    for (final (actor, action) in sorted) {
-      if (!actor.isAlive) continue;
-      switch (action) {
-        case PassAction():
-          _regressChain(actor);
-
-        case DashAction():
-          // Speed doubling already applied during movement resolution (see
-          // the isDashing flag folded into the move commit-reveal). Nothing
-          // left to do at resolution time — treated like Pass for chain
-          // purposes.
-          _regressChain(actor);
-
-        case MeditateAction():
-          _applyManaGain(actor, _kMeditateManaGain);
-          _regressChain(actor);
-
-        case SpellCastAction(
-          :final spell,
-          :final targetHex,
-          :final isPotent,
-          :final isVelocity,
-          :final isEfficiency,
-          :final conveyorDirection,
-        ):
-          // Statuesque (wild magic, row 3 Earth) breaks on a cast — a choice,
-          // unlike Pass / Dash / Meditate / melee, which leave it standing.
-          // Broken here, before resolution, so it covers a fizzled or
-          // countered cast too: the wizard still chose to cast.
-          _breakStatuesque(actor.playerId);
-          // The proof-attested semantics of THIS cast, resolved once for every
-          // consumer below (counter-charm matching, _applySpell, mana, chain
-          // state) so they can never disagree about what the proof said.
-          //
-          // A delayed fire brings its own, captured on its declaration turn;
-          // a current-turn peer cast reads what _verifyPeerSpellCast derived
-          // moments ago. The delayed entry is checked FIRST: its commitmentHex
-          // may well collide with a same-grid cast this turn, and the pending
-          // record is the one that belongs to this action.
-          final delayedCert = delayedCertified[action];
-          final certFormulas = delayedCert?.formulas ??
-              certifiedPeerFormulas[spell.commitmentHex];
-          final certElementSequence = delayedCert?.elementSequence ??
-              certifiedPeerElementSequences[spell.commitmentHex];
-          final certWildMagic = delayedCert?.wildMagic ??
-              certifiedPeerWildMagic[spell.commitmentHex];
-          // Recall NEVER gates the loadout enhancement and never fizzles a
-          // cast (VOCAL_RECALL_PLAN.md §4: getting words wrong costs mana,
-          // full stop). The only fizzle left is a cast whose recall-inflated
-          // cost outran the caster's pool, and that is decided at commit time
-          // on both devices — see [SpellCastAction.fizzledForMana].
-          final enhancements = CastingEnhancements(
-            isPotent: isPotent,
-            isVelocity: isVelocity,
-            isEfficiency: isEfficiency,
-            gameMode: _componentsGameMode,
-            fizzle: action.fizzledForMana,
-          );
-          // Clouds (Water-Fire) base effect: an entity standing in a cloud's
-          // radius (or carrying the lingering Earth-flavor restriction) may
-          // only target adjacent tiles, and a target tile inside a cloud's
-          // radius is likewise only reachable from an adjacent tile. Cloud
-          // position here reflects this turn's Summons-phase move (already
-          // resolved by the time Action resolution runs), so the check uses
-          // where the cloud actually is for the rest of the turn, not last
-          // turn's stale position.
-          final ignoredCloudRestriction =
-              _cloudBoundToAdjacent(actor, targetHex) &&
-              hexDistance(actor.position, targetHex) > 1;
-          // Spell range, enforced by the trusted engine rather than trusted to
-          // the caster's UI. battle_screen's `_maxCastRange` only decides what
-          // a human player's own client lets them tap; a modified client — or
-          // the Solo Practice dummy, which encodes its cast straight onto the
-          // wire — never goes through it. Without this, `effectiveSpellRange`
-          // (and with it Earthen Inertia's whole −1) was advisory against a
-          // peer, and a peer could declare a target clean across the field.
-          // Exactly the reasoning that gave `_cloudBoundToAdjacent` its
-          // engine-side twin.
-          //
-          // **Targeting is valid so long as it was valid when the cast was
-          // completed** (ruling 2026-08-06). So BOTH halves of the test are
-          // read as of that moment, never as of resolution:
-          //
-          //   * the origin — where the caster stood when they declared, not
-          //     where they ended up. Movement resolves in Phase 3, before
-          //     this, and the UI gated the tap against their pre-move tile;
-          //     `actor.position` would fizzle the legal cast of anyone who
-          //     walked away from their target afterwards.
-          //   * the reach — [preMovRange], snapshotted at Phase 2. Reading
-          //     `actor.effectiveSpellRange` here would let an Earthen Inertia
-          //     resolving EARLIER in the same action phase retroactively clip
-          //     a cast that was legal when its caster chose it.
-          //
-          // A delayed (Mystery) fire carries both from the turn it was
-          // declared on — see [PendingDelayedSpell.declaredRange]. Its target
-          // was committed then and never revisited, so judging it against a
-          // range it acquired while sitting pending would punish the player
-          // for the passage of time.
-          final castOrigin = action.delayedOriginHex ??
-              preMovPos[actor.playerId] ??
-              actor.position;
-          // Velocity (Air loadout enhancement) adds to reach on top of
-          // whichever base the three bullets above selected — it's a
-          // per-cast choice, not an avatar stat, so it can't live inside
-          // effectiveSpellRange/preMovRange like Earthen Inertia's rangeUp/
-          // rangeDown do. A delayed (Mystery) cast never carries isVelocity
-          // (Earth and Air are mutually-exclusive loadout picks — see
-          // casting_enhancements.dart), so this only ever adds to an
-          // immediate cast's own declared range.
-          final castRange = (action.delayedRange ??
-                  preMovRange[actor.playerId] ??
-                  actor.effectiveSpellRange) +
-              (isVelocity ? CastingEnhancements.velocityRangeBonus : 0);
-          final outOfRange = hexDistance(castOrigin, targetHex) > castRange;
-          if (enhancements.fizzle || ignoredCloudRestriction || outOfRange) {
-            // Botched incantation, an illegal cast that ignored the cloud's
-            // adjacent-only targeting restriction, or one aimed past the
-            // caster's reach: spell fails entirely. Mana was already spent at
-            // commit time. Treated like
-            // a Pass for chain purposes.
-            _regressChain(actor);
-          } else {
-            // Watery Inertia (Range Modification, Water): a turbulent caster
-            // keeps their aim but not their reach — the real destination is
-            // rolled here, ABOVE the orb event and everything downstream, so
-            // the orb visibly flies to where the spell went and the card
-            // reveal blooms there too. That placement is also why the cloud
-            // legality check above reads the DECLARED hex: the roll is not
-            // the player's choice, so it can't make their cast illegal.
-            final resolvedTarget = _turbulentTarget(actor, targetHex, entropy);
-            // The orb still flies for a countered cast (it visibly happened
-            // and drew a counter, unlike a fizzle) — emitted once here for
-            // both outcomes below, then the two diverge.
-            final affinity = primaryFormulaAffinity(spell.formula);
-            if (affinity != null) {
-              lastCastEvents.add(
-                SpellCastEvent(
-                  casterId: actor.playerId,
-                  fromHex: action.delayedOriginHex ?? actor.position,
-                  toHex: resolvedTarget,
-                  affinity: affinity,
-                ),
-              );
-            }
-            // Counter charms match the cast's certified element sequence, so
-            // the trigger test reads exactly what _applySpell would resolve:
-            // the certified sequence for a verified peer cast or a delayed
-            // fire, the local wire formula for our own spell (the same
-            // fallback every other consumer of this data uses — see
-            // _applySpell's certFormulas).
-            final castSequence = certElementSequence ?? _elementSequence(spell);
-            final counterHit = _findCounteringCharm(castSequence);
-            // Whether the charm swallowed the WHOLE cast. Measured in
-            // formulas for an incantation and in elements for a summon,
-            // because a summon reads residuals too (CreatureSpec.fromElements
-            // counts every activation, _parsedFormulas drops the trailing 1–2).
-            final counteredFormulas = counterHit?.formulas ?? 0;
-            final fullyCountered = counterHit != null &&
-                (spell.isSummon
-                    ? counteredFormulas * kElementsPerFormula >=
-                        castSequence.length
-                    : counteredFormulas >= castSequence.length ~/ kElementsPerFormula);
-            if (counterHit != null) _triggerCounterCharm(counterHit);
-            if (fullyCountered) {
-              // Nothing of the cast survives: consume the charm, record a
-              // countered ResolvedSpellEvent for the UI's card reveal
-              // (battle_screen.dart shows it, then dissolves it — no bloom,
-              // no thumbnail, since nothing was actually created), and skip
-              // application entirely. Mana was already spent at commit time,
-              // so this is otherwise treated like a Pass for chain purposes.
-              //
-              // Keeping this path byte-for-byte the old one is deliberate: it
-              // is what preserves wild-magic invariant A1 ("no wild magic on a
-              // countered cast") for free, since _applySpell — the only place
-              // wild magic fires — is never reached. A PARTIAL counter is a
-              // cast that really happened, so it does resolve and its wild
-              // magic does fire; see the else branch.
-              lastResolvedSpells.add(
-                ResolvedSpellEvent(
-                  spell: spell,
-                  casterId: actor.playerId,
-                  targetHex: resolvedTarget,
-                  isSummon: spell.isSummon,
-                  wasCountered: true,
-                  counteredFormulas: counteredFormulas,
-                  counterCharmOwnerId: counterHit.owner.playerId,
-                ),
-              );
-              _regressChain(actor);
-            } else {
-              // Snapshot the field so the UI's resolution reveal can tell which
-              // clouds/terrain/minions THIS spell brought into being (diffed
-              // right around its application), and animate them in per-card.
-              final cloudsBefore = state.clouds.map((c) => c.id).toSet();
-              final tilesBefore = state.tileEffects.keys.toSet();
-              final minionsBefore = state.minions.map((m) => m.id).toSet();
-              final bookmarksBefore = {
-                for (final av in state.avatars) av.playerId: av.bookmarkCount,
-              };
-              // FuelTransmutation wither/reactivate (§9): a dedicated,
-              // per-caster RNG, kept separate from the shared actionRng
-              // stream so drawing from it can never desync that stream.
-              final witherRng = HashRng(
-                _playerPhaseSeed(
-                  entropy,
-                  matchId,
-                  state.turnNumber,
-                  0x06,
-                  actor.playerId,
-                  _consumeDrawNonce(actor.playerId),
-                ),
-              );
-              final summoned = await _applySpell(
-                actor,
-                spell,
-                resolvedTarget,
-                enhancements,
-                rng,
-                entropy,
-                traversedPaths: traversedPaths,
-                certFormulas: certFormulas,
-                certElementSequence: certElementSequence,
-                certWildMagic: certWildMagic,
-                conveyorDirection: conveyorDirection,
-                witherRng: witherRng,
-                // A charm matched a prefix of this cast but not all of it:
-                // the leading formulas are cancelled and the rest resolves.
-                suppressedFormulas: counteredFormulas,
-                // The rod is declared at Phase 0 now, not folded into the
-                // action commit — every other activation is declared on the
-                // turn it takes effect, and this keeps a delayed Mystery cast
-                // from reserving a rod for three turns while its owner spends
-                // the activation budget elsewhere (§3.1).
-                rodRequested: actor.declaredActivation ==
-                    AccoutrementKind.rodOfSpreading,
-              );
-              // Scattered Gusts (wild magic, row 3 Air): once active, every
-              // cast blows the caster's bookmarks loose and they find a new
-              // set. Free casts are exempt (A8) — they never reach here.
-              if (state.wildMagic.scatteredGusts) {
-                _redrawHand(actor.playerId, entropy);
-              }
-              // A cloud born this turn would otherwise sit dead-still until
-              // *next* turn's Phase 4 (_moveClouds already ran, ahead of this
-              // spell resolution, before the cloud existed) — give it its
-              // Summons-phase move right now, same turn it's summoned, so it's
-              // never visibly stationary. See _moveCloud's doc comment.
-              for (final c in state.clouds) {
-                if (!cloudsBefore.contains(c.id)) _moveCloud(c);
-              }
-              // Bookmark accoutrements gained/lost this resolution (e.g.
-              // ArtifactsInteractionEffect Air/Fire, FuelTransmutationEffect
-              // Fire/Air) resize the affected avatar's hand immediately —
-              // handSize == bookmarkCount + 1 (see _reconcileHandSize).
-              for (final av in state.avatars) {
-                final before = bookmarksBefore[av.playerId]!;
-                if (av.bookmarkCount != before) {
-                  _reconcileHandSize(av.playerId, before, av.bookmarkCount, entropy);
-                }
-              }
-              lastResolvedSpells.add(
-                ResolvedSpellEvent(
-                  spell: spell,
-                  casterId: actor.playerId,
-                  targetHex: resolvedTarget,
-                  isSummon: spell.isSummon,
-                  counteredFormulas: counteredFormulas,
-                  counterCharmOwnerId: counterHit?.owner.playerId,
-                  summonMinionId: summoned?.id,
-                  summonPosition: summoned?.position,
-                  createdCloudIds: [
-                    for (final c in state.clouds)
-                      if (!cloudsBefore.contains(c.id)) c.id,
-                  ],
-                  createdTileHexes: [
-                    for (final k in state.tileEffects.keys)
-                      if (!tilesBefore.contains(k)) k,
-                  ],
-                  createdMinionIds: [
-                    for (final m in state.minions)
-                      if (!minionsBefore.contains(m.id)) m.id,
-                  ],
-                ),
-              );
-            }
-          }
-
-        case MysterySpellCastAction(
-          :final spell,
-          :final mysteryCommitment,
-          :final isPotent,
-          :final isVelocity,
-        ):
-          // Immediate mystery spells were converted to SpellCastAction by
-          // _verifyMysteryAction before reaching here. A MysterySpellCastAction
-          // at this point is always the non-immediate (delayed) variant.
-          //
-          // TODO(B-1) closure for delayed fires: capture the proof-attested
-          // semantics NOW, while the verification that produced them is still
-          // in scope. Up to three turns from now the turn-scoped certified maps
-          // are long cleared, and resolving from `spell.formula` would mean
-          // resolving from a wire value no proof attests — a peer could prove a
-          // cheap grid, attach arbitrary formulas, and have them resolve.
-          //
-          // The two arms sit on opposite sides of the trust boundary but read
-          // the same proof bytes at the same tier, so both devices store
-          // identical values for the same pending spell: the owner parses its
-          // own proof, the verifier reuses what _verifyPeerSpellCast already
-          // derived from the VERIFIED outputs. Branching on ownership rather
-          // than on map presence matters — the maps are keyed by commitmentHex,
-          // and the commitment is grid-only (CLAUDE.md invariant 2), so a peer
-          // casting the same grid at a different T this turn would otherwise
-          // hand the local caster the peer's certified data.
-          final certifiedDeclaration = actor.playerId == localPlayerId
-              ? _certifiedFromProofBytes(spell)
-              : _certifiedPeerCast(
-                    spell,
-                    certifiedPeerFormulas,
-                    certifiedPeerElementSequences,
-                    certifiedPeerWildMagic,
-                  ) ??
-                  // Verification not wired up (solo/dev): parse unverified, the
-                  // same way the owner's device does. No weaker than the wire
-                  // formula this replaces, and identical on both devices.
-                  _certifiedFromProofBytes(spell);
-          state.pendingDelayedSpells.add(
-            PendingDelayedSpell(
-              id: PendingDelayedSpell.idFromCommitment(mysteryCommitment),
-              ownerId: actor.playerId,
-              spell: spell,
-              commitment: mysteryCommitment,
-              castTurn: state.turnNumber,
-              origin: actor.position,
-              declaredRange: actor.effectiveSpellRange,
-              certified: certifiedDeclaration,
-              isPotent: isPotent,
-              isVelocity: isVelocity,
-            ),
-          );
-      }
-    }
-
-    _reapDead(rng);
-    _applyPhoenixSaves();
-  }
+  @override
+  Future<void> drainForcedCasts(Uint8List entropy) =>
+      _drainForcedCasts(entropy);
 
   // ── Mystery / delayed spell helpers ──────────────────────────────────────
 
@@ -3243,7 +2651,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   void _applyMoveMeditations(List<String> meditatorIds) {
     for (final id in meditatorIds) {
       final av = _avatarById(id);
-      if (av != null) _applyManaGain(av, _kMeditateManaGain);
+      if (av != null) _applyManaGain(av, kMeditateManaGain);
     }
   }
 
@@ -3425,379 +2833,7 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     }
   }
 
-  /// Returns the [Minion] just summoned, if [spell.isSummon] and the cast
-  /// actually produced a creature (see [_castSummon]); null otherwise.
-  ///
-  /// [fireWildMagic] is **the recursion guard for the whole wild-magic
-  /// system**. It is false for Spontaneous Combustion's free casts (A8) and
-  /// for Rippling Reflections' doubled application (A7). Without it one
-  /// Spontaneous Combustion can fan out into an unbounded cast cascade, and a
-  /// doubled spell fires its global effect twice. Do not remove it, and do not
-  /// add a caller that leaves it true for a cast the player did not choose.
-  ///
-  /// [suppressedFormulas] is a trajectory counter charm's partial counter
-  /// (docs/COUNTER_CHARM_KINSHIP_PLAN.md Phase 2): that many LEADING formulas
-  /// are cancelled and the remainder of the cast resolves normally. For a
-  /// summon it cancels the corresponding leading stat contributors instead
-  /// (3 per formula), which can shrink the creature or, at the limit, produce
-  /// none. A cast whose formulas are ALL suppressed never gets here — the
-  /// caller takes the full-counter path and skips this method entirely, which
-  /// is what keeps wild-magic invariant A1 true without a flag.
-  Future<Minion?> _applySpell(
-    WizardAvatar actor,
-    SpellAsset spell,
-    HexCoord targetHex,
-    CastingEnhancements enhancements,
-    HashRng rng,
-    Uint8List entropy, {
-    Map<String, List<HexCoord>> traversedPaths = const {},
-    List<ParsedFormula>? certFormulas,
-    List<BorderZone>? certElementSequence,
-    List<WildMagicTrigger>? certWildMagic,
-    HexCoord? conveyorDirection,
-    HashRng? witherRng,
-    bool rodRequested = false,
-    bool fireWildMagic = true,
-    bool subjectToRippling = true,
-    bool skipChainUpdate = false,
-    int suppressedFormulas = 0,
-  }) async {
-    // ── Wild magic (docs/WILD_MAGIC_PLAN.md §4.5) ─────────────────────────
-    // Design doc L746: "Within a single player's spell: wild magic first, then
-    // formula effects in the order the CA created them." So this runs BEFORE
-    // the isSummon early return (A2 — a summon spell still has a certified
-    // trajectory and formulas, and its wild magic fires) and before the
-    // formula loop. Countered and fizzled casts never reach _applySpell at
-    // all, so A1 ("no wild magic on a countered or fizzled cast") holds for
-    // free — do not add a hook upstream of the counter check.
-    if (fireWildMagic) {
-      await _fireWildMagic(actor, spell, certWildMagic, entropy);
-    }
-
-    // ── Rippling Reflections (row 3, Water) ───────────────────────────────
-    // Once active there is no third outcome: every spell either fizzles or
-    // resolves twice. Rolled after wild magic, before the formula loop.
-    var repeatWholeSpell = 1;
-    if (subjectToRippling && state.wildMagic.ripplingFizzlePct != null) {
-      final pct = state.wildMagic.ripplingFizzlePct!;
-      final coin = HashRng(
-        _playerPhaseSeed(
-          entropy,
-          matchId,
-          state.turnNumber,
-          0x0A,
-          actor.playerId,
-          _ripplingNonce++,
-        ),
-      ).nextInt(100);
-      if (coin < pct) {
-        // Fizzle: no formula effects at all, drift 10% toward doubling.
-        // Treated as a fizzle for chain purposes, matching the existing
-        // enhancements.fizzle branch in _resolveActions.
-        state.wildMagic.ripplingFizzlePct = (pct - 10).clamp(0, 100);
-        _regressChain(actor);
-        return null;
-      }
-      // Double: apply the formula effects twice, drift 10% toward fizzling.
-      state.wildMagic.ripplingFizzlePct = (pct + 10).clamp(0, 100);
-      repeatWholeSpell = 2;
-    }
-
-    // ── Line of sight (docs/WALL_LOS_PLAN.md §2.1, §5.2) ──────────────────
-    // An earthen wall or a Big creature standing between the caster and the
-    // declared target does NOT reject the cast — the spell resolves on the
-    // blocker instead. Computed once here, above the summon branch, because
-    // both cast modes need it (they just land differently: see below).
-    final penetration = _penetrationDamageFor(actor);
-    final blocker = losBlockerTile(
-      state,
-      actor.position,
-      targetHex,
-      penetrating: penetration != null,
-    );
-
-    // design doc "Summons": a summon-mode spell's element sequence is read
-    // as a creature instead of being resolved as incantation effects.
-    // Bypasses EffectResolver/EffectApplicator entirely -- summoning is
-    // "instead of creating spell effect incantations", not a 17th effect
-    // kind. It still builds/spends the chain like any other spell (R4).
-    if (spell.isSummon) {
-      // A blocked summon is the one case that does NOT resolve on the blocker:
-      // a creature needs a tile it can stand on, and a wall is exactly the tile
-      // nothing can stand in. It arrives at the last clear hex BEFORE the
-      // blocker instead — the summoning got as far as it could and the creature
-      // stepped out there. (_castSummon's own spawn search then walks outward
-      // from that anchor if it is occupied.)
-      final sequence = certElementSequence ?? _elementSequence(spell);
-      // A counter charm cancels leading stat contributors, 3 per matched
-      // formula — the creature arrives smaller, or (all contributors gone)
-      // not at all. Chain state below still reads the FULL sequence: the
-      // caster channelled the whole spell; the charm interfered with what it
-      // produced, not with what they were building.
-      final survivingSequence = suppressedFormulas <= 0
-          ? sequence
-          : sequence
-              .skip(suppressedFormulas * kElementsPerFormula)
-              .toList(growable: false);
-      final minion = _castSummon(
-        actor,
-        blocker == null
-            ? targetHex
-            : tileBeforeBlocker(actor.position, targetHex, blocker),
-        survivingSequence,
-        spell.summonPersonality,
-        enhancements,
-        rng,
-        rodRequested: rodRequested,
-      );
-      if (!skipChainUpdate) {
-        _updateChainState(actor, spell, certElementSequence: sequence);
-      }
-      return minion;
-    }
-
-    // Null certFormulas now means a local spell (trusted wire formula) or a
-    // proofless dev-flag spell. Peer delayed fires used to land here too —
-    // they carry their declaration-turn [CertifiedCast] now, so a peer can no
-    // longer launder an unattested formula list through a Mystery delay.
-    // TODO(B-1): the last of it is kAllowProoflessSpells. Once that flag is
-    //   deleted, a null entry for any peer spell must forfeit rather than
-    //   fall through here.
-    final allFormulas = certFormulas ?? _parsedFormulas(spell);
-    // Partial counter: the charm cancelled the leading formulas outright, so
-    // they never reach EffectResolver. Chain state below still reads the full
-    // [certFormulas] — see the summon branch's note.
-    final formulas = suppressedFormulas <= 0
-        ? allFormulas
-        : allFormulas.skip(suppressedFormulas).toList(growable: false);
-    if (formulas.isEmpty) {
-      // Wild-magic stub (zero formulas = void spell). Nothing resolves, so a
-      // requested Rod of Wind is NOT consumed here (don't burn a rod on a
-      // no-op cast).
-      return null;
-    }
-
-    // Incantation effects resolve ON the blocker (§2.1) — unlike a summon,
-    // which needs somewhere to stand. Every formula below dispatches at
-    // [resolveHex], not at [targetHex]; this is the authoritative path both
-    // peers run, and it is what makes the per-effect terrain table (§6)
-    // reachable at all.
-    final resolveHex = blocker ?? targetHex;
-    if (penetration != null && penetration > 0) {
-      // Firey Inertia's other half, finally wired: "1 [2 potent] damage to
-      // entities in hexes en route". Fires once per cast, not once per
-      // formula — it is the spell's flight, not an effect.
-      _applyPenetrationEnRoute(actor, targetHex, penetration);
-    }
-
-    // Rod of Wind: consume one now (if requested and owned) — a real cast
-    // with at least one effect follows, so the rod does something. +1 radius
-    // applies to every spatial effect of this spell (see EffectApplicator).
-    final radiusBonus = _consumeRodOfSpreading(actor, rodRequested);
-
-    // Absorption rod: tracked per-target for this whole spell.
-    final rodConsumedFor = <String>{};
-
-    // Conveyor-chain events (knockback landing on a conveyor mid-spell)
-    // collected across every formula of this cast, then folded into the
-    // per-turn list once for the UI's belt/loop animation.
-    final conveyorEvents = <ConveyorChainEvent>[];
-
-    // Rippling Reflections' "resolve twice" wraps the FORMULA LOOP, not the
-    // whole method — structuring it here means a doubled spell physically
-    // cannot reach the wild-magic seam or re-roll the coin (A7), rather than
-    // relying on a flag to stop it.
-    for (var pass = 0; pass < repeatWholeSpell; pass++) {
-    for (final formula in formulas) {
-      final descriptor = EffectResolver.resolve(formula, enhancements);
-
-      // A pending Air-Fire multiplierCycle (Bellows) on this formula's
-      // affinity re-resolves the formula's effect into extra copies inserted
-      // immediately after the original in the resolution order -- 2 total
-      // applications normally, 3 under potency. Consuming (removing) the
-      // entry here means only the first formula of a matching affinity in
-      // this spell is amplified, matching the design doc's singular "next
-      // effect of [element]" wording.
-      final formulaAffinity = spellAffinityFromZone(formula.affinity);
-      final repeatCount =
-          actor.pendingEffectMultipliers.remove(formulaAffinity)?.multiplier ?? 1;
-
-      for (var i = 0; i < repeatCount; i++) {
-        EffectApplicator.apply(
-          ApplyContext(
-            descriptor: descriptor,
-            targetTile: resolveHex,
-            caster: actor,
-            state: state,
-            rng: rng,
-            rodConsumedFor: rodConsumedFor,
-            movePaths: traversedPaths,
-            chosenConveyorDirection: conveyorDirection,
-            conveyorChainEvents: conveyorEvents,
-            drawSchedules: _drawSchedules,
-            witherRng: witherRng,
-            effectiveRadiusBonus: radiusBonus,
-          ),
-        );
-      }
-    }
-    }
-    lastConveyorChainEvents.addAll(conveyorEvents);
-
-    // Update chain state after casting. A forced free cast (A8) skips this —
-    // it neither builds nor breaks the chain.
-    if (!skipChainUpdate) {
-      _updateChainState(actor, spell, certFormulas: certFormulas);
-    }
-    return null;
-  }
-
-  // ── Line of sight (docs/WALL_LOS_PLAN.md) ─────────────────────────────────
-
-  /// Where [actor]'s spell actually lands, given Watery Inertia
-  /// (StatusEffectId.turbulent): the declared direction is kept, the distance
-  /// is re-rolled 1..`effectiveSpellRange`. Returns [declared] unchanged when
-  /// the caster isn't turbulent — every cast calls this, so the not-turbulent
-  /// path must be free of side effects (it must not burn a nonce).
-  ///
-  /// Design v4.0 §303: *"next spell fires in intended direction but range
-  /// randomized 1–max"*. Two rulings, 2026-08-06: the status is **not**
-  /// consumed by the cast — it randomises every spell for its full 4[5] turns
-  /// — and *max* is the caster's own range stat, so a roll higher than the
-  /// declared distance sails **past** the target rather than being clamped to
-  /// it. Falling short and overshooting are both real outcomes.
-  ///
-  /// Rolled from commit-reveal entropy (tag 0x0B), never `Random`: the design
-  /// doc names turbulent range in its jointly-generated-randomness list, and a
-  /// locally-rolled destination would desync the two devices on the very next
-  /// state hash.
-  HexCoord _turbulentTarget(
-    WizardAvatar actor,
-    HexCoord declared,
-    Uint8List entropy,
-  ) {
-    if (!actor.hasTurbulent) return declared;
-    final from = actor.position;
-    final n = hexDistance(from, declared);
-    // A cast on your own tile has no direction to be thrown off along.
-    if (n == 0) return declared;
-
-    final rng = HashRng(
-      _playerPhaseSeed(
-        entropy,
-        matchId,
-        state.turnNumber,
-        0x0B,
-        actor.playerId,
-        _turbulentNonce++,
-      ),
-    );
-    var rolled = rng.nextInt(actor.effectiveSpellRange) + 1; // 1..max
-
-    // Same axial lerp-and-round hexLinePath walks the line with, so a rolled
-    // distance shorter than the declared one lands exactly on a tile the
-    // spell would have flown through. t > 1 extrapolates past the target,
-    // which is the overshoot case.
-    while (rolled > 0) {
-      final t = rolled / n;
-      final hex = HexCoord(
-        (from.q * (1 - t) + declared.q * t).round(),
-        (from.r * (1 - t) + declared.r * t).round(),
-      );
-      // An overshoot can fly off the edge of the battlefield. Walk the roll
-      // back rather than re-rolling: re-rolling would consume a second draw
-      // from a stream the other device advances in lockstep.
-      if (state.battlefield.isInBounds(hex)) return hex;
-      rolled--;
-    }
-    return declared;
-  }
-
-  /// The `penetrationDamage` carried by [actor]'s active Firey Inertia
-  /// (StatusEffectId.penetrating), or null when they don't have it.
-  ///
-  /// Non-null is the LOS exemption itself: a penetrating caster's spells
-  /// ignore walls and Big creatures entirely. The value is the en-route tick
-  /// ([_applyPenetrationEnRoute]) — it can legitimately be 0, which is why
-  /// this returns a nullable int rather than using 0 as "absent".
-  int? _penetrationDamageFor(WizardAvatar actor) {
-    for (final fx in actor.activeStatusEffects) {
-      if (fx.isDormant) continue;
-      if (fx.effectTypeId != StatusEffectId.penetrating) continue;
-      return fx.modifiers['penetrationDamage'] ?? 0;
-    }
-    return null;
-  }
-
-  /// Deals [amount] damage to every entity in the hexes strictly between
-  /// [actor] and [targetHex] — the flight path of a penetrating spell.
-  ///
-  /// Untyped: this is the spell physically passing through, not an elemental
-  /// effect, so it runs no resistance wheel and leaves terrain alone (the
-  /// whole point of penetrating is that terrain isn't in the way).
-  void _applyPenetrationEnRoute(
-    WizardAvatar actor,
-    HexCoord targetHex,
-    int amount,
-  ) {
-    for (final hex in hexLinePath(actor.position, targetHex)) {
-      for (final av in state.avatars) {
-        if (av.isAlive && av.position == hex) av.absorbDamage(amount);
-      }
-      for (final m in state.minions) {
-        if (m.isAlive && m.occupiedTiles.contains(hex)) m.takeDamage(amount);
-      }
-    }
-  }
-
   // ── Wild magic (docs/WILD_MAGIC_PLAN.md) ──────────────────────────────────
-
-  /// Resolves every wild-magic trigger this cast carries, in row-then-element
-  /// order, then drains any forced casts they queued.
-  ///
-  /// [certified] is the peer path: triggers derived by [_verifyPeerSpellCast]
-  /// from the peer's VERIFIED proof public outputs, or — for a delayed fire —
-  /// carried on the [PendingDelayedSpell] from the turn it was declared. Null
-  /// means the local player's own cast (or the kAllowProoflessSpells dev
-  /// flag) — see [_wildMagicFromOwnProof].
-  Future<void> _fireWildMagic(
-    WizardAvatar actor,
-    SpellAsset spell,
-    List<WildMagicTrigger>? certified,
-    Uint8List entropy,
-  ) async {
-    final triggers = certified ?? _wildMagicFromOwnProof(spell);
-    if (triggers.isEmpty) return;
-
-    for (final trigger in triggers) {
-      final rng = HashRng(
-        _playerPhaseSeed(
-          entropy,
-          matchId,
-          state.turnNumber,
-          0x09,
-          actor.playerId,
-          _consumeWildMagicNonce(),
-        ),
-      );
-      WildMagicApplicator.apply(
-        WildMagicApplyContext(
-          state: state,
-          caster: actor,
-          rng: rng,
-          trigger: trigger,
-          events: lastWildMagicEvents,
-          hooks: this,
-        ),
-      );
-    }
-
-    // Spontaneous Combustion's reveal round trip sits HERE: after wild magic
-    // has fired, before the triggering spell's own formula effects resolve
-    // (WILD_MAGIC_PLAN.md §9.5). The applicator queues rather than resolving
-    // because it is synchronous and this needs the network.
-    await _drainForcedCasts(entropy);
-  }
 
   /// The full certified semantics of a spell, derived from proof bytes this
   /// device already holds.
@@ -3824,7 +2860,8 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   /// stronger than the bytes it was handed. When verification IS wired, the
   /// verified derivation always wins; see [_certifiedPeerCast]. Both devices
   /// parse the same bytes either way, so this arm stays in lockstep.
-  CertifiedCast? _certifiedFromProofBytes(SpellAsset spell) {
+  @override
+  CertifiedCast? certifiedFromProofBytes(SpellAsset spell) {
     if (spell.proofBytes.isEmpty) return null;
     try {
       // The spell's OWN tier, not the match ceiling — parsing at the wrong
@@ -3852,41 +2889,10 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     }
   }
 
-  /// Wild-magic triggers for a spell whose proof this device authored.
-  List<WildMagicTrigger> _wildMagicFromOwnProof(SpellAsset spell) =>
-      _certifiedFromProofBytes(spell)?.wildMagic ?? const [];
-
-  /// The [CertifiedCast] [_verifyPeerSpellCast] derived for [spell] earlier in
-  /// this turn, or null if it never ran for it.
-  ///
-  /// Keyed by `commitmentHex` exactly as the three maps are — safe here because
-  /// this is only ever asked about the peer's own current-turn action, which
-  /// [_verifyPeerSpellCast] populates at most once per turn.
-  CertifiedCast? _certifiedPeerCast(
-    SpellAsset spell,
-    Map<String, List<ParsedFormula>> certifiedPeerFormulas,
-    Map<String, List<BorderZone>> certifiedPeerElementSequences,
-    Map<String, List<WildMagicTrigger>> certifiedPeerWildMagic,
-  ) {
-    final formulas = certifiedPeerFormulas[spell.commitmentHex];
-    final sequence = certifiedPeerElementSequences[spell.commitmentHex];
-    if (formulas == null || sequence == null) return null;
-    return CertifiedCast(
-      formulas: formulas,
-      elementSequence: sequence,
-      // An empty trigger list is the normal case, not an absent one.
-      wildMagic: certifiedPeerWildMagic[spell.commitmentHex] ?? const [],
-    );
-  }
-
   /// See [DeterministicResolution.applyPhoenixSaves]. The event sink is this
   /// turn's `lastWildMagicEvents`, which the resolver appends to in place.
   void _applyPhoenixSaves() =>
       _resolution.applyPhoenixSaves(lastWildMagicEvents);
-
-  /// See [DeterministicResolution.breakStatuesque].
-  void _breakStatuesque(String playerId) =>
-      _resolution.breakStatuesque(playerId);
 
   // ── WildMagicHooks ────────────────────────────────────────────────────────
 
@@ -4058,13 +3064,13 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     // A8, the load-bearing recursion guard: a free cast fires NO wild magic,
     // is not subject to Rippling Reflections, does not trigger Scattered
     // Gusts, does not build or break the chain, and is not consumed from hand.
-    await _applySpell(
+    await _resolution.applySpell(
+      _castContext(entropy),
       actor,
       pick.spell,
       target,
       const CastingEnhancements(),
       rng,
-      entropy,
       fireWildMagic: false,
       subjectToRippling: false,
       skipChainUpdate: true,
@@ -4093,285 +3099,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
       return qc != 0 ? qc : a.r.compareTo(b.r);
     });
     return candidates[rng.nextInt(candidates.length)];
-  }
-
-  /// Rod of Wind (Air artifact): if [requested] and [actor] carries an
-  /// unused rod, removes one from their loadout and returns +1 — the effective
-  /// radius bonus for an incantation, or the size-rung bonus for a summon.
-  /// Otherwise returns 0.
-  ///
-  /// [requested] now comes from the caster's **Phase-0 declaration**
-  /// (`declaredActivation == rodOfSpreading`) rather than a flag on the action
-  /// commit, but this stays the single rod-consumption path — which is what
-  /// keeps the trust boundary in one place. Reading the bonus from the actor's
-  /// OWN accoutrements, not from the wire, is that boundary: a peer that
-  /// declares a rod without actually owning one gets no bonus. This mirrors
-  /// how _certifiedManaCost recomputes cost from authoritative state rather
-  /// than trusting the caster's word. Removing the accoutrement mutates the
-  /// avatar, so it shows up in BattleState.toCanonicalBytes() and both devices
-  /// stay in lockstep on the consumed rod.
-  ///
-  /// A rod declared but never spent (no cast, a fizzle, a countered cast)
-  /// survives — the wasted resource is the once-per-turn activation budget,
-  /// not the artifact.
-  int _consumeRodOfSpreading(WizardAvatar actor, bool requested) {
-    if (!requested) return 0;
-    return _consumeAccoutrement(actor, AccoutrementKind.rodOfSpreading) ? 1 : 0;
-  }
-
-  // ── Summoning (design doc "Summons") ──────────────────────────────────────
-
-  /// Derives a creature from [sequence] (CreatureSpec.fromElements) and
-  /// spawns it near [targetHex] under [actor]'s control. Every summon —
-  /// Potent or not — acts for the first time in Phase 5b, later this same
-  /// turn (see this file's header comment). A Potent cast additionally lets
-  /// the creature act immediately right here (design doc: "Summons may take
-  /// an immediate turn the generation they are summoned if spell is made
-  /// potent"), so it ends up acting twice in a row this turn: once here,
-  /// once again in Phase 5b.
-  Minion? _castSummon(
-    WizardAvatar actor,
-    HexCoord targetHex,
-    List<BorderZone> sequence,
-    String personalityName,
-    CastingEnhancements enhancements,
-    HashRng rng, {
-    bool rodRequested = false,
-  }) {
-    final spec = CreatureSpec.fromElements(sequence);
-    if (spec == null) return null; // no activations -- nothing to summon (void)
-
-    // Rod of Wind: a real creature will spawn, so consume the rod now (if
-    // requested and owned) and bump the creature one size rung up the ladder.
-    final sizeBonus = _consumeRodOfSpreading(actor, rodRequested);
-
-    final personality = SummonPersonality.values.firstWhere(
-      (p) => p.name == personalityName,
-      orElse: () => SummonPersonality.aggressive,
-    );
-    final spawn = _findCreatureSpawnTile(targetHex, spec.abilities, sizeBonus);
-    final creature = Minion(
-      id: '${actor.playerId}_sm_${rng.nextInt(1 << 30).toRadixString(36)}',
-      ownerId: actor.playerId,
-      teamId: actor.teamId,
-      position: spawn,
-      affinity: spec.affinity,
-      stats: spec.stats,
-      elementSequence: sequence,
-      abilities: spec.abilities,
-      personality: personality,
-      sizeBonus: sizeBonus,
-    );
-    state.minions.add(creature);
-    if (enhancements.isPotent) {
-      _creatureTurn(creature, rng);
-    }
-    _fireSummonMirror(actor, creature, rng);
-    return creature;
-  }
-
-  /// summonMirror (Reflections/Water-Water): when the Reflections link
-  /// TARGET summons a creature, the link's CASTER receives an identical one
-  /// near their own position.
-  void _fireSummonMirror(WizardAvatar summoner, Minion summoned, HashRng rng) {
-    for (final link in state.reflectionLinks) {
-      if (link.targetId != summoner.playerId) continue;
-      if (!link.activeTriggers.contains(ReflectionTrigger.summonMirror))
-        continue;
-      final mirrorOwner = _avatarById(link.casterId);
-      if (mirrorOwner == null || !mirrorOwner.isAlive) continue;
-      final spawn = _findCreatureSpawnTile(
-        mirrorOwner.position,
-        summoned.abilities,
-        summoned.sizeBonus,
-      );
-      state.minions.add(
-        Minion(
-          id: '${link.casterId}_ms_${rng.nextInt(1 << 30).toRadixString(36)}',
-          ownerId: link.casterId,
-          teamId: mirrorOwner.teamId,
-          position: spawn,
-          affinity: summoned.affinity,
-          stats: summoned.stats,
-          elementSequence: summoned.elementSequence,
-          abilities: summoned.abilities,
-          personality: summoned.personality,
-          sizeBonus: summoned.sizeBonus,
-          // Wears the original's card art, tinted (Minion.copiedFromMinionId).
-          copiedFromMinionId: summoned.copiedFromMinionId ?? summoned.id,
-        ),
-      );
-    }
-  }
-
-  /// Finds the nearest tile to [preferred] whose full footprint (see
-  /// [footprintFor]) is in bounds, passable, and unoccupied.
-  HexCoord _findCreatureSpawnTile(
-    HexCoord preferred,
-    Set<SummonAbility> abilities, [
-    int sizeBonus = 0,
-  ]) {
-    bool footprintOpen(HexCoord center) {
-      for (final t in footprintFor(center, abilities, sizeBonus)) {
-        if (!state.battlefield.isInBounds(t)) return false;
-        if (tileBlocksMovement(state.tileEffects[t])) return false;
-        if (state.avatars.any((av) => av.isAlive && av.position == t))
-          return false;
-        if (state.minions.any((m) => m.isAlive && m.occupiedTiles.contains(t)))
-          return false;
-      }
-      return true;
-    }
-
-    if (footprintOpen(preferred)) return preferred;
-    for (final n in _neighbors(preferred)) {
-      if (footprintOpen(n)) return n;
-    }
-    return preferred; // fallback: stack anyway
-  }
-
-  /// Advances/breaks [actor]'s chain following this cast. [spell.isSummon]
-  /// spells build the chain like any other spell (design doc R4), keyed on
-  /// the creature's derived affinity ([CreatureSpec.fromElements] — always a
-  /// single element, so a summon is always pure) rather than
-  /// [certFormulas]/[_parsedFormulas]; [certElementSequence] is the
-  /// certified element sequence for a peer's summon (mirrors [_castSummon]'s
-  /// own certified/wire split).
-  void _updateChainState(
-    WizardAvatar actor,
-    SpellAsset spell, {
-    List<ParsedFormula>? certFormulas,
-    List<BorderZone>? certElementSequence,
-  }) {
-    final castAffinity = spell.isSummon
-        ? CreatureSpec.fromElements(
-            certElementSequence ?? _elementSequence(spell),
-          )?.affinity
-        : _pureAffinityOf(certFormulas ?? _parsedFormulas(spell));
-
-    if (castAffinity == null) {
-      // Hybrid spell (2+ distinct formula affinities), or the degenerate
-      // empty-sequence summon edge case: breaks the chain outright, same as
-      // any off-alignment action (design doc R3 — purity is the whole
-      // rule).
-      actor.chainLengths.clear();
-      actor.activeChainElement = null;
-      return;
-    }
-
-    if (actor.activeChainElement == castAffinity) {
-      // Continuing the chain — advance by one whole cast (2 half-credits),
-      // scaled by chainFast/chainSlow (chainAccumulationMultiplier: 2.0/0.5).
-      final multiplier = actor.chainAccumulationMultiplier;
-      final credits = (2 * multiplier).round();
-      actor.chainLengths[castAffinity] =
-          (actor.chainLengths[castAffinity] ?? 0) + credits;
-    } else {
-      // Break the old chain; start a new one for this affinity.
-      actor.chainLengths.clear();
-      actor.activeChainElement = castAffinity;
-      actor.chainLengths[castAffinity] = 2;
-    }
-  }
-
-  /// Regresses [actor]'s active chain by 2 whole casts (4 half-credits),
-  /// floored at 0 (design doc R7 — inaction is a gentler decay, never a
-  /// penalty). Called for Pass/Dash/Meditate and any cast that resolves to
-  /// nothing (fizzle, counter-charm).
-  void _regressChain(WizardAvatar actor) {
-    final el = actor.activeChainElement;
-    if (el == null) return;
-    final next = (actor.chainLengths[el] ?? 0) - 4;
-    if (next <= 0) {
-      actor.chainLengths.remove(el);
-      actor.activeChainElement = null;
-    } else {
-      actor.chainLengths[el] = next;
-    }
-  }
-
-  // ── Counter charms ────────────────────────────────────────────────────────
-
-  /// The un-revealed counter charm that intercepts a cast whose certified
-  /// element sequence is [sequence], and how many whole formulas it cancels.
-  ///
-  /// Charms are attuned to a TRAJECTORY, not to one spell's grid
-  /// (docs/COUNTER_CHARM_KINSHIP_PLAN.md Phase 2): a charm fires against any
-  /// cast opening with its element sequence, and cancels formulas for as long
-  /// as the two sequences stay in lockstep ([counterCharmFormulaMatch]).
-  /// Charms trigger on such a cast by ANY wizard, including the charm's own
-  /// owner (design: counter-charm plan, "Trigger source" — deliberately not
-  /// opponent-only).
-  ///
-  /// Selection is a pure function of state, so both devices pick the same
-  /// charm: the LONGEST match wins — a player who paid for a longer charm
-  /// should get the deeper counter — and ties break by the pre-existing fixed
-  /// scan order, avatars by playerId then that avatar's accoutrements by id.
-  /// At most one charm fires per cast; charms do not stack.
-  ///
-  /// Two gates on the charm's OWNER:
-  ///
-  ///   * A wizard who spent an artifact at Phase 0 has their charms down for
-  ///     the turn (ARTIFACT_SYSTEM_PLAN.md §2.2) and is skipped entirely. The
-  ///     tension is internal to the charm holder — *"do I want that 100 mana
-  ///     badly enough to open a window this turn?"* — which is why the gate is
-  ///     on the charm owner's own declaration and not the caster's. Because
-  ///     this method deliberately searches every avatar including the caster,
-  ///     that one guard correctly covers a wizard whose own activation opened
-  ///     a window onto their own cast, with no second check needed.
-  ///   * They must be able to pay [counterCharmManaCost] in full (§2.4). A
-  ///     charm whose owner cannot afford it does not fire and is not consumed
-  ///     — it stays charged for a turn they can pay. Skipping rather than
-  ///     part-paying is what keeps "full cost on every trigger" a real cost
-  ///     rather than a soft one, and it lets a shorter, cheaper charm on the
-  ///     same wizard fire in its place.
-  ({WizardAvatar owner, Accoutrement charm, int formulas})? _findCounteringCharm(
-    List<BorderZone> sequence,
-  ) {
-    if (sequence.length < kElementsPerFormula) return null;
-    final sortedAvatars = List<WizardAvatar>.from(state.avatars)
-      ..sort((a, b) => a.playerId.compareTo(b.playerId));
-    ({WizardAvatar owner, Accoutrement charm, int formulas})? best;
-    for (final av in sortedAvatars) {
-      if (av.declaredActivation != null) continue;
-      final sortedAcc = List<Accoutrement>.from(av.accoutrements)
-        ..sort((a, b) => a.id.compareTo(b.id));
-      for (final acc in sortedAcc) {
-        if (acc.kind != AccoutrementKind.counterCharm) continue;
-        if (acc.counterCharmRevealed) continue;
-        final trajectory = acc.charmTrajectory;
-        if (trajectory == null) continue; // unattuned charm: never fires
-        final formulas = counterCharmFormulaMatch(trajectory, sequence);
-        if (formulas == 0) continue;
-        if (av.mana < counterCharmManaCost(trajectory)) continue;
-        // Strictly-greater keeps the scan order as the tiebreak.
-        if (best == null || formulas > best.formulas) {
-          best = (owner: av, charm: acc, formulas: formulas);
-        }
-      }
-    }
-    return best;
-  }
-
-  /// Consumes [hit]'s charm: marks it revealed (it never triggers again) and
-  /// charges its owner the full [counterCharmManaCost], whatever fraction of
-  /// the cast actually got cancelled (§2.4).
-  ///
-  /// Does not apply or suppress the spell and records no event — the caller
-  /// (the sole call site, in [_resolveActions]) decides between the
-  /// full-counter path (skip [_applySpell] entirely) and the partial-counter
-  /// path (resolve with a suppressed prefix).
-  void _triggerCounterCharm(
-    ({WizardAvatar owner, Accoutrement charm, int formulas}) hit,
-  ) {
-    final owner = hit.owner;
-    final idx = owner.accoutrements.indexWhere((a) => a.id == hit.charm.id);
-    if (idx >= 0) {
-      owner.accoutrements[idx] =
-          owner.accoutrements[idx].copyWith(counterCharmRevealed: true);
-    }
-    final cost = counterCharmManaCost(hit.charm.charmTrajectory ?? const []);
-    owner.mana = (owner.mana - cost).clamp(0, owner.maxMana);
   }
 
   // ── Entropy + state hash ──────────────────────────────────────────────────
@@ -6129,40 +4856,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   static bool _isAdjacent(HexCoord a, HexCoord b) =>
       DeterministicResolution.isAdjacent(a, b);
 
-  /// True if [caster] casting at [targetHex] is subject to a cloud's
-  /// adjacent-only targeting restriction: either [caster] is standing inside
-  /// any cloud's radius (or still carries the lingering Earth-flavor
-  /// [StatusEffectId.cloudBoundTargeting] status), or [targetHex] itself
-  /// falls inside any cloud's radius. Trusted-engine twin of
-  /// battle_screen.dart's `_maxCastRange`, which only gates what the local
-  /// UI lets a human player tap — this is what actually gets enforced during
-  /// resolution, for every caster (peer casts, and the Solo Practice dummy,
-  /// which encodes its scripted cast straight onto the wire and never goes
-  /// through that UI).
-  bool _cloudBoundToAdjacent(WizardAvatar caster, HexCoord targetHex) {
-    // Earthen Scrying Pool (Divination, Earth): the bearer sees through the
-    // murk, so no cloud blinds them — neither one they stand in, nor one
-    // around the tile they're aiming at, nor a lingering dust restriction.
-    // Gating here (rather than only stripping the status on cast) is what
-    // makes the immunity hold when the cloud arrives AFTER the scrying.
-    if (caster.activeStatusEffects.any(
-      (fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.scryingSight,
-    )) {
-      return false;
-    }
-    final casterBound =
-        caster.activeStatusEffects.any(
-          (fx) => fx.effectTypeId == StatusEffectId.cloudBoundTargeting,
-        ) ||
-        state.clouds.any(
-          (c) => hexDistance(caster.position, c.position) <= c.radius,
-        );
-    final hexBound = state.clouds.any(
-      (c) => hexDistance(targetHex, c.position) <= c.radius,
-    );
-    return casterBound || hexBound;
-  }
-
   /// Adjacent tiles holding at least one living hostile entity (enemy avatar
   /// or minion) — the melee-round prompt candidates for [actor]. Empty means
   /// no prompt is shown (see [MeleeTargetPicker]).
@@ -6330,8 +5023,6 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
   void _dispelIllusionsNearScryers() =>
       EffectApplicator.dispelIllusionsNearScryers(state);
 
-  List<HexCoord> _neighbors(HexCoord h) => state.battlefield.neighbors(h);
-
   void _addStatus(
     WizardAvatar av,
     String typeId,
@@ -6341,50 +5032,14 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
 
   // ── Formula helpers ───────────────────────────────────────────────────────
 
-  static List<ParsedFormula> _parsedFormulas(SpellAsset spell) {
-    final zones = spell.formula
-        .map(_zoneFromName)
-        .whereType<BorderZone>()
-        .toList();
-    final formulas = <ParsedFormula>[];
-    for (var i = 0; i + 2 < zones.length; i += 3) {
-      formulas.add(
-        ParsedFormula(
-          affinity: zones[i],
-          effectType1: zones[i + 1],
-          effectType2: zones[i + 2],
-        ),
-      );
-    }
-    return formulas;
-  }
+  /// See [DeterministicResolution.parsedFormulas].
+  static List<ParsedFormula> _parsedFormulas(SpellAsset spell) =>
+      DeterministicResolution.parsedFormulas(spell);
 
-  /// The single affinity shared by every formula in [formulas], for chain
-  /// discount/advancement purposes -- null if [formulas] is empty or spans
-  /// more than one distinct first-element (a hybrid spell, discount-
-  /// ineligible per design doc's Chain Discount System). Used identically
-  /// by [_updateChainState] and [_spellManaCost]/[_certifiedManaCost] so
-  /// "pure" can't drift between the advancement and discount paths.
-  static SpellAffinity? _pureAffinityOf(List<ParsedFormula> formulas) {
-    if (formulas.isEmpty) return null;
-    final first = spellAffinityFromZone(formulas.first.affinity);
-    for (final f in formulas.skip(1)) {
-      if (spellAffinityFromZone(f.affinity) != first) return null;
-    }
-    return first;
-  }
+  /// See [DeterministicResolution.pureAffinityOf].
+  static SpellAffinity? _pureAffinityOf(List<ParsedFormula> formulas) =>
+      DeterministicResolution.pureAffinityOf(formulas);
 
-  static BorderZone? _zoneFromName(String name) => switch (name.toLowerCase()) {
-    'fire' => BorderZone.fire,
-    'earth' => BorderZone.earth,
-    'water' => BorderZone.water,
-    'air' => BorderZone.air,
-    _ => null,
-  };
-
-  /// The full flat element sequence for a local (trusted-wire) summon-mode
-  /// spell -- unlike [_parsedFormulas], residuals are kept (see
-  /// CreatureSpec.fromElements: every activation counts toward a creature).
   /// The element slots a caster is expected to recite for [elementSequence].
   ///
   /// Truncated to COMPLETE TRIPLETS, matching PracticeFormula.fromSpellFormula:
@@ -6403,8 +5058,9 @@ class TurnLoop implements WildMagicHooks, ForcedCastHost {
     ];
   }
 
+  /// See [DeterministicResolution.elementSequence].
   static List<BorderZone> _elementSequence(SpellAsset spell) =>
-      spell.formula.map(_zoneFromName).whereType<BorderZone>().toList();
+      DeterministicResolution.elementSequence(spell);
 
   // ── Wire helpers ──────────────────────────────────────────────────────────
 
