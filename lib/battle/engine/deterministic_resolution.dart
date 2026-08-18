@@ -2317,7 +2317,7 @@ class DeterministicResolution {
   // Every trust decision it depended on — peer proof verification, the Merkle
   // book check, the mystery-commitment check, the delayed-fire verification —
   // now happens BEFORE it is called, and arrives as data: verified `(actor,
-  // action)` pairs plus the `certifiedPeer*` maps the verification produced.
+  // action)` pairs plus the [CertifiedCast] the verification produced.
   //
   // What is left is a single suspension point, and it is not a protocol step
   // this phase takes — it is one an *effect* takes. Spontaneous Combustion
@@ -2355,6 +2355,13 @@ class DeterministicResolution {
   /// commitmentHex: each fire builds a fresh SpellCastAction, so identity is
   /// unique, while commitmentHex is grid-only and a same-grid current-turn cast
   /// would collide with it.
+  ///
+  /// [certifiedPeerCasts] is the same thing for the CURRENT turn's peer cast:
+  /// the [CertifiedCast] `PeerCastVerifier` established moments ago, keyed by
+  /// the certified commitmentHex. One map rather than the three parallel ones it
+  /// replaced — they were always written together, read together and keyed
+  /// identically, so splitting them only created the possibility of a partial
+  /// set, which is the shape of a trust bug rather than a useful state.
   Future<void> resolveActions(
     ActionResolutionContext ctx, {
     required List<(WizardAvatar, TurnAction)> actions,
@@ -2363,9 +2370,7 @@ class DeterministicResolution {
     required Map<String, int> preMovRange,
     required HashRng rng,
     Map<String, List<HexCoord>> traversedPaths = const {},
-    Map<String, List<ParsedFormula>> certifiedPeerFormulas = const {},
-    Map<String, List<BorderZone>> certifiedPeerElementSequences = const {},
-    Map<String, List<WildMagicTrigger>> certifiedPeerWildMagic = const {},
+    Map<String, CertifiedCast> certifiedPeerCasts = const {},
   }) async {
     // Extract the spell from any spell-like action for sort comparisons.
     SpellAsset? extractSpell(TurnAction a) => switch (a) {
@@ -2475,13 +2480,11 @@ class DeterministicResolution {
           // derived moments ago. The delayed entry is checked FIRST: its
           // commitmentHex may well collide with a same-grid cast this turn, and
           // the pending record is the one that belongs to this action.
-          final delayedCert = delayedCertified[action];
-          final certFormulas = delayedCert?.formulas ??
-              certifiedPeerFormulas[spell.commitmentHex];
-          final certElementSequence = delayedCert?.elementSequence ??
-              certifiedPeerElementSequences[spell.commitmentHex];
-          final certWildMagic = delayedCert?.wildMagic ??
-              certifiedPeerWildMagic[spell.commitmentHex];
+          final cert =
+              delayedCertified[action] ?? certifiedPeerCasts[spell.commitmentHex];
+          final certFormulas = cert?.formulas;
+          final certElementSequence = cert?.elementSequence;
+          final certWildMagic = cert?.wildMagic;
           // Recall NEVER gates the loadout enhancement and never fizzles a
           // cast (VOCAL_RECALL_PLAN.md §4: getting words wrong costs mana,
           // full stop). The only fizzle left is a cast whose recall-inflated
@@ -2744,7 +2747,7 @@ class DeterministicResolution {
           // identical values for the same pending spell: the owner parses its
           // own proof, the verifier reuses what the peer verification already
           // derived from the VERIFIED outputs. Branching on ownership rather
-          // than on map presence matters — the maps are keyed by commitmentHex,
+          // than on map presence matters — the map is keyed by commitmentHex,
           // and the commitment is grid-only (CLAUDE.md invariant 2), so a peer
           // casting the same grid at a different T this turn would otherwise
           // hand the local caster the peer's certified data.
@@ -2755,12 +2758,7 @@ class DeterministicResolution {
           // and never rejects.
           final certifiedDeclaration = ctx.host.isLocalPlayer(actor.playerId)
               ? ctx.host.certifiedFromProofBytes(spell)
-              : _certifiedPeerCast(
-                    spell,
-                    certifiedPeerFormulas,
-                    certifiedPeerElementSequences,
-                    certifiedPeerWildMagic,
-                  ) ??
+              : certifiedPeerCasts[spell.commitmentHex] ??
                   // Verification not wired up (solo/dev): parse unverified, the
                   // same way the owner's device does. No weaker than the wire
                   // formula this replaces, and identical on both devices.
@@ -2784,29 +2782,6 @@ class DeterministicResolution {
 
     _reapDead(rng);
     applyPhoenixSaves(ctx.wildMagicEvents);
-  }
-
-  /// The [CertifiedCast] the caller's peer verification derived for [spell]
-  /// earlier in this turn, or null if it never ran for it.
-  ///
-  /// Keyed by `commitmentHex` exactly as the three maps are — safe here because
-  /// this is only ever asked about the peer's own current-turn action, which
-  /// the verification populates at most once per turn.
-  CertifiedCast? _certifiedPeerCast(
-    SpellAsset spell,
-    Map<String, List<ParsedFormula>> certifiedPeerFormulas,
-    Map<String, List<BorderZone>> certifiedPeerElementSequences,
-    Map<String, List<WildMagicTrigger>> certifiedPeerWildMagic,
-  ) {
-    final formulas = certifiedPeerFormulas[spell.commitmentHex];
-    final sequence = certifiedPeerElementSequences[spell.commitmentHex];
-    if (formulas == null || sequence == null) return null;
-    return CertifiedCast(
-      formulas: formulas,
-      elementSequence: sequence,
-      // An empty trigger list is the normal case, not an absent one.
-      wildMagic: certifiedPeerWildMagic[spell.commitmentHex] ?? const [],
-    );
   }
 
   /// Returns the [Minion] just summoned, if [spell.isSummon] and the cast

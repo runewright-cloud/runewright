@@ -128,12 +128,9 @@ import 'package:crypto/crypto.dart' show sha256;
 import 'package:cryptography/cryptography.dart';
 import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
-import 'package:rune_duel/spells/basic_spells.dart' show isBasicGridAndT;
-import 'package:rune_duel/spells/inscribe.dart'
-    show kMaxInscribableSteps, tierForSteps;
+import 'package:rune_duel/spells/inscribe.dart' show tierForSteps;
 import 'package:rune_duel/spells/spell_asset.dart';
 import 'package:rune_duel/spells/spell_authorization.dart';
-import 'package:rune_duel/spells/spell_identity.dart' show isCantripElementCount;
 import 'package:rune_duel/spells/spell_permission.dart';
 
 import '../models/battle_state.dart';
@@ -147,7 +144,6 @@ import '../models/effect_descriptor.dart'; // exports SpellAffinity, spellAffini
 import '../models/hex_battlefield.dart' show hexDistance;
 import '../models/minion.dart';
 import '../models/status_effect_ids.dart';
-import '../models/wild_magic_effect.dart';
 import '../models/wizard_avatar.dart';
 import '../networking/battle_session.dart';
 import '../../identity/identity.dart';
@@ -160,12 +156,12 @@ import 'deterministic_resolution.dart';
 import 'draw_schedule.dart';
 import 'effect_applicator.dart';
 import 'hash_rng.dart';
+import 'peer_cast_verifier.dart';
 import 'proof_intake.dart';
 import 'spell_draw.dart';
 import 'tile_entry_resolver.dart';
 import 'trajectory_parser.dart';
 import 'turn_actions.dart';
-import 'wild_magic.dart';
 import 'wild_magic_applicator.dart';
 import 'forced_cast.dart';
 import '../../sorcerer/incantation_recall.dart';
@@ -549,7 +545,8 @@ class TurnLoop
   /// proven at the smallest tier covering its own T ([tierForSteps]), so a
   /// tier-12 spell cast into a tier-24 match presents 42 public inputs to a
   /// VK expecting 66 and barretenberg rejects it ("num_public_inputs mismatch
-  /// with VK"). That was a real two-device break — see [_vkForTier].
+  /// with VK"). That was a real two-device break — see
+  /// [PeerCastVerifier.tierForSpell].
   final Uint8List? vkBytes;
 
   /// Resolves the bundled verification key for a given circuit tier
@@ -586,25 +583,31 @@ class TurnLoop
   /// Circuit tier (12 / 24 / 48), from [MatchConfig.tier].
   ///
   /// This is the tier the *match* negotiated — a ceiling, not the tier any
-  /// given spell was proven at. Never verify or parse a spell against it; use
-  /// [_tierForSpell] / [_vkForTier], which key off the spell's own T.
+  /// given spell was proven at. Never verify or parse a spell against it; the
+  /// verifier keys off the spell's own T ([PeerCastVerifier.tierForSpell]).
   final int tier;
 
-  /// The circuit tier a spell with [t] generations was proven at — the
-  /// smallest tier covering it, exactly as [inscribeSpell] chose at proving
-  /// time. Null when [t] is outside the circuit's supported range.
+  /// **The peer-cast trust boundary.** Everything that decides whether a peer's
+  /// declared spell may be believed, and which facts about it are believable.
   ///
-  /// [t] arrives on the wire for a peer cast and is therefore untrusted, but
-  /// using it only to *select* a verification key is fail-closed: a wrong tier
-  /// picks a VK the proof cannot satisfy and verification rejects it.
-  /// [_verifyPeerSpellCast] additionally re-checks the certified `outputs.t`
-  /// against the claim, so the value that chose the layout is bound to the
-  /// value the proof actually attests.
-  static int? _tierForSpell(int t) => tierForSteps(t);
-
-  /// The verification key for [tier], preferring the per-tier resolver and
-  /// falling back to the single [vkBytes].
-  Uint8List? _vkForTier(int tier) => vkBytesForTier?.call(tier) ?? vkBytes;
+  /// The sibling of [_resolution]: that field holds the rules that are a pure
+  /// function of state, this one holds the rules that are a function of a
+  /// *proof*. Between them they leave `TurnLoop` holding the network
+  /// sequencing and the protocol reactions — which is all it should hold.
+  ///
+  /// The verifier cannot end a match. It returns a [PeerCastVerdict]; mapping a
+  /// [PeerCastRejected] onto `session.sendForfeit` + an aborting throw is
+  /// [_verifyPeerSpellCast]'s job, right here, because that is protocol and not
+  /// certification.
+  late final PeerCastVerifier _peerCastVerifier = PeerCastVerifier(
+    verifyProof: verifyProof,
+    vkBytes: vkBytes,
+    vkBytesForTier: vkBytesForTier,
+    peerBookRoot: peerBookRoot,
+    peerOwnerPubkeyHex: peerOwnerPubkeyHex,
+    peerPermissions: peerPermissions,
+    allowProoflessSpells: allowProoflessSpells,
+  );
 
   /// When true, spell action payloads carry the [IncantationRecall] suffix,
   /// committed inside the action hash, and the peer prices the recital against
@@ -1107,15 +1110,6 @@ class TurnLoop
   /// real peer to verify against.
   final Uint8List? peerRawPubkey;
 
-  /// commitmentHex values the peer has cast this match. A second cast of the
-  /// same grid is a protocol violation; the match is forfeited on detection.
-  /// EXCEPT for a shipped Basic spell (docs/BASIC_SPELLS_PLAN.md —
-  /// isBasicGridAndT) or a Cantrip (certified trajectory under
-  /// kKinshipMinElements, spell_identity.dart), either of which is exempt: a
-  /// chapter may hold unlimited copies of one, so casting it more than once
-  /// per match is legitimate, not an exploit.
-  final _seenPeerCommitments = <String>{};
-
   /// Spell casts resolved during the most recent [runTurn] call, for the UI's
   /// cast animation. Cleared and repopulated at the start of every turn.
   List<SpellCastEvent> lastCastEvents = [];
@@ -1127,7 +1121,8 @@ class TurnLoop
   List<ResolvedSpellEvent> lastResolvedSpells = [];
 
   /// commitmentHex → certified BASE mana cost (5×segmentCount + dotCount,
-  /// grown by 1.05^T × 1.5^effectCount — see [_certifiedBaseManaCost]) for
+  /// grown by 1.05^T × 1.5^effectCount — see
+  /// [PeerCastVerifier.certifiedBaseManaCost]) for
   /// every peer spell verified during the most recent [runTurn] call.
   /// Cleared and repopulated at the start of every turn, populated only for
   /// peer casts (by [_verifyPeerSpellCast]) — never for the local player's
@@ -1676,28 +1671,22 @@ class TurnLoop
     _wildMagicNonce = 0;
     _turbulentNonce = 0;
 
-    // Turn-scoped map from commitmentHex → certified ParsedFormulas derived from
-    // the peer's verified proof. Populated by _verifyPeerSpellCast; consumed by
-    // _resolveActions → _applySpell. At most one entry per turn (2-player: one
-    // peer action per turn; delayed fires don't re-verify). Cleared here so a
-    // stale entry from a previous turn can never leak into the current one.
+    // Turn-scoped map from certified commitmentHex → the [CertifiedCast]
+    // [PeerCastVerifier] established for the peer's cast: its formulas, its flat
+    // element sequence (design doc "Summons"), and its wild-magic triggers
+    // (docs/WILD_MAGIC_PLAN.md §4.6). Populated by [_verifyPeerSpellCast];
+    // consumed by [DeterministicResolution.resolveActions] → applySpell, which
+    // reads it in place of the untrusted wire formula (B-1 fix).
     //
-    // NOTE: this guarantee is structural — it depends on _verifyPeerSpellCast
+    // At most one entry per turn (2-player: one peer action per turn; delayed
+    // fires carry their own certification instead). Declared here, per turn, so
+    // a stale entry from a previous turn can never leak into the current one.
+    //
+    // NOTE: that guarantee is structural — it depends on _verifyPeerSpellCast
     // being called at most once per turn. 3+ players (experimentalMultiplayer)
     // would break it: multiple peers could each cast the same starting grid,
     // producing colliding keys. Use a composite key if multi-player is ever wired.
-    final certifiedPeerFormulas = <String, List<ParsedFormula>>{};
-
-    // Parallel map for summon-mode spells (design doc "Summons"): the
-    // certified flat element sequence a peer's creature must be derived
-    // from, keyed and cleared identically to [certifiedPeerFormulas].
-    final certifiedPeerElementSequences = <String, List<BorderZone>>{};
-
-    // Parallel map for wild magic (docs/WILD_MAGIC_PLAN.md §4.6): the triggers
-    // derived from the peer's CERTIFIED proof public outputs, never from the
-    // wire SpellAsset. Same lifecycle, same clearing, same 3+-player caveat as
-    // [certifiedPeerFormulas] above.
-    final certifiedPeerWildMagic = <String, List<WildMagicTrigger>>{};
+    final certifiedPeerCasts = <String, CertifiedCast>{};
 
     // ── Phase 1: Action commit ─────────────────────────────────────────────
     // Committed before entropy is revealed so a modified client cannot
@@ -1960,16 +1949,11 @@ class TurnLoop
     );
 
     // Option 3: verify the peer's spell proof and Merkle book membership before
-    // resolving. Forfeits the match on any failure. Populates certifiedPeerFormulas
-    // with the trajectory-derived formulas for use in _resolveActions.
+    // resolving. Forfeits the match on any failure. Populates
+    // certifiedPeerCasts with the trajectory-derived semantics for use in
+    // Phase 5's resolution.
     if (action is SpellCastAction || action is MysterySpellCastAction) {
-      await _verifyPeerSpellCast(
-        action,
-        merkleProof,
-        certifiedPeerFormulas,
-        certifiedPeerElementSequences,
-        certifiedPeerWildMagic,
-      );
+      await _verifyPeerSpellCast(action, merkleProof, certifiedPeerCasts);
     }
 
     // Move-phase Meditate pays out HERE, not back at Phase 2 where it was
@@ -2076,9 +2060,7 @@ class TurnLoop
       preMovRange: preMovRange,
       rng: actionRng,
       traversedPaths: walked,
-      certifiedPeerFormulas: certifiedPeerFormulas,
-      certifiedPeerElementSequences: certifiedPeerElementSequences,
-      certifiedPeerWildMagic: certifiedPeerWildMagic,
+      certifiedPeerCasts: certifiedPeerCasts,
     );
     // Spells conjure illusions, and knockback/teleport shuffle who stands
     // where — either can put an enemy illusion next to a scryer.
@@ -2554,58 +2536,29 @@ class TurnLoop
   // ── Wild magic (docs/WILD_MAGIC_PLAN.md) ──────────────────────────────────
 
   /// The full certified semantics of a spell, derived from proof bytes this
-  /// device already holds.
+  /// device already holds — the [ActionResolutionHost] seam's one proof read.
   ///
-  /// Parses the proof bytes (signature verification skipped — see
-  /// [ProofIntake.parseOwn]) and re-derives formulas, element sequence, and
-  /// wild-magic triggers from the certified trajectory rather than the wire
-  /// `spell.formula`, so this produces byte-identical results to the peer path
-  /// ([_verifyPeerSpellCast]) for the same proof. One derivation, every call
-  /// site — §10 invariant 2.
+  /// The trust logic itself is [PeerCastVerifier.certifyOwnProof]; this is the
+  /// host binding that hands it the match's community seed. Keeping the seam
+  /// rather than letting [DeterministicResolution] reach for the verifier
+  /// directly is the point: resolution asks its host "what did this proof say",
+  /// and stays ignorant of both proof parsing and which device it is running on.
   ///
-  /// Returns null when there are no proof bytes: the `kAllowProoflessSpells`
-  /// dev flag. Both devices see the same (absent) proof bytes and both fall
-  /// back to the wire formula, so it is desync-SAFE even though it is not
-  /// trust-safe. That residue of TODO(B-1) is load-bearing for the dev flag —
-  /// do not widen it and do not invent a second policy for it.
-  // TODO(B-1): the remaining hole is the kAllowProoflessSpells flag. Closing it
-  //   means deleting the flag, then making a null CertifiedCast for a
-  //   current-turn peer spell a forfeit rather than a wire-formula fallback.
-  ///
-  /// For our own spell this is the authoritative derivation. For a peer's, it
-  /// is a *fallback* used only when [_verifyPeerSpellCast] never ran (solo, or
-  /// verification not wired up) — it parses without verifying, so it is no
-  /// stronger than the bytes it was handed. When verification IS wired, the
-  /// verified derivation always wins; see [_certifiedPeerCast]. Both devices
-  /// parse the same bytes either way, so this arm stays in lockstep.
+  /// The peer path and this one share [PeerCastVerifier.semanticsOf], so the
+  /// same proof produces byte-identical formulas, element sequence and
+  /// wild-magic triggers on both sides of the trust boundary — one derivation,
+  /// every call site (§10 invariant 2). What differs is only whether the bytes
+  /// were verified first: for our own spell this is authoritative; for a peer's
+  /// it is a *fallback* used only when [_verifyPeerSpellCast] never ran (solo,
+  /// or verification not wired up), and it is no stronger than the bytes it was
+  /// handed. When verification IS wired, the verified derivation always wins —
+  /// see [DeterministicResolution]'s `_certifiedPeerCast`.
   @override
-  CertifiedCast? certifiedFromProofBytes(SpellAsset spell) {
-    if (spell.proofBytes.isEmpty) return null;
-    try {
-      // The spell's OWN tier, not the match ceiling — parsing at the wrong
-      // tier_max reads the trajectory arrays at the wrong offsets and would
-      // derive different formulas and wild-magic triggers than the peer does
-      // from the same proof (§10 invariant 2). The spell's recorded tier is
-      // authoritative; fall back to deriving it from T for assets written
-      // before the field was trustworthy.
-      final ownTier = _tierForSpell(spell.t) ?? spell.tier;
-      final outputs = ProofIntake.parseOwn(spell.proofBytes, ownTier);
-      final formulas = TrajectoryParser.parse(outputs).formulas;
-      return CertifiedCast(
-        formulas: formulas,
-        elementSequence: TrajectoryParser.certifiedElementSequence(outputs),
-        wildMagic: WildMagic.triggersFor(
-          outputs,
-          formulas,
-          state.config.communitySeed,
-        ),
+  CertifiedCast? certifiedFromProofBytes(SpellAsset spell) =>
+      PeerCastVerifier.certifyOwnProof(
+        spell,
+        communitySeed: state.config.communitySeed,
       );
-    } on ProofIntakeException {
-      // A malformed local proof is a bug, not an attack; falling back is the
-      // same outcome on both devices (they parse the same bytes).
-      return null;
-    }
-  }
 
   /// See [DeterministicResolution.applyPhoenixSaves]. The event sink is this
   /// turn's `lastWildMagicEvents`, which the resolver appends to in place.
@@ -2766,9 +2719,7 @@ class TurnLoop
     await _verifyPeerSpellCast(
       SpellCastAction(spell: spell, targetHex: const HexCoord(0, 0)),
       merkleProof,
-      <String, List<ParsedFormula>>{},
-      <String, List<BorderZone>>{},
-      <String, List<WildMagicTrigger>>{},
+      <String, CertifiedCast>{},
       forcedCast: true,
     );
   }
@@ -3872,373 +3823,146 @@ class TurnLoop
     }
   }
 
-  /// Verify a peer spell cast (Option 3). Forfeits the match on failure.
+  /// The protocol reaction to [PeerCastVerifier]'s verdict on a peer's declared
+  /// spell cast.
   ///
-  /// Checks (in order):
-  ///   1. UltraHonk proof verifies and public [commitmentHex] matches the wire value.
-  ///   2. No duplicate grid cast — same (verified [commitmentHex], T) twice
-  ///      is a protocol violation — UNLESS this is one of the shipped Basic
-  ///      spells (docs/BASIC_SPELLS_PLAN.md) or a CANTRIP (certified
-  ///      trajectory under kKinshipMinElements, spell_identity.dart), either
-  ///      of which a chapter may legitimately hold in unlimited copies, so
-  ///      casting one more than once per match is not an exploit. Keyed on
-  ///      VERIFIED proof outputs, not the wire `spell.commitmentHex`/`.t`/
-  ///      `.formula` — see [isBasicGridAndT]'s header for why that
-  ///      distinction matters at a trust boundary; the Cantrip check is on
-  ///      the certified element sequence for the same reason.
-  ///   3. Merkle membership proof is valid against [peerBookRoot].
+  /// No trust logic lives here any more — the checks, their order, and the exact
+  /// tag each one produces are all in [PeerCastVerifier.certifyPeerCast]. What
+  /// stays is the three things a verifier must not do:
   ///
-  /// On success, populates [certifiedPeerFormulas] with the trajectory-derived
-  /// [ParsedFormula] list for this spell, and [certifiedPeerElementSequences]
-  /// with the flat certified element sequence (design doc "Summons" — the
-  /// same trust boundary extended to creature summoning; see
-  /// TrajectoryParser.certifiedElementSequence). [_resolveActions] reads
-  /// these entries when calling [_applySpell], replacing the untrusted wire
-  /// formula (B-1 fix).
+  ///   * turn a [PeerCastRejected] into `session.sendForfeit` + an aborting
+  ///     throw, with the tag and message the verdict carries verbatim;
+  ///   * publish the certified facts into this turn's `certifiedPeer*` maps,
+  ///     which is how they reach [DeterministicResolution.resolveActions];
+  ///   * charge the peer for the cast, which mutates their avatar (consuming a
+  ///     chainSurcharge or nextSpellCostDouble, converting a shortfall into HP
+  ///     damage) and so cannot happen inside verification.
   ///
   /// [forcedCast] marks a reveal the peer did not choose to make (wild magic's
-  /// Spontaneous Combustion — see [ForcedCast]). It exempts the reveal from
-  /// the duplicate-grid guard: a forced cast must not consume that player's
-  /// once-per-match right to cast the grid, nor trip the duplicate forfeit.
-  /// Everything else — proof verification, commitment-vs-wire, Merkle
-  /// membership — applies unchanged.
+  /// Spontaneous Combustion — see [ForcedCast]). The verifier exempts it from
+  /// the duplicate-grid guard; here it additionally skips the mana charge,
+  /// because a forced cast is free by definition. Charging for it would drain
+  /// mana the caster never chose to spend — and worse, the shortfall check
+  /// would penalise a player who simply happened to be holding an expensive
+  /// spell they were never given the option to not cast.
   Future<void> _verifyPeerSpellCast(
     TurnAction action,
     MembershipProof? merkleProof,
-    Map<String, List<ParsedFormula>> certifiedPeerFormulas,
-    Map<String, List<BorderZone>> certifiedPeerElementSequences,
-    Map<String, List<WildMagicTrigger>> certifiedPeerWildMagic, {
+    Map<String, CertifiedCast> certifiedPeerCasts, {
     bool forcedCast = false,
   }) async {
-    final verify = verifyProof;
-    final bookRoot = peerBookRoot;
-    if (verify == null || (vkBytes == null && vkBytesForTier == null))
-      return; // solo or verification not wired up
-
-    final SpellAsset spell;
-    final IncantationRecall? recall;
-    if (action is SpellCastAction) {
-      spell = action.spell;
-      recall = action.recall;
-    } else if (action is MysterySpellCastAction) {
-      spell = action.spell;
-      recall = action.recall;
-    } else {
-      return;
-    }
-
-    // 1. Proof verification.
-    if (spell.proofBytes.isEmpty) {
-      // DEV FLAG (kAllowProoflessSpells — lib/dev_flags.dart): let a Spell
-      // Test Lab spell through so effects can be exercised on two devices.
-      // Delete this branch along with the flag.
-      //
-      // Nothing is charged here, and [_deductManaForCommittedSpell] doesn't
-      // charge on the caster's side either — see [_isProoflessBypass] for why
-      // free-on-both-sides is the only option that can't desync.
-      //
-      // Nothing is written to [certifiedPeerFormulas], so [_applySpell] falls
-      // back to `_parsedFormulas(spell)`: the wire formula, which is also what
-      // the caster resolves from. Same source on both devices, so effects and
-      // chain state agree. That fallback is exactly the TODO(B-1) hole this
-      // flag leans on — closing that TODO means removing this flag first.
-      //
-      // Not mirrored, deliberately: the peer's draw state doesn't advance
-      // (there's no Merkle proof saying which chapter slot was spent). Draw
-      // state isn't part of [BattleState.toCanonicalBytes], so it can't
-      // desync the match, but the opponent's view of the caster's hand will
-      // drift and scrying a test-spell hand reads stale.
-      if (allowProoflessSpells) return;
-      session.sendForfeit('missing_spell_proof');
-      throw StateError(
-        'peer sent a spell cast with no proof bytes — match forfeit',
-      );
-    }
-    // The tier this spell was PROVEN at, not the match's negotiated ceiling.
-    // Getting this wrong is not a soft failure: the public-input count is
-    // 10 + 2*tier_max (+8 for barretenberg's pairing-point object), so a
-    // tier-12 proof checked against the tier-24 VK aborts in the backend with
-    // "num_public_inputs mismatch with VK" (42 vs 66) and forfeits a duel that
-    // was perfectly legal. Every cast whose T fell outside the match tier used
-    // to break lockstep this way.
-    final spellTier = _tierForSpell(spell.t);
-    if (spellTier == null) {
-      session.sendForfeit('invalid_spell_tier');
-      throw StateError(
-        'peer spell declares T=${spell.t}, outside the circuit range '
-        '(1..$kMaxInscribableSteps) — match forfeit',
-      );
-    }
-    final vk = _vkForTier(spellTier);
-    if (vk == null) {
-      session.sendForfeit('missing_vk_for_tier');
-      throw StateError(
-        'no bundled verification key for tier $spellTier — match forfeit',
-      );
-    }
-    final VerifiedSpellOutputs outputs;
-    try {
-      outputs = await ProofIntake.verifyAndParse(
-        spell.proofBytes,
-        vk,
-        verify,
-        spellTier,
-      );
-    } on ProofIntakeException catch (e) {
-      session.sendForfeit('invalid_spell_proof');
-      throw StateError('peer spell proof rejected: $e');
-    }
-    // Binds the wire-declared T (which selected the VK and the parse layout)
-    // to the T the proof actually attests. Without this a peer could steer
-    // tier selection with a value nothing checked.
-    if (outputs.t != spell.t) {
-      session.sendForfeit('t_mismatch');
-      throw StateError(
-        'peer proof certifies T=${outputs.t} but the wire declared T=${spell.t}'
-        ' — match forfeit',
-      );
-    }
-    if (outputs.commitmentHex != spell.commitmentHex) {
-      session.sendForfeit('commitment_mismatch');
-      throw StateError(
-        'peer proof commitmentHex ${outputs.commitmentHex} '
-        'does not match wire value ${spell.commitmentHex} — match forfeit',
-      );
-    }
-    // Binds the ruleset epoch the proof attests to the one this match
-    // negotiated. [ProofIntake] has parsed `ruleset_version` since it was
-    // added, but nothing read it: the field named itself a negotiated
-    // consensus parameter while enforcing nothing.
-    //
-    // Defence-in-depth rather than a live hole — RULESET_VERSION is a circuit
-    // global, so it is baked into each tier's verification key and a proof
-    // under a different epoch cannot satisfy the bundled VK. That makes this
-    // unreachable between honest clients on matched builds, which is exactly
-    // why it must be explicit: the implicit guarantee evaporates the moment
-    // two VKs are bundled, and a silent cross-epoch acceptance is the sort of
-    // thing a version field exists to make impossible.
-    if (outputs.rulesetVersion != state.config.rulesetVersion) {
-      session.sendForfeit('ruleset_version_mismatch');
-      throw StateError(
-        'peer proof certifies ruleset_version ${outputs.rulesetVersion} but '
-        'the match negotiated ${state.config.rulesetVersion} — match forfeit',
-      );
-    }
-
-    // Recompute formula triplets from the SNARK-certified trajectory (B-1 fix).
-    // Replaces the untrusted wire spell.formula for both mana-cost deduction and
-    // effect resolution. Stored here; read by _resolveActions → _applySpell.
-    //
-    // Computed before the duplicate-grid check below because the Cantrip
-    // exemption needs the CERTIFIED element count, not the peer-claimed
-    // `spell.formula.length`.
-    final certFormulas = TrajectoryParser.parse(outputs).formulas;
-    certifiedPeerFormulas[spell.commitmentHex] = certFormulas;
-    final certElementSequence = TrajectoryParser.certifiedElementSequence(outputs);
-    certifiedPeerElementSequences[spell.commitmentHex] = certElementSequence;
-
-    // 2. Duplicate grid detection — skipped for a shipped Basic spell or a
-    // Cantrip (certified trajectory under kKinshipMinElements), either of
-    // which may legitimately be cast more than once per match.
-    if (!forcedCast &&
-        !isBasicGridAndT(outputs.commitmentHex, outputs.t) &&
-        !isCantripElementCount(certElementSequence.length) &&
-        !_seenPeerCommitments.add(outputs.commitmentHex)) {
-      session.sendForfeit('duplicate_spell_cast:${outputs.commitmentHex}');
-      throw StateError(
-        'peer cast the same grid twice — match forfeit '
-        '(commitmentHex=${outputs.commitmentHex})',
-      );
-    }
-    // Wild magic, same trust boundary (WILD_MAGIC_PLAN.md §4.6): derived from
-    // the VERIFIED public outputs + the certified formulas, never from the
-    // wire SpellAsset. The community seed comes from the agreed MatchConfig,
-    // so both devices hash the same preimage.
-    certifiedPeerWildMagic[spell.commitmentHex] = WildMagic.triggersFor(
-      outputs,
-      certFormulas,
-      state.config.communitySeed,
+    final verdict = await _peerCastVerifier.certifyPeerCast(
+      action,
+      merkleProof,
+      rulesetVersion: state.config.rulesetVersion,
+      communitySeed: state.config.communitySeed,
+      peerDrawSchedule: _drawSchedules[_peerId()],
+      forcedCast: forcedCast,
     );
-    // Retained for Sightings capture (docs/SIGHTINGS_PLAN.md §2/§4) — the
-    // clean bestiary base cost, independent of this cast's modifiers. Read
-    // by battle_screen.dart's capture hook after runTurn returns.
-    lastCertifiedBaseManaCosts[spell.commitmentHex] =
-        _certifiedBaseManaCost(outputs, certFormulas);
 
-    // 2b. Enhancement-claim verification. isPotent/isVelocity/isEfficiency
-    // (and Mystery, implied by the action type itself) must each be backed
-    // by this spell's own certified supreme-dominance zones — a peer cannot
-    // claim Efficiency's mana discount (or Potency/Velocity's effect
-    // gating) on a spell that never achieved supreme dominance in the
-    // matching zone.
-    final certifiedTags = TrajectoryParser.certifiedSupremeTags(outputs);
-    final claimsPotent = action is SpellCastAction
-        ? action.isPotent
-        : (action as MysterySpellCastAction).isPotent;
-    final claimsVelocity = action is SpellCastAction
-        ? action.isVelocity
-        : (action as MysterySpellCastAction).isVelocity;
-    final claimsEfficiency = action is SpellCastAction
-        ? action.isEfficiency
-        : false;
-    final claimsMystery = action is MysterySpellCastAction;
+    switch (verdict) {
+      // Solo, verification not wired up, not a spell action, or the
+      // kAllowProoflessSpells dev flag. Nothing is certified, so resolution
+      // falls back to the wire formula on BOTH devices: not trust-safe, but
+      // desync-safe, which is the property the fallback exists for.
+      case PeerCastUncertified():
+        return;
 
-    if ((claimsPotent && !certifiedTags.contains('fire')) ||
-        (claimsVelocity && !certifiedTags.contains('air')) ||
-        (claimsEfficiency && !certifiedTags.contains('water')) ||
-        (claimsMystery && !certifiedTags.contains('earth'))) {
-      session.sendForfeit('unbacked_enhancement_claim');
-      throw StateError(
-        'peer claimed a cast-time enhancement not backed by certified '
-        'supreme-dominance data — match forfeit '
-        '(commitmentHex=${spell.commitmentHex})',
-      );
-    }
+      case PeerCastRejected(:final forfeitReason, :final detail):
+        session.sendForfeit(forfeitReason);
+        throw StateError(detail);
 
-    // 3. Book membership.
-    if (bookRoot != null && merkleProof != null) {
-      final proofWithRoot = MembershipProof(
-        root: bookRoot,
-        leafHex: merkleProof.leafHex,
-        siblings: merkleProof.siblings,
-        directions: merkleProof.directions,
-      );
-      if (!proofWithRoot.verify()) {
-        session.sendForfeit('book_membership_failed');
-        throw StateError(
-          'peer spell ${spell.commitmentHex} is not a member of their committed book — match forfeit',
+      case PeerCastCertified(:final cast):
+        // The certified semantics, published for _resolveActions → _applySpell
+        // to read in place of the untrusted wire formula (B-1 fix). Keyed on
+        // the CERTIFIED commitment — bound to the wire value by the verifier's
+        // commitment_mismatch check, so this is the same key resolution looks
+        // up, just sourced from the side of the boundary that proved it.
+        certifiedPeerCasts[cast.commitmentHex] = cast.semantics;
+        // Retained for Sightings capture (docs/SIGHTINGS_PLAN.md §2/§4) — the
+        // clean bestiary base cost, independent of this cast's modifiers. Read
+        // by battle_screen.dart's capture hook after runTurn returns.
+        lastCertifiedBaseManaCosts[cast.commitmentHex] = cast.baseManaCost;
+
+        // Mana cost (B-1 + B-8). Base cost is certified by the SNARK; the
+        // effect count, chain discount, recall multiplier and
+        // nextSpellCostDouble all come from _certifiedManaCost over certified
+        // inputs — no untrusted wire values on this path — so both devices
+        // deduct the same amount and the mana ledger stays consistent.
+        final peerId = _peerId();
+        final peerAvatar = peerId != null ? _avatarById(peerId) : null;
+        if (peerAvatar == null || forcedCast) return;
+        final spell = switch (action) {
+          SpellCastAction(:final spell) => spell,
+          MysterySpellCastAction(:final spell) => spell,
+          _ => null,
+        };
+        final recall = switch (action) {
+          SpellCastAction(:final recall) => recall,
+          MysterySpellCastAction(:final recall) => recall,
+          _ => null,
+        };
+        if (spell == null) return;
+        final verifiedCost = _certifiedManaCost(
+          cast.baseManaCost,
+          cast.semantics.formulas,
+          peerAvatar,
+          recall: recall,
+          isEfficiency: cast.isEfficiency,
+          isSummon: spell.isSummon,
+          certElementSequence: cast.semantics.elementSequence,
         );
-      }
-
-      // 3a. Hand membership (SPELL_DRAW_WIRING_PLAN.md §6). The Merkle path
-      // just verified doesn't only prove chapter membership — its directions
-      // authenticate *which* position was cast (proofWithRoot.leafIndex).
-      // That position must be in the caster's publicly-computed in-hand set
-      // and not withered. This is the "interim soft" enforcement §6 calls
-      // for: correct against an honest client; a malicious client could
-      // still forge an unsorted book tree (closed by the §7 sortedness
-      // circuit, not yet landed). Skipped (not failed) when our own
-      // DrawSchedule bookkeeping for the peer isn't dealt yet — a local
-      // chapter-load race (see _dealOpeningHandsIfNeeded), not the peer's
-      // fault.
-      final schedule = _drawSchedules[_peerId()];
-      if (schedule != null && !schedule.isCastable(proofWithRoot.leafIndex)) {
-        session.sendForfeit('cast_out_of_hand');
-        throw StateError(
-          'peer spell ${spell.commitmentHex} at position ${proofWithRoot.leafIndex} '
-          'is not in their castable hand — match forfeit',
-        );
-      }
-    }
-
-    // 3b. Cast authorization (BATTLE_AUTH_PLAN.md §4). The proof declares an
-    // owner_pubkey (outputs.ownerPubkeyHex), but per CLAUDE.md invariant 5 the
-    // circuit never proves the caster holds that key — a proof alone can
-    // declare any owner. [peerOwnerPubkeyHex] is the peer's *authenticated*
-    // identity (verified via a fresh-nonce Ed25519 signature at handshake —
-    // see BattleSession.exchangeIdentityAuth), so this check is what actually
-    // stops a peer casting a spell they neither own nor hold a grant for.
-    // Null in solo/test (no authenticated peer to check against — skip).
-    final authenticatedPeerPubkeyHex = peerOwnerPubkeyHex;
-    if (authenticatedPeerPubkeyHex != null) {
-      final authorized = await castingPlayerMayUse(
-        spellOwnerPubkeyHex: outputs.ownerPubkeyHex,
-        commitmentHex: outputs.commitmentHex,
-        t: outputs.t,
-        castingPlayerPubkeyHex: authenticatedPeerPubkeyHex,
-        permissions: peerPermissions,
-      );
-      if (!authorized) {
-        session.sendForfeit('unauthorized_spell:${outputs.commitmentHex}');
-        throw StateError(
-          'peer cast a spell they neither own nor hold a grant for '
-          '(owner=${outputs.ownerPubkeyHex}, caster=$authenticatedPeerPubkeyHex) '
-          '— match forfeit',
-        );
-      }
-    }
-
-    // 4. Mana cost verification from proof public outputs (B-1 + B-8 fix).
-    // Base cost is certified by the SNARK (5×segmentCount + dotCount).
-    // effectCount, chain discount, sorcerer multiplier, and nextSpellCostDouble
-    // all come from _certifiedManaCost — no untrusted wire values — so both
-    // devices deduct the same amount and the mana ledger stays consistent.
-    //
-    // Skipped entirely for a FORCED cast (wild magic's Spontaneous
-    // Combustion): it is free by definition, so charging for it would drain
-    // mana the caster never chose to spend — and worse, the shortfall check
-    // would forfeit the match against a player who simply happened to be
-    // holding an expensive spell they were never given the option to not cast.
-    final peerId = _peerId();
-    final peerAvatar = peerId != null ? _avatarById(peerId) : null;
-    if (peerAvatar != null && !forcedCast) {
-      final verifiedCost = _certifiedManaCost(
-        outputs,
-        certFormulas,
-        peerAvatar,
-        recall: recall,
-        isEfficiency: claimsEfficiency,
-        isSummon: spell.isSummon,
-        certElementSequence: certElementSequence,
-      );
-      // A peer who can't pay FIZZLES; it is not a forfeit any more.
-      //
-      // This used to end the match on `insufficient_mana_for_spell`. That was
-      // aimed at a desync rather than a cheat — the caster's deduction clamped
-      // at zero and played on while this device stopped — and it is a wildly
-      // disproportionate answer to a move that wins its caster nothing. Both
-      // devices now price the cast from the same certified inputs and reach
-      // the same verdict, so the desync it guarded against cannot happen, and
-      // nothing has to be transmitted to keep them agreed.
-      //
-      // Sorcerer mode makes a shortfall genuinely routine besides: recall can
-      // inflate a cost after the player has committed, and previewSpellCost
-      // deliberately quotes the honest base price rather than a worst case.
-      if (_fizzlesForMana(peerAvatar, verifiedCost)) {
-        _markFizzledForMana(action);
-      } else {
-        peerAvatar.mana = (peerAvatar.mana - verifiedCost).clamp(0, _kMaxMana);
-      }
+        // A peer who can't pay FIZZLES; it is not a forfeit any more.
+        //
+        // This used to end the match on `insufficient_mana_for_spell`. That was
+        // aimed at a desync rather than a cheat — the caster's deduction clamped
+        // at zero and played on while this device stopped — and it is a wildly
+        // disproportionate answer to a move that wins its caster nothing. Both
+        // devices now price the cast from the same certified inputs and reach
+        // the same verdict, so the desync it guarded against cannot happen, and
+        // nothing has to be transmitted to keep them agreed.
+        //
+        // Sorcerer mode makes a shortfall genuinely routine besides: recall can
+        // inflate a cost after the player has committed, and previewSpellCost
+        // deliberately quotes the honest base price rather than a worst case.
+        if (_fizzlesForMana(peerAvatar, verifiedCost)) {
+          _markFizzledForMana(action);
+        } else {
+          peerAvatar.mana = (peerAvatar.mana - verifiedCost).clamp(0, _kMaxMana);
+        }
     }
   }
 
   // ── Mana cost ─────────────────────────────────────────────────────────────
 
-  /// Compute mana cost from SNARK-certified outputs and certified formula list.
+  /// Apply the modifier chain to a peer cast's [certifiedBase] price.
+  ///
+  /// Every input is certified: [certifiedBase] and [certFormulas] come from
+  /// [PeerCastVerifier], [certElementSequence] with them, and [isEfficiency] has
+  /// already been checked against this spell's own certified supreme-dominance
+  /// zones. Nothing on this path reads a wire field, which is the B-1/B-8
+  /// property. (The one exception is [isSummon], read off `SpellAsset.isSummon`
+  /// — see the note at the chain step.)
+  ///
+  /// **This is not verification and must not move behind the verifier**: it
+  /// mutates [caster], consuming a chainSurcharge or a nextSpellCostDouble and
+  /// converting a shortfall into HP damage. It is a deterministic game
+  /// operation over certified inputs.
   ///
   /// Operation order mirrors [_spellManaCost] exactly so both the local and
   /// verifier paths apply the same modifiers in the same sequence:
-  ///   1. Certified base: 5×segmentCount + dotCount, grown by 1.05^T × 1.5^effectCount.
+  ///   1. [certifiedBase] — 5×segmentCount + dotCount grown by
+  ///      1.05^T × 1.5^effectCount, computed once at certification time by
+  ///      [PeerCastVerifier.certifiedBaseManaCost].
   ///   2. Chain discount from [certFormulas] (trusted; replaces wire spell.formula).
-  ///   3. Efficiency (Water) discount: −1/3, gated on [isEfficiency] (verified by the
-  ///      caller against certified supreme-tags — see TrajectoryParser.certifiedSupremeTags).
+  ///   3. Efficiency (Water) discount: −1/3, gated on [isEfficiency].
   ///   4. Recall multiplier from the transmitted [recall] (committed in the action
   ///      hash), scored against the EXPECTED recital both clients derive from the
   ///      certified trajectory. Exact integer arithmetic — see incantation_recall.dart.
   ///   5. nextSpellCostDouble: consume + double + HP shortfall. Both clients execute this
   ///      identically, keeping the status-effect list and state hash in sync.
-  ///
-  /// NOTE(B-1, balance): certified effectCount is tighter than the wire formula for spells
-  /// with residual activations. Example: 4 activations = 1 complete formula + 1 residual;
-  /// wire gives effectCount=1 (floor((4-1)÷3)=1), certified gives effectCount=0
-  /// (max(0,1-1)=0). The certified count is the correct trust boundary — the wire count
-  /// was exploitable by padding the formula list.
-  /// Certified base mana cost: 5×segmentCount + dotCount, grown by
-  /// 1.05^T × 1.5^effectCount — step 1 of [_certifiedManaCost]'s modifier
-  /// chain, factored out so it can't drift from the value Sightings capture
-  /// stores (docs/SIGHTINGS_PLAN.md §2, "the clean bestiary stat" — every
-  /// later step is a per-cast modifier, not intrinsic to the spell).
-  int _certifiedBaseManaCost(
-    VerifiedSpellOutputs outputs,
-    List<ParsedFormula> certFormulas,
-  ) {
-    final base = 5 * outputs.segmentCount + outputs.dotCount;
-    final effectCount = max(0, certFormulas.length - 1);
-    return (base * pow(1.05, outputs.t) * pow(1.5, effectCount)).round();
-  }
-
   int _certifiedManaCost(
-    VerifiedSpellOutputs outputs,
+    int certifiedBase,
     List<ParsedFormula> certFormulas,
     WizardAvatar caster, {
     IncantationRecall? recall,
@@ -4247,7 +3971,7 @@ class TurnLoop
     List<BorderZone>? certElementSequence,
   }) {
     // 1. Certified base + growth.
-    var cost = _certifiedBaseManaCost(outputs, certFormulas);
+    var cost = certifiedBase;
 
     // 2. Chain: a pending chainSurcharge (potent Air-flavor Chain
     // Interaction) overrides the ordinary chain lookup entirely for this one
