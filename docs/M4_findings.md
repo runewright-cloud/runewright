@@ -5796,3 +5796,112 @@ reordering that needs its own reproduction and its own corpus run.
 
 If these are ever unified on the canonical-pubkey rule, it is a `RULESET_VERSION`-visible
 change and wants a two-device pass, not just a green suite.
+
+---
+
+## M4.19 — `isSummon` is a wire field steering trusted calculations (found 2026-08-17, NOT fixed)
+
+Found by inspection while preparing the mana-cost extraction, after `PeerCastVerifier`
+made the trust boundary explicit enough to read off what does and does not cross it.
+Recorded rather than fixed: closing it requires an authenticated structure that does not
+exist yet (see "What a fix needs" below), and inventing an engine-side rule instead would
+be exactly the confabulated structure CLAUDE.md warns against.
+
+### The gap
+
+`TurnLoop._certifiedManaCost` takes `isSummon: spell.isSummon` — a plain wire field —
+and every other input it takes is certified. Nothing binds that field:
+
+* **Proof public outputs** (`proof_intake.dart`) are `T`, `owner_pubkey`,
+  `ruleset_version`, `commitment`, `border_activations`, `dominance_trajectory`,
+  `supreme_dominance_flags`, `segment_count`, `dot_count`. No summon bit.
+* **`commitment = Poseidon2(packed_grid)`** is grid-only (CLAUDE.md invariant 2), and
+  summon-ness is not a property of the grid.
+* **Book membership** (`book_commitment.dart`) hashes `commitmentHex` leaves, so the
+  Merkle root binds the grid set and nothing else. The Option-2 batch hash is over the
+  same leaves.
+* **`spellHashHex = Poseidon2(commitment, T)`** (`inscribe.dart`) — again no summon bit.
+
+Summon-ness is the author's *interpretation* of a certified trajectory, chosen in the UI
+(`main.dart`'s `_isSummonMode`) and stored only in the local `SpellAsset` JSON. The same
+grid is a legal summon and a legal incantation; no proof can distinguish them because
+there is nothing to distinguish.
+
+The action commit *does* bind the field for the turn — `_encodeAction` includes the two
+summon bytes (protocol v5) and the commit hashes those bytes — so a caster cannot flip it
+after seeing the reveal. That is a temporal binding, not an authenticity one.
+
+### Why it is load-bearing
+
+`_certifiedManaCost` and `_updateChainState` both branch on it to pick the chain affinity:
+
+| declaration | affinity source | can be null? |
+|---|---|---|
+| summon | `CreatureSpec.fromElements(certElementSequence).affinity` — the majority element | no, for any non-empty sequence |
+| non-summon | `pureAffinityOf(certFormulas)` — null unless every formula shares one affinity | yes |
+
+A hybrid spell is supposed to break the chain and pay full price (design doc R3 — purity
+is the whole rule). Declaring it a summon launders it into a pure cast: it takes the
+`0.9^n` discount *and* advances the chain instead of clearing it. Measured in
+`test/battle/engine/summon_declaration_trust_test.dart`: the same certified spell, same
+proof bytes, same commitment, same battle state, same 4-cast fire chain, costs **34 mana
+declared an incantation and 23 declared a summon**, and leaves the chain **cleared vs.
+advanced to 5 casts**.
+
+Both devices consume the same wire declaration, so this is a *cheat, not a desync*: the
+state hash agrees and nothing rejects it.
+
+Two smaller consequences ride along:
+
+* **Recall opener.** `_certifiedManaCost` passes the same field to
+  `IncantationRecall.tallyAgainst` as `expectedIsSummon`, which picks the opener word the
+  caster is scored against. The caster authors both the spoken claim and the declaration,
+  in one committed payload, so the opener slot can never score wrong — one free unit of
+  recall on every cast, worth a `openerWrongWeight = 3` swing.
+* **Interpretation shopping.** The same certified grid resolves as a creature or as
+  formula effects, chosen after seeing the board rather than at inscribe time.
+
+`vocal_slot.dart`'s `openerFor` doc comment names the reasoning error precisely: it
+justifies trusting the field because it is "already consensus-visible". That establishes
+both devices read the same value, not that the value is true. **Consensus-visible is not
+certified** — worth remembering as its own rule, since the same sentence would justify
+trusting any wire field.
+
+### Adjacent, same provenance
+
+`spell.summonPersonality` travels in the same two bytes, is equally uncertified, drives
+creature AI, and lands in canonical state (`battle_state.dart` writes
+`m.personality.index` into `toCanonicalBytes`). Any fix for `isSummon` should cover it —
+they are one authored label, not two.
+
+### What a fix needs
+
+Engine-side derivation is impossible: there is no certified datum to derive from. The
+options, cheapest first:
+
+1. **Bind it off-circuit.** Extend the book Merkle leaf from `commitmentHex` to a hash
+   over `(commitment, T, isSummon, personality)` — i.e. move membership onto a
+   `uniqueSpellId`-shaped leaf. No circuit change, no `kRulesetVersion` bump, no
+   re-proving. It does invalidate every committed root and every outstanding
+   loan/transfer signature keyed to `commitmentHex`, which is exactly the migration
+   `spell_identity.dart` already schedules for Phase 4 — so this wants to ride with that,
+   not ahead of it.
+2. **Bind it in-circuit.** A new public input. Costs a `kRulesetVersion` bump, new VKs,
+   and re-proving every spell — and it certifies a field the CA has no opinion about,
+   which is a poor fit for what the circuit is for.
+3. **Rule it away.** Make chain affinity read the same function in both modes so the
+   declaration stops being worth lying about. That is a design change to the chain rules,
+   not a trust fix, and it is Soren's call.
+
+Option 1 is the recommendation, deferred to the Phase-4 identity migration.
+
+### Verification
+
+`test/battle/engine/summon_declaration_trust_test.dart` characterizes the live behaviour,
+including the parts that are wrong; `expectedChainLaunderingIsLive` flips to false when
+the fix lands and the expectations invert. The attack stays as the regression. 807 tests
+in `test/battle/` green, full suite 1619 green (the 2 `vocabulary_screen_test.dart`
+failures are pre-existing and fail identically without this file).
+
+No version epoch moved: nothing about the characterization changes canonical state, wire
+framing, or proof semantics.
