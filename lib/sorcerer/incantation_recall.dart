@@ -14,8 +14,9 @@
 // ── Why this file has no doubles ──────────────────────────────────────────
 //
 // The multiplier lands on the mana ledger, which both devices compute
-// independently and must agree on exactly (see TurnLoop._certifiedManaCost /
-// _spellManaCost, whose operation order is already coupled for this reason).
+// independently and must agree on exactly (see
+// DeterministicResolution.certifiedManaCost / spellCostBreakdown, whose
+// operation order is already coupled for this reason).
 // A one-ULP disagreement becomes a one-mana disagreement becomes a state-hash
 // desync becomes a forfeit.
 //

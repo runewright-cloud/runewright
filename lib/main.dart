@@ -476,7 +476,8 @@ class _GameScreenState extends State<GameScreen>
   /// (entries 4, 7, 10, …) multiplies cost by 1.5 -- a residual (in-progress,
   /// not-yet-complete) activation buys nothing, so effectCount is
   /// `formulas.length - 1`, not a raw activation count. This must match
-  /// TurnLoop._wireBaseManaCost / _certifiedBaseManaCost, which are what
+  /// DeterministicResolution.wireBaseManaCost /
+  /// PeerCastVerifier.certifiedBaseManaCost, which are what
   /// actually charge the caster and the opponent at cast time -- an earlier
   /// `(committed.length - 1) ~/ 3` form over-counted on any residual, so the
   /// live readout advertised a price ~1.5x what the duel deducted (and,

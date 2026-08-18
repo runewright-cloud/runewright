@@ -130,10 +130,12 @@
 // TurnLoop's own three jobs and the next thing to look at, but none of them is
 // deterministic resolution and none of them belongs in this file.
 
-import 'dart:math' show max, min;
+import 'dart:math' show max, min, pow;
 import 'dart:typed_data';
 
 import 'package:rune_duel/engine/border_zone.dart';
+import 'package:rune_duel/sorcerer/incantation_recall.dart';
+import 'package:rune_duel/sorcerer/vocal_slot.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/spells/counter_charm.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
@@ -173,6 +175,7 @@ import 'hash_rng.dart';
 import 'line_of_sight.dart';
 import 'terrain_ops.dart';
 import 'tile_entry_resolver.dart';
+import 'peer_cast_verifier.dart' show PeerCastVerifier;
 import 'trajectory_parser.dart' show ParsedFormula;
 import 'turn_actions.dart';
 import 'wild_magic_applicator.dart';
@@ -3352,6 +3355,369 @@ class DeterministicResolution {
       actor.chainLengths[el] = next;
     }
   }
+
+  // ── Mana cost ─────────────────────────────────────────────────────────────
+  //
+  // Eighth across the seam, and operations again rather than a phase — pricing
+  // a cast is not a phase, it is a calculation two different callers reach at
+  // two different moments (the caster at commit, the peer after verification).
+  //
+  // The two mirrors below are deliberately NOT merged. They apply the same five
+  // steps in the same order, but they start from different data on purpose:
+  //
+  //   [certifiedManaCost]   the price the PEER charges. Base, formulas and
+  //                         element sequence all come from the verified public
+  //                         outputs via `PeerCastVerifier` — the B-1/B-8
+  //                         property.
+  //   [spellCostBreakdown]  the price the CASTER charges itself, from its own
+  //                         local `SpellAsset`. Trusting the wire here is
+  //                         sound because it is the caster's own spell.
+  //
+  // Collapsing them into one function parameterised by "certified or not" would
+  // read as tidier and would be the exact regression B-1 closed: one path is a
+  // trust boundary and the other is not, and a shared body is one refactor away
+  // from the untrusted caller reaching the trusted branch. They mirror each
+  // other; they do not share.
+  //
+  // **What is uncertified here, deliberately (M4.19).** Both mirrors read
+  // `isSummon` to choose the chain affinity, and it is an authored WIRE field
+  // that no proof attests — see docs/M4_findings.md M4.19 and
+  // test/battle/engine/summon_declaration_trust_test.dart. The extraction
+  // preserved that read exactly and made it an explicit named parameter on
+  // [certifiedManaCost] rather than hiding it; the fix is deferred to the
+  // Phase-4 spell-identity migration. Do not "clean this up" by deriving it
+  // from [certElementSequence] — that would be a silent rules change.
+  //
+  // TurnLoop keeps everything around these: which action is being priced,
+  // whether the proofless dev-flag bypass applies, coalescing a null recall,
+  // marking the action fizzled, and the UI's preview/affordability wrappers.
+  // What crosses is the arithmetic and the caster mutations it implies.
+
+
+  /// Apply the modifier chain to a peer cast's [certifiedBase] price.
+  ///
+  /// Every input is certified: [certifiedBase] and [certFormulas] come from
+  /// [PeerCastVerifier], [certElementSequence] with them, and [isEfficiency] has
+  /// already been checked against this spell's own certified supreme-dominance
+  /// zones. Nothing on this path reads a wire field, which is the B-1/B-8
+  /// property. (The one exception is [isSummon], read off `SpellAsset.isSummon`
+  /// — see the note at the chain step.)
+  ///
+  /// **This is not verification and must not move behind the verifier**: it
+  /// mutates [caster], consuming a chainSurcharge or a nextSpellCostDouble and
+  /// converting a shortfall into HP damage. It is a deterministic game
+  /// operation over certified inputs.
+  ///
+  /// Operation order mirrors [applySpellManaCost] exactly so both the local and
+  /// verifier paths apply the same modifiers in the same sequence:
+  ///   1. [certifiedBase] — 5×segmentCount + dotCount grown by
+  ///      1.05^T × 1.5^effectCount, computed once at certification time by
+  ///      [PeerCastVerifier.certifiedBaseManaCost].
+  ///   2. Chain discount from [certFormulas] (trusted; replaces wire spell.formula).
+  ///   3. Efficiency (Water) discount: −1/3, gated on [isEfficiency].
+  ///   4. Recall multiplier from the transmitted [recall] (committed in the action
+  ///      hash), scored against the EXPECTED recital both clients derive from the
+  ///      certified trajectory. Exact integer arithmetic — see incantation_recall.dart.
+  ///   5. nextSpellCostDouble: consume + double + HP shortfall. Both clients execute this
+  ///      identically, keeping the status-effect list and state hash in sync.
+  int certifiedManaCost(
+    int certifiedBase,
+    List<ParsedFormula> certFormulas,
+    WizardAvatar caster, {
+    IncantationRecall? recall,
+    bool isEfficiency = false,
+    bool isSummon = false,
+    List<BorderZone>? certElementSequence,
+    bool isVocalComponents = false,
+  }) {
+    // 1. Certified base + growth.
+    var cost = certifiedBase;
+
+    // 2. Chain: a pending chainSurcharge (potent Air-flavor Chain
+    // Interaction) overrides the ordinary chain lookup entirely for this one
+    // cast, regardless of affinity — consumed here so it doesn't also fire
+    // in _updateChainState's normal advancement afterward.
+    final surchargeIdx = caster.activeStatusEffects.indexWhere(
+      (fx) => fx.effectTypeId == StatusEffectId.chainSurcharge,
+    );
+    if (surchargeIdx >= 0) {
+      cost = (cost * pow(0.9, -1)).ceil();
+      caster.activeStatusEffects.removeAt(surchargeIdx);
+    } else {
+      final pureAffinity = isSummon
+          ? CreatureSpec.fromElements(
+              certElementSequence ?? const [],
+            )?.affinity
+          : pureAffinityOf(certFormulas);
+      cost = (cost * caster.chainCostMultiplier(pureAffinity)).ceil();
+    }
+
+    // 3. Efficiency (Water) loadout enhancement: −1/3 mana cost. [isEfficiency]
+    // has already been verified against this spell's certified supreme-tags
+    // by _verifyPeerSpellCast before reaching here — see
+    // TrajectoryParser.certifiedSupremeTags. Mirrors applySpellManaCost's step,
+    // same relative position (after chain discount, before sorcerer
+    // multiplier).
+    if (isEfficiency) {
+      cost = (cost * 2 / 3).ceil();
+    }
+
+    // 4. Recall multiplier. The EXPECTED recital is derived HERE, from the
+    // certified element sequence and the certified isSummon — never from
+    // anything the caster transmitted. That is what makes a recall claim
+    // checkable rather than self-reported, and it is the whole reason the
+    // verbal component moved off pronunciation quality
+    // (VOCAL_RECALL_PLAN.md §2).
+    //
+    // Exact integer arithmetic, rounded once — see incantation_recall.dart on
+    // why no double may appear anywhere on this path.
+    //
+    // [recall] is never null here in sorcerer mode: the peer decodes it from
+    // the wire (silent at worst), and the caster's own commit path coalesces
+    // it — see TurnLoop._deductManaForCommittedSpell. Null reaches this only from
+    // TurnLoop.previewSpellCost, which must quote the honest base price because no
+    // incantation has been spoken yet.
+    if (isVocalComponents && recall != null) {
+      cost = recall
+          .tallyAgainst(
+            expectedIsSummon: isSummon,
+            expectedElements:
+                expectedRecitalSlots(certElementSequence ?? const []),
+          )
+          .applyTo(cost);
+    }
+
+    // 5. nextSpellCostDouble: consume and double cost, convert excess to HP damage.
+    // Both caster and verifier execute this path identically, keeping the status-effect
+    // list and state hash in sync. Pre-existing desync when active (see M4_findings.md
+    // "nextSpellCostDouble pre-existing desync"); this is the fix.
+    final doubleIdx = caster.activeStatusEffects.indexWhere(
+      (fx) => fx.effectTypeId == StatusEffectId.nextSpellCostDouble,
+    );
+    if (doubleIdx >= 0) {
+      final fx = caster.activeStatusEffects[doubleIdx];
+      final multiplier = fx.modifiers['costMultiplier'] ?? 2;
+      cost = (cost * multiplier).ceil();
+      final hpPerMana = fx.modifiers['hpPerManaMissed'] ?? 1;
+      final manaPerHp = fx.modifiers['manaPerHp'] ?? 10;
+      final shortfall = (cost - caster.mana).clamp(0, _kMaxMana);
+      if (shortfall > 0) {
+        final hpDamage = ((shortfall / manaPerHp) * hpPerMana).ceil();
+        caster.absorbDamage(hpDamage);
+        cost = caster.mana;
+      }
+      caster.activeStatusEffects.removeAt(doubleIdx);
+    }
+
+    return cost.clamp(0, _kMaxMana);
+  }
+
+  /// Step 1 of [applySpellManaCost], written to be the exact local mirror of
+  /// [PeerCastVerifier.certifiedBaseManaCost]: same inputs, same operations, same order.
+  ///
+  /// Deliberately recomputed rather than read off [SpellAsset.manaCost].
+  /// That field is baked at inscribe time from the *activation* count —
+  /// `max(0, (activations - 1) ~/ 3)` — while the certified path derives
+  /// effectCount from the count of *complete formulas*, `max(0, formulas - 1)`.
+  /// Those agree only when the activation count is an exact multiple of 3, so
+  /// any spell with a residual activation charged its own caster ~1.5x what
+  /// the opponent's device charged it, `avatar.mana` diverged, and
+  /// [_exchangeStateHash] forfeited the match ("state hash mismatch on turn
+  /// N"). The certified count is the one that must win — it's the trust
+  /// boundary, and the wire count was exploitable by padding the formula
+  /// list — so the local path adopts it here.
+  ///
+  /// [_parsedFormulas] and TrajectoryParser both group the same flat
+  /// activation sequence into triplets and drop the residual, so
+  /// `parsedFormulas(spell).length == certFormulas.length` for an honest
+  /// spell; a dishonest one still loses, because the opponent charges the
+  /// certified amount regardless and the state hash catches the difference.
+  int wireBaseManaCost(SpellAsset spell) {
+    final base = 5 * spell.segmentCount + spell.dotCount;
+    final effectCount = max(0, parsedFormulas(spell).length - 1);
+    return (base * pow(1.05, spell.t) * pow(1.5, effectCount)).round();
+  }
+
+  /// Charge [caster] for casting [spell]: the cost, *and* the state changes
+  /// that pricing it implies (a consumed chainSurcharge, a consumed
+  /// nextSpellCostDouble, the HP damage its shortfall converts to).
+  ///
+  /// The arithmetic lives in [spellCostBreakdown] so `TurnLoop.previewSpellCost` can
+  /// ask "what would this cost?" without charging for it. Do not reintroduce a
+  /// second copy of the formula here — the UI gate and the deduction must
+  /// agree to the mana, or the player is offered casts that then fizzle for
+  /// want of it (see [fizzlesForMana]).
+  int applySpellManaCost(
+    SpellAsset spell,
+    WizardAvatar caster, {
+    CastingEnhancements? enhancements,
+    IncantationRecall? recall,
+    bool isVocalComponents = false,
+  }) {
+    final b = spellCostBreakdown(spell, caster,
+        enhancements: enhancements,
+        recall: recall,
+        isVocalComponents: isVocalComponents);
+
+    if (b.hpDamage > 0) caster.absorbDamage(b.hpDamage);
+
+    // Both indices address the UNMUTATED list, so remove the higher first —
+    // that is exactly equivalent to the original inline order (remove the
+    // surcharge, then remove the double at its post-shift index), because
+    // dropping a chainSurcharge never changes *which* nextSpellCostDouble is
+    // first, only where it sits.
+    final consumed = [b.surchargeIdx, b.doubleIdx].where((i) => i >= 0).toList()
+      ..sort();
+    for (final i in consumed.reversed) {
+      caster.activeStatusEffects.removeAt(i);
+    }
+
+    return b.cost;
+  }
+
+  /// Price a cast of [spell] by [caster] without mutating either.
+  ///
+  /// Operation order is the same as [certifiedManaCost]'s — see its doc
+  /// comment for the numbered steps and why the two must not drift. What this
+  /// returns beyond the cost is everything the charging path has to *apply*:
+  /// [hpDamage] to absorb, and the indices into [caster]'s current
+  /// `activeStatusEffects` of the chainSurcharge / nextSpellCostDouble entries
+  /// this cast consumes (-1 when absent).
+  ({int cost, int hpDamage, int surchargeIdx, int doubleIdx})
+  spellCostBreakdown(
+    SpellAsset spell,
+    WizardAvatar caster, {
+    CastingEnhancements? enhancements,
+    IncantationRecall? recall,
+    bool isVocalComponents = false,
+  }) {
+    // 1. Base + growth — mirrors certifiedManaCost step 1.
+    var cost = wireBaseManaCost(spell);
+
+    // Chain: a pending chainSurcharge (potent Air-flavor Chain Interaction)
+    // overrides the ordinary chain lookup for this one cast, regardless of
+    // affinity — mirrors certifiedManaCost's step 2, same relative
+    // position. Reported back for [applySpellManaCost] to consume, so it doesn't
+    // also fire in _updateChainState's normal advancement afterward.
+    final surchargeIdx = caster.activeStatusEffects.indexWhere(
+      (fx) => fx.effectTypeId == StatusEffectId.chainSurcharge,
+    );
+    if (surchargeIdx >= 0) {
+      cost = (cost * pow(0.9, -1)).ceil();
+    } else {
+      final pureAffinity = spell.isSummon
+          ? CreatureSpec.fromElements(elementSequence(spell))?.affinity
+          : pureAffinityOf(parsedFormulas(spell));
+      cost = (cost * caster.chainCostMultiplier(pureAffinity)).ceil();
+    }
+
+    // Efficiency (Water) loadout enhancement: −1/3 mana cost. Applied after
+    // chain discount, before the sorcerer multiplier — see certifiedManaCost
+    // for the mirrored step at the same relative position.
+    if (enhancements?.isEfficiency ?? false) {
+      cost = (cost * 2 / 3).ceil();
+    }
+
+    // Recall multiplier — the local mirror of certifiedManaCost step 4, at
+    // the same relative position (after the chain and Efficiency discounts, so
+    // a shaky recital inflates the already-discounted cost).
+    //
+    // Reads the LOCAL element sequence where the certified path reads the
+    // certified one. That is the same trust split every step here already
+    // uses: this path prices the caster's own cast, and the certified path is
+    // what the peer charges them.
+    //
+    // Null means "not spoken yet" here, and prices at base — that is
+    // TurnLoop.previewSpellCost's path. The charging path never passes null; see
+    // TurnLoop._deductManaForCommittedSpell.
+    if (isVocalComponents && recall != null) {
+      cost = recall
+          .tallyAgainst(
+            expectedIsSummon: spell.isSummon,
+            expectedElements: expectedRecitalSlots(elementSequence(spell)),
+          )
+          .applyTo(cost);
+    }
+
+    // nextSpellCostDouble status effect: double the cost (and report the
+    // effect back for [applySpellManaCost] to consume).
+    var hpDamage = 0;
+    final doubleIdx = caster.activeStatusEffects.indexWhere(
+      (fx) => fx.effectTypeId == StatusEffectId.nextSpellCostDouble,
+    );
+    if (doubleIdx >= 0) {
+      final fx = caster.activeStatusEffects[doubleIdx];
+      final multiplier = fx.modifiers['costMultiplier'] ?? 2;
+      cost = (cost * multiplier).ceil();
+      final hpPerMana = fx.modifiers['hpPerManaMissed'] ?? 1;
+      final manaPerHp = fx.modifiers['manaPerHp'] ?? 10;
+      // HP shortfall conversion: if caster can't afford it, excess cost → HP damage.
+      // This is the one route by which an "unaffordable" cast is still legal —
+      // the caster pays what they have and bleeds for the rest — so the cost
+      // returned here is never above `caster.mana`, and `TurnLoop.canAffordSpell`
+      // correctly lets it through without needing a special case.
+      final shortfall = (cost - caster.mana).clamp(0, 9999);
+      if (shortfall > 0) {
+        hpDamage = ((shortfall / manaPerHp) * hpPerMana).ceil();
+        cost = caster.mana; // pay what they have
+      }
+    }
+
+    return (
+      cost: cost.clamp(0, _kMaxMana),
+      hpDamage: hpDamage,
+      surchargeIdx: surchargeIdx,
+      doubleIdx: doubleIdx,
+    );
+  }
+
+  /// The element slots a caster is expected to recite for [elementSequence].
+  ///
+  /// Truncated to COMPLETE TRIPLETS, matching PracticeFormula.fromSpellFormula:
+  /// a spell's activation list carries 1–2 residuals that never filled a group
+  /// of three, and those resolve to no effect (FormulaTracker.formulas drops
+  /// them). Asking a caster to recite words their cast never uses would price
+  /// mana against a recital the drill never taught.
+  static List<VocalSlot> expectedRecitalSlots(
+      List<BorderZone> elementSequence) {
+    final complete = (elementSequence.length ~/ 3) * 3;
+    return [
+      for (var i = 0; i < complete; i++)
+        if (VocalSlot.fromAffinityZone(elementSequence[i].name)
+            case final slot?)
+          slot,
+    ];
+  }
+
+  /// Whether a cast priced at [cost] fizzles for want of mana.
+  ///
+  /// The deterministic half of the rule; TurnLoop owns what a fizzle then
+  /// *means* to the protocol (marking the action so resolution skips its
+  /// effects). Applies in BOTH modes, and on BOTH sides of the trust boundary
+  /// — the caster evaluates it against its own breakdown, the peer against
+  /// [certifiedManaCost] — which is what lets the two agree without
+  /// transmitting anything.
+  ///
+  /// Sorcerer mode needs it because recall can INFLATE a cost after the player
+  /// has already committed (VOCAL_RECALL_PLAN.md §4), but the response is right
+  /// for wizard mode too, and it replaces what used to be a match forfeit
+  /// there.
+  ///
+  /// Forfeiting was never really punishing a cheat — an unaffordable cast wins
+  /// its caster nothing — it was avoiding a DESYNC. The caster's own deduction
+  /// clamped at zero and played on while the peer stopped the match, and those
+  /// two devices disagreeing is the actual failure. Fizzling fixes that at the
+  /// source: both devices price the cast from the same certified inputs, so
+  /// both reach the same verdict and stay in step.
+  ///
+  /// The UI still gates affordability (TurnLoop.canAffordSpell); this is the
+  /// backstop behind it, not a replacement for it.
+  ///
+  /// Known narrow edge, accepted in §4: refund-on-shortfall is a take-back.
+  /// Deliberately blanking a cast you regret returns the mana at the cost of
+  /// the turn. Only reachable when a spell already costs most of the pool.
+  bool fizzlesForMana(WizardAvatar caster, int cost) => cost > caster.mana;
+
 
   // ── Counter charms ────────────────────────────────────────────────────────
 

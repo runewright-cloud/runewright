@@ -18,8 +18,8 @@
 //   to `castRange` in TurnLoop._resolveActions' SpellCastAction branch, and
 //   mirrored by battle_screen._maxCastRange for the UI's own targeting gate
 //   and range highlight.
-// Efficiency: mana cost −1/3 (applied in _spellManaCost/_certifiedManaCost in
-//   turn_loop.dart, not here).
+// Efficiency: mana cost −1/3 (applied in spellCostBreakdown /
+//   certifiedManaCost in deterministic_resolution.dart, not here).
 //
 // In sorcerer mode the vocal quality score (and eventually somatic) modifies
 // which enhancements are active and scales the mana cost multiplier. High
@@ -58,7 +58,7 @@ class CastingEnhancements {
   static const int velocityRangeBonus = 2;
 
   /// Water loadout enhancement — mana cost −1/3, applied in
-  /// TurnLoop._spellManaCost/_certifiedManaCost.
+  /// DeterministicResolution.spellCostBreakdown/certifiedManaCost.
   final bool isEfficiency;
 
   /// Mana cost factor from somatic/vocal quality (sorcerer mode only).
@@ -97,7 +97,7 @@ class CastingEnhancements {
   //     how well the caster spoke.
   //   - Recall NEVER fizzles a cast. [fizzle] now means one thing only: the
   //     cost outran the caster's pool, in which case the mana is REFUNDED and
-  //     the turn is spent (TurnLoop._fizzlesForMana).
+  //     the turn is spent (DeterministicResolution.fizzlesForMana).
   //
   // maxManaCostMultiplier existed purely so previewSpellCost could quote a
   // worst case and guarantee a bad incantation never turned an affordable

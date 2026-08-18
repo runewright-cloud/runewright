@@ -52,7 +52,8 @@
 //
 // [certifiedBaseManaCost] is likewise the only proof-derived base price. The
 // modifier chain that layers on top of it (chain discount, Efficiency, recall,
-// nextSpellCostDouble) stays in `TurnLoop._certifiedManaCost`, because applying
+// nextSpellCostDouble) lives in `DeterministicResolution.certifiedManaCost`,
+// because applying
 // it consumes status effects and can convert a shortfall into HP damage — it
 // mutates the caster. What crosses into it from here is the certified base and
 // the certified formulas, so there is still exactly one path from proof bytes
@@ -264,7 +265,8 @@ class PeerCastVerifier {
   /// Certified base mana cost: `5×segmentCount + dotCount`, grown by
   /// `1.05^T × 1.5^effectCount`.
   ///
-  /// Step 1 of the modifier chain in `TurnLoop._certifiedManaCost`, kept
+  /// Step 1 of the modifier chain in
+  /// `DeterministicResolution.certifiedManaCost`, kept
   /// separate so it cannot drift from the value Sightings capture stores
   /// (docs/SIGHTINGS_PLAN.md §2, "the clean bestiary stat" — every later step is
   /// a per-cast modifier, not intrinsic to the spell).
