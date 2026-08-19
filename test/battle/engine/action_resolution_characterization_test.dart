@@ -36,6 +36,7 @@ import 'dart:typed_data';
 
 import 'package:test/test.dart';
 
+import 'package:rune_duel/battle/engine/commit_reveal.dart';
 import 'package:rune_duel/battle/engine/forced_cast.dart' show ForcedCastPick;
 import 'package:rune_duel/battle/engine/hash_rng.dart';
 import 'package:rune_duel/battle/engine/turn_loop.dart';
@@ -101,6 +102,42 @@ SpellAsset _spell({
 SpellAsset _plainSummon(String id) =>
     _spell(id: id, formula: const ['earth', 'earth', 'earth'], isSummon: true);
 
+/// A [SoloBattleSession] with the joint turn entropy **pinned**, so every deal,
+/// draw and redeal below is bit-identical from run to run.
+///
+/// Solo mode normally derives each turn's entropy from `Random.secure()`
+/// (`SoloBattleSession.exchangeNonce` mints a fresh nonce), which makes any
+/// assertion about *which* card was drawn a coin flip. The trick here is the
+/// one `turn_session_pair.dart` already uses: choose `theirNonce` so that
+/// `ourNonce XOR theirNonce` is always [entropy] — exactly what
+/// [CommitRevealEntropy.revealAndCombine] returns once the commit checks out.
+///
+/// Nothing about the engine's RNG *consumption* changes; only the seed it is
+/// handed stops being random.
+class _PinnedEntropySession extends SoloBattleSession {
+  _PinnedEntropySession({required super.state, required this.entropy});
+
+  final Uint8List entropy;
+
+  @override
+  Future<({Uint8List theirNonce, Uint8List theirCommit})> exchangeNonce({
+    required Uint8List ourCommit,
+    required Uint8List ourNonce,
+  }) async {
+    final theirNonce = Uint8List.fromList([
+      for (var i = 0; i < 32; i++) ourNonce[i] ^ entropy[i],
+    ]);
+    return (
+      theirNonce: theirNonce,
+      theirCommit: await CommitRevealEntropy.commit(theirNonce),
+    );
+  }
+
+  @override
+  Future<Uint8List> refreshEntropy(String reason) async =>
+      Uint8List.fromList(entropy);
+}
+
 typedef _Ctx = ({
   BattleState state,
   TurnLoop loop,
@@ -108,7 +145,16 @@ typedef _Ctx = ({
   WizardAvatar dummy,
 });
 
-_Ctx _setup({int radius = 6, int range = 6}) {
+/// [pinnedEntropy] swaps the secure-random solo session for
+/// [_PinnedEntropySession] and pins the commit salts too, making the whole turn
+/// reproducible. [bookmarks] sets the local wizard's hand size
+/// (handSize == bookmarkCount + 1 — see `TurnLoop._dealOpeningHandsIfNeeded`).
+_Ctx _setup({
+  int radius = 6,
+  int range = 6,
+  Uint8List? pinnedEntropy,
+  int bookmarks = 0,
+}) {
   const localId = 'local';
   const dummyId = 'dummy';
   const lp = HexCoord(0, 3);
@@ -127,6 +173,10 @@ _Ctx _setup({int radius = 6, int range = 6}) {
     position: lp,
     teamId: 'solo',
     baseSpellRange: range,
+    accoutrements: [
+      for (var i = 0; i < bookmarks; i++)
+        Accoutrement(id: 'bm$i', kind: AccoutrementKind.bookmark),
+    ],
   );
   final dummy = WizardAvatar(
     playerId: dummyId,
@@ -153,8 +203,18 @@ _Ctx _setup({int radius = 6, int range = 6}) {
     state: state,
     loop: TurnLoop(
       state: state,
-      session: SoloBattleSession(state: state),
+      session: pinnedEntropy == null
+          ? SoloBattleSession(state: state)
+          : _PinnedEntropySession(state: state, entropy: pinnedEntropy),
       localPlayerId: localId,
+      // Pinned alongside the entropy: these salts seed the action-phase RNG,
+      // so leaving them on Random.secure() would keep part of the turn
+      // unreproducible even with the joint entropy fixed.
+      commitNonceSource: pinnedEntropy == null
+          ? null
+          : (length) => Uint8List.fromList(
+                List<int>.generate(length, (i) => (i * 7 + 3) & 0xFF),
+              ),
     ),
     local: local,
     dummy: dummy,
@@ -265,19 +325,50 @@ void main() {
   });
 
   // ── 2. Scattered Gusts' redraw at resolution time ─────────────────────────
+  //
+  // What the redraw actually does (`TurnLoop._redrawHand` →
+  // `DrawSchedule.redrawHand` / `SpellDraw.redrawHand`):
+  //
+  //   1. every card in hand is returned to `remaining` (a `removeSlot(0)` loop,
+  //      which also clears its withered flag);
+  //   2. the eligible population is therefore the WHOLE chapter minus only the
+  //      positions permanently cast out of it — old hand included;
+  //   3. `handSize` cards are drawn back out of that pool one at a time,
+  //      `remainingPool.removeAt(rng.nextInt(remainingPool.length))`;
+  //   4. the seed is `_playerPhaseSeed(turn entropy, matchId, turnNumber, 0x05,
+  //      playerId, drawNonce)` — the only RNG seam involved, and it rides on the
+  //      turn's joint entropy, which `_PinnedEntropySession` pins here.
+  //
+  // NOTE ON WHAT IS *NOT* ASSERTED: an earlier version of this group asserted
+  // that the redealt hand DIFFERS from the hand dealt without the flag. That is
+  // mathematically invalid — a correct whole-deck redeal draws uniformly from a
+  // pool that still contains the old hand, so reproducing it is a legal outcome
+  // (1-in-6 with the six-card chapter below, which is exactly how often the
+  // assertion failed). The invariant that actually characterises the effect is
+  // that old-hand cards are RETURNED TO AND DRAWABLE FROM the pool, and that is
+  // proved below by saturation rather than by luck.
 
   group('Scattered Gusts redraws the caster\'s hand on every cast', () {
-    /// A chapter of distinguishable cards. Six, so a redraw of a one-card hand
-    /// has five other cards to land on and "the hand did not change" is a real
-    /// signal rather than a coin flip.
-    List<SpellAsset> chapter() => [
-          for (var i = 0; i < 6; i++)
+    /// Pinned joint entropy — see [_PinnedEntropySession]. Any 32 fixed bytes
+    /// do; nothing below depends on *which* positions this particular seed
+    /// happens to produce.
+    final entropy = Uint8List.fromList(
+      List<int>.generate(32, (i) => (i * 11 + 5) & 0xFF),
+    );
+
+    /// A chapter of [size] distinguishable cards.
+    List<SpellAsset> chapter(int size) => [
+          for (var i = 0; i < size; i++)
             _spell(id: 'card$i', formula: const ['fire', 'fire', 'fire']),
         ];
 
-    Future<_Ctx> run({required bool gusts}) async {
-      final ctx = _setup();
-      final cards = chapter();
+    Future<_Ctx> run({
+      required bool gusts,
+      int chapterSize = 6,
+      int bookmarks = 0,
+    }) async {
+      final ctx = _setup(pinnedEntropy: entropy, bookmarks: bookmarks);
+      final cards = chapter(chapterSize);
       ctx.loop
         ..localChapterSpells = cards
         ..localChapterCommitments = [for (final c in cards) c.commitmentHex];
@@ -306,34 +397,113 @@ void main() {
       );
     });
 
-    test('with the flag, the same cast re-deals the hand from the whole deck',
-        () async {
-      final without = await run(gusts: false);
-      final with_ = await run(gusts: true);
+    test('with the flag, the redeal conserves the deck and keeps the public '
+        'schedule and the private contents in agreement', () async {
+      final ctx = await run(gusts: true);
+      final schedule = ctx.loop.drawScheduleFor('local')!;
 
-      // Same size, same deck — only the contents move.
-      expect(with_.loop.drawScheduleFor('local')!.hand.length, 1);
-      expect(with_.loop.drawScheduleFor('local')!.remaining.length, 5);
+      // Hand size is preserved: Gusts re-deals the SAME number of cards
+      // (`_redrawHand`'s `handSize ?? schedule.hand.length`).
+      expect(schedule.hand.length, 1, reason: 'bookmarkCount 0 → handSize 1');
+      expect(schedule.remaining.length, 5);
 
-      expect(
-        with_.loop.drawScheduleFor('local')!.hand,
-        isNot(without.loop.drawScheduleFor('local')!.hand),
-        reason: 'the Gusts redraw must actually change which position is held',
-      );
+      // Conservation — nothing fabricated, duplicated or lost. Every chapter
+      // position is accounted for exactly once across hand ∪ remaining, and
+      // nothing was permanently used (the cast spell was not in the chapter).
+      final all = [...schedule.hand, ...schedule.remaining];
+      expect(all.toSet(), {0, 1, 2, 3, 4, 5});
+      expect(all.length, 6, reason: 'no position may appear twice');
+      expect(ctx.loop.usedChapterPositions('local'), isEmpty);
+
       // The public schedule and the private contents are redrawn from the SAME
       // seed, so they must still agree about which card is in the slot — the
       // invariant `_redrawHand` exists to hold (see its doc comment).
-      final position = with_.loop.drawScheduleFor('local')!.hand.single;
+      final position = schedule.hand.single;
       // Positions index the CANONICAL (commitmentHex-sorted) chapter, which is
       // what `_dealOpeningHandsIfNeeded` and BookCommitment both derive from —
       // not the order the chapter was handed to the loop in.
-      final canonical = List<String>.from(with_.loop.localChapterCommitments!)
+      final canonical = List<String>.from(ctx.loop.localChapterCommitments!)
         ..sort();
+      expect(ctx.loop.localSpellDraw!.hand.length, 1);
       expect(
-        with_.loop.localSpellDraw!.hand.single.commitmentHex,
+        ctx.loop.localSpellDraw!.hand.single.commitmentHex,
         canonical[position],
         reason: 'schedule position and SpellDraw contents must not diverge',
       );
+    });
+
+    test('the previous hand is returned to the pool and is drawable from it — '
+        'a four-card chapter dealt into a three-card hand must redraw at '
+        'least two of the three cards it just gave back', () async {
+      // SATURATION, not luck. Two bookmarks → handSize 3; the chapter is 4. So
+      // at redeal time the pool is 4 if (and only if) the old hand went back
+      // into it, and 1 if it did not:
+      //
+      //   correct              → pool 4, deal 3. |old ∩ new| ≥ 3 + 3 − 4 = 2,
+      //                          forced by pigeonhole for EVERY RNG outcome.
+      //   old hand excluded    → pool 1, `dealSize` clamps to 1, the hand
+      //                          shrinks to one card, |old ∩ new| = 0.
+      //   old hand returned    → pool 1 at draw time, same shrunken hand, even
+      //   only after the draw    though the returned cards do reappear in
+      //                          `remaining` afterwards.
+      //
+      // Both the hand-size and the intersection assertion therefore separate a
+      // whole-deck redeal from a "refill from everything except the old hand"
+      // one, with zero dependence on which cards the RNG actually picked. (The
+      // third case is why simply checking `hand ∪ remaining` is not enough: a
+      // deck that conserves every card can still have excluded the old hand
+      // from the draw.)
+      final before = await run(gusts: false, chapterSize: 4, bookmarks: 2);
+      final oldHand = before.loop.drawScheduleFor('local')!.hand.toSet();
+      expect(oldHand.length, 3, reason: 'bookmarkCount 2 → handSize 3');
+
+      final after = await run(gusts: true, chapterSize: 4, bookmarks: 2);
+      final newHand = after.loop.drawScheduleFor('local')!.hand;
+
+      expect(
+        after.loop.drawScheduleFor('local')!.remaining.length + newHand.length,
+        4,
+        reason: 'the whole chapter is still accounted for',
+      );
+      expect(newHand.toSet().length, 3,
+          reason: 'three distinct positions — nothing duplicated');
+      expect(
+        newHand.length,
+        3,
+        reason: 'a pool that excluded the old hand could only have dealt 1',
+      );
+      expect(
+        newHand.toSet().intersection(oldHand).length,
+        greaterThanOrEqualTo(2),
+        reason: 'cards from the previous hand must be eligible for the redeal',
+      );
+
+      // AND, as it happens, under this pinned entropy the redeal reproduces the
+      // old hand EXACTLY — same three positions, same order. That is not a
+      // failure and nothing here treats it as one: it is a live demonstration
+      // that a correct whole-deck redeal may legally return the hand it just
+      // scattered, which is precisely why the old `isNot(...)` assertion this
+      // group used to carry was unsound.
+      expect(newHand.toSet(), oldHand,
+          reason: 'identical is a legal outcome of a whole-deck redeal');
+    });
+
+    test('the flag is what moves the hand — with the entropy pinned, the '
+        'redeal is observable rather than inferred', () async {
+      // This is the one assertion that shows the Gusts branch actually EXECUTED
+      // (`deterministic_resolution.dart`'s `if (state.wildMagic.scatteredGusts)`
+      // → `host.redrawHand`) rather than the flag being read and ignored.
+      //
+      // It is NOT the old, unsound "a redeal must change the hand" claim. Both
+      // runs below share one pinned joint entropy, so each hand is a fixed
+      // function of a fixed seed and this comparison has no run-to-run variance
+      // at all — it is a characterisation of what this seed does, not a
+      // probabilistic argument. The saturated test above deliberately shows the
+      // opposite outcome (an identical redeal) being equally correct.
+      final off = await run(gusts: false);
+      final on = await run(gusts: true);
+      expect(off.loop.drawScheduleFor('local')!.hand, [0]);
+      expect(on.loop.drawScheduleFor('local')!.hand, [2]);
     });
   });
 
