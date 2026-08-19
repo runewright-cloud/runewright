@@ -1,0 +1,138 @@
+{
+  "name": "potent_summon_acts_twice",
+  "description": "player_a casts a POTENT summon on turn 1, then does nothing. Covers Potency's immediate bonus action (design doc \"Summons\"): the creature acts twice on its cast turn and once per turn thereafter, and BOTH of the cast turn's actions appear in the Summons-phase playback stream (M4.17). Also pins the certified Potency claim across the peer boundary.",
+  "turns": [
+    {
+      "turn": 1,
+      "note": "player_a casts a Potent summon two tiles from player_b; the creature closes on its bonus action and strikes on the sweep",
+      "stateHash": "f45a4ba34e6ac858902c3272d1c7a23cbe321ea088e3fa4a83e03bc07ecb257a",
+      "events": {
+        "castEvents": 1,
+        "resolvedSpells": 1,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 2,
+        "minionAttacks": 1,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 1,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 466,
+            "chain": "earth",
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 23,
+            "mana": 500,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 1,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 2,
+      "note": "nobody acts — the creature takes its ONE ordinary action, which is the contrast that makes turn 1 mean something",
+      "stateHash": "2f0afbd116f896cc243432d9eaca3fb36ddf9b5b80658b59e15f5fbc338903f0",
+      "events": {
+        "castEvents": 0,
+        "resolvedSpells": 0,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 1,
+        "minionAttacks": 1,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 2,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 466,
+            "chain": null,
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 22,
+            "mana": 500,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 1,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 3,
+      "note": "a third turn, to catch a cadence that is off by one",
+      "stateHash": "d6209a28b8d3522ea11501c9ec5878337f1bfd2f7ec567bc5c31b929e64a0856",
+      "events": {
+        "castEvents": 0,
+        "resolvedSpells": 0,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 1,
+        "minionAttacks": 1,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 3,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 466,
+            "chain": null,
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 21,
+            "mana": 500,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 1,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    }
+  ]
+}

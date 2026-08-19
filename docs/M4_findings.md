@@ -4273,6 +4273,11 @@ nerf to melee; if playtesting says the "spend a point" cost is too harsh, the kn
   tile it never visibly left. The list is cleared at the *start* of the Summons phase, not the
   turn: a Potent summon's Phase 5 bonus action is already shown by that spell's own card reveal,
   and replaying it here would walk the creature twice.
+  **[CORRECTED 2026-08-19 — this paragraph's last sentence was wrong.]** The card reveal never
+  reads these events; `_playSummonWalks` is their only consumer anywhere. Clearing the list at
+  the Summons phase therefore discarded the bonus action's playback record entirely rather than
+  avoiding a double-walk. Both lists are now reset in `runTurn` with every other per-turn sink
+  and appended to by both phases. See M4.17.
 - The painter's walk timeline is now shared, not duplicated: `AvatarMoveAnimation` and
   `MinionMoveAnimation` both extend `EntityMoveAnimation`, and `wizardWalkStateAt` became
   `entityWalkStateAt`. A melee creature's whole attack *is* the lunge-and-recoil, so it arrives
@@ -5681,52 +5686,111 @@ entity you summoned can actually do the thing the script claims to cover.
 
 ---
 
-## M4.17 — A Potent summon's bonus action is invisible (found 2026-08-16, NOT fixed)
+## M4.17 — A Potent summon's bonus action is invisible (found 2026-08-16, FIXED 2026-08-19)
 
 Found while extracting the Summons phase behind the deterministic seam. Recorded rather
-than fixed: the extraction's whole claim is "no behaviour change", and this is a
-behaviour change.
+than fixed at the time: the extraction's whole claim was "no behaviour change", and this
+is a behaviour change. Characterized and then fixed in a later slice.
 
 `_castSummon` gives a Potent summon an immediate bonus action the moment it is cast, in
 Phase 5:
 
 ```dart
 if (enhancements.isPotent) {
-  _creatureTurn(creature, rng);
+  _creatureTurn(creature, rng, moveEvents: ctx.minionMoveEvents, ...);
 }
 ```
 
 `_creatureTurn` appends the walk to `lastMinionMoveEvents` and any blow to
-`lastMinionAttackEvents`. Phase 5b then opened with:
+`lastMinionAttackEvents`. Phase 5b then **replaced both fields wholesale** —
+`resolveSummonActions` allocated fresh lists and `_resolveSummons` assigned them over the
+old ones — which threw both away before `onSummonMovementResolved` ever saw them. The
+creature's free first action was **fully resolved in state** (it really moved, it really
+dealt the damage) but the UI never animated it: the token appeared at its spawn tile,
+then jumped to wherever the bonus action left it as part of the Phase 5b walk, and the
+bonus blow landed with no attack animation at all.
 
-```dart
-lastMinionMoveEvents = [];
-lastMinionAttackEvents = [];
-```
+**Not a desync.** Both devices ran `_castSummon` identically and discarded identically,
+and none of the three lists feeds the state hash. It was a presentation bug only.
 
-— which throws both away before `onSummonMovementResolved` ever sees them. The creature's
-free first action is **fully resolved in state** (it really moved, it really dealt the
-damage) but the UI never animates it: the token appears at its spawn tile, then jumps to
-wherever the bonus action left it as part of the Phase 5b walk, and the bonus blow lands
-with no attack animation at all. The conveyor half of the same action *is* visible —
-`lastConveyorChainEvents` is not reset in Phase 5b, so a Potent summon shoved by a
-conveyor on its bonus step animates while its own steps do not.
+Nothing caught it because the events are UI-only bookkeeping: no test asserted on the
+Potent path's move events, and the replay corpus had no Potent script — the transcript
+records `minionMoves` / `minionAttacks` as *counts taken after* Phase 5b, so the corpus
+was blind to it by construction.
 
-**Not a desync.** Both devices run `_castSummon` identically and discard identically, and
-none of the three lists feeds the state hash. It is a presentation bug only.
+### The second half: the append landed in the PREVIOUS turn's list
 
-Nothing caught it because the events are UI-only bookkeeping: no test asserts on the
-Potent path's move events, and the replay transcript records `minionMoves` /
-`minionAttacks` as *counts taken after* Phase 5b, so the corpus is blind to it by
-construction.
+Found during characterization, and it is the more dangerous half. `_castContext`'s doc
+comment claimed it "always captures the CURRENT `lastX` lists — `runTurn` reassigns them
+at the top of every turn". That premise was **false for exactly these two fields**:
+`runTurn` reset five sinks and not these, which were only ever replaced in Phase 5b. So
+on any turn after the first, Phase 5's append went into the *previous* turn's outcome
+list — a collection already handed to the UI. Harmless only because nothing read it back,
+and it would have become a live cross-turn leak the moment anyone "fixed" the discard by
+merging the two lists.
 
-The extraction preserved the behaviour exactly — `resolveSummonActions` fills fresh lists
-and `_resolveSummons` assigns them over the old ones, which discards the same events at
-the same moment. Fixing it properly means deciding what a Potent summon's bonus action
-should *look* like (a second playback callback in Phase 5, or carrying the events through
-to Phase 5b's walk and accepting that the animation plays late) — a design question, and
-one for whoever does the `_resolveActions` extraction, since that is where the call site
-lives.
+### Two documents asserted the discard was correct, on a false premise
+
+`TurnLoop.lastMinionMoveEvents`'s own doc comment, and this file's 2026-08-04 entry, both
+said the bonus action was *"already shown by that spell's own card reveal, so replaying it
+here would walk the creature a second time"*. That is not true. `_playSummonWalks` (via
+`onSummonMovementResolved`) is the **only** consumer of `MinionMoveEvent`/`AttackEvent`
+anywhere in the app; the card-reveal sequence reads `lastCastEvents` / `lastResolvedSpells`
+/ `lastConveyorChainEvents` / `lastWildMagicEvents` and never touches the minion lists. The
+clear was guarding against a double-walk that could not occur. Both comments are corrected.
+
+**The tell was in the asymmetry.** `lastConveyorChainEvents` is reset in `runTurn` and
+appended to by both phases, so a Potent summon shoved by a conveyor on its bonus step
+animated while its own step did not — the same `_creatureTurn` call writing three sinks,
+one of which worked. That is what "when behavior surprises you, suspect the boundary"
+looks like in practice: the difference was ownership, not logic.
+
+### The fix
+
+One invariant, stated once and now structural:
+
+> **Every per-turn `lastX` event list is freshly allocated at the top of `runTurn`, and
+> every phase that emits events during that turn appends into those same list objects. No
+> phase reassigns one mid-turn.**
+
+Three production changes, all bookkeeping:
+
+1. `runTurn` resets `lastMinionMoveEvents` / `lastMinionAttackEvents` alongside the other
+   five per-turn sinks.
+2. `resolveSummonActions` takes `moveEvents` / `attackEvents` as required parameters and
+   **appends** to them, exactly as it always did for `conveyorChainEvents`, and returns
+   `void`. `SummonActionOutcome` is deleted — the type existed only to carry lists back
+   for the caller to assign, which was the bug.
+3. `_resolveSummons` passes the loop's live lists and assigns nothing.
+
+Playback now reads chronologically: bonus action first, then the sweep in `state.minions`
+creation order. `_creatureTurn` did not move, no new callback or suspension point was
+added, and the RNG stream, `actedThisTurn` handling, damage, deaths and creation order are
+untouched.
+
+**`kBattleEngineVersion` stays at 2.** The bump test is "could two builds compute a
+different canonical `BattleState` from identical inputs", and that file's header says in
+so many words that *"presentation, UI, animation, and event playback do not"* qualify.
+These events are `TurnLoop` fields, not `BattleState` fields, and `MinionMoveEvent`'s own
+doc says TurnLoop never reads them back. `kRulesetVersion` (3) and `kBattleProtocolVersion`
+(5) are equally untouched.
+
+**Corpus.** No existing golden changed — verified by regenerating the whole corpus and
+finding one new file and zero modifications, which is the strongest available evidence
+that canonical state and per-turn event counts are unmoved for every scripted match.
+`potent_summon_acts_twice.json` is new: turn 1 is `minionMoves: 2, minionAttacks: 1`
+(bonus action + sweep) against turns 2-3's `minionMoves: 1, minionAttacks: 1`, and that
+contrast is what a future regression would break.
+
+Regressions live in `test/battle/engine/potent_summon_bonus_events_test.dart`, including
+a direct list-identity/lifecycle test (the turn-N lists are fresh objects and turn N+1
+never touches them) and a `TurnSessionPair` parity test asserting both devices build the
+same event sequence *and* identical canonical bytes.
+
+**The lesson worth keeping:** an event sink passed as a parameter and appended to cannot
+be silently replaced; one returned for the caller to assign can. The three sinks
+`_creatureTurn` writes were split across both shapes, and the two that used the returned
+shape were the two that lost data. Prefer the parameter.
 
 ---
 

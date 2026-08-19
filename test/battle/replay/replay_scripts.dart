@@ -41,6 +41,7 @@ Future<List<MatchScript>> allScripts() async => [
       _terrainAndClouds(),
       _drawAndRefill(),
       _summonActsOverTurns(),
+      _potentSummonActsTwice(),
       await _counterCharmInterceptsDelayedFire(),
       await _unbackedMysteryClaimForfeits(),
     ];
@@ -423,6 +424,90 @@ MatchScript _summonActsOverTurns() {
   );
 }
 
+
+
+/// Potency's immediate bonus action, and its playback record (M4.17).
+///
+/// The corpus had a summon script and no *Potent* summon script, which is
+/// precisely why M4.17 survived: `eventCounts` records `minionMoves` /
+/// `minionAttacks` per turn, so a script that casts Potency is the one thing
+/// that can pin "the bonus action is visible" as a number. Before the fix this
+/// script's turn 1 would have shown one move event; it shows two.
+///
+/// What each turn is for:
+///
+///   turn 1  The Potent cast. Two creature actions in one turn — the immediate
+///           bonus action from inside Phase 5, then the ordinary Phase-5b
+///           sweep. The creature spawns two tiles from player_b with
+///           `moveSpeed 1`, so the bonus action spends its whole budget closing
+///           (a walk, no blow — see M4_findings: a creature that arrives with
+///           nothing left cannot lunge) and the sweep lands the blow from
+///           adjacent. `minionMoves: 2, minionAttacks: 1`.
+///   turn 2  The same creature, no Potency in play: ONE action. The contrast
+///           with turn 1 is the whole point — it is what distinguishes "Potent
+///           grants an extra action" from "creatures act twice".
+///   turn 3  A third turn, to catch an off-by-one in the cadence, exactly as
+///           `_summonActsOverTurns` does.
+///
+/// Element sequence is `EEFFAA` — the same one `_summonActsOverTurns` uses, and
+/// for the same reasons (hp 2 / dmg 1 / move 1, and it dodges every pattern in
+/// `kSummonAbilityPattern`). Keeping it identical means the two goldens differ
+/// only by Potency, which is what makes the diff between them readable. A
+/// distinct `variant` is required regardless: the commitment is grid-only and
+/// the duplicate-grid guard forfeits a peer that casts the same grid twice.
+///
+/// The Potency claim itself is certified — `PeerCastVerifier` forfeits an
+/// `unbacked_enhancement_claim`, so the proof must attest supreme fire
+/// dominance, which the fire generations in this sequence supply.
+MatchScript _potentSummonActsTwice() {
+  final summon = spellFromElements(
+    elements: const [
+      BorderZone.earth, BorderZone.earth,
+      BorderZone.fire, BorderZone.fire,
+      BorderZone.air, BorderZone.air,
+    ],
+    variant: 52,
+    name: 'Quickened Sentinel',
+    isSummon: true,
+  );
+
+  return MatchScript(
+    name: 'potent_summon_acts_twice',
+    description:
+        'player_a casts a POTENT summon on turn 1, then does nothing. Covers '
+        "Potency's immediate bonus action (design doc \"Summons\"): the "
+        'creature acts twice on its cast turn and once per turn thereafter, '
+        'and BOTH of the cast turn\'s actions appear in the Summons-phase '
+        'playback stream (M4.17). Also pins the certified Potency claim across '
+        'the peer boundary.',
+    localChapterCommitments: [summon.commitmentHex],
+    turns: [
+      ScriptedTurn.fixed(
+        note: 'player_a casts a Potent summon two tiles from player_b; the '
+            'creature closes on its bonus action and strikes on the sweep',
+        local: TurnInput(
+          action: SpellCastAction(
+            spell: summon,
+            targetHex: const HexCoord(2, 1),
+            isPotent: true,
+          ),
+        ),
+        peer: TurnInput(action: PassAction()),
+      ),
+      ScriptedTurn.fixed(
+        note: 'nobody acts — the creature takes its ONE ordinary action, which '
+            'is the contrast that makes turn 1 mean something',
+        local: TurnInput(action: PassAction()),
+        peer: TurnInput(action: PassAction()),
+      ),
+      ScriptedTurn.fixed(
+        note: 'a third turn, to catch a cadence that is off by one',
+        local: TurnInput(action: PassAction()),
+        peer: TurnInput(action: PassAction()),
+      ),
+    ],
+  );
+}
 
 /// Casting from a real hand, turn after turn, so the deck actually drains.
 ///

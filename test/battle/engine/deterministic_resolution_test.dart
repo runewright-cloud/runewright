@@ -15,6 +15,7 @@
 
 import 'dart:typed_data';
 
+import 'package:rune_duel/battle/engine/battle_events.dart';
 import 'package:rune_duel/battle/engine/deterministic_resolution.dart';
 import 'package:rune_duel/battle/engine/hash_rng.dart';
 import 'package:rune_duel/battle/engine/tile_entry_resolver.dart';
@@ -36,6 +37,8 @@ void main() {
     DeterministicResolution resolution,
     List<ConveyorChainEvent> conveyor,
     List<WildMagicEvent> wildMagic,
+    List<MinionMoveEvent> minionMoves,
+    List<AttackEvent> minionAttacks,
   })
   harness() {
     final state = makeDuelState();
@@ -43,6 +46,8 @@ void main() {
       resolution: DeterministicResolution(state),
       conveyor: <ConveyorChainEvent>[],
       wildMagic: <WildMagicEvent>[],
+      minionMoves: <MinionMoveEvent>[],
+      minionAttacks: <AttackEvent>[],
     );
   }
 
@@ -156,8 +161,10 @@ void main() {
 
     // Synchronous by construction. A phase that needed the host's playback
     // could not have this signature, which is the whole point of the split.
-    final outcome = h.resolution.resolveSummonActions(
+    h.resolution.resolveSummonActions(
       rng: HashRng(Uint8List(32)),
+      moveEvents: h.minionMoves,
+      attackEvents: h.minionAttacks,
       conveyorChainEvents: h.conveyor,
     );
 
@@ -165,11 +172,11 @@ void main() {
         reason: 'the creature should have closed on its target');
     expect(victim.hp, lessThan(hpBefore),
         reason: 'and struck once it was in range');
-    expect(outcome.moveEvents, hasLength(1));
-    expect(outcome.attackEvents, hasLength(1));
-    expect(outcome.moveEvents.single.path.first, const HexCoord(4, 0),
+    expect(h.minionMoves, hasLength(1));
+    expect(h.minionAttacks, hasLength(1));
+    expect(h.minionMoves.single.path.first, const HexCoord(4, 0),
         reason: 'the walk starts at the pre-move tile');
-    expect(outcome.moveEvents.single.path.last, state.minions.single.position,
+    expect(h.minionMoves.single.path.last, state.minions.single.position,
         reason: 'and ends where the creature actually is');
   });
 
@@ -185,6 +192,8 @@ void main() {
 
     h.resolution.resolveSummonActions(
       rng: HashRng(Uint8List(32)),
+      moveEvents: h.minionMoves,
+      attackEvents: h.minionAttacks,
       conveyorChainEvents: h.conveyor,
     );
     final afterActions = state.toCanonicalBytes();
@@ -210,6 +219,8 @@ void main() {
 
     h.resolution.resolveSummonActions(
       rng: HashRng(Uint8List(32)),
+      moveEvents: h.minionMoves,
+      attackEvents: h.minionAttacks,
       conveyorChainEvents: h.conveyor,
     );
     expect(state.minions, hasLength(1),
@@ -231,6 +242,8 @@ void main() {
       state.minions.add(attacker(const HexCoord(4, 0)));
       h.resolution.resolveSummonActions(
         rng: HashRng(Uint8List(32)..fillRange(0, 32, 0x5A)),
+        moveEvents: h.minionMoves,
+        attackEvents: h.minionAttacks,
         conveyorChainEvents: h.conveyor,
       );
       h.resolution.resolveSummonAftermath(

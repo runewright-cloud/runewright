@@ -395,9 +395,13 @@ class ActionResolutionContext {
   final List<ConveyorChainEvent> conveyorChainEvents;
   final List<WildMagicEvent> wildMagicEvents;
 
-  /// Only a Potent summon's immediate bonus action appends to these during
-  /// Phase 5 — and the Phase 5b sweep then replaces both lists wholesale, so
-  /// those appends are discarded. That is M4.17, preserved deliberately.
+  /// A Potent summon's immediate bonus action appends to these during Phase 5;
+  /// [resolveSummonActions] appends the ordinary sweep to the SAME two lists in
+  /// Phase 5b. Both are the caller's live per-turn lists, never replaced
+  /// mid-turn, so what the UI plays back is one chronological timeline —
+  /// bonus action first, sweep after. See `TurnLoop.lastMinionMoveEvents`
+  /// and docs/M4_findings.md M4.17 for the version of this that dropped the
+  /// bonus action on the floor.
   final List<MinionMoveEvent> minionMoveEvents;
   final List<AttackEvent> minionAttackEvents;
 }
@@ -411,27 +415,6 @@ class _AiTarget {
   final HexCoord position;
   final WizardAvatar? avatar;
   final Minion? minion;
-}
-
-/// Everything the Summons phase decided, computed before any of it is shown.
-///
-/// This is the whole point of splitting [DeterministicResolution.
-/// resolveSummonActions] out of `TurnLoop._resolveSummons`: the movement and
-/// the blows are *already resolved* — state is fully mutated, damage applied,
-/// deaths recorded — by the time the caller has this object. The caller's
-/// remaining job is playback, and playback cannot change the outcome because
-/// there is nothing left to decide.
-class SummonActionOutcome {
-  const SummonActionOutcome({
-    required this.moveEvents,
-    required this.attackEvents,
-  });
-
-  /// Every creature that visibly moved or lunged, in AI sweep order.
-  final List<MinionMoveEvent> moveEvents;
-
-  /// Every creature blow that landed, in the order it landed.
-  final List<AttackEvent> attackEvents;
 }
 
 /// Battle resolution that runs identically on both devices, given the same
@@ -1191,16 +1174,22 @@ class DeterministicResolution {
   /// `state.minions` creation order, mutating [state] as it goes (movement,
   /// terrain damage, conveyor pushes, attacks, cleave, carapace reflection).
   ///
-  /// Returns the playback record for what happened. Conveyor pushes picked up
-  /// mid-walk are appended to [conveyorChainEvents], which the caller owns and
-  /// shares with the rest of the turn (see this file's header).
+  /// **Appends** its playback record to [moveEvents] / [attackEvents] rather
+  /// than returning fresh lists. All three sinks are the caller's live per-turn
+  /// lists, shared with the rest of the turn (see this file's header), and a
+  /// Potent summon's Phase-5 bonus action has already appended its own walk and
+  /// blow to the first two — so appending here keeps one chronological playback
+  /// timeline instead of discarding the earlier half (M4.17).
   ///
   /// Does NOT reap the dead: a creature that lunged in and died to a Molten
   /// Carapace has to be seen making the lunge before it is removed, so the
-  /// caller plays the outcome back first and calls [resolveSummonAftermath]
-  /// second.
-  SummonActionOutcome resolveSummonActions({
+  /// caller plays the events back first and calls [resolveSummonAftermath]
+  /// second. Everything is already decided by the time this returns — playback
+  /// cannot change the outcome, because there is nothing left to decide.
+  void resolveSummonActions({
     required HashRng rng,
+    required List<MinionMoveEvent> moveEvents,
+    required List<AttackEvent> attackEvents,
     required List<ConveyorChainEvent> conveyorChainEvents,
   }) {
     // Both clients run the same deterministic AI for all minions (creation
@@ -1208,9 +1197,9 @@ class DeterministicResolution {
     // (Potent or not) starts with actedThisTurn=false, so it's included in
     // this sweep — its first action is always this same turn, here. A
     // Potent summon additionally got an immediate bonus action during Phase
-    // 5 (see TurnLoop._castSummon), so it acts a second time right here.
-    final moveEvents = <MinionMoveEvent>[];
-    final attackEvents = <AttackEvent>[];
+    // 5 (see _castSummon), so it acts a second time right here — and its
+    // bonus-action events are already at the head of [moveEvents] /
+    // [attackEvents], which is why this appends rather than allocating.
     final living = state.minions
         .where((m) => m.isAlive && !m.actedThisTurn)
         .toList();
@@ -1225,10 +1214,6 @@ class DeterministicResolution {
       creature.actedThisTurn = true;
     }
     state.resetMinionActions();
-    return SummonActionOutcome(
-      moveEvents: moveEvents,
-      attackEvents: attackEvents,
-    );
   }
 
   /// The other half of the Summons phase: what settles once the walk has been
@@ -3183,9 +3168,13 @@ class DeterministicResolution {
   /// are summoned if spell is made potent"), so it ends up acting twice in a
   /// row this turn: once here, once again in Phase 5b.
   ///
-  /// The events that immediate action appends are DISCARDED by the Phase 5b
-  /// sweep, which replaces both lists wholesale — a real, presentation-only
-  /// bug recorded as M4.17 in docs/M4_findings.md and deliberately preserved.
+  /// The events that immediate action appends go into the turn's own
+  /// [ActionResolutionContext.minionMoveEvents] /
+  /// [ActionResolutionContext.minionAttackEvents], which
+  /// [resolveSummonActions] then appends the Phase-5b sweep to — so the UI
+  /// plays the bonus action first and the ordinary action after it, in the
+  /// order they happened. Phase 5b used to replace both lists here, which
+  /// discarded the bonus action's whole playback record (M4.17).
   Minion? _castSummon(
     ActionResolutionContext ctx,
     WizardAvatar actor,

@@ -1154,18 +1154,30 @@ class TurnLoop
   /// at the same instant, and the loser recoils off it. See [AvatarMoveEvent].
   List<AvatarMoveEvent> lastAvatarMoveEvents = [];
 
-  /// Every summon's walk during the most recent Summons phase — one entry per
-  /// creature that actually went somewhere or lunged, for the UI's movement
-  /// animation. Cleared at the start of the Summons phase rather than at the
-  /// start of the turn: a Potent summon's bonus action happens back in Phase 5
-  /// and is already shown by that spell's own card reveal, so replaying it here
-  /// would walk the creature a second time. See [MinionMoveEvent].
+  /// Every summon walk this turn — one entry per creature that actually went
+  /// somewhere or lunged, for the UI's movement animation. Cleared and
+  /// repopulated at the start of every turn, exactly like the other per-turn
+  /// sinks above.
+  ///
+  /// **One chronological timeline, appended to by two phases.** A Potent
+  /// summon takes its bonus action back in Phase 5, from inside the cast that
+  /// created it, and every summon takes its ordinary action in Phase 5b — so
+  /// this list runs bonus-action-first, then the sweep in `state.minions`
+  /// creation order. It is never reassigned mid-turn; both phases append.
+  ///
+  /// That is the M4.17 fix. This doc used to claim the Phase-5 bonus action was
+  /// "already shown by that spell's own card reveal", and Phase 5b cleared the
+  /// list on that basis. The claim was false: `_playSummonWalks`
+  /// (`onSummonMovementResolved`) is the ONLY consumer of these events anywhere
+  /// in the app, and the card-reveal sequence never reads them — so the bonus
+  /// action was shown nowhere, and the creature visibly teleported across it.
+  /// See [MinionMoveEvent] and docs/M4_findings.md M4.17.
   List<MinionMoveEvent> lastMinionMoveEvents = [];
 
-  /// Every blow a summon landed during the most recent Summons phase, for the
-  /// UI's attack animation. Cleared alongside [lastMinionMoveEvents] and for
-  /// the same reason (a Potent summon's Phase 5 bonus action is already shown
-  /// by its spell's card reveal). See [AttackEvent].
+  /// Every blow a summon landed this turn, for the UI's attack animation.
+  /// Cleared, repopulated and ordered exactly like [lastMinionMoveEvents], and
+  /// for the same reason — a Potent summon's bonus blow is a real blow that
+  /// nothing else animates. See [AttackEvent].
   List<AttackEvent> lastMinionAttackEvents = [];
 
   /// Every wizard haymaker that landed during the most recent Phase 4b melee
@@ -1643,6 +1655,14 @@ class TurnLoop
     lastConveyorChainEvents = [];
     lastCounterCharmProcs = [];
     lastAvatarMoveEvents = [];
+    // Reset here, with every other per-turn sink, and NOT again in Phase 5b.
+    // These two used to be replaced at the Summons phase instead, which threw
+    // away a Potent summon's Phase-5 bonus action and — because `_castContext`
+    // captures the list objects, not the fields — appended it into the
+    // PREVIOUS turn's already-delivered list. That was M4.17; see
+    // [lastMinionMoveEvents].
+    lastMinionMoveEvents = [];
+    lastMinionAttackEvents = [];
     lastWildMagicEvents = [];
     lastCertifiedBaseManaCosts = {};
     _wildMagicNonce = 0;
@@ -2237,18 +2257,18 @@ class TurnLoop
   /// those two calls can influence either — the host callback in the middle
   /// only animates an outcome that already happened.
   Future<void> _resolveSummons(HashRng rng) async {
-    final outcome = _resolution.resolveSummonActions(
+    // Appends to the turn's three event sinks rather than replacing any of
+    // them: a Potent summon's Phase-5 bonus action is already sitting in the
+    // first two, and the sweep's events belong after it in the same
+    // chronological timeline (M4.17). All three are passed the same way for
+    // the same reason — `conveyorChainEvents` is the one that was always
+    // correct, and the other two now match it.
+    _resolution.resolveSummonActions(
       rng: rng,
+      moveEvents: lastMinionMoveEvents,
+      attackEvents: lastMinionAttackEvents,
       conveyorChainEvents: lastConveyorChainEvents,
     );
-    // Replaces (rather than clears-and-fills) the two UI lists, exactly as the
-    // old in-place `= []` did: whatever a Potent summon's Phase-5 bonus action
-    // appended is discarded here either way — that is a real (pre-existing,
-    // presentation-only) bug, recorded as M4.17 in docs/M4_findings.md and
-    // deliberately preserved rather than fixed inside a no-behaviour-change
-    // extraction.
-    lastMinionMoveEvents = outcome.moveEvents;
-    lastMinionAttackEvents = outcome.attackEvents;
     // Walk the tokens before anything reaps or dispels: a creature that lunged
     // in and died to a Molten Carapace should be seen making the lunge, not
     // vanish from the tile it never visibly left. Same await-the-UI contract
