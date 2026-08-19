@@ -16,6 +16,8 @@ import 'package:test/test.dart';
 import 'package:rune_duel/battle/engine/book_commitment.dart'
     show MembershipProof;
 import 'package:rune_duel/battle/engine/forced_cast.dart';
+import 'package:rune_duel/battle/models/certified_cast.dart';
+import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/battle/engine/hash_rng.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
 
@@ -84,15 +86,28 @@ class _FakeHost implements ForcedCastHost {
     return peerReply;
   }
 
+  /// What [verifyForcedReveal] certifies. Null (the default) is the "nothing
+  /// to certify" case — solo, or verification not wired up.
+  CertifiedCast? certifies;
+
+  /// What [certifiedFromProofBytes] derives, per spell id. The fake keeps the
+  /// two sources separate so a test can tell which one a pick read.
+  final Map<String, CertifiedCast> ownProofSemantics = {};
+
   @override
-  Future<void> verifyForcedReveal(
+  Future<CertifiedCast?> verifyForcedReveal(
     String playerId,
     int position,
     SpellAsset spell,
     MembershipProof? merkleProof,
   ) async {
     verified.add((playerId, position));
+    return certifies;
   }
+
+  @override
+  CertifiedCast? certifiedFromProofBytes(SpellAsset spell) =>
+      ownProofSemantics[spell.id];
 
   @override
   Future<void> resolveForcedCast(ForcedCastPick pick, HashRng rng) async {
@@ -104,6 +119,14 @@ class _FakeHost implements ForcedCastHost {
 }
 
 HashRng _rngFor(String _) => HashRng(Uint8List(32));
+
+/// A one-element [CertifiedCast] marker. The tests below only need to tell two
+/// certified values apart, so the element sequence carries the tag.
+CertifiedCast _semantics(BorderZone tag) => CertifiedCast(
+      formulas: const [],
+      elementSequence: [tag],
+      wildMagic: const [],
+    );
 
 const _request = ForcedCastRequest(
   affectedPlayerIds: {'me', 'you'},
@@ -266,6 +289,81 @@ void main() {
       expect(host.verified, [('you', peerSlot)]);
       expect(host.resolved.map((p) => p.playerId), containsAll(['me', 'you']));
       expect(host.forfeits, isEmpty);
+    });
+
+    // ── Certified semantics on the pick (M4.20) ──────────────────────────
+    //
+    // The sequencer's job is to put the PROOF's answer on every pick before
+    // resolution sees it. Which side of the trust boundary a pick came from
+    // decides where that answer comes from, and the fake host keeps the two
+    // sources distinguishable so the branch is actually observable.
+
+    test('a LOCAL pick carries the semantics derived from its own proof bytes',
+        () async {
+      final host = _FakeHost();
+      // Every local slot maps to the same marker, so this passes whichever
+      // slot the public selection lands on.
+      for (final spell in host.localSpells.values) {
+        host.ownProofSemantics[spell.id] = _semantics(BorderZone.earth);
+      }
+      // What a PEER reveal would have certified — must not be what a local
+      // pick picks up.
+      host.certifies = _semantics(BorderZone.water);
+
+      await ForcedCast.run(_request, host, _rngFor);
+
+      final pick = host.resolved.singleWhere((p) => p.playerId == 'me');
+      expect(pick.certified, isNotNull,
+          reason: 'our own pick never crosses verifyForcedReveal, so it must '
+              'derive its semantics from its own proof');
+      expect(pick.certified!.elementSequence, [BorderZone.earth]);
+    });
+
+    test('a PEER pick carries what verifyForcedReveal certified', () async {
+      final host = _FakeHost();
+      final peerSlot = await _peerSelectedSlot();
+      host.certifies = _semantics(BorderZone.water);
+      host.peerReply = ForcedCast.encodeReveal([
+        (position: peerSlot, spell: _spell('d'), proof: null),
+      ]);
+
+      await ForcedCast.run(_request, host, _rngFor);
+
+      final pick = host.resolved.singleWhere((p) => p.playerId == 'you');
+      expect(pick.certified, isNotNull);
+      expect(pick.certified!.elementSequence, [BorderZone.water],
+          reason: 'the verification result is the only authority for a peer '
+              'reveal — this is the value M4.20 used to discard');
+    });
+
+    test('a PEER pick falls back to parsing the revealed proof when nothing '
+        'was certified (solo / verification not wired up)', () async {
+      final host = _FakeHost();
+      final peerSlot = await _peerSelectedSlot();
+      host.certifies = null; // uncertified — not a verification FAILURE
+      // decodeReveal reconstructs the spell with an empty id, which is the key
+      // the fake's own-proof derivation is looking up.
+      host.ownProofSemantics[''] = _semantics(BorderZone.air);
+      host.peerReply = ForcedCast.encodeReveal([
+        (position: peerSlot, spell: _spell('d'), proof: null),
+      ]);
+
+      await ForcedCast.run(_request, host, _rngFor);
+
+      final pick = host.resolved.singleWhere((p) => p.playerId == 'you');
+      expect(pick.certified!.elementSequence, [BorderZone.air],
+          reason: 'parsing the revealed proof unverified is still strictly '
+              'better than the authored formula, and is what the revealing '
+              'device itself resolved from');
+    });
+
+    test('a pick carries no semantics when there is no proof to derive from',
+        () async {
+      final host = _FakeHost(); // no ownProofSemantics, no certifies
+      await ForcedCast.run(_request, host, _rngFor);
+      expect(host.resolved.single.certified, isNull,
+          reason: 'both devices see the same absence, so the wire fallback '
+              'stays desync-safe');
     });
 
     test('a reveal for the WRONG slot forfeits — no shopping for a spell',

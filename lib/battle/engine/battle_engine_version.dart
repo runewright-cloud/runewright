@@ -57,6 +57,27 @@
 // e0010e1: simultaneous free-move runs serialize by ascending canonical owner
 // pubkey (`compareCanonicalPubkeyHex`), not local-first.
 //
+// v2 (2026-08-19, M4.20) — a forced cast (wild magic's Spontaneous Combustion)
+// resolves the PROOF-attested trajectory, not the revealer's authored
+// `SpellAsset.formula`. `ForcedCastHost.verifyForcedReveal` now returns the
+// `CertifiedCast` it was already computing, `ForcedCastPick` carries it, and
+// `TurnLoop.resolveForcedCast` passes it to `applySpell` — the same certified
+// arguments an ordinary cast has had since B-1.
+//
+// This is exactly the case this gate exists for, and it is worth being precise
+// about why, because "honest inputs are unchanged" is NOT the test. The
+// forced-reveal payload (0x43) is byte-identical before and after; every proof
+// verifies the same way; no VK moves. What changes is what a v1 and a v2 build
+// COMPUTE from that identical transcript whenever the authored formula and the
+// certified trajectory disagree: v1 resolves the authored one, v2 the certified
+// one, and the two canonical `BattleState`s diverge. That divergence is
+// reachable two ways — a modified client lying about its own formula (the M4.20
+// attack), and, without any adversary at all, a spell whose stored `formula`
+// field simply does not match its proof, which a v1 build resolves from the
+// field and a v2 build from the proof. Either way a mixed pair would desync
+// mid-match on a state hash instead of being refused at the handshake, which is
+// the failure mode v1 was introduced to abolish.
+//
 // There is deliberately no v0 build. Nothing has shipped, so pretending an
 // earlier epoch was ever negotiated would be fiction; 0 is reserved as the
 // sentinel for a peer that predates this field entirely and therefore declares
@@ -70,7 +91,7 @@
 /// [DeviceCapabilities.battleEngineVersion] both default to it rather than
 /// restating a literal, exactly as `MatchConfig.rulesetVersion` derives from
 /// `kRulesetVersion`. See this file's header for what forces a bump.
-const int kBattleEngineVersion = 1;
+const int kBattleEngineVersion = 2;
 
 /// What a peer that predates the engine-version gate implicitly declares: it
 /// omits the field, and an omitted field cannot be read as agreement.

@@ -27,6 +27,7 @@
 import 'dart:convert' show utf8;
 import 'dart:typed_data';
 
+import 'package:rune_duel/battle/models/certified_cast.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
 
 import 'book_commitment.dart' show MembershipProof;
@@ -66,18 +67,41 @@ class ForcedCastRequest {
   final ForcedCastTargeting targeting;
 }
 
-/// One resolved pick: whose hand, which public chapter position, and (once
-/// revealed and verified) the spell itself.
+/// One resolved pick: whose hand, which public chapter position, the spell
+/// itself, and — once the reveal has been through the trust boundary — what
+/// its PROOF says that spell does.
 class ForcedCastPick {
   const ForcedCastPick({
     required this.playerId,
     required this.position,
     required this.spell,
+    this.certified,
   });
 
   final String playerId;
   final int position;
+
+  /// The WIRE object. Its `formula`, `isSummon` and `summonPersonality` are
+  /// authored by whoever revealed it and bound by nothing (the commitment is
+  /// grid-only — CLAUDE.md invariant 2). Resolution must read [certified]
+  /// instead wherever the two can disagree.
   final SpellAsset spell;
+
+  /// The proof-attested semantics of this pick (M4.20).
+  ///
+  /// A peer's comes from [ForcedCastHost.verifyForcedReveal] — the same
+  /// derivation an ordinary peer cast gets — and the local player's from
+  /// [ForcedCastHost.certifiedFromProofBytes] over its own proof bytes. Both
+  /// routes end in `PeerCastVerifier.semanticsOf`, so both devices hold
+  /// byte-identical formulas, element sequence and wild-magic triggers for the
+  /// same pick and resolve it the same way.
+  ///
+  /// Null means there was no proof to derive from at all — a proofless dev-flag
+  /// spell, or verification not wired up (solo) with unparseable bytes. Both
+  /// devices see the same absence and fall back to the wire identically, so it
+  /// is desync-safe; it is never a licence to prefer the wire when certified
+  /// data exists.
+  final CertifiedCast? certified;
 }
 
 // ── Host seam ─────────────────────────────────────────────────────────────────
@@ -121,12 +145,33 @@ abstract class ForcedCastHost {
   /// or throws (after forfeiting) if verification fails. A revealed spell that
   /// fails verification forfeits the match, exactly like any other bad cast;
   /// there is deliberately no lenient path.
-  Future<void> verifyForcedReveal(
+  ///
+  /// Returns null when nothing could be certified — solo, verification not
+  /// wired up, or the `kAllowProoflessSpells` dev flag. That is the same
+  /// "no proof to derive from" case [certifiedFromProofBytes] returns null for,
+  /// and it is NOT a verification failure: a failure throws.
+  ///
+  /// The return type used to be `void` while this comment already said
+  /// "returns the certified spell". The certified semantics were computed here
+  /// and dropped, and resolution fell back to the peer's authored
+  /// `SpellAsset.formula` — M4.20.
+  Future<CertifiedCast?> verifyForcedReveal(
     String playerId,
     int position,
     SpellAsset spell,
     MembershipProof? merkleProof,
   );
+
+  /// The certified semantics of a spell whose proof bytes this device already
+  /// holds, parsed without verifying them.
+  ///
+  /// Used for the LOCAL player's own picks, which never cross
+  /// [verifyForcedReveal] because nobody sends themselves a reveal. Both sides
+  /// end at the same derivation over the same proof bytes, so the local
+  /// device's own pick resolves exactly as the receiving device resolves it —
+  /// which is what keeps the state hashes agreed. Null when there are no
+  /// usable proof bytes.
+  CertifiedCast? certifiedFromProofBytes(SpellAsset spell);
 
   /// Resolves one forced cast: zero mana, no chain update, not consumed from
   /// hand, and exempt from every on-cast global hook (see A8).
@@ -201,7 +246,19 @@ class ForcedCast {
       final spell = host.localSpellAt(position);
       if (spell == null) continue;
       resolved.add(
-        ForcedCastPick(playerId: localId, position: position, spell: spell),
+        ForcedCastPick(
+          playerId: localId,
+          position: position,
+          spell: spell,
+          // Our own pick never goes through verifyForcedReveal (we do not send
+          // ourselves a reveal), so it derives the same semantics straight from
+          // its own proof bytes — the pattern a delayed fire's declaration
+          // already uses for the owning device. Branching on ownership rather
+          // than on some shared map matters: certified data is keyed by
+          // commitment and the commitment is grid-only, so a peer revealing the
+          // same grid this turn must not be able to supply OUR semantics.
+          certified: host.certifiedFromProofBytes(spell),
+        ),
       );
     }
 
@@ -240,12 +297,26 @@ class ForcedCast {
             'selected — match forfeit',
           );
         }
-        await host.verifyForcedReveal(playerId, position, got.spell, got.proof);
+        // The trust boundary, and the ONLY authority for what this reveal
+        // does. Verification throws (after forfeiting) on a bad reveal, so
+        // reaching the next line means the proof verified.
+        final certified = await host.verifyForcedReveal(
+          playerId,
+          position,
+          got.spell,
+          got.proof,
+        );
         resolved.add(
           ForcedCastPick(
             playerId: playerId,
             position: position,
             spell: got.spell,
+            // Null only when there was nothing to certify (solo, verification
+            // not wired up, proofless dev flag). Parsing the revealed bytes
+            // unverified is then still strictly better than the authored
+            // formula, and is what the revealing device itself resolved from —
+            // same fallback shape as a delayed fire's.
+            certified: certified ?? host.certifiedFromProofBytes(got.spell),
           ),
         );
       }

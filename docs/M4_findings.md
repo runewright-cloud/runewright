@@ -5905,3 +5905,264 @@ failures are pre-existing and fail identically without this file).
 
 No version epoch moved: nothing about the characterization changes canonical state, wire
 framing, or proof semantics.
+
+---
+
+## M4.20 — A forced cast resolves the peer's authored formula (found 2026-08-19, FIXED 2026-08-19)
+
+Found by a provenance audit of the peer-authored `SpellAsset` fields that survive
+`ActionWire.decodeAction` — `name`, `formula`, `t`, `isSummon`, `summonPersonality`. The
+audit's headline result is that two of the three fields it set out to check are sound:
+**`t` is bound to the proof** and **`name` is presentation-only**. The third is not,
+and the leak is not on the path anyone was watching.
+
+### The audit's result, field by field
+
+| field | classification | where it is bound, or where it leaks |
+|---|---|---|
+| `t` | authored → **commit-bound → proof-certified** | `PeerCastVerifier.certifyPeerCast` rejects `outputs.t != spell.t` with `t_mismatch`. Its only *use* before that check is `tierForSpell(spell.t)`, which selects the VK — fail-closed, because a wrong tier picks a key the proof cannot satisfy. Nothing downstream reads a wire `t`: `CertifiedPeerCast` deliberately does not carry one, mana comes from `certifiedBaseManaCost(outputs, …)` over `outputs.t`, and `toCanonicalBytes` never encodes it. |
+| `name` | authored → **presentation-only** | No gameplay read anywhere. Terminal consumers: the wire codecs, `SightingCapture.spellName` (local bestiary file, off-lockstep), `SpellCardWidget`/`showSpellCardFullscreen` via `TurnLoop.spellAt`, and event/log text. Absent from `toCanonicalBytes`, from every hash, and from resolution. |
+| `formula` | authored → **certified-superseded on the ordinary path, LOAD-BEARING on the forced-cast path** | See below. |
+
+### The gap
+
+`TurnLoop.resolveForcedCast` calls `DeterministicResolution.applySpell` with **no
+certified arguments**:
+
+```dart
+await _resolution.applySpell(
+  _castContext(entropy), actor, pick.spell, target, const CastingEnhancements(), rng,
+  fireWildMagic: false, subjectToRippling: false, skipChainUpdate: true,
+);
+```
+
+`certFormulas` and `certElementSequence` therefore default to null, and `applySpell`
+falls back to `parsedFormulas(spell)` / `elementSequence(spell)` — the **authored wire
+formula**, which no proof attests (the commitment is grid-only, CLAUDE.md invariant 2).
+
+The certified data exists and is thrown away one call earlier. `ForcedCast.run` step 3
+calls `host.verifyForcedReveal`, which runs the reveal through the real trust boundary:
+
+```dart
+await _verifyPeerSpellCast(
+  SpellCastAction(spell: spell, targetHex: const HexCoord(0, 0)),
+  merkleProof,
+  <String, CertifiedCast>{},   // ← the certified semantics land here and are discarded
+  forcedCast: true,
+);
+```
+
+`_verifyPeerSpellCast` writes `cast.semantics` into the map it is handed. That map is a
+throwaway literal, so the proof-derived formulas, element sequence and wild-magic
+triggers are computed, verified, and dropped. Step 4 then resolves from the wire.
+
+### Why it is exploitable, not merely untidy
+
+The ordinary cast path is safe precisely because the two devices read *different*
+formulas: the caster resolves its own wire value, the receiver the certified one, and
+`_exchangeStateHash` forfeits on the difference. That is what makes an immediate forgery
+self-defeating (M4.15 is the same lesson from the Mystery-delay direction).
+
+The forced-cast path removes that asymmetry. Both devices resolve the *same* authored
+formula — the revealer from its own `localSpellAt(position)`, the receiver from the
+revealed bytes — so the state hashes agree. A modified client edits `formula` in its own
+on-disk `SpellAsset` (a plain JSON field, bound by nothing), reveals it, and both devices
+apply it. The forfeit that catches an immediate forgery cannot fire here.
+
+Two properties make it worse than an ordinary cast:
+
+* **The cast is free.** A8 exempts forced casts from mana entirely, and
+  `_verifyPeerSpellCast` skips its mana block under `forcedCast: true`. So the laundered
+  formula costs nothing.
+* **The slot guard does not help.** `ForcedCast.run` selects slots publicly before anyone
+  reveals, which stops the revealer *shopping* for a favourable spell. It does not stop
+  them *lying about the contents* of whichever slot was picked — the reveal is checked for
+  position, proof validity, commitment and T, none of which constrain `formula`.
+
+Reachability: the only caller today is wild magic's Spontaneous Combustion, whose triggers
+are derived from certified proof outputs plus the community seed — attacker-influenceable
+by grinding a grid whose hash triggers it. Per the Phase-3 notes above, **Spontaneous
+Combustion has never crossed a real wire**, so this is live code with no hardware pass.
+
+`spell.isSummon` and `spell.summonPersonality` ride the same path for the same reason;
+that is M4.19, not a separate finding.
+
+### What a fix needs
+
+Cheapest repair, and the one the surrounding code already implies: **carry the certified
+cast from step 3 to step 4 instead of discarding it.** `ForcedCastHost.verifyForcedReveal`
+returns `void` today and its doc comment already claims it "Returns the certified spell" —
+the type never caught up with the prose. Make it return the `CertifiedCast?`, store it on
+`ForcedCastPick`, and have `resolveForcedCast` pass `certFormulas` / `certElementSequence`
+/ `certWildMagic` through to `applySpell`, exactly as `resolveActions` does for an ordinary
+cast. No new derivation, no second source of truth — the value is already computed.
+
+The local player's own picks (`isLocalPlayer`) never go through `verifyForcedReveal`, so
+they need the same `certifiedFromProofBytes` fallback the delayed-fire branch uses at
+`deterministic_resolution.dart:2763`; otherwise the two devices would resolve one pick
+from certified data and the other from the wire, and the state hash would forfeit.
+
+**Version implications: none on the wire.** No wire bytes move — `forcedReveal` (0x43)
+already carries the proof and the Merkle path, which is everything the certified
+derivation needs, so `kBattleProtocolVersion` stays at 5. No circuit change, so
+`RULESET_VERSION` stays at 3. It does change resolution for any cast where the wire
+formula and the certified trajectory disagree — see the engine-version note in the fix
+below, which is where that lands.
+
+### Verification
+
+`test/battle/engine/authored_spell_field_trust_test.dart` characterizes all three fields:
+
+* a `t` sweep that encodes one action frame and patches **only the two `t` bytes** —
+  every other byte, including the proof, held identical. Against a proof certifying T=3:
+  T−1, T+1 and 11 → `t_mismatch`; 24 → `invalid_spell_proof` (the wire value selects a
+  different tier and the proof is parsed at the wrong offsets — fail-closed, one check
+  earlier); 0, 49 and 0xFFFF → `invalid_spell_tier`. Only T=3 certifies.
+* two casts identical but for `name` (including a 64-character multi-byte one) producing
+  byte-identical `toCanonicalBytes`.
+* the formula control pair: on the ordinary path the receiver resolves the certified earth
+  trajectory (no cloud) while the caster resolves its own authored `water/water/fire` (a
+  cloud); on the forced path the receiver resolves the **authored** formula and the cloud
+  appears.
+
+905 tests in `test/battle/` green. The one failure is
+`action_resolution_characterization_test.dart`'s "Scattered Gusts re-deals the hand" case,
+a **pre-existing test defect** unrelated to this audit: it asserts a random redeal cannot
+equal the prior hand, which is a coin flip — baseline measurement was 3 failures in 6 runs.
+Not fixed in this slice.
+
+### The fix (2026-08-19)
+
+Exactly the repair the section above specifies: **carry the certified cast from step 3 to
+step 4 instead of discarding it.** Four small edits, no new derivation and no second
+source of truth.
+
+1. `TurnLoop._verifyPeerSpellCast` returns `Future<CertifiedCast?>` — the semantics it was
+   already computing, or null for `PeerCastUncertified` (solo, verification not wired up,
+   proofless dev flag). A rejection still throws. The ordinary path ignores the return and
+   keeps reading the turn-scoped map, so nothing about it changes.
+2. `ForcedCastHost.verifyForcedReveal` returns that `CertifiedCast?`, which is what its
+   doc comment claimed all along. The throwaway map stays a throwaway **on purpose**: a
+   forced reveal is not a cast the peer chose, so it must not publish itself into this
+   turn's certified maps where an ordinary cast of the same grid would pick it up.
+3. `ForcedCastPick` carries a `certified` field. Peer picks get it from
+   `verifyForcedReveal`; local picks from a new `ForcedCastHost.certifiedFromProofBytes`,
+   which TurnLoop already implemented for the `ActionResolutionHost` seam. Both routes end
+   at `PeerCastVerifier.semanticsOf` over the same proof bytes at the same tier, so the
+   revealing device and the receiving device derive byte-identical formulas, element
+   sequence and wild-magic triggers — which is what keeps the state hashes agreed.
+   Branching on ownership rather than on map presence is deliberate, for the reason the
+   delayed-declaration branch documents: the map is keyed by commitment, the commitment is
+   grid-only, so a peer revealing the same grid this turn must not be able to supply OUR
+   semantics.
+4. `TurnLoop.resolveForcedCast` passes `certFormulas` / `certElementSequence` /
+   `certWildMagic` to `applySpell`, exactly as `resolveActions` does for an ordinary cast.
+   (`certWildMagic` is inert under A8's `fireWildMagic: false`; it is passed so the
+   certified triple travels as one value rather than as two-thirds of one.)
+
+A null `certified` still falls back to the wire, and that is correct rather than a
+leftover: it means there was no proof to derive from at all, both devices see the same
+absence, and the fallback is desync-safe. A peer pick that came back uncertified
+additionally tries `certifiedFromProofBytes` on the revealed bytes first — parsing
+unverified is no stronger than the bytes it was handed, but it is strictly better than the
+authored formula and it is what the revealing device itself resolved from.
+
+**`kBattleEngineVersion` 1 → 2.** The wire is byte-identical and every proof verifies the
+same way, so neither of the other two gates can see this — which is precisely the case
+`battle_engine_version.dart` was introduced for. "Honest inputs are unchanged" is not the
+test; the test is whether two builds can compute a different canonical `BattleState` from
+the same inputs, and here they can, two ways: the M4.20 attack itself, and — with no
+adversary at all — any spell whose stored `formula` simply does not match its proof, which
+a v1 build resolves from the field and a v2 build from the proof. Without the bump a mixed
+pair desyncs mid-match on a state hash instead of being refused at the handshake.
+`kRulesetVersion` stays 3 (no circuit change) and `kBattleProtocolVersion` stays 5 (no
+framing change).
+
+### The contradictory-formula question, deliberately left open
+
+The fix **supersedes** a contradictory authored formula; it does not **reject** one. That
+was considered and is not being decided here, because deciding it would be inventing
+policy rather than closing a hole:
+
+* **Semantic comparison is well-defined.** `elementSequence(spell)` (wire) and
+  `TrajectoryParser.certifiedElementSequence(outputs)` (certified) are directly
+  comparable, and raw string comparison would be wrong — `_zoneFromName` lowercases and
+  `whereType` drops unrecognized names, so several texts legitimately denote the same
+  sequence. An honest client writes `FormulaTracker.committed` into both
+  (`main.dart:516/596`), so they agree today.
+* **But the existing mismatch convention does not extend to it.** `t_mismatch`,
+  `commitment_mismatch` and `ruleset_version_mismatch` all guard a wire value that is
+  *load-bearing before certification* — `t` selects the VK and the parse layout,
+  `commitment` keys the certified maps and the duplicate-grid guard, `ruleset_version` is
+  a negotiated consensus parameter. `formula` is load-bearing in none of them: it is
+  superseded outright, and the codebase documents it as a desync-safe fallback that the
+  `kAllowProoflessSpells` path actively depends on.
+* **So a `formula_mismatch` forfeit would be a new protocol requirement, not an
+  enforcement of an existing one.** It would newly oblige every conformant client to
+  transmit a formula derived exactly from the certified trajectory, on pain of losing the
+  match, and it would apply to every ordinary cast, not just forced ones. That is Soren's
+  call, and it wants the `kAllowProoflessSpells` question (the standing TODO(B-1)) settled
+  in the same breath, since an uncertified cast has nothing to compare against.
+
+Recommendation if it is ever taken up: fold it into the same pass that deletes
+`kAllowProoflessSpells`, and make it a rejection at `certifyPeerCast` (one place, both
+paths) rather than a forced-cast special case.
+
+### Verification of the fix
+
+`test/battle/engine/authored_spell_field_trust_test.dart` keeps sections 1 and 2 as
+characterization and turns section 3 into a regression suite:
+
+* **the historical pin** — a `ForcedCastPick` with no certified semantics still falls back
+  to the wire and still makes the cloud. That is the shape M4.20 had; what the fix removes
+  is the forced-cast path's ability to *produce* such a pick.
+* the forged reveal (proof certifies earth/earth/earth, authored formula claims
+  water/water/fire) resolves to **no cloud** on a peer pick, on a local pick, and through
+  the full two-device `ForcedCast.run`;
+* local and peer picks produce **byte-identical canonical state**;
+* the forged spell and an honest twin — same grid, same commitment, byte-identical proof,
+  differing only in the authored `formula` — produce byte-identical canonical state, which
+  is the invariant stated directly: the same proof implies the same gameplay;
+* an honest forced cast is byte-identical to its pre-fix resolution;
+* a forced cast is still free (A8), a bad proof still forfeits (`invalid_spell_proof`), a
+  proofless reveal is still refused, and the ordinary-path control is untouched;
+* a **positive control** — a reveal whose proof certifies water/water/fire really does
+  create the cloud through the same end-to-end sequence — so "no clouds" cannot pass
+  vacuously by the forced cast never having resolved.
+
+`forced_cast_test.dart` covers the seam itself: which source each pick's semantics comes
+from (own proof for local, `verifyForcedReveal` for peer), the uncertified fallback, and
+the no-proof-at-all case. Slot selection, ordering, withheld/malformed/wrong-slot forfeits
+are unchanged and still green.
+
+921 of 922 tests in `test/battle/` pass; the one failure is the known Scattered Gusts
+coin-flip defect described above, unrelated and not fixed here. Full suite 1734 pass, 2
+fail — the pre-existing `vocabulary_screen_test.dart` pair. Analyzer clean (no new
+errors, warnings or infos).
+
+M4.19 (`isSummon` / `summonPersonality`) is **untouched and still live**: those two fields
+ride the same reveal and are still uncertified, exactly as characterized. The fix
+deliberately does not paper over them — `ForcedCastPick.spell` remains the wire object and
+its doc comment now says so.
+
+### Incidental, not pursued
+
+* **`wireBaseManaCost` overflows on an absurd `t`.** `pow(1.05, 65535)` is `Infinity` and
+  `.round()` on it throws. Unreachable from a peer (the wire `t` never reaches that
+  function; only a *local* spell does) and unreachable from the inscribe UI, so it is a
+  robustness note, not a finding. It is why the `t` sweep patches frame bytes directly
+  instead of driving a full turn — a caster with `t = 0xFFFF` dies charging itself.
+* **`certifiedPeerCasts` is keyed by commitment with no ownership branch** at
+  `deterministic_resolution.dart:2487`, unlike the delayed-declaration branch 280 lines
+  below, which comments the hazard explicitly. Since the commitment is grid-only, a local
+  cast of the same grid a peer certified this turn picks up the peer's certified semantics.
+  Both devices compute the same map, so it is desync-safe; whether it is *correct* when the
+  two casts ran at different T is a separate question, not audited here.
+* **`SoloBattleSession`'s truncated 0x01 encoder** (`_encodeDummySpellCast`) and its inline
+  `_splitActionCommit` copy are **intentionally a reduced protocol**, documented as such in
+  that file's header, and cannot reach a network: the class is an in-process
+  `BattleTurnSession` stub used by Solo Practice, the Spell Test Lab, `battle_screen.dart`'s
+  no-session fallback, and ~20 engine tests. It never emulates real peer wire behaviour —
+  it *is* the peer, locally, with `verifyProof` null. Worth knowing that a large share of
+  the engine suite therefore exercises the short frame rather than the real one. Left
+  untouched.

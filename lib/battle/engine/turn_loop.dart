@@ -2662,7 +2662,7 @@ class TurnLoop
       session.exchangeForcedReveal(ours);
 
   @override
-  Future<void> verifyForcedReveal(
+  Future<CertifiedCast?> verifyForcedReveal(
     String playerId,
     int position,
     SpellAsset spell,
@@ -2672,7 +2672,14 @@ class TurnLoop
     // deliberately bypassed (see _verifyPeerSpellCast's forcedCast flag): a
     // forced cast is not the player's choice, so it must not consume their
     // once-per-match right to cast that grid, nor trip the duplicate forfeit.
-    await _verifyPeerSpellCast(
+    //
+    // The RETURN VALUE is the whole point of the call (M4.20). It used to be
+    // discarded, and [resolveForcedCast] then resolved the peer's authored
+    // `spell.formula` — a wire field no proof attests. The turn-scoped map is
+    // still a throwaway on purpose: a forced reveal is not a cast the peer
+    // chose, so it must not publish itself into this turn's certified maps
+    // where an ordinary cast of the same grid would pick it up.
+    return _verifyPeerSpellCast(
       SpellCastAction(spell: spell, targetHex: const HexCoord(0, 0)),
       merkleProof,
       <String, CertifiedCast>{},
@@ -2689,6 +2696,17 @@ class TurnLoop
     // A8, the load-bearing recursion guard: a free cast fires NO wild magic,
     // is not subject to Rippling Reflections, does not trigger Scattered
     // Gusts, does not build or break the chain, and is not consumed from hand.
+    //
+    // The certified triple is what the cast MEANS (M4.20). Passing it here is
+    // the same thing `resolveActions` does for an ordinary cast: with it,
+    // `applySpell` reads the proof-attested trajectory; without it, it falls
+    // back to `parsedFormulas(spell)` / `elementSequence(spell)` — the authored
+    // wire formula, which nothing binds. A null [pick.certified] means there
+    // was no proof to derive from at all, and both devices see that identically.
+    //
+    // certWildMagic is inert under `fireWildMagic: false` (A8 — a free cast
+    // fires none), and is passed anyway so the certified triple travels as one
+    // value rather than as two-thirds of one.
     await _resolution.applySpell(
       _castContext(entropy),
       actor,
@@ -2696,6 +2714,9 @@ class TurnLoop
       target,
       const CastingEnhancements(),
       rng,
+      certFormulas: pick.certified?.formulas,
+      certElementSequence: pick.certified?.elementSequence,
+      certWildMagic: pick.certified?.wildMagic,
       fireWildMagic: false,
       subjectToRippling: false,
       skipChainUpdate: true,
@@ -3291,7 +3312,14 @@ class TurnLoop
   /// mana the caster never chose to spend — and worse, the shortfall check
   /// would penalise a player who simply happened to be holding an expensive
   /// spell they were never given the option to not cast.
-  Future<void> _verifyPeerSpellCast(
+  ///
+  /// Returns the [CertifiedCast] this verification established, or null when
+  /// nothing was certified ([PeerCastUncertified] — solo, verification not
+  /// wired up, or the proofless dev flag). A rejection throws instead. The
+  /// ordinary cast path ignores the return and reads [certifiedPeerCasts];
+  /// [verifyForcedReveal] needs it directly, because a forced reveal
+  /// deliberately does not publish itself into this turn's certified maps.
+  Future<CertifiedCast?> _verifyPeerSpellCast(
     TurnAction action,
     MembershipProof? merkleProof,
     Map<String, CertifiedCast> certifiedPeerCasts, {
@@ -3312,7 +3340,7 @@ class TurnLoop
       // falls back to the wire formula on BOTH devices: not trust-safe, but
       // desync-safe, which is the property the fallback exists for.
       case PeerCastUncertified():
-        return;
+        return null;
 
       case PeerCastRejected(:final forfeitReason, :final detail):
         session.sendForfeit(forfeitReason);
@@ -3337,7 +3365,7 @@ class TurnLoop
         // deduct the same amount and the mana ledger stays consistent.
         final peerId = _peerId();
         final peerAvatar = peerId != null ? _avatarById(peerId) : null;
-        if (peerAvatar == null || forcedCast) return;
+        if (peerAvatar == null || forcedCast) return cast.semantics;
         final spell = switch (action) {
           SpellCastAction(:final spell) => spell,
           MysterySpellCastAction(:final spell) => spell,
@@ -3348,7 +3376,7 @@ class TurnLoop
           MysterySpellCastAction(:final recall) => recall,
           _ => null,
         };
-        if (spell == null) return;
+        if (spell == null) return cast.semantics;
         final verifiedCost = _resolution.certifiedManaCost(
           cast.baseManaCost,
           cast.semantics.formulas,
@@ -3380,6 +3408,7 @@ class TurnLoop
         } else {
           peerAvatar.mana = (peerAvatar.mana - verifiedCost).clamp(0, _kMaxMana);
         }
+        return cast.semantics;
     }
   }
 
