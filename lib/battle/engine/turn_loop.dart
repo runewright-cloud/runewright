@@ -80,47 +80,31 @@
 // For the caller to provide the local player's decision, pass a [TurnInput].
 // Multi-player (3–6) would require a list of sessions; stub is 2-player only.
 //
-// Action wire encoding (commit-reveal payload):
-//   Pass:     [0x00]
-//   Spell:    [0x01][commit_hex:32][t:2][q:2][r:2][formula_len:2][formula_utf8:N]
-//             formula_utf8 = comma-separated zone names ("fire,earth,water")
-//             [isPotent:1][isVelocity:1][isEfficiency:1]
-//             [optional proof tail when book proofs are enabled]
-//             [sorcerer mode only: pronunciation_u8:1, volume_u8:1, somatic_u8:1]
-//   Dash:     [0x04]  — doubles this turn's movement budget (see move-path
-//             wire encoding below for how the flag actually reaches the peer
-//             in time to affect movement resolution).
-//   Meditate: [0x05]  — restores +25 mana (main phase). May stack with a
-//             move-phase Meditate (see below) for +50 total.
+// ── Where the bytes live ─────────────────────────────────────────────────────
 //
-// Commit:  SHA-256(action_bytes ‖ nonce)  32 bytes
-// Reveal:  nonce(16) ‖ action_bytes       variable
+// Every wire encoding this file used to spell out now lives in
+// `battle_wire_codec.dart`, one small class per message, each carrying the
+// field-order spec it implements: `ActionWire` (the main-phase action, its
+// proof tail, its recall suffix and its split-leaf commitment preimage),
+// `MoveWire`, `MeleeWire`, `ArtifactActivationWire`, `DelayedRevealWire`,
+// `StateHashWire`, and the two divination exchanges' framing
+// (`SealedExchangeFrames`, `ScryWire`, `SpellRevealWire`).
 //
-// Move-path wire encoding: [isDashing:1][meditateInMove:1][count:1][q:2][r:2]…
-// isDashing/meditateInMove are folded into the *movement* commit-reveal
-// (not the action commit-reveal) specifically so both clients know each
-// other's dash status before avatar movement resolves — the action
-// reveal itself is deliberately deferred until after movement resolves (so
-// a spell's target can't inform the opponent's move), which would otherwise
-// make Dash's same-turn speed boost impossible to apply deterministically.
-// meditateInMove forces the declared path to be treated as empty (stay put)
-// regardless of what was sent, and grants +25 mana at reveal time.
+// What stays here is everything the codec deliberately does not do: the order
+// the exchanges happen in, what is committed before what is revealed, which
+// peer claims get verified and against what, and what happens to the match
+// when one fails. The codec answers "what value do these bytes represent";
+// this file answers "should we believe it, and what do we do next".
 //
-// Melee wire encoding (separate commit-reveal, after movement resolves):
-//   No melee: [0x00]   Melee: [0x01][q:2][r:2]
-// Commit/reveal shape identical to movement's.
-//
-// Artifact-activation wire encoding (Phase 0 commit-reveal, before the action
-// commit):
-//   No activation: [0x00]   Activation: [0x01][kind:1]
-// [kind] is the AccoutrementKind index. The declaration names a KIND, never a
-// specific accoutrement id — the engine picks which instance is consumed by
-// sorting the owner's accoutrements by id and taking the first match, the
-// same fixed-order convention _findCounteringCharm uses. That removes a whole
-// class of trust bug: a peer cannot name an id it does not own, because it
-// never gets to name an id. Commit/reveal shape identical to movement's.
+// The commit/reveal envelope itself — commit = SHA-256(payload ‖ nonce),
+// reveal = nonce(16) ‖ payload — stays here too, because it is one line at
+// each phase's exchange and inseparable from the sequencing around it. The
+// action phase is the exception in shape as well as ownership: it commits to
+// a two-leaf split (see `ActionWire.splitActionCommit`) so a Divination can
+// open the target leaf early, and so its reveal is saltA(16) ‖ saltB(16) ‖
+// payload.
 
-import 'dart:convert' show jsonDecode, jsonEncode, utf8;
+import 'dart:convert' show utf8;
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' show sha256;
@@ -139,13 +123,13 @@ import '../models/pending_delayed_spell.dart';
 import '../models/divination_link.dart';
 import '../models/effect_descriptor.dart'; // exports SpellAffinity, spellAffinityFromZone
 import '../models/hex_battlefield.dart' show hexDistance;
-import '../models/minion.dart';
 import '../models/wizard_avatar.dart';
 import '../networking/battle_session.dart';
 import '../../identity/identity.dart';
 import '../../identity/key_packing.dart' show compareCanonicalPubkeyHex;
 import '../../protocol/match_session.dart' show ProofVerifier;
 import 'battle_events.dart';
+import 'battle_wire_codec.dart';
 import 'book_commitment.dart';
 import 'commit_reveal.dart';
 import 'deterministic_resolution.dart';
@@ -179,6 +163,12 @@ export 'deterministic_resolution.dart'
 // importing this file — the same split battle_events.dart made. Re-exported so
 // every existing `import '.../turn_loop.dart'` naming them keeps compiling.
 export 'turn_actions.dart';
+
+// The battle protocol's serialization boundary moved to battle_wire_codec.dart
+// — every encoder, decoder and framing rule, with no trust decision among
+// them. Re-exported so `kStateHashSignatureTag` (and the codecs themselves,
+// for anyone hand-building a frame) stay reachable through this file.
+export 'battle_wire_codec.dart';
 
 // ── Turn input / action types ─────────────────────────────────────────────────
 
@@ -272,11 +262,6 @@ const _kMaxMana = 9999;
 // The Rod of Wind's per-rod movement chance moved to the deterministic seam
 // with the roll it prices (deterministic_resolution.dart, "Phase 0").
 
-/// Domain-separation tag for the per-turn signed state-hash (Phase D,
-/// BATTLE_AUTH_PLAN.md §6). Distinct from battle_session.dart's
-/// `kIdentityAuthSignatureTag` so a state-hash signature can never be
-/// replayed as an auth signature or vice-versa.
-const kStateHashSignatureTag = 'RUNEWRIGHT_BATTLE_STATE_V1\x00';
 
 /// Asks the local UI which adjacent tile (if any) to melee this turn, given
 /// the list of adjacent tiles that hold at least one living hostile entity.
@@ -1088,6 +1073,29 @@ class TurnLoop
     return BookCommitment.proveMembership(commitments, spell.commitmentHex)?.leafIndex;
   }
 
+  /// The proof-tail seam handed to [ActionWire.encodeAction].
+  ///
+  /// **Null when this caster has no committed chapter**, which is what makes
+  /// the codec omit the tail entirely rather than write an empty one — the
+  /// distinction is a wire-visible byte difference, so it has to be decided
+  /// here, where "do we have a chapter" is known, rather than inside the
+  /// encoder.
+  ///
+  /// Non-null, it answers only "which chapter position is this spell being
+  /// cast from" — hand slots, duplicate commitments and the local draw
+  /// schedule are all local bookkeeping the codec has no business knowing.
+  MembershipProofResolver? get _castProofResolver =>
+      localChapterCommitments == null ? null : _membershipProofForCast;
+
+  MembershipProof? _membershipProofForCast(SpellAsset spell, int? handIndex) {
+    final commitments = localChapterCommitments;
+    if (commitments == null) return null;
+    final position = _localCastPosition(spell, handIndex);
+    return position != null
+        ? BookCommitment.proveMembershipAt(commitments, position)
+        : null;
+  }
+
   // ── Phase D: signed per-turn state hash (BATTLE_AUTH_PLAN.md §6) ───────────
 
   /// Signs a message with the local identity's private key
@@ -1345,7 +1353,7 @@ class TurnLoop
         : await artifactActivationPicker(available);
 
     final nonce = _commitNonce(_kRevealNonceBytes);
-    final bytes = _encodeActivation(localChoice);
+    final bytes = ArtifactActivationWire.encode(localChoice);
     final commit = await Sha256()
         .hash(Uint8List.fromList([...bytes, ...nonce]))
         .then((h) => Uint8List.fromList(h.bytes));
@@ -1354,7 +1362,8 @@ class TurnLoop
     final myReveal = Uint8List.fromList([...nonce, ...bytes]);
     final peerReveal = await session.exchangeArtifactActivationReveal(myReveal);
     await _verifyReveal(peerReveal, peerCommit, 'artifact');
-    final peerChoice = _decodeActivation(peerReveal, _kRevealNonceBytes);
+    final peerChoice =
+        ArtifactActivationWire.decode(peerReveal, _kRevealNonceBytes);
 
     // Applied in sorted-playerId order, not local-first, so both devices walk
     // the same sequence — the same convention _findCounteringCharm and the
@@ -1395,22 +1404,6 @@ class TurnLoop
     return round;
   }
 
-  static Uint8List _encodeActivation(AccoutrementKind? kind) => kind == null
-      ? Uint8List.fromList([0x00])
-      : Uint8List.fromList([0x01, kind.index]);
-
-  /// Decodes an activation declaration from [data] at [offset]. Anything
-  /// malformed — truncated, unknown lead byte, out-of-range kind index —
-  /// reads as "declared nothing", which
-  /// [DeterministicResolution.validateActivation] would have
-  /// reduced it to anyway.
-  static AccoutrementKind? _decodeActivation(Uint8List data, int offset) {
-    if (offset >= data.length || data[offset] != 0x01) return null;
-    if (offset + 1 >= data.length) return null;
-    final index = data[offset + 1];
-    if (index >= AccoutrementKind.values.length) return null;
-    return AccoutrementKind.values[index];
-  }
 
   /// Begins the action-commit phase for [action] early, before movement is
   /// chosen: exchanges the split action commitment (§13b.2.1) with the peer,
@@ -1454,8 +1447,13 @@ class TurnLoop
 
     final saltA = _commitNonce(_kRevealNonceBytes);
     final saltB = _commitNonce(_kRevealNonceBytes);
-    final actionBytes = _encodeAction(action);
-    final actionCommit = await _splitActionCommit(actionBytes, saltA, saltB);
+    final actionBytes = ActionWire.encodeAction(
+      action,
+      isVocalComponents: isVocalComponents,
+      membershipProofFor: _castProofResolver,
+    );
+    final actionCommit =
+        await ActionWire.splitActionCommit(actionBytes, saltA, saltB);
     final peerActionCommit = await session.exchangeActionCommit(actionCommit);
 
     _pendingAction = action;
@@ -1727,7 +1725,7 @@ class TurnLoop
         ? const <HexCoord>[]
         : input.movePath;
     final moveNonce = _commitNonce(_kRevealNonceBytes);
-    final moveBytes = _encodeMovePayload(
+    final moveBytes = MoveWire.encodePayload(
       isDashing: iAmDashing,
       meditateInMove: input.meditateInMove,
       path: localPath,
@@ -1742,7 +1740,7 @@ class TurnLoop
     final peerMoveReveal = await session.exchangeMoveReveal(myMoveReveal);
     await _verifyReveal(peerMoveReveal, peerMoveCommit, 'movement');
 
-    final peerMovePayload = _decodeMovePayload(
+    final peerMovePayload = MoveWire.decodePayload(
       peerMoveReveal,
       _kRevealNonceBytes,
     );
@@ -1841,7 +1839,7 @@ class TurnLoop
         ? null
         : await meleeTargetPicker(localMeleeCandidates);
     final meleeNonce = _commitNonce(_kRevealNonceBytes);
-    final meleeBytes = _encodeOptionalTarget(localMeleeTarget);
+    final meleeBytes = MeleeWire.encodeTarget(localMeleeTarget);
     final meleeCommit = await Sha256()
         .hash(Uint8List.fromList([...meleeBytes, ...meleeNonce]))
         .then((h) => Uint8List.fromList(h.bytes));
@@ -1850,7 +1848,7 @@ class TurnLoop
     final myMeleeReveal = Uint8List.fromList([...meleeNonce, ...meleeBytes]);
     final peerMeleeReveal = await session.exchangeMeleeReveal(myMeleeReveal);
     await _verifyReveal(peerMeleeReveal, peerMeleeCommit, 'melee');
-    final peerMeleeTarget = _decodeOptionalTarget(
+    final peerMeleeTarget = MeleeWire.decodeTarget(
       peerMeleeReveal,
       _kRevealNonceBytes,
     );
@@ -1906,9 +1904,15 @@ class TurnLoop
     // ── Phase 5: Delayed spell reveals + Action reveal + resolution ───────
     // Both players simultaneously announce any pending delayed spells firing
     // this turn (independent of, and before, the current-turn action reveal).
-    final localDelayedPayload = _buildDelayedRevealPayload(
-      input.delayedSpellReveals,
-    );
+    final localDelayedPayload = DelayedRevealWire.encode([
+      for (final r in input.delayedSpellReveals)
+        (
+          pendingSpellId: r.pendingSpellId,
+          targetTile: r.targetTile,
+          delay: r.delay,
+          nonce: r.nonce,
+        ),
+    ]);
     final peerDelayedPayload = await session.exchangeDelayedSpellReveals(
       localDelayedPayload,
     );
@@ -1921,7 +1925,7 @@ class TurnLoop
     final peerActionReveal = await session.exchangeActionReveal(myActionReveal);
     await _verifyActionReveal(peerActionReveal, peerActionCommit);
 
-    final (:action, :merkleProof) = _decodeAction(
+    final (:action, :merkleProof) = ActionWire.decodeAction(
       peerActionReveal.sublist(_kRevealNonceBytes * 2),
       withProof: verifyProof != null,
       isVocalComponents: isVocalComponents,
@@ -2394,22 +2398,9 @@ class TurnLoop
     Uint8List payload,
     String ownerId,
   ) async {
-    if (payload.isEmpty) return [];
-    final count = payload[0];
     final fires = <(WizardAvatar, SpellCastAction, CertifiedCast?)>[];
-    var pos = 1;
-    for (var i = 0; i < count; i++) {
-      if (pos + 37 > payload.length)
-        break; // 16 id + 4 coord + 1 delay + 16 nonce
-      final idBytes = payload.sublist(pos, pos + 16);
-      pos += 16;
-      final targetTile = _decodeCoord(payload, pos);
-      pos += 4;
-      final delay = payload[pos++];
-      final nonce = payload.sublist(pos, pos + 16);
-      pos += 16;
-
-      final id = idBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    for (final (:id, :targetTile, :delay, :nonce)
+        in DelayedRevealWire.decode(payload)) {
       final pending = state.pendingDelayedSpells
           .where((p) => p.id == id && p.ownerId == ownerId)
           .firstOrNull;
@@ -2492,20 +2483,6 @@ class TurnLoop
   /// See [DeterministicResolution.applyManaGain].
   void _applyManaGain(WizardAvatar av, int amount) =>
       _resolution.applyManaGain(av, amount);
-
-  static Uint8List _buildDelayedRevealPayload(
-    List<DelayedSpellReveal> reveals,
-  ) {
-    final buf = BytesBuilder();
-    buf.addByte(reveals.length.clamp(0, 255));
-    for (final r in reveals) {
-      buf.add(_hexToBytes(r.pendingSpellId)); // 32 hex chars → 16 bytes
-      buf.add(_encodeCoord(r.targetTile)); // 4 bytes
-      buf.addByte(r.delay & 0xFF); // 1 byte
-      buf.add(r.nonce); // 16 bytes
-    }
-    return buf.toBytes();
-  }
 
   // The haymaker itself and the counter-charm proc it feeds moved to the
   // deterministic seam (deterministic_resolution.dart, "Phase 4b") — both are
@@ -2773,16 +2750,6 @@ class TurnLoop
     return jointEntropy;
   }
 
-  /// Builds the message signed/verified over a state hash: distinct per
-  /// match (matchId) and per turn (turnNumber), so a signature can't be
-  /// replayed across matches or turns.
-  List<int> _stateHashMessage(Uint8List hash) => [
-        ...utf8.encode(kStateHashSignatureTag),
-        ...(matchId ?? const <int>[]),
-        ..._be4(state.turnNumber),
-        ...hash,
-      ];
-
   Future<void> _exchangeStateHash() async {
     final canonical = state.toCanonicalBytes();
     final hashBytes = await Sha256().hash(canonical);
@@ -2796,7 +2763,11 @@ class TurnLoop
     if (sign == null) {
       outgoing = ourHash;
     } else {
-      final sig = await sign(_stateHashMessage(ourHash));
+      final sig = await sign(StateHashWire.signatureMessage(
+        matchId: matchId,
+        turnNumber: state.turnNumber,
+        hash: ourHash,
+      ));
       outgoing = Uint8List.fromList([...ourHash, ...sig]);
     }
 
@@ -2816,7 +2787,11 @@ class TurnLoop
       peerHash = peerBytes.sublist(0, 32);
       final peerSig = peerBytes.sublist(32, 96);
       final sigOk = await Identity.verify(
-        message: _stateHashMessage(peerHash),
+        message: StateHashWire.signatureMessage(
+          matchId: matchId,
+          turnNumber: state.turnNumber,
+          hash: peerHash,
+        ),
         signatureBytes: peerSig,
         publicKeyBytes: rawPeerKey,
       );
@@ -2832,7 +2807,7 @@ class TurnLoop
       session.sendForfeit('state_hash_mismatch');
       throw StateError(
         'state hash mismatch on turn ${state.turnNumber}: '
-        'local=${_hex(ourHash)} peer=${_hex(peerHash)}',
+        'local=${WireBytes.hex(ourHash)} peer=${WireBytes.hex(peerHash)}',
       );
     }
   }
@@ -2874,7 +2849,8 @@ class TurnLoop
     final saltA = reveal.sublist(0, _kRevealNonceBytes);
     final saltB = reveal.sublist(_kRevealNonceBytes, _kRevealNonceBytes * 2);
     final actionBytes = reveal.sublist(_kRevealNonceBytes * 2);
-    final expected = await _splitActionCommit(actionBytes, saltA, saltB);
+    final expected =
+        await ActionWire.splitActionCommit(actionBytes, saltA, saltB);
     if (!_bytesEqual(expected, commit)) {
       session.sendForfeit('withheld_reveal:action');
       throw StateError(
@@ -2889,48 +2865,6 @@ class TurnLoop
   // scryer with an active DivinationLink can verifiably learn (target, saltB)
   // early — via an encrypted scryOpen frame naming leafA as the Merkle
   // sibling — without learning remainder (spell identity/formula/enhancements).
-
-  /// Splits action bytes into (targetBytes, remainderBytes): targetBytes is
-  /// the plaintext (q,r) HexCoord slice a scry effect may verifiably open
-  /// early; remainderBytes is everything else. Pass and delayed (non-
-  /// immediate) Mystery casts have no plaintext target yet — targetBytes is
-  /// empty for those.
-  static (Uint8List target, Uint8List remainder) _splitActionTarget(
-    Uint8List actionBytes,
-  ) {
-    if (actionBytes.isEmpty) return (Uint8List(0), actionBytes);
-    int? targetOffset;
-    switch (actionBytes[0]) {
-      case 0x01:
-        targetOffset = 1 + 32 + 2; // SpellCastAction: after type+commit+t.
-    }
-    if (targetOffset == null || actionBytes.length < targetOffset + 4) {
-      return (Uint8List(0), actionBytes);
-    }
-    final target = actionBytes.sublist(targetOffset, targetOffset + 4);
-    final remainder = Uint8List.fromList([
-      ...actionBytes.sublist(0, targetOffset),
-      ...actionBytes.sublist(targetOffset + 4),
-    ]);
-    return (Uint8List.fromList(target), remainder);
-  }
-
-  static Future<Uint8List> _leafHash(Uint8List data, Uint8List salt) async {
-    final h = await Sha256().hash(Uint8List.fromList([...data, ...salt]));
-    return Uint8List.fromList(h.bytes);
-  }
-
-  static Future<Uint8List> _splitActionCommit(
-    Uint8List actionBytes,
-    Uint8List saltA,
-    Uint8List saltB,
-  ) async {
-    final (target, remainder) = _splitActionTarget(actionBytes);
-    final leafA = await _leafHash(remainder, saltA);
-    final leafB = await _leafHash(target, saltB);
-    final h = await Sha256().hash(Uint8List.fromList([...leafA, ...leafB]));
-    return Uint8List.fromList(h.bytes);
-  }
 
   /// Runs the §13b scry-key/scry-open exchange for the current turn, in both
   /// directions at once (this player may simultaneously be scrying the peer
@@ -2979,20 +2913,19 @@ class TurnLoop
     if (outgoingLink != null) {
       myEphemeral = await x25519.newKeyPair();
       final pub = await myEphemeral.extractPublicKey();
-      myKeyFrame = Uint8List.fromList([0x01, ...pub.bytes]);
+      myKeyFrame = SealedExchangeFrames.keyFrame(pub.bytes);
     } else {
-      myKeyFrame = Uint8List.fromList([0x00]);
+      myKeyFrame = SealedExchangeFrames.decline();
     }
     final peerKeyFrame = await session.exchangeScryKey(myKeyFrame);
 
     // ── Send our scryOpen: an AEAD-encrypted target-leaf opening iff the ──
     // ── peer is scrying us. ──
-    Uint8List myOpenFrame = Uint8List.fromList([0x00]);
-    if (incomingLink != null &&
-        peerKeyFrame.length == 33 &&
-        peerKeyFrame[0] == 0x01) {
+    Uint8List myOpenFrame = SealedExchangeFrames.decline();
+    final peerScryKey = SealedExchangeFrames.keyFramePublicKey(peerKeyFrame);
+    if (incomingLink != null && peerScryKey != null) {
       final peerEkPub = SimplePublicKey(
-        peerKeyFrame.sublist(1),
+        peerScryKey,
         type: KeyPairType.x25519,
       );
       final vk = await x25519.newKeyPair();
@@ -3004,13 +2937,23 @@ class TurnLoop
       final derived = await Hkdf(
         hmac: Hmac.sha256(),
         outputLength: 32,
-      ).deriveKey(secretKey: shared, info: _scryHkdfInfo());
+      ).deriveKey(
+        secretKey: shared,
+        info: ScryWire.hkdfInfo(
+          matchId: matchId,
+          turnNumber: state.turnNumber,
+        ),
+      );
 
-      final (targetBytes, remainder) = _splitActionTarget(actionBytes);
-      final leafA = await _leafHash(remainder, saltA);
+      final (targetBytes, remainder) = ActionWire.splitActionTarget(actionBytes);
+      final leafA = await ActionWire.leafHash(remainder, saltA);
       // Opening: targetBytes(4, may be 0) ‖ saltB(16) ‖ leafA(32, the Merkle
       // sibling needed to verify the leaf against the public actionCommit).
-      final opening = Uint8List.fromList([...targetBytes, ...saltB, ...leafA]);
+      final opening = ScryWire.encodeOpening(
+        target: targetBytes,
+        saltB: saltB,
+        leafA: leafA,
+      );
       final cipher = Xchacha20.poly1305Aead();
       final nonce = cipher.newNonce();
       final box = await cipher.encrypt(
@@ -3018,23 +2961,16 @@ class TurnLoop
         secretKey: derived,
         nonce: nonce,
       );
-      myOpenFrame = Uint8List.fromList([
-        0x01,
-        ...vkPub.bytes,
-        ...box.concatenation(),
-      ]);
+      myOpenFrame =
+          SealedExchangeFrames.sealedFrame(vkPub.bytes, box.concatenation());
     }
     final peerOpenFrame = await session.exchangeScryOpen(myOpenFrame);
 
     // ── Decrypt the peer's opening, if we're the scryer and they answered. ──
-    if (myEphemeral == null ||
-        peerOpenFrame.isEmpty ||
-        peerOpenFrame[0] != 0x01) {
-      return null;
-    }
-    if (peerOpenFrame.length < 1 + 32) return null;
+    final peerSealed = SealedExchangeFrames.openSealedFrame(peerOpenFrame);
+    if (myEphemeral == null || peerSealed == null) return null;
     final vkPub = SimplePublicKey(
-      peerOpenFrame.sublist(1, 33),
+      peerSealed.vkPub,
       type: KeyPairType.x25519,
     );
     final shared = await x25519.sharedSecretKey(
@@ -3044,10 +2980,13 @@ class TurnLoop
     final derived = await Hkdf(
       hmac: Hmac.sha256(),
       outputLength: 32,
-    ).deriveKey(secretKey: shared, info: _scryHkdfInfo());
+    ).deriveKey(
+      secretKey: shared,
+      info: ScryWire.hkdfInfo(matchId: matchId, turnNumber: state.turnNumber),
+    );
 
     const nonceLen = 24, macLen = 16;
-    final boxBytes = peerOpenFrame.sublist(33);
+    final boxBytes = peerSealed.box;
     if (boxBytes.length < nonceLen + macLen) return null;
     final box = SecretBox.fromConcatenation(
       boxBytes,
@@ -3063,22 +3002,14 @@ class TurnLoop
       throw StateError('peer scry opening failed AEAD auth — match forfeit');
     }
     // Opening is targetBytes ‖ saltB(16) ‖ leafA(32); targetBytes is 4 bytes
-    // for a Spell/Haymaker cast, 0 bytes (no plaintext target yet) for a
-    // Pass or delayed Mystery cast — see [_splitActionTarget].
-    final hasTarget = opening.length == 4 + 16 + 32;
-    if (!hasTarget && opening.length != 16 + 32) return null;
-    final openedTarget = hasTarget
-        ? Uint8List.fromList(opening.sublist(0, 4))
-        : Uint8List(0);
-    final saltOffset = hasTarget ? 4 : 0;
-    final openedSaltB = Uint8List.fromList(
-      opening.sublist(saltOffset, saltOffset + 16),
-    );
-    final leafA = Uint8List.fromList(
-      opening.sublist(saltOffset + 16, saltOffset + 48),
-    );
+    // for a Spell cast, 0 bytes (no plaintext target yet) for a Pass or
+    // delayed Mystery cast — see [ActionWire.splitActionTarget].
+    final decoded = ScryWire.decodeOpening(opening);
+    if (decoded == null) return null;
+    final (target: openedTarget, saltB: openedSaltB, leafA: leafA) = decoded;
+    final hasTarget = openedTarget.isNotEmpty;
 
-    final leafB = await _leafHash(openedTarget, openedSaltB);
+    final leafB = await ActionWire.leafHash(openedTarget, openedSaltB);
     final recombined = await Sha256().hash(
       Uint8List.fromList([...leafA, ...leafB]),
     );
@@ -3089,17 +3020,8 @@ class TurnLoop
       );
     }
 
-    return hasTarget ? _decodeCoord(openedTarget, 0) : null;
+    return hasTarget ? WireBytes.decodeCoord(openedTarget, 0) : null;
   }
-
-  /// Domain-separates the scry-key HKDF derivation by match and turn, so an
-  /// ephemeral key reused (never should be, but defence-in-depth) across
-  /// matches or turns still derives a distinct symmetric key.
-  Uint8List _scryHkdfInfo() => Uint8List.fromList([
-    ...utf8.encode('RWSCRY1'),
-    ...(matchId ?? const <int>[]),
-    ..._be4(state.turnNumber),
-  ]);
 
   // ── Divination (Water) spell-list reveal ───────────────────────────────────
   //
@@ -3173,22 +3095,22 @@ class TurnLoop
     if (outgoingLink != null) {
       myEphemeral = await x25519.newKeyPair();
       final pub = await myEphemeral.extractPublicKey();
-      myKeyFrame = Uint8List.fromList([0x01, ...pub.bytes]);
+      myKeyFrame = SealedExchangeFrames.keyFrame(pub.bytes);
     } else {
-      myKeyFrame = Uint8List.fromList([0x00]);
+      myKeyFrame = SealedExchangeFrames.decline();
     }
     final peerKeyFrame = await session.exchangeSpellRevealKey(myKeyFrame);
 
-    Uint8List myOpenFrame = Uint8List.fromList([0x00]);
+    Uint8List myOpenFrame = SealedExchangeFrames.decline();
     final hand = localSpellDraw?.hand;
     final commitments = localChapterCommitments;
+    final peerRevealKey = SealedExchangeFrames.keyFramePublicKey(peerKeyFrame);
     if (incomingLink != null &&
         hand != null &&
         commitments != null &&
-        peerKeyFrame.length == 33 &&
-        peerKeyFrame[0] == 0x01) {
+        peerRevealKey != null) {
       final peerEkPub = SimplePublicKey(
-        peerKeyFrame.sublist(1),
+        peerRevealKey,
         type: KeyPairType.x25519,
       );
       final vk = await x25519.newKeyPair();
@@ -3200,7 +3122,13 @@ class TurnLoop
       final derived = await Hkdf(
         hmac: Hmac.sha256(),
         outputLength: 32,
-      ).deriveKey(secretKey: shared, info: _spellRevealHkdfInfo());
+      ).deriveKey(
+        secretKey: shared,
+        info: SpellRevealWire.hkdfInfo(
+          matchId: matchId,
+          turnNumber: state.turnNumber,
+        ),
+      );
 
       // Each hand card carries its own Merkle proof (siblings/directions)
       // against our own committed book — the receiver checks it against
@@ -3212,7 +3140,7 @@ class TurnLoop
       // SpellDraw.hand are index-parallel by construction, so slot i's
       // chapter position is schedule.hand[i] regardless of duplicates.
       final schedule = _drawSchedules[localPlayerId];
-      final entries = <Map<String, dynamic>>[];
+      final entries = <SpellRevealEntry>[];
       for (var i = 0; i < hand.length; i++) {
         final spell = hand[i];
         final position = schedule != null && i < schedule.hand.length
@@ -3221,32 +3149,25 @@ class TurnLoop
         final proof =
             position != null ? BookCommitment.proveMembershipAt(commitments, position) : null;
         if (proof == null) continue; // unreachable: hand spells are chapter members
-        entries.add({
-          'spell': spell.toJson(),
-          'siblings': proof.siblings,
-          'directions': proof.directions,
-        });
+        entries.add((
+          spell: spell,
+          siblings: proof.siblings,
+          directions: proof.directions,
+        ));
       }
-      final payload = Uint8List.fromList(utf8.encode(jsonEncode(entries)));
+      final payload = SpellRevealWire.encodeEntries(entries);
       final cipher = Xchacha20.poly1305Aead();
       final nonce = cipher.newNonce();
       final box = await cipher.encrypt(payload, secretKey: derived, nonce: nonce);
-      myOpenFrame = Uint8List.fromList([
-        0x01,
-        ...vkPub.bytes,
-        ...box.concatenation(),
-      ]);
+      myOpenFrame =
+          SealedExchangeFrames.sealedFrame(vkPub.bytes, box.concatenation());
     }
     final peerOpenFrame = await session.exchangeSpellRevealOpen(myOpenFrame);
 
-    if (myEphemeral == null ||
-        peerOpenFrame.isEmpty ||
-        peerOpenFrame[0] != 0x01) {
-      return null;
-    }
-    if (peerOpenFrame.length < 1 + 32) return null;
+    final peerSealed = SealedExchangeFrames.openSealedFrame(peerOpenFrame);
+    if (myEphemeral == null || peerSealed == null) return null;
     final vkPub = SimplePublicKey(
-      peerOpenFrame.sublist(1, 33),
+      peerSealed.vkPub,
       type: KeyPairType.x25519,
     );
     final shared = await x25519.sharedSecretKey(
@@ -3256,10 +3177,16 @@ class TurnLoop
     final derived = await Hkdf(
       hmac: Hmac.sha256(),
       outputLength: 32,
-    ).deriveKey(secretKey: shared, info: _spellRevealHkdfInfo());
+    ).deriveKey(
+      secretKey: shared,
+      info: SpellRevealWire.hkdfInfo(
+        matchId: matchId,
+        turnNumber: state.turnNumber,
+      ),
+    );
 
     const nonceLen = 24, macLen = 16;
-    final boxBytes = peerOpenFrame.sublist(33);
+    final boxBytes = peerSealed.box;
     if (boxBytes.length < nonceLen + macLen) return null;
     final box = SecretBox.fromConcatenation(
       boxBytes,
@@ -3278,20 +3205,15 @@ class TurnLoop
     List<SpellAsset> revealed;
     List<MembershipProof> revealedProofs;
     try {
-      final decoded = jsonDecode(utf8.decode(payloadBytes)) as List<dynamic>;
       final spells = <SpellAsset>[];
       final proofs = <MembershipProof>[];
-      for (final entryRaw in decoded) {
-        final entry = entryRaw as Map<String, dynamic>;
-        final spell = SpellAsset.fromJson(entry['spell'] as Map<String, dynamic>);
-        final siblings = (entry['siblings'] as List<dynamic>).cast<String>();
-        final directions = (entry['directions'] as List<dynamic>).cast<bool>();
-        spells.add(spell);
+      for (final entry in SpellRevealWire.decodeEntries(payloadBytes)) {
+        spells.add(entry.spell);
         proofs.add(MembershipProof(
           root: '', // filled per-entry below, from peerBookRoot
-          leafHex: spell.commitmentHex,
-          siblings: siblings,
-          directions: directions,
+          leafHex: entry.spell.commitmentHex,
+          siblings: entry.siblings,
+          directions: entry.directions,
         ));
       }
       revealed = spells;
@@ -3345,462 +3267,6 @@ class TurnLoop
     }
 
     return revealed;
-  }
-
-  /// Domain-separates the spell-reveal HKDF derivation by match and turn —
-  /// mirrors [_scryHkdfInfo] with a distinct tag so the two exchanges never
-  /// derive the same symmetric key even if somehow run with identical
-  /// ephemeral keys.
-  Uint8List _spellRevealHkdfInfo() => Uint8List.fromList([
-    ...utf8.encode('RWSPELLREV1'),
-    ...(matchId ?? const <int>[]),
-    ..._be4(state.turnNumber),
-  ]);
-
-  // ── Action wire encoding / decoding ──────────────────────────────────────
-
-  /// Encode a [TurnAction] to bytes for commitment hashing and wire transmission.
-  ///
-  /// When [localChapterCommitments] is set on this [TurnLoop], spell actions
-  /// include a trailing proof tail:
-  ///   [proof_len:4 BE][proof_bytes:N][merkle_depth:1][merkle_path:depth*(32+1)]
-  /// The receiver must parse this tail when [withProof] is true in [_decodeAction].
-  /// Appends the two summon fields: `[isSummon:1][personalityIndex:1]`.
-  ///
-  /// Without these a summon cast arrived at the opponent as an ordinary
-  /// incantation — the caster spawned a creature, the verifier resolved
-  /// formula effects, and the match forfeited on the turn's state hash. See
-  /// M4_findings M4.16; peer_summon_replication_test.dart is the regression.
-  ///
-  /// The personality travels as a [SummonPersonality] **index**, not its name:
-  /// one byte instead of a length-prefixed string, and it cannot carry an
-  /// arbitrary value. The cost is that **the enum's declaration order is now
-  /// wire-visible — never reorder or remove a case, only append.** Same rule
-  /// the element order already lives under (CLAUDE.md).
-  static void _appendSummonBytes(BytesBuilder buf, SpellAsset spell) {
-    buf.addByte(spell.isSummon ? 1 : 0);
-    final idx = SummonPersonality.values
-        .indexWhere((p) => p.name == spell.summonPersonality);
-    buf.addByte(idx < 0 ? SummonPersonality.aggressive.index : idx);
-  }
-
-  /// Reads what [_appendSummonBytes] wrote, tolerating a truncated buffer the
-  /// same way every other field here does.
-  static ({bool isSummon, String personality}) _readSummonBytes(
-    Uint8List bytes,
-    int pos,
-  ) {
-    final isSummon = pos < bytes.length && bytes[pos] == 1;
-    final rawIdx = pos + 1 < bytes.length ? bytes[pos + 1] : 0;
-    // An out-of-range index means a peer built by a version that appended a
-    // personality this build does not have. Falling back keeps both devices
-    // agreeing on SOMETHING rather than throwing, and the protocol-version
-    // gate is what actually prevents the mismatch reaching here.
-    final personality = rawIdx < SummonPersonality.values.length
-        ? SummonPersonality.values[rawIdx].name
-        : SummonPersonality.aggressive.name;
-    return (isSummon: isSummon, personality: personality);
-  }
-
-  Uint8List _encodeAction(TurnAction action) {
-    final buf = BytesBuilder();
-    switch (action) {
-      case PassAction():
-        buf.addByte(0x00);
-
-      case SpellCastAction(
-        :final spell,
-        :final targetHex,
-        :final isPotent,
-        :final isVelocity,
-        :final isEfficiency,
-        :final recall,
-        :final conveyorDirection,
-        :final handIndex,
-      ):
-        buf.addByte(0x01);
-        buf.add(_hexToBytes(spell.commitmentHex));
-        buf.add(_be2(spell.t));
-        buf.add(_encodeCoord(targetHex));
-        final formulaStr = spell.formula.join(',');
-        final formulaBytes = utf8.encode(formulaStr);
-        buf.add(_be2(formulaBytes.length));
-        buf.add(formulaBytes);
-        final nameBytes = utf8.encode(spell.name);
-        buf.add(_be2(nameBytes.length));
-        buf.add(nameBytes);
-        buf.addByte(isPotent ? 1 : 0);
-        buf.addByte(isVelocity ? 1 : 0);
-        buf.addByte(isEfficiency ? 1 : 0);
-        buf.addByte(conveyorDirection != null ? 1 : 0);
-        if (conveyorDirection != null) buf.add(_encodeCoord(conveyorDirection));
-        _appendSummonBytes(buf, spell);
-        _appendSpellProofTail(buf, spell, handIndex);
-        if (isVocalComponents) _appendSorcererBytes(buf, recall);
-
-      case DashAction():
-        buf.addByte(0x04);
-
-      case MeditateAction():
-        buf.addByte(0x05);
-
-      case MysterySpellCastAction(
-        :final spell,
-        :final mysteryCommitment,
-        :final immediateTarget,
-        :final immediateNonce,
-        :final isPotent,
-        :final isVelocity,
-        :final recall,
-        :final handIndex,
-      ):
-        buf.addByte(0x03);
-        buf.add(_hexToBytes(spell.commitmentHex));
-        buf.add(_be2(spell.t));
-        final formulaStr = spell.formula.join(',');
-        final formulaBytes = utf8.encode(formulaStr);
-        buf.add(_be2(formulaBytes.length));
-        buf.add(formulaBytes);
-        final nameBytes3 = utf8.encode(spell.name);
-        buf.add(_be2(nameBytes3.length));
-        buf.add(nameBytes3);
-        buf.add(mysteryCommitment);
-        final isImmediate = immediateTarget != null && immediateNonce != null;
-        buf.addByte(isImmediate ? 1 : 0);
-        if (isImmediate) {
-          buf.add(_encodeCoord(immediateTarget));
-          buf.add(immediateNonce);
-        }
-        buf.addByte(isPotent ? 1 : 0);
-        buf.addByte(isVelocity ? 1 : 0);
-        _appendSummonBytes(buf, spell);
-        _appendSpellProofTail(buf, spell, handIndex);
-        if (isVocalComponents) _appendSorcererBytes(buf, recall);
-    }
-    return buf.toBytes();
-  }
-
-  /// Appends [proof_len:4][proof_bytes:N][merkle_depth:1][path:depth*(32+1)] to
-  /// [buf] for the given [spell], but only when [localChapterCommitments] is set.
-  ///
-  /// [handIndex], when known, proves the caster's OWN hand slot rather than
-  /// searching the chapter for a matching commitment — the duplicate-safe
-  /// form (docs/BASIC_SPELLS_PLAN.md §7). Null falls back to the commitment
-  /// search, correct only when the chapter holds no duplicate of [spell].
-  void _appendSpellProofTail(BytesBuilder buf, SpellAsset spell, int? handIndex) {
-    final commitments = localChapterCommitments;
-    if (commitments == null || spell.proofBytes.isEmpty) return;
-    buf.add(_be4(spell.proofBytes.length));
-    buf.add(spell.proofBytes);
-    final position = _localCastPosition(spell, handIndex);
-    final proof = position != null
-        ? BookCommitment.proveMembershipAt(commitments, position)
-        : null;
-    if (proof == null || proof.siblings.isEmpty) {
-      buf.addByte(0); // depth 0: leaf is the only node (single-spell chapter)
-      return;
-    }
-    buf.addByte(proof.siblings.length);
-    for (var i = 0; i < proof.siblings.length; i++) {
-      buf.add(_hexToBytes(proof.siblings[i]));
-      buf.addByte(proof.directions[i] ? 1 : 0);
-    }
-  }
-
-  /// Appends the sorcerer recall suffix to [buf] for spell action payloads.
-  ///
-  ///   [recall bytes: 2 + spokenCount][suffixLen: 1]
-  ///
-  /// Variable length, unlike the fixed 3-byte VocalScore suffix it replaces —
-  /// a recital is one opener plus up to 48 element words. The TRAILING length
-  /// byte is what keeps the decoder's read-from-the-end structure working:
-  /// the payload is parsed front-to-back for the spell and proof tail, so the
-  /// suffix can only be located by measuring back from the end, which a
-  /// variable-length blob cannot be without first knowing its size.
-  ///
-  /// Only slot INDICES cross the wire, never the words filling them
-  /// (VOCAL_RECALL_PLAN.md §8.10.1) — a player's vocabulary never leaves
-  /// their device.
-  void _appendSorcererBytes(BytesBuilder buf, IncantationRecall? recall) {
-    final bytes = (recall ?? IncantationRecall.silent).toWireBytes();
-    buf.add(bytes);
-    buf.addByte(bytes.length);
-  }
-
-  /// Reads the trailing recall suffix written by [_appendSorcererBytes].
-  ///
-  /// Returns null in wizard mode. A malformed suffix decodes to "no
-  /// utterance" rather than throwing: every unreadable position scores as
-  /// WRONG, so a corrupt recall can only cost the caster mana — there is
-  /// nothing here worth forfeiting a match over.
-  static IncantationRecall? _decodeSorcererSuffix(
-      Uint8List bytes, bool isVocalComponents) {
-    if (!isVocalComponents || bytes.isEmpty) return null;
-    final suffixLen = bytes[bytes.length - 1];
-    final start = bytes.length - 1 - suffixLen;
-    if (suffixLen < 2 || start < 0) return IncantationRecall.silent;
-    return IncantationRecall.fromWireBytes(bytes, start).recall;
-  }
-
-  /// Decode a [TurnAction] from [bytes] and optionally parse the trailing proof
-  /// tail (present when the peer has [localChapterCommitments] set).
-  ///
-  /// Returns `({TurnAction action, MembershipProof? merkleProof})`. [merkleProof]
-  /// is non-null only when [withProof] is true and a valid tail was found. The
-  /// [root] field of the returned proof is left empty — [_verifyPeerSpellCast]
-  /// fills it from [peerBookRoot] before calling [verify].
-  static ({TurnAction action, MembershipProof? merkleProof}) _decodeAction(
-    Uint8List bytes, {
-    bool withProof = false,
-    bool isVocalComponents = false,
-  }) {
-    // BUG FIX (found via SPELL_DRAW_WIRING_PLAN.md §10 item 4's test — a
-    // pre-existing bug, dormant because every prior test used a single-spell
-    // chapter, where BookCommitment.proveMembership has no siblings and
-    // _appendSpellProofTail writes depth=0, never exercising this path):
-    // [pos] here is ALREADY past the wire's [proof_len:4][proof_bytes:N]
-    // segment — both call sites below decode that segment themselves first
-    // (into decodedProofBytes/decodedProofBytes3) and pass the ADVANCED
-    // [pos]. This function used to re-read another [proof_len:4] from that
-    // already-advanced position and skip that many (garbage) bytes, which
-    // for any REAL multi-spell chapter (nonzero merkle depth) blew past
-    // [b.length] and made every merkleProof silently null — book-membership
-    // and hand-membership (§6) checks were both unconditionally skipped
-    // for any chapter with more than one spell. The tail format is
-    // [proof_len:4][proof_bytes:N][merkle_depth:1][path...] — this function
-    // only ever needs to read from merkle_depth onward.
-    MembershipProof? parseProofTail(
-      Uint8List b,
-      int pos,
-      String commitmentHex,
-    ) {
-      if (!withProof || pos >= b.length) return null;
-      final depth = b[pos++];
-      final siblings = <String>[];
-      final directions = <bool>[];
-      for (var d = 0; d < depth; d++) {
-        if (pos + 33 > b.length) return null;
-        final sib = b.sublist(pos, pos + 32);
-        pos += 32;
-        directions.add(b[pos++] == 1);
-        siblings.add(
-          '0x${sib.map((x) => x.toRadixString(16).padLeft(2, '0')).join()}',
-        );
-      }
-      if (siblings.length != depth) return null;
-      return MembershipProof(
-        root: '', // filled by _verifyPeerSpellCast
-        leafHex: commitmentHex,
-        siblings: siblings,
-        directions: directions,
-      );
-    }
-
-    if (bytes.isEmpty) return (action: PassAction(), merkleProof: null);
-    final type = bytes[0];
-    switch (type) {
-      case 0x00:
-        return (action: PassAction(), merkleProof: null);
-
-      case 0x01:
-        if (bytes.length < 1 + 32 + 2 + 4 + 2 + 2 + 3) {
-          return (action: PassAction(), merkleProof: null);
-        }
-        int pos = 1;
-        final commitBytes = bytes.sublist(pos, pos + 32);
-        pos += 32;
-        final t = _readBe2(bytes, pos);
-        pos += 2;
-        final q = _readInt16(bytes, pos);
-        pos += 2;
-        final r = _readInt16(bytes, pos);
-        pos += 2;
-        final formulaLen = _readBe2(bytes, pos);
-        pos += 2;
-        final formulaStr = pos + formulaLen <= bytes.length
-            ? utf8.decode(bytes.sublist(pos, pos + formulaLen))
-            : '';
-        pos += formulaLen;
-        final formula = formulaStr.isEmpty ? <String>[] : formulaStr.split(',');
-        final nameLen = pos + 2 <= bytes.length ? _readBe2(bytes, pos) : 0;
-        pos += 2;
-        final name = pos + nameLen <= bytes.length
-            ? utf8.decode(bytes.sublist(pos, pos + nameLen))
-            : '';
-        pos += nameLen;
-        final commitmentHex =
-            '0x${commitBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join()}';
-
-        final isPotent01 = pos < bytes.length && bytes[pos++] == 1;
-        final isVelocity01 = pos < bytes.length && bytes[pos++] == 1;
-        final isEfficiency01 = pos < bytes.length && bytes[pos++] == 1;
-
-        HexCoord? conveyorDirection01;
-        if (pos < bytes.length) {
-          final hasDir = bytes[pos++] == 1;
-          if (hasDir && pos + 4 <= bytes.length) {
-            conveyorDirection01 = _decodeCoord(bytes, pos);
-            pos += 4;
-          }
-        }
-
-        final summon01 = _readSummonBytes(bytes, pos);
-        pos += 2;
-
-        // Parse proof bytes from the tail (needed for verification).
-        Uint8List decodedProofBytes = Uint8List(0);
-        if (withProof && pos + 4 <= bytes.length) {
-          final proofLen = _readBe4(bytes, pos);
-          pos += 4;
-          if (pos + proofLen <= bytes.length) {
-            decodedProofBytes = bytes.sublist(pos, pos + proofLen);
-          }
-          pos += proofLen;
-        }
-
-        final spell = SpellAsset(
-          id: '',
-          createdAt: DateTime.fromMillisecondsSinceEpoch(0),
-          tier: 24,
-          t: t,
-          ownerPubkeyHex: '',
-          manaCost: 0,
-          segmentCount: 0,
-          dotCount: 0,
-          initialGrid: const [],
-          proofBytes: decodedProofBytes,
-          name: name,
-          commitmentHex: commitmentHex,
-          spellHashHex: '',
-          formula: formula,
-          // M4.16: without these the peer resolved a summon as an ordinary
-          // incantation and the match desynced on the spot.
-          isSummon: summon01.isSummon,
-          summonPersonality: summon01.personality,
-        );
-        final merkle = parseProofTail(bytes, pos, commitmentHex);
-        // [KEY STRUCTURAL CONSTRAINT — no local recalculation]
-        // What the caster SAID is read verbatim from the trailing suffix. It
-        // is NEVER recomputed from local audio: _decodeAction is a static
-        // method holding no scorer reference, making local recalculation
-        // structurally impossible, and the peer's microphone is unavailable to
-        // this device anyway.
-        //
-        // What IS recomputed locally is the EXPECTED sequence, derived from the
-        // certified trajectory (see DeterministicResolution.certifiedManaCost).
-        // That asymmetry is the
-        // whole of the recall model: the claim is the caster's, the check is
-        // ours. Pronunciation quality could never be checked this way, which is
-        // why it was replaced.
-        final recall01 = _decodeSorcererSuffix(bytes, isVocalComponents);
-        return (
-          action: SpellCastAction(
-            spell: spell,
-            targetHex: HexCoord(q, r),
-            isPotent: isPotent01,
-            isVelocity: isVelocity01,
-            isEfficiency: isEfficiency01,
-            recall: recall01,
-            conveyorDirection: conveyorDirection01,
-          ),
-          merkleProof: merkle,
-        );
-
-      case 0x04:
-        return (action: DashAction(), merkleProof: null);
-
-      case 0x05:
-        return (action: MeditateAction(), merkleProof: null);
-
-      case 0x03:
-        if (bytes.length < 1 + 32 + 2 + 2 + 2)
-          return (action: PassAction(), merkleProof: null);
-        int pos3 = 1;
-        final spellCommit = bytes.sublist(pos3, pos3 + 32);
-        pos3 += 32;
-        final t3 = _readBe2(bytes, pos3);
-        pos3 += 2;
-        final formulaLen3 = _readBe2(bytes, pos3);
-        pos3 += 2;
-        final formulaStr3 = pos3 + formulaLen3 <= bytes.length
-            ? utf8.decode(bytes.sublist(pos3, pos3 + formulaLen3))
-            : '';
-        pos3 += formulaLen3;
-        final nameLen3 = pos3 + 2 <= bytes.length ? _readBe2(bytes, pos3) : 0;
-        pos3 += 2;
-        final name3 = pos3 + nameLen3 <= bytes.length
-            ? utf8.decode(bytes.sublist(pos3, pos3 + nameLen3))
-            : '';
-        pos3 += nameLen3;
-        if (pos3 + 32 + 1 > bytes.length)
-          return (action: PassAction(), merkleProof: null);
-        final mysteryCommit = bytes.sublist(pos3, pos3 + 32);
-        pos3 += 32;
-        final hasImmediate = bytes[pos3++] == 1;
-        HexCoord? immTarget;
-        Uint8List? immNonce;
-        if (hasImmediate && pos3 + 4 + 16 <= bytes.length) {
-          immTarget = _decodeCoord(bytes, pos3);
-          pos3 += 4;
-          immNonce = bytes.sublist(pos3, pos3 + 16);
-          pos3 += 16;
-        }
-        final isPotent3 = pos3 < bytes.length && bytes[pos3++] == 1;
-        final isVelocity3 = pos3 < bytes.length && bytes[pos3++] == 1;
-        final summon3 = _readSummonBytes(bytes, pos3);
-        pos3 += 2;
-
-        Uint8List decodedProofBytes3 = Uint8List(0);
-        final commitmentHex3 =
-            '0x${spellCommit.map((b) => b.toRadixString(16).padLeft(2, '0')).join()}';
-        if (withProof && pos3 + 4 <= bytes.length) {
-          final proofLen = _readBe4(bytes, pos3);
-          pos3 += 4;
-          if (pos3 + proofLen <= bytes.length) {
-            decodedProofBytes3 = bytes.sublist(pos3, pos3 + proofLen);
-          }
-          pos3 += proofLen;
-        }
-
-        final spell3 = SpellAsset(
-          id: '',
-          createdAt: DateTime.fromMillisecondsSinceEpoch(0),
-          tier: 24,
-          t: t3,
-          ownerPubkeyHex: '',
-          manaCost: 0,
-          segmentCount: 0,
-          dotCount: 0,
-          initialGrid: const [],
-          proofBytes: decodedProofBytes3,
-          name: name3,
-          commitmentHex: commitmentHex3,
-          spellHashHex: '',
-          formula: formulaStr3.isEmpty ? [] : formulaStr3.split(','),
-          // M4.16, same as the immediate-cast branch: a delayed summon has to
-          // survive the wire too, or it desyncs when it eventually fires.
-          isSummon: summon3.isSummon,
-          summonPersonality: summon3.personality,
-        );
-        final merkle3 = parseProofTail(bytes, pos3, commitmentHex3);
-        // Same no-local-recalculation constraint as case 0x01 above.
-        final recall03 = _decodeSorcererSuffix(bytes, isVocalComponents);
-        return (
-          action: MysterySpellCastAction(
-            spell: spell3,
-            mysteryCommitment: mysteryCommit,
-            immediateTarget: immTarget,
-            immediateNonce: immNonce,
-            isPotent: isPotent3,
-            isVelocity: isVelocity3,
-            recall: recall03,
-          ),
-          merkleProof: merkle3,
-        );
-
-      default:
-        return (action: PassAction(), merkleProof: null);
-    }
   }
 
   /// The protocol reaction to [PeerCastVerifier]'s verdict on a peer's declared
@@ -4080,7 +3546,7 @@ class TurnLoop
         ? null
         : await freeMoveDirectionPicker(localGrant);
     final nonce = _commitNonce(_kRevealNonceBytes);
-    final bytes = _encodePath(localPath ?? const []);
+    final bytes = MoveWire.encodePath(localPath ?? const []);
     final commit = await Sha256()
         .hash(Uint8List.fromList([...bytes, ...nonce]))
         .then((h) => Uint8List.fromList(h.bytes));
@@ -4089,7 +3555,7 @@ class TurnLoop
     final myReveal = Uint8List.fromList([...nonce, ...bytes]);
     final peerReveal = await session.exchangeFreeMoveReveal(myReveal);
     await _verifyReveal(peerReveal, peerCommit, 'freeMove');
-    final peerPath = _decodePath(peerReveal, _kRevealNonceBytes);
+    final peerPath = MoveWire.decodePath(peerReveal, _kRevealNonceBytes);
 
     // Applied in ascending canonical owner_pubkey byte order, NOT local-first.
     // This used to run the local wizard first and the peer second, which is a
@@ -4149,130 +3615,6 @@ class TurnLoop
   // mana chain: they had no other caller on this side of the seam. See
   // DeterministicResolution's "Mana cost" section.
 
-  // ── Wire helpers ──────────────────────────────────────────────────────────
-
-  /// Encode a move path as [count:1][q:2][r:2]… (4 bytes per coord).
-  static Uint8List _encodePath(List<HexCoord> path) {
-    final buf = BytesBuilder();
-    buf.addByte(path.length.clamp(0, 255));
-    for (final h in path) {
-      buf.add(_encodeCoord(h));
-    }
-    return buf.toBytes();
-  }
-
-  /// Decode a move path from [data] starting at [offset].
-  /// Format: [count:1][q:2][r:2]… Returns empty list on underflow.
-  static List<HexCoord> _decodePath(Uint8List data, int offset) {
-    if (offset >= data.length) return const [];
-    final count = data[offset];
-    final path = <HexCoord>[];
-    var pos = offset + 1;
-    for (var i = 0; i < count; i++) {
-      if (pos + 4 > data.length) break;
-      path.add(_decodeCoord(data, pos));
-      pos += 4;
-    }
-    return path;
-  }
-
-  /// Encode the movement-phase payload: [isDashing:1][meditateInMove:1]
-  /// followed by [_encodePath]'s bytes. See this file's header comment for
-  /// why Dash/Meditate flags travel with movement rather than the action.
-  static Uint8List _encodeMovePayload({
-    required bool isDashing,
-    required bool meditateInMove,
-    required List<HexCoord> path,
-  }) {
-    final buf = BytesBuilder();
-    buf.addByte(isDashing ? 1 : 0);
-    buf.addByte(meditateInMove ? 1 : 0);
-    buf.add(_encodePath(path));
-    return buf.toBytes();
-  }
-
-  /// Decode a movement-phase payload from [data] starting at [offset].
-  /// When [meditateInMove] is true, [path] is forced empty regardless of
-  /// what was transmitted (defence-in-depth against a modified peer).
-  static ({bool isDashing, bool meditateInMove, List<HexCoord> path})
-  _decodeMovePayload(Uint8List data, int offset) {
-    if (offset + 2 > data.length) {
-      return (
-        isDashing: false,
-        meditateInMove: false,
-        path: const <HexCoord>[],
-      );
-    }
-    final isDashing = data[offset] == 1;
-    final meditateInMove = data[offset + 1] == 1;
-    final path = meditateInMove
-        ? const <HexCoord>[]
-        : _decodePath(data, offset + 2);
-    return (isDashing: isDashing, meditateInMove: meditateInMove, path: path);
-  }
-
-  /// Encode an optional target tile — [0x00] = none, [0x01][q:2][r:2] = that
-  /// tile. The resolution-phase melee choice; the post-resolution free-move
-  /// choice used to share this shape but now carries a whole path (a Boost run
-  /// can be several tiles long) and rides [_encodePath] instead, where an
-  /// empty path is the "stand fast" encoding.
-  static Uint8List _encodeOptionalTarget(HexCoord? target) {
-    if (target == null) return Uint8List.fromList([0x00]);
-    final buf = BytesBuilder();
-    buf.addByte(0x01);
-    buf.add(_encodeCoord(target));
-    return buf.toBytes();
-  }
-
-  /// Decode an optional target tile from [data] starting at [offset].
-  static HexCoord? _decodeOptionalTarget(Uint8List data, int offset) {
-    if (offset >= data.length || data[offset] != 0x01) return null;
-    if (offset + 5 > data.length) return null;
-    return _decodeCoord(data, offset + 1);
-  }
-
-  static Uint8List _encodeCoord(HexCoord h) => Uint8List(4)
-    ..[0] = (h.q >> 8) & 0xFF
-    ..[1] = h.q & 0xFF
-    ..[2] = (h.r >> 8) & 0xFF
-    ..[3] = h.r & 0xFF;
-
-  static HexCoord _decodeCoord(Uint8List data, int offset) =>
-      HexCoord(_readInt16(data, offset), _readInt16(data, offset + 2));
-
-  static int _readInt16(Uint8List data, int offset) {
-    final u = (data[offset] << 8) | data[offset + 1];
-    return u >= 0x8000 ? u - 0x10000 : u;
-  }
-
-  static int _readBe2(Uint8List data, int offset) =>
-      (data[offset] << 8) | data[offset + 1];
-
-  static int _readBe4(Uint8List data, int offset) =>
-      (data[offset] << 24) |
-      (data[offset + 1] << 16) |
-      (data[offset + 2] << 8) |
-      data[offset + 3];
-
-  static Uint8List _be2(int v) => Uint8List(2)
-    ..[0] = (v >> 8) & 0xFF
-    ..[1] = v & 0xFF;
-
-  static Uint8List _be4(int v) => Uint8List(4)
-    ..[0] = (v >> 24) & 0xFF
-    ..[1] = (v >> 16) & 0xFF
-    ..[2] = (v >> 8) & 0xFF
-    ..[3] = v & 0xFF;
-
-  static Uint8List _hexToBytes(String hex) {
-    final s = hex.startsWith('0x') ? hex.substring(2) : hex;
-    final result = Uint8List(s.length ~/ 2);
-    for (var i = 0; i < result.length; i++) {
-      result[i] = int.parse(s.substring(i * 2, i * 2 + 2), radix: 16);
-    }
-    return result;
-  }
-
   static bool _bytesEqual(Uint8List a, Uint8List b) {
     if (a.length != b.length) return false;
     var diff = 0;
@@ -4282,6 +3624,4 @@ class TurnLoop
     return diff == 0;
   }
 
-  static String _hex(Uint8List bytes) =>
-      bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 }

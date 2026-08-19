@@ -9,12 +9,15 @@
 // dummyAutoCast exception: when [dummyAutoCast] is set (both Solo Practice
 // and the Spell Test Lab do), the "peer" (target dummy) casts
 // [dummyCastFormula] at [dummyCastTarget] every turn instead of passing.
-// This hand-encodes TurnLoop's [0x01] spell-action wire format (see the wire
-// spec comment atop turn_loop.dart) because TurnLoop._encodeAction is
-// private to that file — keep the two in sync if the wire format ever
-// changes. No proof tail or sorcerer suffix is emitted: solo mode's TurnLoop
-// never verifies peer proofs (verifyProof is null) and neither solo surface
-// enables sorcerer mode.
+// This hand-encodes a DELIBERATELY SHORT prefix of the [0x01] spell-action
+// wire format (spec: ActionWire in battle_wire_codec.dart): type, commitment,
+// t, target, formula — and then stops. Every later field (name, enhancement
+// flags, conveyor, the two summon bytes, the proof tail, the recall suffix)
+// is absent, which the decoder reads as its default. That is why this cannot
+// simply call ActionWire.encodeAction: doing so would emit a longer, DIFFERENT
+// payload. Solo mode gets away with the short form because its TurnLoop never
+// verifies peer proofs (verifyProof is null) and neither solo surface enables
+// sorcerer mode. Keep it in sync with ActionWire's head fields.
 //
 // The scrying pattern (§13b) is the one exchange where the dummy's fictional
 // answer must be a *real* cryptographic opening, not a constant stub: if the
@@ -237,9 +240,10 @@ class SoloBattleSession implements BattleTurnSession {
     return Uint8List.fromList(h.bytes);
   }
 
-  /// Duplicates TurnLoop._splitActionTarget (private to that file) — keep in
-  /// sync if the split-leaf scheme ever changes. [_splitActionCommit] below
-  /// reimplements this inline for historical reasons; both must agree.
+  /// A second copy of ActionWire.splitActionTarget
+  /// (battle_wire_codec.dart) — keep in sync if the split-leaf scheme ever
+  /// changes. [_splitActionCommit] below reimplements this inline for
+  /// historical reasons; both must agree.
   static (Uint8List target, Uint8List remainder) _splitActionTarget(
       Uint8List actionBytes) {
     if (actionBytes.isEmpty) return (Uint8List(0), actionBytes);
@@ -258,8 +262,10 @@ class SoloBattleSession implements BattleTurnSession {
     return (Uint8List.fromList(target), remainder);
   }
 
-  /// Encodes TurnLoop's [0x01] spell-cast wire format for the scripted dummy
-  /// cast: [0x01][commit:32][t:2][q:2][r:2][formula_len:2][formula_utf8:N].
+  /// Encodes the head of the [0x01] spell-cast wire format for the scripted
+  /// dummy cast: [0x01][commit:32][t:2][q:2][r:2][formula_len:2]
+  /// [formula_utf8:N], and nothing after it. See this file's header for why
+  /// the truncation is deliberate rather than a drift from ActionWire.
   static Uint8List _encodeDummySpellCast(HexCoord target, List<String> formula) {
     final buf = BytesBuilder();
     buf.addByte(0x01);
@@ -282,8 +288,11 @@ class SoloBattleSession implements BattleTurnSession {
     ..[2] = (h.r >> 8) & 0xFF
     ..[3] = h.r & 0xFF;
 
-  /// Duplicates TurnLoop._splitActionCommit (private to that file) — keep in
-  /// sync if the split-leaf scheme ever changes.
+  /// A second copy of ActionWire.splitActionCommit
+  /// (battle_wire_codec.dart) — keep in sync if the split-leaf scheme ever
+  /// changes. Note it carries an extra `case 0x02` the canonical one does not;
+  /// no action type 0x02 exists, so the branch is unreachable and the two
+  /// agree on every input the dummy can produce.
   static Future<Uint8List> _splitActionCommit(
       Uint8List actionBytes, Uint8List saltA, Uint8List saltB) async {
     int? targetOffset;
