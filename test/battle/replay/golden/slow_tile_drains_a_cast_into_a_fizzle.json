@@ -1,0 +1,138 @@
+{
+  "name": "slow_tile_drains_a_cast_into_a_fizzle",
+  "description": "A hasted caster walks through a Slow tile on the turn they cast, and the 10 mana it drains takes them below their own spell price. Pins M4.10b's rule that a committed cast is priced at Phase 5 from live state, not reserved at Phase 1 — the transcript that used to desync.",
+  "turns": [
+    {
+      "turn": 1,
+      "note": "player_a hastes itself; player_b lays a Slow tile beside it",
+      "stateHash": "cd17ddde14c9b3592c8aac707b10033687e9bcc44cf29d33624c0f6740cd503d",
+      "events": {
+        "castEvents": 2,
+        "resolvedSpells": 2,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 1,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 25,
+            "chain": "air",
+            "position": "0,0",
+            "statuses": 1
+          },
+          "player_b": {
+            "hp": 24,
+            "mana": 25,
+            "chain": "water",
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 1,
+        "terrainBarriers": 0,
+        "terrainHp": 1,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 2,
+      "note": "player_a walks through the mire and casts — the drain fizzles it",
+      "stateHash": "50e03f00f8d90818bf98bf3604c0728f3adabaa1624fcd5b350ed2ae950b478a",
+      "events": {
+        "castEvents": 0,
+        "resolvedSpells": 0,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 2,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 15,
+            "chain": null,
+            "position": "0,1",
+            "statuses": 1
+          },
+          "player_b": {
+            "hp": 24,
+            "mana": 25,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 1,
+        "terrainBarriers": 0,
+        "terrainHp": 1,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 3,
+      "note": "quiet turn — a fizzled cast must leave nothing behind either",
+      "stateHash": "f880ed683c77b310cef81b047bb47261286bd234122d6a959dc8460d3813b9c0",
+      "events": {
+        "castEvents": 0,
+        "resolvedSpells": 0,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 3,
+        "avatars": {
+          "player_a": {
+            "hp": 24,
+            "mana": 15,
+            "chain": null,
+            "position": "0,1",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 24,
+            "mana": 25,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 1,
+        "terrainBarriers": 0,
+        "terrainHp": 1,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    }
+  ]
+}

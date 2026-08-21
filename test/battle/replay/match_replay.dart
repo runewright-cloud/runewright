@@ -113,6 +113,7 @@ class MatchScript {
     this.startBattle = false,
     this.localCharms = const [],
     this.peerCharms = const [],
+    this.startingMana = kStartMana,
   });
 
   /// Stable identifier; also the golden file's basename.
@@ -162,6 +163,11 @@ class MatchScript {
   /// whose certified element sequence OPENS with the charm's trajectory.
   final List<List<BorderZone>> localCharms;
   final List<List<BorderZone>> peerCharms;
+
+  /// Opening mana for both wizards (see [makeDuelState]). Only lowered by
+  /// scripts about affordability; the default keeps every other golden
+  /// byte-identical.
+  final int startingMana;
 }
 
 /// One turn's recorded outcome.
@@ -408,11 +414,13 @@ Future<MatchTranscript> runMatchScript(MatchScript script) async {
     bookmarks: script.bookmarks,
     localCharms: script.localCharms,
     peerCharms: script.peerCharms,
+    startingMana: script.startingMana,
   );
   final peerState = makeDuelState(
     bookmarks: script.bookmarks,
     localCharms: script.localCharms,
     peerCharms: script.peerCharms,
+    startingMana: script.startingMana,
   );
 
   // Chapters must be sorted by commitmentHex before anything derives positions

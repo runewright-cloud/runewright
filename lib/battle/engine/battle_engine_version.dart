@@ -78,6 +78,40 @@
 // mid-match on a state hash instead of being refused at the handshake, which is
 // the failure mode v1 was introduced to abolish.
 //
+// v3 (2026-08-21, M4.10b) — spell mana settlement moved from asymmetric
+// local-Phase-1 / peer-Phase-5 timing to **canonical Phase-5 settlement**.
+//
+// Under v1/v2 each device charged its OWN player's committed cast at Phase 1,
+// the instant the action commit crossed the wire, and the PEER's at Phase 5,
+// once the reveal was verified. Neither site could move on its own, so for any
+// single cast one device deducted four phases earlier than the other, and
+// everything Phases 2–4b did to that caster — a SlowTile draining their mana, a
+// Water haymaker stripping the `nextSpellCostDouble` that priced the cast, a
+// counter-charm proc destroying a mana gem and clamping their pool, a punch
+// that a caster already dead from shortfall HP could not receive — landed on
+// opposite sides of the deduction on the two devices.
+//
+// v3 charges nothing at Phase 1. Both players' committed casts are priced and
+// paid for at the start of Phase 5, from the live replicated state, in
+// ascending playerId order, before `_applyMoveMeditations` and before any other
+// Phase-5 resource mutation (`TurnLoop._settleCommittedCasts`).
+//
+// **This is the case the gate exists for, and the argument is worth being
+// precise about, because "we fixed a desync" is not by itself a reason to
+// bump.** The test is whether two builds could compute a different canonical
+// `BattleState` from an identical transcript, and here they demonstrably can:
+// the same messages, the same proofs, the same VK, and a v2 build resolves a
+// SlowTile-drained marginal cast while a v3 build fizzles it. What makes this
+// unusual is that the v2 canonical state for such a transcript was never
+// well-defined in the first place — v2's two peers already disagreed, which was
+// the bug. v3 does not so much change the rule as supply one. The gate still
+// has to fire: without it a v2/v3 pair would desync mid-match on a state hash
+// instead of being refused at the handshake, which is the failure mode v1 was
+// introduced to abolish.
+//
+// No proof semantics participate and no framing changes, so `kRulesetVersion`
+// stays 3 and `kBattleProtocolVersion` stays 5. See docs/M4_findings.md M4.10b.
+//
 // There is deliberately no v0 build. Nothing has shipped, so pretending an
 // earlier epoch was ever negotiated would be fiction; 0 is reserved as the
 // sentinel for a peer that predates this field entirely and therefore declares
@@ -91,7 +125,7 @@
 /// [DeviceCapabilities.battleEngineVersion] both default to it rather than
 /// restating a literal, exactly as `MatchConfig.rulesetVersion` derives from
 /// `kRulesetVersion`. See this file's header for what forces a bump.
-const int kBattleEngineVersion = 2;
+const int kBattleEngineVersion = 3;
 
 /// What a peer that predates the engine-version gate implicitly declares: it
 /// omits the field, and an omitted field cannot be read as agreement.

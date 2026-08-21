@@ -237,6 +237,26 @@ enum TurnPhase {
   winCheck,
 }
 
+// ── Phase-5 cast settlement (M4.10b) ──────────────────────────────────────────
+
+/// One committed cast, waiting to be priced and paid for at Phase 5.
+///
+/// [settle] prices the cast against the state as it stands when it is called
+/// and applies everything that pricing implies — the mana, a consumed
+/// chainSurcharge or nextSpellCostDouble, the HP a shortfall converts to, or
+/// the fizzle mark if it can no longer be paid for at all.
+///
+/// **There is deliberately no "certified?" flag on this record.** The closure is
+/// built by the site that already knows which of the two pricing mirrors this
+/// cast belongs to: [TurnLoop._localCastSettlement] prices the caster's own
+/// spell from its own [SpellAsset], and [TurnLoop._certifiedPeerCastSettlement]
+/// prices a peer's from verified proof outputs. A settlement record carrying
+/// "use certified semantics: true/false" would be precisely the generic branch
+/// B-1/B-8 closed — one flag away from letting an untrusted caller select the
+/// trusted path. The two mirrors meet here as opaque closures and nowhere else;
+/// see deterministic_resolution.dart's "Mana cost" section header.
+typedef _CastSettlement = ({String playerId, void Function() settle});
+
 // ── TurnLoop ──────────────────────────────────────────────────────────────────
 
 // Wire spec: action/move reveal format is nonce(_kRevealNonceBytes) ‖ payload.
@@ -1475,7 +1495,12 @@ class TurnLoop
     _pendingActionCommit = actionCommit;
     _pendingPeerActionCommit = peerActionCommit;
 
-    _deductManaForCommittedSpell(action);
+    // NOTHING IS CHARGED HERE (M4.10b). Committing a cast does not reserve
+    // mana, HP, a chainSurcharge or a nextSpellCostDouble — all of that is
+    // settled at Phase 5 by [_settleCommittedCasts], against the state as it
+    // stands then. Phase 1 stays free to do local bookkeeping, but it must
+    // never become a second authoritative settlement path: that is exactly the
+    // asymmetry M4.10b removed.
 
     final openedTarget = await _exchangeScryOpenings(
       actionBytes: actionBytes,
@@ -1493,21 +1518,23 @@ class TurnLoop
     return openedTarget;
   }
 
-  /// Deducts mana for [action] immediately after its commit is exchanged
-  /// (covers regular and mystery spells) — moved here from the inline Phase 1
-  /// body so [beginTurn] can call it as soon as the action is committed.
-  void _deductManaForCommittedSpell(TurnAction action) {
+  /// The local player's committed cast, as a Phase-5 settlement — or null when
+  /// this turn's action is not a chargeable cast.
+  ///
+  /// Prices from the caster's own [SpellAsset]. Trusting the wire here is sound
+  /// because it is the caster's own spell; the peer's cast is priced from
+  /// certified proof outputs instead, by [_certifiedPeerCastSettlement]. See
+  /// [_CastSettlement] on why those two never merge.
+  _CastSettlement? _localCastSettlement(TurnAction action) {
     final committedSpell = switch (action) {
       SpellCastAction(:final spell) => spell,
       MysterySpellCastAction(:final spell) => spell,
       _ => null,
     };
-    if (committedSpell == null) return;
+    if (committedSpell == null) return null;
     // DEV FLAG — free on both devices. See [_isProoflessBypass].
-    if (_isProoflessBypass(committedSpell)) return;
+    if (_isProoflessBypass(committedSpell)) return null;
 
-    final av = _localAvatar();
-    final castingEnhancements = _castingEnhancementsFor(action);
     // A missing recall is a BLANK, not an exemption — but only once the cast
     // is actually being charged for. Two reasons it cannot stay null here:
     //
@@ -1528,29 +1555,41 @@ class TurnLoop
       _ => null,
     };
 
-    // Price it WITHOUT charging first, so a shortfall can fizzle-and-refund
-    // rather than silently clamping to zero (VOCAL_RECALL_PLAN.md §4).
-    final preview = _resolution.spellCostBreakdown(
-      committedSpell,
-      av,
-      enhancements: castingEnhancements,
-      recall: recall,
-      isVocalComponents: isVocalComponents,
-    );
-    if (_fizzlesForMana(av, preview.cost)) {
-      _markFizzledForMana(action);
-      return; // mana refunded (never deducted); the turn is still spent
-    }
+    return (
+      playerId: localPlayerId,
+      settle: () {
+        // Everything below reads the avatar as it stands NOW, at settlement.
+        // Nothing is carried forward from Phase 1 — that is the whole point of
+        // M4.10b, and re-reading here rather than closing over a Phase-1 value
+        // is what makes it true.
+        final av = _localAvatar();
+        final castingEnhancements = _castingEnhancementsFor(action);
 
-    av.mana = (av.mana -
-            _resolution.applySpellManaCost(
-              committedSpell,
-              av,
-              enhancements: castingEnhancements,
-              recall: recall,
-              isVocalComponents: isVocalComponents,
-            ))
-        .clamp(0, _kMaxMana);
+        // Price it WITHOUT charging first, so a shortfall can fizzle-and-refund
+        // rather than silently clamping to zero (VOCAL_RECALL_PLAN.md §4).
+        final preview = _resolution.spellCostBreakdown(
+          committedSpell,
+          av,
+          enhancements: castingEnhancements,
+          recall: recall,
+          isVocalComponents: isVocalComponents,
+        );
+        if (_fizzlesForMana(av, preview.cost)) {
+          _markFizzledForMana(action);
+          return; // mana refunded (never deducted); the turn is still spent
+        }
+
+        av.mana = (av.mana -
+                _resolution.applySpellManaCost(
+                  committedSpell,
+                  av,
+                  enhancements: castingEnhancements,
+                  recall: recall,
+                  isVocalComponents: isVocalComponents,
+                ))
+            .clamp(0, _kMaxMana);
+      },
+    );
   }
 
   /// See [DeterministicResolution.fizzlesForMana] — the rule and the reasoning
@@ -1954,14 +1993,31 @@ class TurnLoop
     // Option 3: verify the peer's spell proof and Merkle book membership before
     // resolving. Forfeits the match on any failure. Populates
     // certifiedPeerCasts with the trajectory-derived semantics for use in
-    // Phase 5's resolution.
+    // Phase 5's resolution, and hands back the peer's charge as a settlement
+    // for the sorted pass below rather than applying it inline.
+    final settlements = <_CastSettlement>[];
     if (action is SpellCastAction || action is MysterySpellCastAction) {
-      await _verifyPeerSpellCast(action, merkleProof, certifiedPeerCasts);
+      await _verifyPeerSpellCast(
+        action,
+        merkleProof,
+        certifiedPeerCasts,
+        settlements: settlements,
+      );
     }
 
-    // Move-phase Meditate pays out HERE, not back at Phase 2 where it was
-    // declared — the one point in the turn where both players' casts have
-    // been charged on both devices. See [_applyMoveMeditations].
+    // Cast settlement (M4.10b). The first resource mutation of Phase 5, and
+    // the ONLY point at which a committed cast is paid for: both players'
+    // casts, priced against the state Phases 2–4b left behind, in ascending
+    // playerId order, on both devices. See [_settleCommittedCasts].
+    //
+    // Nothing between the Phase-1 commit and this line may charge for a cast.
+    _settleCommittedCasts(input.action, settlements);
+
+    // Move-phase Meditate pays out AFTER settlement, not back at Phase 2 where
+    // it was declared. Both orderings matter and for different reasons: Phase 2
+    // was a lockstep bug (M4.10), and being after settlement rather than before
+    // is what keeps a move-Meditate from funding the same turn's spell — the
+    // ruling M4.10 settled and M4.10b preserves. See [_applyMoveMeditations].
     _applyMoveMeditations(meditators);
 
     // Hand/deck refill (SPELL_DRAW_WIRING_PLAN.md §4) — a spell leaves the
@@ -2463,30 +2519,34 @@ class TurnLoop
   /// Pays out this turn's move-phase Meditations, for the players in
   /// [meditatorIds] (already sorted by playerId).
   ///
-  /// **Called from Phase 5, after both casts have been charged** — not from
-  /// Phase 2, where the declaration is exchanged. The two cast-charging paths
-  /// sit in different phases by design: a player's own cast is priced and
-  /// deducted the moment its commit crosses the wire
-  /// ([_deductManaForCommittedSpell], Phase 1), while the peer's cast can only
-  /// be charged once its reveal has been verified ([_verifyPeerSpellCast],
-  /// Phase 5). Any mana movement *between* those two points is therefore
-  /// applied before the deduction on one device and after it on the other —
-  /// and since [_applyManaGain] clamps at `maxMana`, a caster near their
-  /// ceiling ended the turn with two different mana totals:
+  /// **Called from Phase 5, immediately after [_settleCommittedCasts]** — not
+  /// from Phase 2, where the declaration is exchanged.
+  ///
+  /// Two separate rulings hold this call in place, and they are worth keeping
+  /// apart because only one of them is still a desync concern:
+  ///
+  /// *Not Phase 2* (M4.10). Cast charging used to straddle the turn — a
+  /// player's own cast deducted at Phase 1, the peer's at Phase 5 — so a payout
+  /// at Phase 2 landed before the deduction on one device and after it on the
+  /// other. Since [_applyManaGain] clamps at `maxMana`, a caster near their
+  /// ceiling ended the turn with two different totals:
   ///
   ///   caster's device:  100 − 11 = 89, +25 → clamped 100
   ///   opponent's device: 100 + 25 → clamped 100, −11 = 89
   ///
-  /// which [_exchangeStateHash] correctly reports as a broken duel. The
-  /// caster's own ordering is the canonical one: their cast was committed —
-  /// and gated for affordability — before the meditation was worth anything,
-  /// so the meditation cannot fund this turn's spell. Paying out here makes
-  /// every device agree with that.
+  /// which [_exchangeStateHash] correctly reports as a broken duel. M4.10b has
+  /// since moved BOTH charges to Phase 5 ([_settleCommittedCasts]), so the
+  /// straddle is gone and this particular hazard could no longer arise even
+  /// from Phase 2 — but the payout stays here regardless, because of:
   ///
-  /// The same reasoning is why [_fizzlesForMana] has to be evaluated against
-  /// the same mana on both sides: with the payout at Phase 2, the opponent
-  /// priced an unaffordable cast against 25 more mana than the caster did and
-  /// the two devices disagreed about whether the spell fizzled at all.
+  /// *After settlement, not before* (the ruling M4.10 settled). A move-phase
+  /// Meditate must not fund the same turn's spell. That used to fall out of the
+  /// caster charging at Phase 1; now it is exactly and only the order of these
+  /// two calls. Moving this line above [_settleCommittedCasts] would let a
+  /// meditation pay for a cast, silently, on both devices — a rules change
+  /// wearing the costume of a reordering. See
+  /// `mana_charge_window_characterization_test.dart`'s "move-phase Meditate
+  /// cannot fund this turn's cast" group, which pins it in both directions.
   ///
   /// Sorted rather than local-first for the usual reason (the convention
   /// [_findCounteringCharm] and the Phase 4b melee round follow): a Reflections
@@ -3344,6 +3404,7 @@ class TurnLoop
     MembershipProof? merkleProof,
     Map<String, CertifiedCast> certifiedPeerCasts, {
     bool forcedCast = false,
+    List<_CastSettlement>? settlements,
   }) async {
     final verdict = await _peerCastVerifier.certifyPeerCast(
       action,
@@ -3378,14 +3439,23 @@ class TurnLoop
         // by battle_screen.dart's capture hook after runTurn returns.
         lastCertifiedBaseManaCosts[cast.commitmentHex] = cast.baseManaCost;
 
-        // Mana cost (B-1 + B-8). Base cost is certified by the SNARK; the
-        // effect count, chain discount, recall multiplier and
-        // nextSpellCostDouble all come from certifiedManaCost over certified
-        // inputs — no untrusted wire values on this path — so both devices
-        // deduct the same amount and the mana ledger stays consistent.
+        // Mana cost (B-1 + B-8) is NOT applied here. Certification and
+        // settlement are two different jobs and, since M4.10b, two different
+        // moments: this method establishes what the proof says, and hands the
+        // charge back as a [_CastSettlement] for [_settleCommittedCasts] to
+        // run in canonical player order alongside the local cast. Charging
+        // inline would put this peer's deduction ahead of the local one on
+        // every device, which is the asymmetry M4.10b removed.
+        //
+        // Two callers deliberately pass no [settlements] list and are therefore
+        // never charged, exactly as before: a forced cast (wild magic's
+        // Spontaneous Combustion — the victim did not choose to cast and does
+        // not pay), and any caller with no peer avatar to charge.
         final peerId = _peerId();
         final peerAvatar = peerId != null ? _avatarById(peerId) : null;
-        if (peerAvatar == null || forcedCast) return cast.semantics;
+        if (peerAvatar == null || forcedCast || settlements == null) {
+          return cast.semantics;
+        }
         final spell = switch (action) {
           SpellCastAction(:final spell) => spell,
           MysterySpellCastAction(:final spell) => spell,
@@ -3397,6 +3467,42 @@ class TurnLoop
           _ => null,
         };
         if (spell == null) return cast.semantics;
+        settlements.add(_certifiedPeerCastSettlement(
+          action: action,
+          cast: cast,
+          peerAvatar: peerAvatar,
+          spell: spell,
+          recall: recall,
+        ));
+        return cast.semantics;
+    }
+  }
+
+  /// A verified peer cast, as a Phase-5 settlement.
+  ///
+  /// Every pricing input is certified: [cast]'s base price, formulas and
+  /// element sequence come from [PeerCastVerifier] over verified public
+  /// outputs, and `isEfficiency` has already been checked against this spell's
+  /// own certified supreme-dominance zones. Nothing here reads a wire field —
+  /// which is the B-1/B-8 property — with the one deliberate exception noted at
+  /// `isSummon` below.
+  ///
+  /// Split out of [_verifyPeerSpellCast] rather than left inline so the charge
+  /// can be *ordered* against the local one (M4.10b). The separation is also
+  /// load-bearing for trust: this is the only constructor of a certified
+  /// settlement, it takes a [PeerCastCertified]'s payload directly, and there
+  /// is no parameter by which a caller could ask it to price from wire data
+  /// instead. See [_CastSettlement].
+  _CastSettlement _certifiedPeerCastSettlement({
+    required TurnAction action,
+    required CertifiedPeerCast cast,
+    required WizardAvatar peerAvatar,
+    required SpellAsset spell,
+    required IncantationRecall? recall,
+  }) {
+    return (
+      playerId: peerAvatar.playerId,
+      settle: () {
         final verifiedCost = _resolution.certifiedManaCost(
           cast.baseManaCost,
           cast.semantics.formulas,
@@ -3428,8 +3534,8 @@ class TurnLoop
         } else {
           peerAvatar.mana = (peerAvatar.mana - verifiedCost).clamp(0, _kMaxMana);
         }
-        return cast.semantics;
-    }
+      },
+    );
   }
 
   // ── Mana cost ─────────────────────────────────────────────────────────────
@@ -3437,11 +3543,58 @@ class TurnLoop
   // The arithmetic moved to DeterministicResolution's "Mana cost" section —
   // both mirrors, the recital derivation, and the fizzle predicate. What stays
   // here is orchestration: choosing which inputs a call gets, the proofless
-  // dev-flag bypass, coalescing a null recall, and marking an action fizzled.
+  // dev-flag bypass, coalescing a null recall, marking an action fizzled, and
+  // — since M4.10b — WHEN each cast is settled and in what order.
   //
   // The two mirrors stay separate over there for the reason they were separate
   // here: one is a trust boundary and the other is not. See that section's
   // header before touching either.
+
+  /// Prices and pays for every chargeable committed cast this turn, in
+  /// ascending `playerId` order, from the state as it stands at the start of
+  /// Phase 5 (M4.10b).
+  ///
+  /// **This is the only authoritative settlement path.** A committed cast
+  /// reserves nothing: no mana, no HP, no chainSurcharge, no
+  /// nextSpellCostDouble. Between the Phase-1 commit and here, Phases 2–4b are
+  /// free to drain the caster's mana (a SlowTile), destroy the very statuses
+  /// that would have priced the cast (a Water haymaker), shrink their maximum
+  /// pool (a counter-charm proc destroying a mana gem) or punch them — and all
+  /// of it lands *before* the price is read, identically on both devices.
+  ///
+  /// That is the whole fix. The old rule charged the local cast at Phase 1 and
+  /// the peer's at Phase 5, so for any single cast one device deducted four
+  /// phases earlier than the other and everything in between was applied on
+  /// opposite sides of the deduction. See docs/M4_findings.md M4.10 / M4.10b.
+  ///
+  /// Called after the peer's reveal has cleared the trust boundary — that is
+  /// the earliest point at which both devices know the same set of casts — and
+  /// before [_applyMoveMeditations], which is what keeps M4.10's ruling that a
+  /// move-phase Meditate cannot fund the same turn's spell.
+  ///
+  /// **On the sort.** Charging one caster cannot currently change any pricing
+  /// input of the other: each settlement reads and writes only its own avatar's
+  /// mana, statuses, chain and HP, and the one cross-player mana link that
+  /// exists (a Reflections `manaMirror`) lives in
+  /// [DeterministicResolution.applyManaGain], which is gain-only and is not on
+  /// this path. So the order is not observable today. It is fixed anyway, by
+  /// the same convention [_findCounteringCharm], the Phase 4b melee round and
+  /// [_applyMoveMeditations] follow, because "not observable today" is a
+  /// property of the current effect list and not of the settlement machinery —
+  /// and the alternative, local-first, is a *different* order on each device.
+  /// Anything added here that does read across players must be brought to
+  /// Soren as an interaction, not left to the sort to define.
+  void _settleCommittedCasts(
+    TurnAction localAction,
+    List<_CastSettlement> settlements,
+  ) {
+    final local = _localCastSettlement(localAction);
+    if (local != null) settlements.add(local);
+    settlements.sort((a, b) => a.playerId.compareTo(b.playerId));
+    for (final settlement in settlements) {
+      settlement.settle();
+    }
+  }
 
 
   // ── Cost preview (UI affordability gate) ──────────────────────────────────

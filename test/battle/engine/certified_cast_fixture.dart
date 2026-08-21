@@ -240,10 +240,15 @@ bool bytesEqual(List<int> a, List<int> b) {
 /// [bookmarks] drives hand size (`handSize == bookmarkCount + 1`), so a script
 /// that needs a hand bigger than one card must ask for them. Defaults to zero
 /// to keep every existing golden byte-identical.
+/// [startingMana] lowers each wizard's opening pool without touching
+/// [maxMana], for the one script that needs a cast to sit close enough to a
+/// player's pool that ten mana decides whether it can be paid for. Defaults to
+/// [kStartMana] so every existing golden stays byte-identical.
 BattleState makeDuelState({
   int bookmarks = 0,
   List<List<BorderZone>> localCharms = const [],
   List<List<BorderZone>> peerCharms = const [],
+  int startingMana = kStartMana,
 }) {
   List<Accoutrement> accoutrementsFor(
     String id,
@@ -275,7 +280,7 @@ BattleState makeDuelState({
         playerId: 'player_a',
         ownerPubkeyHex: '0x${'00' * 32}',
         hp: 24,
-        mana: kStartMana,
+        mana: startingMana,
         maxMana: kStartMana,
         position: posA,
         teamId: 'team_a',
@@ -286,7 +291,7 @@ BattleState makeDuelState({
         playerId: 'player_b',
         ownerPubkeyHex: '0x${'11' * 32}',
         hp: 24,
-        mana: kStartMana,
+        mana: startingMana,
         maxMana: kStartMana,
         position: posB,
         teamId: 'team_b',

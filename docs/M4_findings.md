@@ -6233,7 +6233,7 @@ its doc comment now says so.
 
 ---
 
-## M4.10b — Characterizing the rest of the Phase 1 → Phase 5 charging window (2026-08-19, NOT fixed)
+## M4.10b — The rest of the Phase 1 → Phase 5 charging window (found 2026-08-19, FIXED 2026-08-21)
 
 *Investigation slice only: no policy fix, no phase reordering, no version bump. This
 section is the evidence M4.10's "Still open" paragraph asked for, plus two hazards that
@@ -6538,3 +6538,183 @@ than to the fixture.
 Not attempted: a two-device hardware pass. By CLAUDE.md's verification hierarchy this
 work sits at integration-test level; it is characterization, not a fix, so there is
 nothing yet for a device pass to confirm.
+
+---
+
+## M4.10b, part 2 — the fix: canonical Phase-5 cast settlement (2026-08-21)
+
+Option **C** from the comparison above, taken as recommended. `kBattleEngineVersion`
+**2 → 3**; `kRulesetVersion` stays 3 and `kBattleProtocolVersion` stays 5.
+
+### The rule
+
+> **A committed spell reserves nothing.** Both players' ordinary committed casts are
+> priced and settled from the replicated state that exists at the start of Phase 5, in
+> ascending `playerId` order, before `_applyMoveMeditations` and before any other Phase-5
+> resource mutation.
+
+### Timeline, before and after
+
+| | **v2 (before)** | **v3 (after)** |
+|---|---|---|
+| Phase 1 | `_deductManaForCommittedSpell`: prices the LOCAL cast, gates affordability, consumes chainSurcharge / nextSpellCostDouble, absorbs shortfall HP, deducts mana | commit-reveal exchanges only. **Nothing is charged** |
+| Phases 2–4b | mutations land *after* the local charge and *before* the peer charge | mutations land before **both** charges, on both devices |
+| Phase 5 | `_verifyPeerSpellCast` certifies **and** charges the peer, inline | `_verifyPeerSpellCast` certifies and returns a `_CastSettlement`; `_settleCommittedCasts` then settles **both** casts in sorted `playerId` order |
+| Phase 5 | `_applyMoveMeditations` | unchanged — still strictly after settlement |
+
+### Production changes (four files)
+
+* **`turn_loop.dart`**
+  * `_beginTurnImpl` no longer calls the deduction. The line is replaced by a comment
+    saying what must never go back there.
+  * `_deductManaForCommittedSpell` → **`_localCastSettlement`**: same body, same five
+    steps, but returns a `_CastSettlement` instead of executing. The avatar is re-read
+    *inside* the closure (`_localAvatar()`), never captured — closing over a Phase-1
+    value would have quietly rebuilt the bug in snapshot clothing.
+  * `_verifyPeerSpellCast` gains an optional `List<_CastSettlement>? settlements` sink,
+    the same idiom `certifiedPeerCasts` already uses. Its charging block moves out to
+    **`_certifiedPeerCastSettlement`**. The forced-cast caller passes no list and is
+    therefore still never charged, exactly as before.
+  * **`_settleCommittedCasts`** — the one authoritative settlement path.
+* **`deterministic_resolution.dart`** — comments only. The "Mana cost" section header
+  said the two mirrors were reached "at two different moments (the caster at commit, the
+  peer after verification)", which is precisely what is no longer true.
+* **`battle_engine_version.dart`** — bump + v3 history entry.
+* **`certified_cast_fixture.dart` / `match_replay.dart`** — an additive `startingMana`
+  knob for the new replay script, defaulting to `kStartMana` so no existing golden moves.
+
+**No wire codec, no proof path, no phase reordering, no arithmetic change.** The five
+pricing steps and the shortfall→HP rule are byte-identical; only *when* they run moved.
+
+### How the two mirrors stay apart
+
+The B-1/B-8 property is that an untrusted path cannot reach the trusted mirror. The
+obvious way to write this fix — one settlement record with a `certified: bool` — would
+have been exactly that regression: one flag away from letting a caller select the trusted
+branch.
+
+Instead `_CastSettlement` is `({String playerId, void Function() settle})`. **It carries
+no discriminator at all.** The closure is built by the site that already knows which
+mirror the cast belongs to, each site is the only constructor of its kind, and neither
+takes a parameter that could change its mind. The two mirrors meet as opaque closures and
+nowhere else.
+
+### What the five former divergences do now
+
+Every one adopts the LATE reading — the one the peer's device already had, which is the
+only one that was ever computed from settled state:
+
+| hazard | old caster device | old peer device | v3, both |
+|---|---|---|---|
+| `nextSpellCostDouble` drained at Phase 4b | 40 charged | 20 charged | **20** |
+| `chainSurcharge` drained at Phase 4b | 23 charged | 20 charged | **20** |
+| lethal shortfall vs the melee round | punch missed | punch landed | **lands, then they die** |
+| SlowTile drain | resolved, mana 0 | fizzled, mana 15 | **fizzled, mana 15** |
+| gem destruction clamp | mana 100 | mana 80 | **80** |
+
+### Semantics that are now decided, and were not before
+
+* **A mid-turn mana loss can fizzle a cast that was affordable when committed.**
+  Commitment is not reservation. The UI gate (`canAffordSpell` → `previewSpellCost`) is
+  unchanged and still quotes the honest price at commit time; it is a courtesy, not a
+  promise.
+* **A cost-modifying status destroyed before Phase 5 is not paid for.** Punch the curse
+  off someone and they cast at the ordinary price.
+* **The melee round completes before a lethal payment.** A caster who will die paying for
+  their spell still throws their punch and still takes one.
+* **A caster killed by their own shortfall still does not land the cast** — *unchanged*,
+  and now pinned by its own regression. Both devices already did this under v2 (the charge
+  preceded `_resolveActions` on each of them); the fix moved *when* the caster dies, not
+  what their death does to the spell.
+* **The HP-shortfall rule itself is untouched** and still reachable only through
+  `nextSpellCostDouble`. Deliberately not broadened in this slice.
+
+### On the sort, and the dependency audit it required
+
+Charging one caster cannot currently change any pricing input of the other. Each
+settlement reads and writes only its own avatar's `mana`, `activeStatusEffects`,
+`chainLengths` and HP (via `absorbDamage`, which touches only that avatar's own barriers).
+The one cross-player mana link in the engine — a Reflections `manaMirror` — lives in
+`applyManaGain`, which is **gain-only** (`if (amount <= 0) return`) and is not on the
+settlement path.
+
+So the order is **not observable today**, and the sort is defensive rather than
+load-bearing. It is fixed anyway, by the convention `_findCounteringCharm`, the Phase 4b
+melee round and `_applyMoveMeditations` already follow, for one reason: the alternative is
+local-first, which is a *different order on each device*, and "not observable" is a
+property of the current effect list rather than of the settlement machinery. **Anything
+added to settlement that does read across players is an interaction and must be brought
+to Soren as one, not left to the sort to define.** That sentence is also in
+`_settleCommittedCasts`'s doc comment, where someone might actually read it.
+
+### The meditate ordering is now load-bearing in a new way
+
+M4.10 moved the move-Meditate payout to Phase 5 to fix a clamp-ordering desync, and ruled
+that a move-Meditate must not fund the same turn's spell. Under v2 that ruling *fell out*
+of the caster charging at Phase 1. Under v3 it is **exactly and only the order of two
+adjacent lines**: `_settleCommittedCasts` then `_applyMoveMeditations`. Swapping them
+would let a meditation pay for a cast, silently and identically on both devices — a rules
+change wearing the costume of a reordering, invisible to every lockstep test. Both
+directions are pinned by the "move-phase Meditate cannot fund this turn's cast" group.
+
+### The replay corpus
+
+**All eight existing goldens are byte-identical.** That is the strongest single piece of
+evidence the fix is behaviour-preserving for ordinary play: the corpus contains no
+transcript in which anything touched a caster's mana, statuses or HP between the commit
+and the reveal.
+
+One script was added, `slow_tile_drains_a_cast_into_a_fizzle` — the status-free
+demonstration of the new rule, and **verified to fail against the pre-fix engine**, where
+it desyncs on turn 2 and the match forfeits (the harness records 1 turn where the golden
+has 3).
+
+Building it surfaced a small rules fact nobody had written down: **a wizard cannot walk
+onto a spell-made Slow tile at base speed.** The tile costs `1 + extraMoveCost` = 3
+movement and `_kBaseMoveSpeed` is 2, so the step is simply refused. The SlowTile race is
+only reachable by a *hasted* caster, which is why the script spends turn 1 on
+`[air, air, air]` before the walk. It is also why the unit-test fixture uses a synthetic
+`SlowTile(extraMoveCost: 0)`: the hazard is the drain, not the movement cost.
+
+### Verification
+
+* `mana_charge_window_characterization_test.dart` — **15 cases**, up from 11. The five
+  divergences inverted (same fixtures, same pinned intermediates, expectations flipped from
+  "the devices disagree, here is each number" to "they agree, here is the one number"), all
+  six controls kept unchanged, plus four new: the lethal-shortfall cast-resolution
+  regression, both move-Meditate orderings, and a **both-players-cast** case that exercises
+  the two-entry sorted settlement path on both devices at once.
+* `test/battle/` — **948 green** (944 before this work).
+* Full suite — **1759 green**; the 3 failures are pre-existing and unrelated: the 2 known
+  `vocabulary_screen_test` ones, and `inscribe_test`'s SRS-cache case, which is the known
+  full-suite-load flake (it passes in isolation both with and without this change, and
+  touches no battle code).
+* Analyzer — 16 infos/warnings, **identical to the pre-change baseline**, none in the
+  changed code.
+
+### Audit: is there a second settlement path left?
+
+No. Grepping every mana write outside `DeterministicResolution` leaves exactly two, and
+both are inside the settlement closures reached only from `_settleCommittedCasts`:
+`turn_loop.dart`'s local deduction and its certified peer deduction. `previewSpellCost` is
+read-only. Everything else that touches mana (`effect_applicator`, `wild_magic_applicator`)
+is Phase-5 spell *resolution*, downstream of settlement, and is not cast payment.
+
+Phase 1 now mutates nothing on account of a spell being committed. The artifact phase
+(Phase 0) still spends mana, but it does so before the action commit on both devices
+symmetrically and is a separate mechanic, not a cast charge.
+
+### Left alone, deliberately
+
+M4.19 (`isSummon` still steers the certified chain affinity from a wire field), M4.20's
+formula policy, M4.17, `certifiedPeerCasts`' commitment keying, `kAllowProoflessSpells`.
+One thing noticed and not touched: **`_verifyMysteryAction` drops `fizzledForMana` when it
+converts an immediate Mystery cast to a `SpellCastAction`**, so a fizzled immediate Mystery
+still resolves. Pre-existing, unchanged by this slice (settlement runs before the
+conversion, exactly as the Phase-1 deduction did), and desync-safe because both devices
+convert identically. Worth its own look.
+
+### Still open
+
+A two-device hardware pass. This work sits at integration-test level by CLAUDE.md's
+verification hierarchy, and it changes the mana ledger on the peer path.

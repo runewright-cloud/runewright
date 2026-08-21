@@ -3348,8 +3348,11 @@ class DeterministicResolution {
   // ── Mana cost ─────────────────────────────────────────────────────────────
   //
   // Eighth across the seam, and operations again rather than a phase — pricing
-  // a cast is not a phase, it is a calculation two different callers reach at
-  // two different moments (the caster at commit, the peer after verification).
+  // a cast is not a phase, it is a calculation two different callers reach for
+  // two different casts. Both reach it at the same MOMENT: TurnLoop settles
+  // every committed cast at the start of Phase 5, in canonical playerId order
+  // (M4.10b). What differs between the two mirrors below is whose spell they
+  // price and how much of it they are allowed to trust, never when.
   //
   // The two mirrors below are deliberately NOT merged. They apply the same five
   // steps in the same order, but they start from different data on purpose:
@@ -3463,7 +3466,7 @@ class DeterministicResolution {
     //
     // [recall] is never null here in sorcerer mode: the peer decodes it from
     // the wire (silent at worst), and the caster's own commit path coalesces
-    // it — see TurnLoop._deductManaForCommittedSpell. Null reaches this only from
+    // it — see TurnLoop._localCastSettlement. Null reaches this only from
     // TurnLoop.previewSpellCost, which must quote the honest base price because no
     // incantation has been spoken yet.
     if (isVocalComponents && recall != null) {
@@ -3618,7 +3621,7 @@ class DeterministicResolution {
     //
     // Null means "not spoken yet" here, and prices at base — that is
     // TurnLoop.previewSpellCost's path. The charging path never passes null; see
-    // TurnLoop._deductManaForCommittedSpell.
+    // TurnLoop._localCastSettlement.
     if (isVocalComponents && recall != null) {
       cost = recall
           .tallyAgainst(

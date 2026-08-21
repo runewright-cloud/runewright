@@ -44,7 +44,98 @@ Future<List<MatchScript>> allScripts() async => [
       _potentSummonActsTwice(),
       await _counterCharmInterceptsDelayedFire(),
       await _unbackedMysteryClaimForfeits(),
+      _slowTileDrainsACastIntoAFizzle(),
     ];
+
+/// A Slow tile drains the caster below their own spell's price, mid-turn.
+///
+/// The corpus's record of M4.10b's temporal rule: **a committed spell reserves
+/// nothing, and is priced from the state that exists at the start of Phase 5.**
+///
+/// ## Why this one is worth a script
+///
+/// It is the only demonstration of that rule that needs no status effects at
+/// all — just terrain, a walk, and a pool close enough to a price that ten mana
+/// decides it. Under the pre-M4.10b engine this exact transcript desynced: the
+/// caster's own device had already charged the spell at Phase 1 (25 − 20 = 5,
+/// then the drain clamped it to 0) and RESOLVED it, while the opponent's device
+/// drained first (25 − 10 = 15), priced at 20 > 15, and fizzled it. Two devices,
+/// one transcript, different turns — the state hash caught it and the duel
+/// ended. Both now fizzle.
+///
+/// ## Why it takes three casts to set up
+///
+/// A wizard cannot walk onto a Slow tile at base speed. The tile a spell makes
+/// costs `1 + extraMoveCost` = 3 movement, and [_kBaseMoveSpeed] is 2, so the
+/// step is simply refused. Entering one voluntarily requires a haste — which is
+/// why turn 1 spends player_a's action on `[air, air, air]` (+1 speed, 3 turns)
+/// aimed at their own tile, and player_b's on the tile itself.
+///
+/// That is not scaffolding, it is the finding: the SlowTile race is only
+/// reachable by a hasted caster, and it took building the script to notice.
+MatchScript _slowTileDrainsACastIntoAFizzle() {
+  // Flavour is the FIRST element of the triplet; the pair (2nd, 3rd) picks the
+  // kind (effect_kind.dart's effectKindFromPair). So [air, air, air] is an
+  // Air-flavoured Air-Air speed manipulation (+1 speed, 3 turns), and
+  // [water, earth, water] a Water-flavoured Earth-Water tile modification,
+  // which is the SlowTile (effect_resolver.dart).
+  final haste = spellFromElements(
+    elements: const [BorderZone.air, BorderZone.air, BorderZone.air],
+    variant: 90,
+    name: 'Quickening',
+  );
+  final slowTile = spellFromElements(
+    elements: const [BorderZone.water, BorderZone.earth, BorderZone.water],
+    variant: 91,
+    name: 'Clinging Mire',
+  );
+  final marginal = spellFromElements(
+    elements: List.filled(3, BorderZone.fire),
+    variant: 92,
+    name: 'Last Ember',
+  );
+
+  return MatchScript(
+    name: 'slow_tile_drains_a_cast_into_a_fizzle',
+    description:
+        'A hasted caster walks through a Slow tile on the turn they cast, and '
+        'the 10 mana it drains takes them below their own spell price. Pins '
+        "M4.10b's rule that a committed cast is priced at Phase 5 from live "
+        'state, not reserved at Phase 1 — the transcript that used to desync.',
+    // Low enough that one Slow tile decides the second cast. 45 pays for turn
+    // 1 (20) and leaves 25, which covers the turn-2 cast at commit time and
+    // does not cover it after the drain.
+    startingMana: 45,
+    localChapterCommitments: [haste.commitmentHex, marginal.commitmentHex],
+    peerChapterCommitments: [slowTile.commitmentHex],
+    turns: [
+      ScriptedTurn.fixed(
+        note: 'player_a hastes itself; player_b lays a Slow tile beside it',
+        local: TurnInput(
+          action: SpellCastAction(spell: haste, targetHex: const HexCoord(0, 0)),
+        ),
+        peer: TurnInput(
+          action:
+              SpellCastAction(spell: slowTile, targetHex: const HexCoord(0, 1)),
+        ),
+      ),
+      ScriptedTurn.fixed(
+        note: 'player_a walks through the mire and casts — the drain fizzles it',
+        local: TurnInput(
+          action:
+              SpellCastAction(spell: marginal, targetHex: const HexCoord(1, 0)),
+          movePath: const [HexCoord(0, 1)],
+        ),
+        peer: TurnInput(action: PassAction()),
+      ),
+      ScriptedTurn.fixed(
+        note: 'quiet turn — a fizzled cast must leave nothing behind either',
+        local: TurnInput(action: PassAction()),
+        peer: TurnInput(action: PassAction()),
+      ),
+    ],
+  );
+}
 
 /// A Mystery claimed on a spell whose proof does not back it — the match ends.
 ///
