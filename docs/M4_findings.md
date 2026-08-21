@@ -6230,3 +6230,311 @@ its doc comment now says so.
   it *is* the peer, locally, with `verifyProof` null. Worth knowing that a large share of
   the engine suite therefore exercises the short frame rather than the real one. Left
   untouched.
+
+---
+
+## M4.10b — Characterizing the rest of the Phase 1 → Phase 5 charging window (2026-08-19, NOT fixed)
+
+*Investigation slice only: no policy fix, no phase reordering, no version bump. This
+section is the evidence M4.10's "Still open" paragraph asked for, plus two hazards that
+paragraph did not know about.*
+
+Tests: `test/battle/engine/mana_charge_window_characterization_test.dart`, 11 cases
+(5 divergences + 6 controls), all green as **characterizations of the bug**. Battle
+suite: 944 green.
+
+### 1. The temporal contract, as it actually runs
+
+There is exactly one asymmetry and everything below is a consequence of it: **each
+device charges its own player's cast at Phase 1 and the other player's at Phase 5.** For
+a single cast the two devices are four phases apart. When *both* players cast, each
+device applies the two charges in the opposite relative order from the other.
+
+Timeline for one cast by `player_a`, both devices side by side:
+
+| point | device A (`player_a`, the caster) | device B (`player_b`, the peer) |
+|---|---|---|
+| Phase 0 | artifact declare/exchange/apply — gem burst mana, rod roll | identical, same point |
+| **Phase 1** | `beginTurn` → action commit exchanged → **`_deductManaForCommittedSpell`**: `spellCostBreakdown` prices, `fizzlesForMana` decides, `applySpellManaCost` consumes the surcharge/double, absorbs shortfall HP, deducts mana | commits its own action; knows only that *a* commit arrived. **Cannot see whether A is casting at all** |
+| Phase 1 (rest) | scry openings, spell-reveal openings | identical |
+| Phase 2 | movement commit-reveal; move-Meditate **declared only** (payout deferred by M4.10) | identical |
+| Phase 3 | entropy reveal; `resolveAvatarMovement` — **SlowTile mana drain**, FloorIsLava HP, conveyor-loop HP | identical, but A's cast is **not yet charged here** |
+| Phase 4 | `moveClouds` (positions only) | identical |
+| Phase 4b | melee commit-reveal; `applyHaymaker` — HP, Water **status drain**, Earth `speedDown`, Fire DoT; `applyCounterCharmProc` — **gem destroyed → `_syncMaxMana` clamps current mana**. Victim query filters on `isAlive` | identical *inputs*, different *caster state*: on B the caster still holds its uncharged mana, its unconsumed statuses, and its pre-shortfall HP |
+| **Phase 5** | `_verifyPeerSpellCast` charges **B's** cast | `_verifyPeerSpellCast` → **`certifiedManaCost`** charges A's cast here: prices, consumes, absorbs shortfall HP, `fizzlesForMana` |
+| Phase 5 | `_applyMoveMeditations` (M4.10's fix — strictly after both charges) | identical |
+| Phase 5 | `_resolveActions` → chain update, effects, `chainSurcharge`/`nextSpellCostDouble` *application* | identical |
+| Phase 6 | status tick, terrain auras, regen | identical |
+
+The pricing inputs first become known at Phase 1 on the caster's device only. On the
+peer's device **no pricing input is knowable before Phase 5** — the action is hidden
+behind its commitment until the reveal. That single fact is what rules out the naive
+form of repair option A; see §5.
+
+### 2. Hazard 1 — Water haymaker vs `nextSpellCostDouble` (M4.10's guess, CONFIRMED)
+
+Reproduced exactly as predicted. Caster carries `nextSpellCostDouble` with
+**`remainingTurns == 1`**; the opponent has the Water haymaker and punches them.
+
+```
+base cost                       20   (5×3 segments + 2 dots, ×1.05^3, effectCount 0)
+caster device : Phase 1 prices with the status present   → 40 charged, entry consumed
+peer device   : Phase 4b drain takes 1 → 0 and REMOVES it → Phase 5 finds nothing
+                                                         → 20 charged
+start 500 → caster device 460, peer device 480. State hash mismatch on turn 1.
+```
+
+`chainSurcharge` diverges identically (23 vs 20 — `ceil(20 × 0.9⁻¹)`), and for the same
+reason: both consumables are applied with `remainingTurns = 2`
+(`EffectApplicator`), so both sit at exactly 1 for exactly one turn. **That one-turn
+window is why this has never been seen in play**, and the control test pins it: at
+`remainingTurns = 2` the drain takes 2 → 1, the entry survives, and both devices agree.
+
+### 3. Hazard 2 — Lethal shortfall vs the Phase 4b `isAlive` gate (M4.10's guess, CONFIRMED, but narrower than stated)
+
+Two corrections to the original write-up, both narrowing it:
+
+* **The shortfall→HP conversion is reachable only through `nextSpellCostDouble`.** In
+  both mirrors `hpDamage` is computed *inside* the `doubleIdx >= 0` branch and is 0
+  everywhere else. Every other unaffordable cast fizzles instead. So hazard 2 is a
+  sub-case of hazard 1's status, not an independent one.
+* **`meleeCandidates`' `isAlive` gate is not a divergence source.** A wizard's melee
+  target is commit-revealed from their *own* device, so a caster dead at Phase 4b on
+  their own device simply commits "no target" and the peer reads that null off the wire.
+  Pinned by its own control test. The asymmetry lives entirely in `applyHaymaker`'s
+  `_avatarsAt` victim query, which filters on `isAlive`.
+
+Reproduction: mana 0, HP 3, `nextSpellCostDouble`; cost 20 × 2 = 40, shortfall 40,
+`hpDamage = ceil(40/10) = 4`, HP 3 − 4 → dead.
+
+```
+caster device : dead at Phase 1  → at Phase 4b the target tile queries EMPTY → punch lands on nobody
+peer device   : alive at Phase 4b → punch lands, leaves its speedDown behind → dies at Phase 5
+```
+
+HP itself clamps at 0 on both sides, which is why the divergence has to be observed
+through the punch's *side effect* rather than through HP. With ≥1 counter charm on the
+attacker it is worse than cosmetic: the proc's victim list differs, so the two devices
+consume the shared melee `HashRng` stream differently from that point on.
+
+The control pins the boundary precisely: a **survivable** shortfall is order-independent
+(24 − 4 − 1 = 19 on both devices), because plain subtraction commutes and the gate never
+fires. The window is observable only when the shortfall is lethal.
+
+### 4. Hazard 3 — SlowTile mana drain (NOT in M4.10's list; the worst one)
+
+`DeterministicResolution` line ~759, inside `resolveAvatarMovement`:
+`av.mana = (av.mana - effect.manaDrainOnEntry).clamp(0, 9999)`. Phase 3. Ordinary
+terrain. **No status effects required.**
+
+```
+caster mana 25, cost 20, SlowTile drain 10 on the caster's move path
+
+caster device : 25 − 20 (Phase 1) = 5, then − 10 drain → clamp → 0
+peer device   : 25 − 10 drain (Phase 3) = 15, then Phase 5: 20 > 15 → fizzlesForMana → NOT CHARGED → 15
+```
+
+The mana totals are not the worst of it. **The two devices resolved completely different
+turns**: on the caster's device the spell landed (opponent 24 → 20) and advanced the
+caster's fire chain to 2; on the peer's device it fizzled — opponent untouched, no chain.
+This is the exact failure mode M4.10 called out as worse than the totals, and unlike the
+two hazards it named, it needs no rare status combination at all. It is reachable in
+ordinary play by any caster who walks over a Slow tile with mana near their spell's price.
+
+The control pins that the same walk with mana well clear of the price agrees on both
+devices: with no clamp reached and no fizzle boundary crossed, the two subtractions
+commute.
+
+### 5. Hazard 4 — Counter-charm gem destruction (NOT in M4.10's list)
+
+`applyCounterCharmProc` → `_consumeAccoutrement(victim, manaGem)` → `_syncMaxMana`,
+which does `if (av.mana > av.maxMana) av.mana = av.maxMana`. Phase 4b.
+
+```
+caster maxMana 200 (innate 100 + 1 gem × 100), mana 200, cost 20; the gem is destroyed
+
+caster device : 200 − 20 = 180, then clamp to the new 100 → 100
+peer device   : clamp 200 → 100, then − 20 → 80
+```
+
+This is the **original M4.10 clamp-ordering bug arriving from the ceiling instead of the
+floor**, and it survives the meditate fix untouched because the shrink happens at Phase
+4b, not Phase 2. It is the clearest evidence that M4.10's "defer the offending mutation"
+option is a treadmill: the gem clamp was added to Phase 4b *after* the meditate payout
+was moved out of Phase 2, and reopened the window without anyone noticing.
+
+### 6. Full audit of the window
+
+Every value reaching `certifiedManaCost` / `spellCostBreakdown` / `fizzlesForMana` /
+`applySpellManaCost`, classified:
+
+| input | source | mutable in the window? | classification |
+|---|---|---|---|
+| `certifiedBase` | SNARK public outputs | no | immutable for the turn |
+| `certFormulas`, `certElementSequence` | SNARK public outputs | no | immutable |
+| `recall` | action bytes, inside the commitment | no | immutable |
+| `isEfficiency` | verified against certified supreme tags | no | immutable |
+| `isVocalComponents` | match config | no | immutable |
+| `isSummon` | **wire field** (M4.19) | no | immutable *in time*; its problem is trust, not temporality. Untouched here |
+| `caster.chainLengths` / `activeChainElement` | avatar | **no** — only `_updateChainState` / `_regressChain` / `setAllChainsToNegative` touch them, all Phase 5+ | immutable in-window (M4.10's "chain state is now clean" **confirmed**) |
+| `chainSurcharge` presence | avatar statuses | **YES** — Water haymaker drain, Phase 4b | **should have been snapshotted at commitment** |
+| `nextSpellCostDouble` presence + modifiers | avatar statuses | **YES** — same drain | **should have been snapshotted at commitment** |
+| `caster.mana` | avatar | **YES** — SlowTile drain (Phase 3), gem-destruction clamp (Phase 4b) | **ambiguous — needs a ruling** (see §8) |
+| `caster.hp` | avatar | **YES** — lava, conveyor loops, haymaker damage | legitimately live for damage; **the death it causes is the ambiguous part** |
+| `caster.maxMana` | avatar accoutrements | **YES** — gem destruction, Phase 4b | should be snapshotted, or the charge moved |
+| effect-list *indices* (`surchargeIdx` / `doubleIdx`) | `spellCostBreakdown` output | n/a — computed and applied in adjacent statements | safe as written; do not separate those two calls |
+| draw schedule / hand | — | YES (charm wither) | does not enter pricing |
+
+Also noted, inert: the pricing mirrors match `nextSpellCostDouble` / `chainSurcharge`
+with a raw `indexWhere` that **ignores `isDormant`**, while `WizardAvatar.nextSpellCostDoubled`
+checks it. That getter has no callers in `lib/`, so nothing disagrees today — but the two
+readings of "is this status active" are one call site away from disagreeing. Separate
+from M4.10b; not touched.
+
+### 7. Did the mana extraction change the defect?
+
+No — and it is worth being precise, because the extraction *looks* like it should have.
+Moving both mirrors behind `DeterministicResolution` changed **where the arithmetic
+lives, not when it runs**: `TurnLoop` still calls `spellCostBreakdown` +
+`applySpellManaCost` at Phase 1 and `certifiedManaCost` at Phase 5. The window is
+byte-for-byte the one M4.10 described.
+
+What it *did* do is make one repair strictly easier and expose an asymmetry that matters
+for the others:
+
+* The caster's side is now **already split** into a pure pricing function
+  (`spellCostBreakdown` → `(cost, hpDamage, surchargeIdx, doubleIdx)`) and a separate
+  applicator (`applySpellManaCost`). That is exactly the shape a snapshot repair needs.
+* The peer's side is **still fused**: `certifiedManaCost` prices *and* mutates in one
+  pass (consumes the status entries, absorbs shortfall HP) and returns only an `int`.
+  Any snapshot repair has to split it the same way first.
+
+### 8. Repair options
+
+**A — snapshot the pricing inputs at Phase 1.**
+Both devices hold the full replicated state at Phase 1, so a snapshot needs **no new wire
+field and no new persistent field** — this is worth stating plainly because it is the
+first thing anyone will assume is required. But the peer's device does not know *whether*
+the peer is casting at Phase 1 (the action is behind its commitment), so it must snapshot
+**both players unconditionally** and consume conditionally at Phase 5.
+
+That forces the answer to the §6 snapshot question:
+
+* **Snapshotting the numeric final price is not viable.** The peer cannot compute a price
+  at Phase 1 — it has no spell, no proof, no recall. Only the *inputs* can be snapshotted.
+* **Consumption must happen at charge time, not snapshot time**, for the same reason: the
+  peer's device must not strip a `nextSpellCostDouble` off an avatar that may turn out not
+  to have cast at all. So consumption becomes *"remove this status if it is still there"* —
+  idempotent, and a no-op on the caster's device (already consumed) and on a drained peer
+  (already removed). That is coherent, but note what it means: **the status is paid for
+  even when a Phase-4b drain has already destroyed it.** That is a gameplay ruling, not an
+  implementation detail.
+
+Coverage: closes hazards 1 and 2's *pricing* half. Does **not** close hazard 4 — the
+`maxMana` ceiling clamp is not commutative with the charge no matter what price you
+snapshot. Closes hazard 3's *fizzle* disagreement (both devices judge affordability
+against the snapshot pool) and, by the floor-clamp commutativity
+`clamp₀(clamp₀(x−a)−b) == clamp₀(clamp₀(x−b)−a)`, the mana totals too — but only for
+floor clamps. Any future in-window mana *gain* reopens it, exactly as move-Meditate did.
+Does not close hazard 2's death-timing half at all: the shortfall HP still lands at Phase
+1 on one device and Phase 5 on the other. **Two of the four hazards survive option A.**
+
+**B — defer each offending mutation past the charge.**
+Closes whichever case you point it at, and nothing else. The gem-destruction hazard is
+the argument against it: that clamp was added to Phase 4b *after* the meditate payout was
+deferred out of Phase 2, silently reopening the window. Deferring SlowTile drains and
+haymaker status drains past Phase 5 would also move real gameplay — a drain that no
+longer applies before the melee round it shares a phase with. Rejected.
+
+**C — charge both casts at Phase 5, in canonical order.**
+One charging point, one order, on both devices. Every in-window mutation then lands on
+the same side of both charges everywhere, which closes all four hazards **and everything
+added to Phases 2–4b later** — the property neither A nor B has.
+
+The two objections M4.10 raised against it have both weakened since it was written:
+
+* *"The commit-time affordability gate needs somewhere else to live."* It already does.
+  `fizzlesForMana` replaced the old forfeit, and the real gate is `canAffordSpell` in the
+  UI, which reads `previewSpellCost` and never charges. The Phase-1 deduction is no longer
+  load-bearing for affordability; it is load-bearing only for the mana bar.
+* *"The local mana bar does not move until reveal."* True, and now the whole cost:
+  a presentation change, on a bar that already cannot show the recall multiplier at
+  commit time (`previewSpellCost` deliberately quotes the honest base price).
+
+Requirements C brings with it, none of them large but all of them mandatory:
+1. The two charges must run in **sorted `playerId` order**, not local-first — the same
+   convention `_findCounteringCharm`, the melee round and `_applyMoveMeditations` already
+   follow. A Reflections `manaMirror` link makes the order observable.
+2. They must run **strictly before `_applyMoveMeditations`**, preserving M4.10's ruling
+   that a move-Meditate cannot fund the same turn's spell.
+3. The local charge site must be unconditional, not inside `_verifyPeerSpellCast` — solo
+   mode and the uncertified path still have to charge.
+4. `fizzledForMana` marking moves with it; resolution already runs after.
+
+### Recommendation
+
+**Option C.** Not because it is the smallest diff — it is not — but because it is the
+only one that states a temporal rule rather than a list of exceptions:
+
+> **A cast is priced and charged at the moment it is revealed, against the state as it
+> stands then, in canonical player order — on every device.**
+
+A and B both leave "which phase charged this?" as a per-value question that every future
+Phase-2-to-4b addition has to re-answer correctly, and the gem clamp is the proof that it
+will not be re-answered correctly. C makes the standing rule M4.10 left behind
+(*"anything new that mutates a wizard's mana, chain, cost-modifying statuses or HP between
+the action commit and the action reveal is a lockstep bug by construction"*) into
+something the engine enforces structurally instead of something a comment asks for.
+
+### Open decisions — need Soren
+
+1. **A/B/C.** Recommendation above.
+2. **Should a mid-turn mana loss be able to fizzle a cast that was affordable when
+   committed?** Under C, yes: walk over a Slow tile and your cast can fail. Under A, no.
+   Today the answer is *both, one per device*, which is why it has to be decided rather
+   than discovered. Recommendation: yes — it is legible ("the tile drained you"), and it
+   is what the peer's device already does.
+3. **Is a `nextSpellCostDouble` destroyed by a Water haymaker still paid for?** Under C,
+   no (it is gone by the charge point). Under A, yes. Recommendation: no — the punch
+   visibly stripped the curse; charging for it anyway reads as a bug to a player.
+4. **Should the lethal shortfall land before or after the melee round?** Under C it lands
+   after, so a dying caster still gets punched and still throws their own punch. That is
+   a real rules change from what the caster's device does today.
+5. Not blocking, but adjacent: **should the shortfall→HP route stay gated on
+   `nextSpellCostDouble` alone?** It is currently the only path by which an unaffordable
+   cast is not simply a fizzle, and neither M4.10 nor the design prose says whether that
+   is intent or accident.
+
+### Version implications (argument only — nothing bumped here)
+
+* **`kRulesetVersion` — no.** No proof semantics participate. `certifiedBase`, the
+  formulas and the element sequence are unchanged; no VK moves; no spell needs re-proving.
+* **`kBattleProtocolVersion` — no**, for A or C. Neither adds a message, a field, or a
+  framing change; A's snapshot is computed independently on both devices from state they
+  already share.
+* **`kBattleEngineVersion` 2 → 3 — yes, for any of A, B or C.** The gate's own test is
+  *"could two builds compute a different canonical `BattleState` from identical inputs"*,
+  and here the answer is demonstrably yes: the five reproductions above are transcripts —
+  same messages, same proofs, same VK — that a patched and an unpatched build resolve into
+  different states. The SlowTile case does not even need an adversary or a rare status.
+  There is a subtlety worth stating rather than glossing: today's canonical state for
+  these transcripts is **not merely different, it is undefined** — the two peers already
+  disagree, which is the bug. Fixing it does not *change* a well-defined rule so much as
+  *define* one, and the gate still fires, because a mixed pair would desync mid-match on a
+  state hash instead of being refused at the handshake. That refusal is the entire reason
+  v1 exists.
+
+### Tests
+
+`test/battle/engine/mana_charge_window_characterization_test.dart` — 11 cases, real
+paired `TurnSessionPair` loops (two independent `TurnLoop`s, real commit-reveal, live
+proof verification stubbed to `alwaysOk`). Every intermediate is pinned — base cost 20,
+the doubled 40, the surcharged 23, the shortfall's 4 HP, the 25/15/0 drain arithmetic,
+the 200/100/80 gem clamp — so a fix inverts specific expectations rather than replacing
+the file. Six of the eleven are **controls** that remove only the in-window mutation and
+assert agreement, which is what makes each divergence attributable to the window rather
+than to the fixture.
+
+Not attempted: a two-device hardware pass. By CLAUDE.md's verification hierarchy this
+work sits at integration-test level; it is characterization, not a fix, so there is
+nothing yet for a device pass to confirm.
