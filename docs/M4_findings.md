@@ -6718,3 +6718,158 @@ convert identically. Worth its own look.
 
 A two-device hardware pass. This work sits at integration-test level by CLAUDE.md's
 verification hierarchy, and it changes the mana ledger on the peer path.
+
+---
+
+## M4.21 — Mystery is a mana-fizzle bypass (characterized 2026-08-22)
+
+*This section records the characterization only. The repair is written up in
+"M4.21, part 2" below.*
+
+### The governing invariant, stated first
+
+> Once canonical Phase-5 settlement marks a committed cast `fizzledForMana`, later
+> Mystery conversion or delayed-declaration handling must not resurrect it. The action
+> is spent and produces no spell consequence. **Mystery receives no special
+> affordability exception.**
+
+Nothing in the codebase disagreed with that sentence. `VOCAL_RECALL_PLAN.md` §4/§9.5
+and `casting_enhancements.dart`'s doc comment on `fizzle` both state the rule
+unconditionally — the cost outran the pool, the mana is refunded, the turn is spent —
+and `runewright_design_v4_0.md` §791 describes Mystery as *delay plus secrecy* and
+nothing else. There was no design intent to implement. There was a dropped field.
+
+### Two manifestations, one invariant
+
+**A. Immediate Mystery — the flag is lost in conversion.**
+
+`TurnLoop._verifyMysteryAction` rebuilds an immediate (delay 0)
+`MysterySpellCastAction` as a *fresh* `SpellCastAction`, copying `spell`, target,
+`isPotent`, `isVelocity` and `recall` — but not `fizzledForMana`. Settlement runs
+before that conversion, so the flag was written onto an object that is then discarded:
+
+| line | what happens |
+|---|---|
+| `turn_loop.dart` `_settleCommittedCasts` | prices both casts, calls `_markFizzledForMana` on the **`MysterySpellCastAction`** |
+| `turn_loop.dart` `_verifyMysteryAction` (≈50 lines later) | discards that object for a new one, flag defaulting to `false` |
+| `deterministic_resolution.dart` `enhancements.fizzle` gate | reads `false` → full resolution |
+
+**B. Delayed Mystery — the flag is never read.**
+
+A non-immediate `MysterySpellCastAction` passes through `_verifyMysteryAction`
+untouched, so here the flag *survives* — and then nothing consumes it.
+`resolveActions`' `MysterySpellCastAction` case destructures
+`spell, mysteryCommitment, isPotent, isVelocity` and queues a `PendingDelayedSpell`
+unconditionally. Since a delayed fire is never re-priced (settlement happens on the
+declaration turn only), an unaffordable declaration becomes a fully-effective free cast
+one turn later.
+
+These are two different defects that happen to violate the same invariant. **Fixing the
+conversion does not fix the declaration**, which is why the repair below touches two
+files rather than one.
+
+### Not introduced by M4.10b
+
+`git log -L` on `_verifyMysteryAction` shows `fizzledForMana` arrived in `fb1225a`
+(vocal recall), which added `recall:` to this constructor call and not the new flag.
+Under the pre-M4.10b rule the local charge happened at Phase 1 and the peer's inline in
+`_verifyPeerSpellCast` — **both still before the conversion**. M4.10b moved the timing
+without changing the outcome, and noted the gap in its own "Left alone, deliberately"
+section rather than widening that slice.
+
+### What it actually costs
+
+Measured on two genuinely separate `TurnLoop`s over `TurnSessionPair`, real
+commit-reveal exchanges, no network:
+
+| pin | value |
+|---|---|
+| starting mana | 5 |
+| canonical cost | 21 (`5×3 + 2 = 17`, `× 1.05⁴`, `× 1.5⁰`) |
+| fizzle verdict immediately before conversion | `true` |
+| converted action's fizzle value | `false` |
+| mana paid | **none** — refunded on both devices |
+| HP paid | none |
+| spell effects | **resolve** — target 24 → 20 HP |
+| chain | **builds to 2** (fire) instead of regressing to 0 |
+| canonical state on both peers | identical |
+
+**This is an exploitable affordability bypass, not a presentation inconsistency.** The
+caster gets a full-effect cast *plus* chain progress for zero mana. And because both
+devices convert identically it is desync-safe — no state-hash forfeit, no symptom, no
+log line. Any client reaches it by choosing a spell it cannot afford and routing it
+through Mystery. The delayed variant is the same bypass with a one-turn fuse.
+
+That combination — free, silent, and available to an unmodified client — is what makes
+this worth an engine epoch rather than a patch note.
+
+### Scope: only the mana fizzle
+
+`outOfRange` and `ignoredCloudRestriction` are recomputed at the resolution gate from
+`preMovRange` and live cloud positions. They never travel on the action, so the
+conversion cannot drop them, and the out-of-range Mystery control confirms they still
+suppress correctly. `fizzledForMana` is the only fizzle input that rides the action
+object, and therefore the only one exposed to a reconstruction.
+
+### The conversion field audit
+
+Treated as a data-loss audit rather than a one-bit search, since the whole class of bug
+is "a reconstruction that forgot something":
+
+| field | classification |
+|---|---|
+| `spell`, `isPotent`, `isVelocity`, `recall` | explicitly copied |
+| `targetHex` | deliberately reconstructed from `immediateTarget` |
+| `mysteryCommitment`, `immediateTarget`, `immediateNonce` | consumed by the conversion; irrelevant after |
+| `delayedOriginHex`, `delayedRange` | correctly null — this is a same-turn cast |
+| `conveyorDirection` | not representable on Mystery; documented as deliberate in `turn_actions.dart` |
+| `isEfficiency` | not representable — Mystery and Efficiency are mutually exclusive claims, and the `0x03` encoding has no byte for it |
+| `handIndex` | **dropped, currently harmless** |
+| `fizzledForMana` | **accidentally dropped** ← the bug |
+
+**On `handIndex`: dropped, and deliberately left dropped.** Every consumer runs
+upstream of the conversion — `appendSpellProofTail` at encode time and
+`_advanceDrawState` in Phase 5, both of which read `input.action` specifically *because*
+the converted action has lost the distinction (there is a comment in `runTurn` saying
+so). Adding it back would be speculative: there is no consumer that needs it, and a
+copied-but-unread field is how the next audit gets a false negative. Fix it when
+something downstream of the conversion asks for it, not before.
+
+`turn_loop.dart`'s `_verifyMysteryAction` is the only immediate-Mystery conversion site
+in `lib/`.
+
+### The fixture trap this cost an hour to
+
+A Mystery cast **is itself a cast-time enhancement claim**, and `PeerCastVerifier`
+requires every claim to be backed by that spell's own certified supreme-dominance zone
+(fire→Potency, air→Velocity, water→Efficiency, **earth→Mystery**). A synthetic proof
+with a pure-fire trajectory therefore forfeits on `unbacked_enhancement_claim` before
+any of this is reachable.
+
+Worse, it *presents* as a hang rather than a failure: the forfeit kills one loop while
+the other is still waiting on an exchange, and the `Future.wait(...).timeout()` reports
+the timeout, not the `StateError` underneath. Any paired-session Mystery fixture needs
+an earth-dominant supreme generation. The one here uses `fire, fire, fire, earth` —
+one complete fire formula (the damage) plus an earth residual (the backing).
+
+### Characterization corpus
+
+`test/battle/engine/mystery_fizzle_characterization_test.dart` — 9 tests, all green
+against the unfixed engine, pinning the bug as behaviour so the repair has something to
+invert:
+
+| # | case | pre-fix |
+|---|---|---|
+| 1 | unaffordable immediate Mystery | **BUG** — flag true, 4 damage, chain 2, refunded |
+| 2 | control: same spell cast normally | fizzles correctly — no damage, chain 0 |
+| 3 | control: affordable immediate Mystery | pays 21, deals 4, chain 2 |
+| 4 | peer-owned unaffordable immediate Mystery | **BUG** — identical, via `_certifiedPeerCastSettlement` |
+| 5 | unaffordable delayed declaration | **BUG** — queues anyway |
+| 6 | that declaration fires next turn | **BUG** — full damage, never paid for |
+| 7 | control: affordable delayed declaration fires | same damage |
+| 8 | control: affordable delayed declaration queues + pays | 21 charged |
+| 9 | control: out-of-range Mystery | correctly suppressed |
+
+Cases 3, 7, 8 are deliberately *indistinguishable* from 1, 6, 5 downstream of the
+conversion. That is the finding restated as a test: today the engine cannot tell an
+affordable Mystery cast from an unaffordable one.
