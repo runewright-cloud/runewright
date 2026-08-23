@@ -1,33 +1,49 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// mystery_fizzle_characterization_test.dart — the immediate-Mystery
-// mana-fizzle propagation gap.
+// mystery_fizzle_characterization_test.dart — M4.21: Mystery is not an
+// affordability exception.
 //
-// ## The rule these tests measure against
+// ## The rule this file enforces
 //
-//   A committed cast whose price exceeds the caster's mana at canonical
-//   Phase-5 settlement FIZZLES: the mana is refunded (never deducted), the
-//   spell produces no effects, and the caster's chain regresses. The turn is
-//   still spent. (docs/VOCAL_RECALL_PLAN.md §4 / §9.5; the flag is
-//   SpellCastAction.fizzledForMana, set by TurnLoop._markFizzledForMana and
-//   read at deterministic_resolution.dart's `enhancements.fizzle` gate.)
+//   Once canonical Phase-5 settlement marks a committed cast fizzledForMana,
+//   the cast is SPENT and produces no spell consequence. The mana is refunded
+//   (never deducted), no effect resolves, the chain regresses, and — for a
+//   Mystery declaration — nothing is placed on the battlefield. Later Mystery
+//   conversion or delayed-declaration handling must not resurrect it.
+//   (docs/VOCAL_RECALL_PLAN.md §4 / §9.5.)
 //
-// ## What this file characterizes, and does NOT fix
+// ## What changed in this file, and what did not
 //
-// `TurnLoop._verifyMysteryAction` rebuilds an immediate (delay=0)
-// MysterySpellCastAction as a fresh SpellCastAction, copying spell, target,
-// isPotent, isVelocity and recall — but NOT `fizzledForMana`. Settlement runs
-// BEFORE that conversion (`_settleCommittedCasts` at Phase 5 open, the
-// conversion a few lines later), so the flag is set on an object that is then
-// discarded, and the cast reaches resolution with fizzle == false.
+// These are the SAME nine fixtures that reproduced the bug (commit 577828c,
+// and the M4.21 section of docs/M4_findings.md). The five controls are
+// untouched — they passed before the fix and pass after, which is what makes
+// them controls. The four BUG cases had their expectations INVERTED, from
+// "the flag was set and the cast resolved anyway" to "the flag was set and
+// nothing happened":
 //
-// These tests pin the CURRENT behaviour, bug included, so the eventual repair
-// has something to invert. Every expectation below marked BUG is what the code
-// does today and what the fix must change; every other expectation is a
-// control that must keep passing.
+//   | case                                 | pre-fix                  | now        |
+//   |--------------------------------------|--------------------------|------------|
+//   | unaffordable immediate Mystery       | 4 damage, chain 2        | no effect  |
+//   | ...peer-owned                        | 4 damage                 | no effect  |
+//   | unaffordable delayed declaration     | queued a PendingDelayed  | nothing    |
+//   | ...and fired next turn               | 4 damage, unpaid         | never fires|
 //
-// Noted but untouched in docs/M4_findings.md's M4.10b section.
-
+// One test is new: `parity` below casts the same unaffordable spell twice,
+// once ordinarily and once through Mystery, and asserts the two produce
+// byte-identical canonical state. That is the invariant in its shortest form —
+// routing a cast through Mystery changes nothing about what a shortfall costs.
+//
+// ## The two repairs it covers
+//
+//   A. TurnLoop._verifyMysteryAction now CARRIES fizzledForMana through the
+//      immediate-cast rebuild instead of dropping it. Carried, never
+//      recomputed: there is one canonical affordability verdict and it was
+//      made at Phase 5.
+//   B. DeterministicResolution.resolveActions' non-immediate Mystery branch
+//      now reads the flag and declines to queue a PendingDelayedSpell,
+//      regressing the chain the same way every other mana fizzle does. There
+//      is deliberately NO second affordability check at delayed-fire time.
+//
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
@@ -55,17 +71,15 @@ const int _kBaseCost = 21;
 const int _kPoorMana = 5;
 
 void main() {
-  group('immediate Mystery — the fizzle flag is lost in conversion', () {
-    test('BUG: an unaffordable immediate Mystery cast resolves anyway',
+  group('immediate Mystery — the fizzle flag survives conversion', () {
+    test('an unaffordable immediate Mystery cast produces no consequence',
         () async {
       final r = await _runPairedMysteryTurn(casterMana: _kPoorMana);
 
       expect(r.error, isNull);
-      expect(r.canonicalMatches, isTrue,
-          reason: 'both devices convert identically, so this is a rules bug, '
-              'not a desync');
+      expect(r.canonicalMatches, isTrue);
 
-      // 1. Settlement DID decide the cast was unaffordable: the flag is set on
+      // 1. Settlement decided the cast was unaffordable: the flag is set on
       //    the action object the caller still holds, and no mana was taken.
       expect(r.localActionFizzled, isTrue,
           reason: '_markFizzledForMana ran on the MysterySpellCastAction');
@@ -73,24 +87,26 @@ void main() {
           reason: 'fizzle refunds — nothing was deducted');
       expect(r.b.casterMana, equals(_kPoorMana));
 
-      // 2. ...and the cast resolved regardless. This is the bug.
-      // 24 → 20: the fire formula's full damage, exactly as if the caster
-      // had been able to pay for it.
-      expect(r.a.opponentHp, equals(_kStartHp - 4),
-          reason: 'BUG: a canonically fizzled cast dealt damage');
-      expect(r.b.opponentHp, equals(r.a.opponentHp));
+      // 2. No HP was paid either. A shortfall converts to HP only under
+      //    nextSpellCostDouble, which is not in play here; the plain fizzle
+      //    rule costs nothing but the turn.
+      expect(r.a.casterHp, equals(_kStartHp));
 
-      // 3. Chain built instead of regressing — the second consequence of the
-      //    lost flag, and the one that pays forward into later turns. The
-      //    length is 2 (not 1) because _updateChainState advances once per
-      //    committed fire element beyond the first, which is exactly what the
-      //    affordable control below also produces.
-      expect(r.a.casterChainLengths[SpellAffinity.fire], equals(2),
-          reason: 'BUG: a fizzle must _regressChain, not build one');
-      expect(r.b.casterChainLengths[SpellAffinity.fire], equals(2));
+      // 3. ...and the cast produced nothing. This is the M4.21 fix: the flag
+      //    now rides the rebuilt SpellCastAction into the `enhancements.fizzle`
+      //    gate, which suppresses the whole resolution.
+      expect(r.a.opponentHp, equals(_kStartHp),
+          reason: 'a canonically fizzled cast deals no damage');
+      expect(r.b.opponentHp, equals(_kStartHp));
+
+      // 4. Chain regressed rather than building — the second consequence of
+      //    the flag, and the one that pays forward into later turns.
+      expect(r.a.casterChainLengths[SpellAffinity.fire] ?? 0, equals(0),
+          reason: 'a fizzle regresses the chain');
+      expect(r.b.casterChainLengths[SpellAffinity.fire] ?? 0, equals(0));
     });
 
-    test('control: the same unaffordable spell cast NORMALLY does fizzle',
+    test('control: the same unaffordable spell cast NORMALLY still fizzles',
         () async {
       final r = await _runPairedMysteryTurn(
         casterMana: _kPoorMana,
@@ -101,10 +117,34 @@ void main() {
       expect(r.canonicalMatches, isTrue);
       expect(r.localActionFizzled, isTrue);
       expect(r.a.casterMana, equals(_kPoorMana), reason: 'refunded');
-      expect(r.a.opponentHp, equals(_kStartHp),
-          reason: 'no effects: the flag survived to the resolution gate');
-      expect(r.a.casterChainLengths[SpellAffinity.fire] ?? 0, equals(0),
-          reason: 'fizzle regresses the chain');
+      expect(r.a.casterHp, equals(_kStartHp));
+      expect(r.a.opponentHp, equals(_kStartHp));
+      expect(r.a.casterChainLengths[SpellAffinity.fire] ?? 0, equals(0));
+    });
+
+    test('parity: ordinary and Mystery shortfalls now cost exactly the same',
+        () async {
+      // The invariant in its shortest form. Two runs of the same unaffordable
+      // spell, one ordinary and one routed through Mystery, compared as whole
+      // canonical states rather than field by field — so a consequence nobody
+      // thought to assert cannot diverge unnoticed. Pre-fix these differed in
+      // HP, chain and (for the delayed variant) pendingDelayedSpells.
+      final ordinary = await _runPairedMysteryTurn(
+        casterMana: _kPoorMana,
+        useMystery: false,
+      );
+      final mystery = await _runPairedMysteryTurn(casterMana: _kPoorMana);
+
+      expect(ordinary.error, isNull);
+      expect(mystery.error, isNull);
+      expect(ordinary.localActionFizzled, isTrue);
+      expect(mystery.localActionFizzled, isTrue);
+      expect(mystery.a.casterMana, equals(ordinary.a.casterMana));
+      expect(mystery.a.casterHp, equals(ordinary.a.casterHp));
+      expect(mystery.a.opponentHp, equals(ordinary.a.opponentHp));
+      expect(mystery.a.casterChainLengths, equals(ordinary.a.casterChainLengths));
+      expect(mystery.a.pendingDelayedCount,
+          equals(ordinary.a.pendingDelayedCount));
     });
 
     test('control: an AFFORDABLE immediate Mystery cast pays and resolves',
@@ -115,17 +155,19 @@ void main() {
       expect(r.canonicalMatches, isTrue);
       expect(r.localActionFizzled, isFalse);
       expect(r.a.casterMana, equals(_kStartMana - _kBaseCost));
-      expect(r.a.opponentHp, lessThan(_kStartHp));
-      // Identical to the unaffordable case above — which is the point: today
-      // the two are indistinguishable downstream of the conversion.
+      // 24 → 20: the fire formula's full damage. Unchanged by M4.21 — the fix
+      // must be invisible to a caster who can pay.
+      expect(r.a.opponentHp, equals(_kStartHp - 4));
       expect(r.a.casterChainLengths[SpellAffinity.fire], equals(2));
+      expect(r.b.casterChainLengths[SpellAffinity.fire], equals(2));
     });
 
-    test('BUG applies to a PEER-owned immediate Mystery cast too', () async {
-      // player_b is now the caster, so device A sees the bug on its peer path
-      // (_certifiedPeerCastSettlement → _markFizzledForMana on the decoded
-      // MysterySpellCastAction) and device B on its local path. Same loss site
-      // either way: the conversion runs on both actions.
+    test('a PEER-owned unaffordable immediate Mystery is suppressed too',
+        () async {
+      // player_b is the caster, so device A reaches the verdict through
+      // _certifiedPeerCastSettlement and device B through
+      // _localCastSettlement. The conversion runs on both actions, so the
+      // repair has to hold on both — this is the ownership half of the test.
       final r = await _runPairedMysteryTurn(
         casterMana: _kPoorMana,
         casterIsB: true,
@@ -134,24 +176,20 @@ void main() {
       expect(r.error, isNull);
       expect(r.canonicalMatches, isTrue);
       expect(r.localActionFizzled, isTrue);
-      // `caster` is player_b here; device A reached this verdict through
-      // _certifiedPeerCastSettlement, device B through _localCastSettlement.
+      // `caster` is player_b here.
       expect(r.a.casterMana, equals(_kPoorMana),
           reason: 'peer settlement refunded on the verifier\'s device');
       expect(r.b.casterMana, equals(_kPoorMana));
-      expect(r.a.opponentHp, lessThan(_kStartHp),
-          reason: 'BUG: the peer\'s fizzled Mystery cast dealt damage');
-      expect(r.b.opponentHp, equals(r.a.opponentHp));
+      expect(r.a.opponentHp, equals(_kStartHp),
+          reason: 'the peer\'s fizzled Mystery cast deals no damage');
+      expect(r.b.opponentHp, equals(_kStartHp));
     });
   });
 
-  group('delayed Mystery — the declaration turn', () {
-    test('BUG: an unaffordable delayed Mystery declaration still queues',
+  group('delayed Mystery — a fizzled declaration never enters pending state',
+      () {
+    test('an unaffordable delayed Mystery declaration queues nothing',
         () async {
-      // A non-immediate MysterySpellCastAction passes through
-      // _verifyMysteryAction UNCHANGED, so the flag survives on the object —
-      // but resolveActions' MysterySpellCastAction case never reads it. The
-      // pending spell is queued, and a delayed fire is not charged again.
       final r = await _runPairedMysteryTurn(
         casterMana: _kPoorMana,
         delay: 1,
@@ -161,18 +199,20 @@ void main() {
       expect(r.canonicalMatches, isTrue);
       expect(r.localActionFizzled, isTrue);
       expect(r.a.casterMana, equals(_kPoorMana), reason: 'refunded');
-      expect(r.a.pendingDelayedCount, equals(1),
-          reason: 'BUG: a fizzled declaration was still queued');
-      expect(r.b.pendingDelayedCount, equals(1));
-      // The declaration itself never damages anyone — that is the mechanic,
-      // not the fizzle.
+      expect(r.a.pendingDelayedCount, equals(0),
+          reason: 'a fizzled declaration is not placed on the battlefield');
+      expect(r.b.pendingDelayedCount, equals(0));
       expect(r.a.opponentHp, equals(_kStartHp));
+      // Spent like any other mana fizzle: the chain regresses. Deliberately
+      // the ordinary _regressChain, not a Mystery-specific rule.
+      expect(r.a.casterChainLengths[SpellAffinity.fire] ?? 0, equals(0));
     });
 
-    test('BUG: the fizzled declaration then FIRES on the delay turn', () async {
-      // The follow-through. A delayed fire is never re-priced (settlement
-      // happens on the declaration turn only), so a declaration that fizzled
-      // for mana yields a fully-effective free cast one turn later.
+    test('and therefore no delayed fire happens on the following turn',
+        () async {
+      // The follow-through, and the reason the declaration-side repair had to
+      // exist at all: a delayed fire is never re-priced, so anything that
+      // reaches the pending list fires for free. Nothing reaches it.
       final r = await _runDelayedMysteryFire(casterMana: _kPoorMana);
 
       expect(r.error, isNull);
@@ -180,22 +220,49 @@ void main() {
       expect(r.declarationFizzled, isTrue);
       expect(r.a.casterMana, equals(_kPoorMana),
           reason: 'never charged, on either turn');
-      expect(r.a.pendingDelayedCount, equals(0), reason: 'it fired');
-      expect(r.a.opponentHp, lessThan(_kStartHp),
-          reason: 'BUG: a fizzled declaration dealt full damage a turn later');
-      expect(r.b.opponentHp, equals(r.a.opponentHp));
+      expect(r.a.pendingDelayedCount, equals(0),
+          reason: 'nothing was ever queued, so nothing was left to fire');
+      expect(r.a.opponentHp, equals(_kStartHp),
+          reason: 'no damage a turn later either');
+      expect(r.b.opponentHp, equals(_kStartHp));
     });
 
-    test('control: an affordable delayed declaration fires for the same damage',
+    test('control: an affordable delayed declaration still fires normally',
         () async {
       final r = await _runDelayedMysteryFire(casterMana: _kStartMana);
 
       expect(r.error, isNull);
       expect(r.canonicalMatches, isTrue);
       expect(r.declarationFizzled, isFalse);
-      expect(r.a.casterMana, equals(_kStartMana - _kBaseCost));
-      expect(r.a.pendingDelayedCount, equals(0));
-      expect(r.a.opponentHp, lessThan(_kStartHp));
+      expect(r.a.casterMana, equals(_kStartMana - _kBaseCost),
+          reason: 'charged once, at declaration — never re-priced at fire');
+      expect(r.a.pendingDelayedCount, equals(0), reason: 'it fired');
+      expect(r.a.opponentHp, equals(_kStartHp - 4));
+      expect(r.b.opponentHp, equals(_kStartHp - 4));
+    });
+
+    test('the skipped declaration does not swallow the other player\'s action',
+        () async {
+      // Repair B skips the rest of its `case` with a bare `break`. In Dart that
+      // targets the switch, not the `for (final (actor, action) in sorted)`
+      // around it — but "the language says so" is a weaker guarantee than a
+      // fixture, and getting it wrong would silently drop every action sorted
+      // after the fizzled one. So: player_a's declaration fizzles while
+      // player_b casts for real, and player_b's spell must still land.
+      final r = await _runPairedMysteryTurn(
+        casterMana: _kPoorMana,
+        delay: 1,
+        opponentAlsoCasts: true,
+      );
+
+      expect(r.error, isNull);
+      expect(r.canonicalMatches, isTrue);
+      expect(r.localActionFizzled, isTrue);
+      expect(r.a.pendingDelayedCount, equals(0), reason: 'nothing queued');
+      expect(r.a.casterHp, equals(_kStartHp - 4),
+          reason: 'the OTHER action still resolved — the break broke the '
+              'switch, not the loop');
+      expect(r.b.casterHp, equals(r.a.casterHp));
     });
 
     test('control: an affordable delayed Mystery declaration queues and pays',
@@ -210,15 +277,17 @@ void main() {
       expect(r.localActionFizzled, isFalse);
       expect(r.a.casterMana, equals(_kStartMana - _kBaseCost));
       expect(r.a.pendingDelayedCount, equals(1));
+      expect(r.b.pendingDelayedCount, equals(1));
     });
   });
 
-  group('out-of-range: a non-mana fizzle path, for comparison', () {
+  group('out-of-range: a non-mana fizzle path, unchanged by M4.21', () {
     test('control: an out-of-range immediate Mystery cast IS suppressed',
         () async {
       // outOfRange is recomputed at the resolution gate from preMovRange, not
-      // carried on the action — so it is immune to the conversion and shows
-      // the gate itself works. Mana is still charged (the cast was affordable).
+      // carried on the action — so it was never exposed to the conversion and
+      // is not what M4.21 touched. Mana is still charged: an out-of-range cast
+      // is paid for, unlike a mana fizzle.
       final r = await _runPairedMysteryTurn(
         casterMana: _kStartMana,
         casterRange: 1,
@@ -228,8 +297,7 @@ void main() {
       expect(r.error, isNull);
       expect(r.canonicalMatches, isTrue);
       expect(r.localActionFizzled, isFalse);
-      expect(r.a.casterMana, equals(_kStartMana - _kBaseCost),
-          reason: 'an out-of-range cast is paid for, unlike a mana fizzle');
+      expect(r.a.casterMana, equals(_kStartMana - _kBaseCost));
       expect(r.a.opponentHp, equals(_kStartHp));
       expect(r.a.casterChainLengths[SpellAffinity.fire] ?? 0, equals(0));
     });
@@ -281,10 +349,12 @@ Future<_PairedResult> _runPairedMysteryTurn({
   int delay = 0,
   int casterRange = 3,
   bool targetFar = false,
+  bool opponentAlsoCasts = false,
 }) async {
   final casterId = casterIsB ? 'player_b' : 'player_a';
   final opponentId = casterIsB ? 'player_a' : 'player_b';
   final opponentHome = casterIsB ? _kCasterHome : _kOpponentHome;
+  final casterHome = casterIsB ? _kOpponentHome : _kCasterHome;
 
   BattleState build() => _makeState(
         casterId: casterId,
@@ -318,6 +388,15 @@ Future<_PairedResult> _runPairedMysteryTurn({
   final spell = _fireSpell(id: 'mystery-ember', commitmentFill: 0xab);
   (casterIsB ? loop2 : loop1).localChapterCommitments = [spell.commitmentHex];
 
+  // A DISTINCT commitment: certifiedPeerCasts is keyed by commitmentHex and the
+  // commitment is grid-only, so two casts of the same grid in one turn collide.
+  final replySpell = _fireSpell(id: 'reply-ember', commitmentFill: 0xcd);
+  if (opponentAlsoCasts) {
+    (casterIsB ? loop1 : loop2).localChapterCommitments = [
+      replySpell.commitmentHex,
+    ];
+  }
+
   final target = targetFar ? _kFarTile : opponentHome;
 
   // The action the CASTER declares. Held in a variable so the test can read
@@ -343,12 +422,15 @@ Future<_PairedResult> _runPairedMysteryTurn({
 
   Object? error;
   try {
+    final TurnAction otherAction = opponentAlsoCasts
+        ? SpellCastAction(spell: replySpell, targetHex: casterHome)
+        : PassAction();
     await Future.wait([
       loop1.runTurn(TurnInput(
-        action: casterIsB ? PassAction() : castAction,
+        action: casterIsB ? otherAction : castAction,
       )),
       loop2.runTurn(TurnInput(
-        action: casterIsB ? castAction : PassAction(),
+        action: casterIsB ? castAction : otherAction,
       )),
     ], eagerError: false).timeout(const Duration(seconds: 20));
   } catch (e) {

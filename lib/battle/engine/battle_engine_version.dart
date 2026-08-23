@@ -112,6 +112,43 @@
 // No proof semantics participate and no framing changes, so `kRulesetVersion`
 // stays 3 and `kBattleProtocolVersion` stays 5. See docs/M4_findings.md M4.10b.
 //
+// v4 (2026-08-23, M4.21) — a cast that canonical Phase-5 settlement marked
+// `fizzledForMana` can no longer be resurrected by Mystery. Two paths did it:
+//
+//   * `TurnLoop._verifyMysteryAction` rebuilt an immediate (delay 0) Mystery
+//     cast as a fresh `SpellCastAction` and dropped the flag, so the cast
+//     resolved at full effect while keeping the mana settlement had refunded.
+//     The flag is now carried through the rebuild.
+//   * `DeterministicResolution.resolveActions`' non-immediate Mystery branch
+//     never read the flag, so an unaffordable declaration still queued a
+//     `PendingDelayedSpell` — and a delayed fire is never re-priced, so it
+//     landed free a turn later. A fizzled declaration now queues nothing and
+//     regresses the chain, exactly as any other mana fizzle does.
+//
+// Mystery gets no special affordability exception; nothing in the design docs
+// ever said it did (VOCAL_RECALL_PLAN.md §4/§9.5,
+// `runewright_design_v4_0.md` §791). This was a dropped field and an unread
+// one, not a rule.
+//
+// The gate has to fire, on the usual test: **the same wire transcript** — same
+// `0x03` action bytes, same proofs, same VK — yields different canonical
+// `BattleState` on either side of the change. A v3 build applies the spell's
+// damage, advances the caster's chain and (for the delayed variant) writes a
+// `PendingDelayedSpell` into the state; a v4 build suppresses all three. HP,
+// `chainLengths` and `pendingDelayedSpells` are all hashed by
+// `BattleState.toCanonicalBytes`, so a mixed pair desyncs on the state hash
+// mid-match instead of being refused at the handshake — the failure mode v1
+// exists to abolish.
+//
+// Unlike v3, the v3 behaviour here WAS well-defined: both peers agreed, and
+// agreed on the wrong answer. That makes this a rules correction rather than a
+// rules supply, and it is the reason it needs an epoch rather than a patch
+// note — an unpatched client is not merely stale, it can cast for free.
+//
+// No proof semantics participate (the enhancement-backing check that certifies
+// a Mystery claim is untouched) and no framing changes, so `kRulesetVersion`
+// stays 3 and `kBattleProtocolVersion` stays 5. See docs/M4_findings.md M4.21.
+//
 // There is deliberately no v0 build. Nothing has shipped, so pretending an
 // earlier epoch was ever negotiated would be fiction; 0 is reserved as the
 // sentinel for a peer that predates this field entirely and therefore declares
@@ -125,7 +162,7 @@
 /// [DeviceCapabilities.battleEngineVersion] both default to it rather than
 /// restating a literal, exactly as `MatchConfig.rulesetVersion` derives from
 /// `kRulesetVersion`. See this file's header for what forces a bump.
-const int kBattleEngineVersion = 3;
+const int kBattleEngineVersion = 4;
 
 /// What a peer that predates the engine-version gate implicitly declares: it
 /// omits the field, and an omitted field cannot be read as agreement.

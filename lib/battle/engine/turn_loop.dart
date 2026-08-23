@@ -2442,6 +2442,30 @@ class TurnLoop
   /// Converts an immediate [MysterySpellCastAction] (delay=0) into a regular
   /// [SpellCastAction] after verifying the mystery commitment.
   /// Returns [PassAction] on hash mismatch. Non-immediate actions pass through.
+  ///
+  /// **This is a rebuild, and a rebuild is a place where semantics get lost.**
+  /// [_settleCommittedCasts] has already run by the time this is called — that
+  /// ordering is deliberate and predates M4.10b — so the action arriving here
+  /// may already be marked [MysterySpellCastAction.fizzledForMana]. Dropping
+  /// that on the floor was M4.21: the cast reached resolution with
+  /// `fizzle == false`, resolved at full effect, and kept the mana settlement
+  /// had refunded. A free cast, silently, from an unmodified client.
+  ///
+  /// The flag is **carried, never recomputed**. This method must not become a
+  /// second affordability oracle: there is exactly one canonical verdict, made
+  /// at Phase 5 from settled state, and re-pricing here would be a second one
+  /// reading a different moment — precisely the asymmetry M4.10b abolished.
+  ///
+  /// Everything else the destination type can hold is accounted for:
+  /// `targetHex` is reconstructed from the now-opened `immediateTarget`;
+  /// `delayedOriginHex`/`delayedRange` are correctly null for a same-turn cast;
+  /// `conveyorDirection` and `isEfficiency` have no representation on a Mystery
+  /// action at all (Mystery and Efficiency are mutually exclusive enhancement
+  /// claims, and the 0x03 encoding has no byte for either). `handIndex` is
+  /// dropped and stays dropped: every consumer — `appendSpellProofTail` at
+  /// encode time, `_advanceDrawState` in Phase 5 — runs upstream of this
+  /// conversion and deliberately reads `input.action` instead. Copying a field
+  /// nothing reads is how the next audit gets a false negative.
   Future<TurnAction> _verifyMysteryAction(TurnAction action) async {
     if (action is! MysterySpellCastAction || !action.isImmediate) return action;
 
@@ -2458,7 +2482,9 @@ class TurnLoop
       isPotent: action.isPotent,
       isVelocity: action.isVelocity,
       recall: action.recall,
-    );
+    )
+      // Settled at Phase 5, before this line. Carried, not recomputed. M4.21.
+      ..fizzledForMana = action.fizzledForMana;
   }
 
   /// Parses a delayed-reveal payload, verifies each entry against pending state,

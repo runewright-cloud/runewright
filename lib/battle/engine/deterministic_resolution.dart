@@ -2723,6 +2723,29 @@ class DeterministicResolution {
           // MysterySpellCastAction at this point is always the non-immediate
           // (delayed) variant.
           //
+          // A declaration the caster could not pay for never enters the
+          // pending state (M4.21). Settlement has already refunded the mana and
+          // marked the action; queueing it anyway made an unaffordable spell
+          // into a fully-effective free cast one turn later, because a delayed
+          // fire is deliberately never re-priced — the affordability question
+          // is asked once, at the declaration turn's Phase-5 settlement, and
+          // this is where that answer has to bite. **Do not "fix" this by
+          // re-pricing at fire time instead:** the caster's mana three turns
+          // later has nothing to do with whether they could afford the cast
+          // they committed to, and asking twice is how two devices come to
+          // disagree.
+          //
+          // The turn is still spent, and it is spent the way every other mana
+          // fizzle spends one — [_regressChain], the same call the ordinary
+          // cast path's `enhancements.fizzle` branch makes. Nothing
+          // Mystery-specific is invented here, and nothing is placed on the
+          // battlefield: a fizzled declaration leaves no pending orb, because a
+          // visible placeholder that can never fire is a tell about the
+          // caster's mana that the Mystery mechanic exists to withhold.
+          if (action.fizzledForMana) {
+            _regressChain(actor);
+            break;
+          }
           // TODO(B-1) closure for delayed fires: capture the proof-attested
           // semantics NOW, while the verification that produced them is still
           // in scope. Up to three turns from now the turn-scoped certified maps

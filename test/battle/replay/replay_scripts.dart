@@ -45,7 +45,139 @@ Future<List<MatchScript>> allScripts() async => [
       await _counterCharmInterceptsDelayedFire(),
       await _unbackedMysteryClaimForfeits(),
       _slowTileDrainsACastIntoAFizzle(),
+      await _mysteryFizzleIsNotAFreeCast(),
     ];
+
+/// A caster who cannot pay gets nothing, whether or not they route it through
+/// Mystery.
+///
+/// The corpus's record of **M4.21**: once canonical Phase-5 settlement marks a
+/// cast `fizzledForMana`, neither the immediate-Mystery conversion nor the
+/// delayed-declaration branch may resurrect it.
+///
+/// ## Why this one is worth a script
+///
+/// Because the half that matters spans a turn boundary, which is this corpus's
+/// stated admission criterion. The old bug's delayed variant wrote a
+/// `PendingDelayedSpell` on turn 1 and cashed it on turn 2 for free — a
+/// two-turn transcript is the only place that is visible at all. Turn 2 here
+/// exists solely to be the turn that fire would have landed on.
+///
+/// The unit regressions
+/// (`test/battle/engine/mystery_fizzle_characterization_test.dart`) assert the
+/// fields anyone thought to name. This asserts the **bytes**, which is the
+/// stronger claim for a bug whose entire signature was that it produced no
+/// symptom: both devices agreed, no state hash tripped, and the only evidence
+/// was HP that should not have moved.
+///
+/// ## Reading the spell
+///
+/// `[fire, fire, fire, earth, earth, earth]` — two complete formulas, so
+/// `spellFromElements`' whole-formula assertion holds. The fire triplet is
+/// Fire Damage: if either repair regressed, this golden gains HP loss on
+/// player_b and an Earth Barrier that should not exist. The earth triplet is
+/// not decoration either — a Mystery claim must be backed by certified supreme
+/// dominance in the **earth** zone, so without it the peer forfeits on
+/// `unbacked_enhancement_claim` and the script tests nothing.
+///
+/// Cost is `(5×3 + 2) × 1.05^6 × 1.5^1` = 34, against a 10-mana pool. The
+/// shortfall is deliberately wide: nothing about this script should turn on
+/// rounding.
+Future<MatchScript> _mysteryFizzleIsNotAFreeCast() async {
+  const elements = [
+    BorderZone.fire,
+    BorderZone.fire,
+    BorderZone.fire,
+    BorderZone.earth,
+    BorderZone.earth,
+    BorderZone.earth,
+  ];
+  final delayed = spellFromElements(
+    elements: elements,
+    variant: 93,
+    name: 'Patient Ruin',
+  );
+  final immediate = spellFromElements(
+    elements: elements,
+    variant: 94,
+    name: 'Sudden Ruin',
+  );
+
+  const target = HexCoord(1, 0);
+  const delay = 1;
+  // Fixed, not random: a replayable script cannot contain entropy the golden
+  // does not also contain.
+  final delayedNonce = Uint8List.fromList(List.generate(16, (i) => i + 31));
+  final delayedCommitment = await PendingDelayedSpell.commitmentHash(
+    target: target,
+    delay: delay,
+    nonce: delayedNonce,
+  );
+  final immediateNonce = Uint8List.fromList(List.generate(16, (i) => i + 61));
+  final immediateCommitment = await PendingDelayedSpell.commitmentHash(
+    target: target,
+    delay: 0,
+    nonce: immediateNonce,
+  );
+
+  return MatchScript(
+    name: 'mystery_fizzle_is_not_a_free_cast',
+    description:
+        'A 10-mana wizard commits two 34-mana Mystery casts, one delayed and '
+        'one immediate. Both fizzle at Phase-5 settlement. Pins M4.21: the '
+        'delayed one queues no PendingDelayedSpell and therefore never fires, '
+        'and the immediate one is suppressed by the flag its conversion now '
+        'carries. Nothing is charged and nothing lands.',
+    // Well below the 34 either cast prices at. Both wizards get the same pool;
+    // player_b never casts, so only player_a's matters.
+    startingMana: 10,
+    localChapterCommitments: [
+      delayed.commitmentHex,
+      immediate.commitmentHex,
+    ],
+    peerChapterCommitments: const [],
+    turns: [
+      ScriptedTurn.fixed(
+        note: 'player_a declares a Mystery (delay 1) it cannot afford — the '
+            'turn is spent, the chain regresses, and NO pending spell is '
+            'written',
+        local: TurnInput(
+          action: MysterySpellCastAction(
+            spell: delayed,
+            mysteryCommitment: delayedCommitment,
+          ),
+        ),
+        peer: TurnInput(action: PassAction()),
+      ),
+      ScriptedTurn.fixed(
+        note: 'the turn the delay would have elapsed on. Nothing to reveal, '
+            "because nothing was queued — if player_b's HP moves here, the "
+            'declaration-side repair has regressed',
+        local: TurnInput(action: PassAction()),
+        peer: TurnInput(action: PassAction()),
+      ),
+      ScriptedTurn.fixed(
+        note: 'player_a fires an immediate Mystery (delay 0) it still cannot '
+            'afford — the conversion carries the fizzle flag, so no damage',
+        local: TurnInput(
+          action: MysterySpellCastAction(
+            spell: immediate,
+            mysteryCommitment: immediateCommitment,
+            immediateTarget: target,
+            immediateNonce: immediateNonce,
+          ),
+        ),
+        peer: TurnInput(action: PassAction()),
+      ),
+      ScriptedTurn.fixed(
+        note: 'quiet turn — a fizzled cast must leave nothing behind, on '
+            'either device',
+        local: TurnInput(action: PassAction()),
+        peer: TurnInput(action: PassAction()),
+      ),
+    ],
+  );
+}
 
 /// A Slow tile drains the caster below their own spell's price, mid-turn.
 ///

@@ -6873,3 +6873,212 @@ invert:
 Cases 3, 7, 8 are deliberately *indistinguishable* from 1, 6, 5 downstream of the
 conversion. That is the finding restated as a test: today the engine cannot tell an
 affordable Mystery cast from an unaffordable one.
+
+---
+
+## M4.21, part 2 — the fix: Mystery cannot resurrect a fizzled cast (2026-08-23)
+
+Characterization commit `577828c`. This section is the repair.
+
+### The rule, restated as the thing the code now enforces
+
+> Once canonical Phase-5 settlement marks a committed cast `fizzledForMana`,
+> the cast is **spent**: the mana is refunded, no effect resolves, the chain regresses,
+> and nothing is placed on the battlefield. Neither Mystery conversion nor delayed
+> declaration may resurrect it.
+
+### Two repairs, because there were two defects
+
+**A. `turn_loop.dart` — `_verifyMysteryAction` carries the flag.**
+
+```dart
+  return SpellCastAction(
+    spell: action.spell,
+    targetHex: action.immediateTarget!,
+    isPotent: action.isPotent,
+    isVelocity: action.isVelocity,
+    recall: action.recall,
+  )
+    // Settled at Phase 5, before this line. Carried, not recomputed. M4.21.
+    ..fizzledForMana = action.fizzledForMana;
+```
+
+One cascade. **Carried, never recomputed** — and that word is the design decision, not a
+stylistic note. Re-pricing here would create a *second* affordability oracle reading a
+different moment than the first, which is precisely the asymmetry M4.10b spent a
+milestone abolishing. There is one canonical verdict, made at Phase 5 from settled
+state, and everything downstream transports it.
+
+**B. `deterministic_resolution.dart` — a fizzled declaration queues nothing.**
+
+```dart
+  if (action.fizzledForMana) {
+    _regressChain(actor);
+    break;
+  }
+```
+
+Placed at the top of the non-immediate `MysterySpellCastAction` branch, before the
+`certifiedDeclaration` derivation and the `PendingDelayedSpell` write.
+
+Two things it deliberately does *not* do:
+
+* **It does not re-price at fire time.** The affordability question is asked once, on
+  the declaration turn, and this is where that answer has to bite. Checking again three
+  turns later would ask a different question — "can they afford it *now*" — of a
+  caster whose pool has nothing to do with the commitment they made. Two checks is how
+  two devices come to disagree.
+* **It does not queue a visibly fizzled placeholder.** A pending orb that can never
+  fire is a tell about the caster's mana, and withholding exactly that is what Mystery
+  is for. Nothing goes on the board.
+
+The chain consequence is `_regressChain` — the same call the ordinary cast path's
+`enhancements.fizzle` branch makes. No Mystery-specific chain rule was invented; the
+branch simply reuses the general one it was previously skipping.
+
+### Why B is not fixed by A
+
+Worth stating plainly, because "preserve the flag" sounds like it should cover both.
+It does not. A non-immediate Mystery action passes through `_verifyMysteryAction`
+**untouched** — there is nothing to preserve, the flag was already intact. B's defect
+was on the *reading* side: `resolveActions` destructured four fields and never looked at
+the fifth. Two different defects, one invariant, two edits.
+
+### The conversion audit, preserved
+
+| field | classification |
+|---|---|
+| `spell`, `isPotent`, `isVelocity`, `recall` | explicitly copied |
+| `targetHex` | deliberately reconstructed from `immediateTarget` |
+| `mysteryCommitment`, `immediateTarget`, `immediateNonce` | consumed by the conversion |
+| `delayedOriginHex`, `delayedRange` | correctly null — same-turn cast |
+| `conveyorDirection`, `isEfficiency` | not representable on a Mystery action |
+| `handIndex` | **dropped, and left dropped** — see below |
+| `fizzledForMana` | **was the accidental loss** — now carried |
+
+**`handIndex` was not "fixed".** Every consumer runs upstream of the conversion:
+`appendSpellProofTail` at encode time, `_advanceDrawState` in Phase 5 — both of which
+read `input.action` specifically because the converted action has lost the distinction,
+with a comment in `runTurn` saying so. Copying a field nothing reads buys nothing and
+costs something: it is how the *next* audit of this constructor gets a false negative,
+because a fully-populated rebuild looks safe whether or not it is. If a consumer appears
+downstream of the conversion, add it then. The audit is recorded here so that decision
+is visible rather than merely absent.
+
+### Version: engine 3 → 4
+
+`kBattleEngineVersion` **3 → 4**. `kRulesetVersion` stays **3**;
+`kBattleProtocolVersion` stays **5**.
+
+The gate's test is not "did we fix a bug" but "can two builds compute a different
+canonical `BattleState` from an identical transcript". They demonstrably can. The same
+`0x03` action bytes, the same proofs, the same VK: a v3 build applies the spell's
+damage, advances the caster's chain, and (for the delayed variant) writes a
+`PendingDelayedSpell`; a v4 build suppresses all three. HP, `chainLengths` and
+`pendingDelayedSpells` are all hashed by `BattleState.toCanonicalBytes`, so a mixed pair
+desyncs mid-match on a state hash instead of being refused at the handshake.
+
+Unlike v3, **the v3 behaviour here was well-defined** — both peers agreed, and agreed on
+the wrong answer. That makes this a rules *correction* rather than a rules *supply*, and
+it is why it needs an epoch rather than a patch note: an unpatched client is not merely
+stale, it can cast for free.
+
+Nothing in the proof path moved. The enhancement-backing check that certifies a Mystery
+claim (`certifiedSupremeTags`, earth zone) is untouched, and so is the wire framing.
+
+### Regressions
+
+`mystery_fizzle_characterization_test.dart` keeps all nine fixtures; the five controls
+are untouched and the four BUG cases have their expectations inverted:
+
+| case | pre-fix | now |
+|---|---|---|
+| unaffordable immediate Mystery | 4 damage, chain 2, refunded | **no effect, chain 0, refunded** |
+| ...peer-owned | 4 damage | **no effect** |
+| unaffordable delayed declaration | queued a `PendingDelayedSpell` | **queues nothing** |
+| ...and fired next turn | 4 damage, never paid for | **never fires** |
+| control: same spell cast ordinarily | fizzles | unchanged |
+| control: affordable immediate Mystery | 21 charged, 4 damage, chain 2 | unchanged |
+| control: affordable delayed declaration | 21 charged, queues | unchanged |
+| control: affordable delayed fire | 4 damage | unchanged |
+| control: out-of-range Mystery | suppressed, still charged | unchanged |
+
+Two tests are new. **`parity`** is the invariant in its shortest form: the same
+unaffordable spell cast ordinarily and through Mystery, compared as whole outcomes
+rather than field by field, so a consequence nobody thought to assert cannot diverge
+unnoticed. Pre-fix these differed in HP, chain and pending spells.
+
+The second guards repair B's `break`. It skips the rest of its `case`, and in Dart that
+targets the switch rather than the `for (final (actor, action) in sorted)` around it —
+but "the language says so" is a weaker guarantee than a fixture, and getting it wrong
+would silently drop every action sorted *after* the fizzled one. So player_a's
+declaration fizzles while player_b casts for real, and player_b's spell still lands.
+
+### The replay: `mystery_fizzle_is_not_a_free_cast`
+
+Added, because Mystery is natively expressible in the harness and the delayed half is
+*only* visible across a turn boundary — this corpus's stated admission criterion. Four
+turns, a 10-mana wizard, two 34-mana Mystery casts (one delayed, one immediate), and a
+turn 2 that exists solely to be the turn the fire would have landed on. All four turns
+golden to `pendingDelayedSpells: 0`, `resolvedSpells: 0`, both wizards at 24 HP and 10
+mana.
+
+The unit regressions assert the fields someone thought to name. The golden asserts the
+**bytes** — the stronger claim for a bug whose whole signature was the absence of one.
+The spell is `[fire, fire, fire, earth, earth, earth]`: two complete formulas (so
+`spellFromElements`' whole-formula assertion holds), a fire triplet that would show as
+HP loss if either repair regressed, and an earth triplet that backs the Mystery claim.
+
+**No existing golden moved.** Nothing already in the corpus fizzles a Mystery cast, so
+the fix is invisible to all nine prior transcripts — which is the evidence that it is
+narrow.
+
+### The fixture trap, repeated because it will catch the next person
+
+A Mystery cast **is itself a cast-time enhancement claim**, and `PeerCastVerifier`
+requires it to be backed by certified supreme dominance in the **earth** zone. A
+synthetic proof with a pure-fire trajectory forfeits on `unbacked_enhancement_claim`
+before anything under test is reachable — and it presents as a *hang*, not a failure,
+because the forfeit kills one loop while the other waits on an exchange and
+`Future.wait(...).timeout()` reports the timeout instead of the `StateError` underneath.
+Any paired-session Mystery fixture needs an earth-dominant supreme generation.
+
+### Audit: any remaining path where a fizzled cast can still act?
+
+Grepping every read and write of `fizzledForMana` leaves four sites, and all four are
+now closed:
+
+* `_markFizzledForMana` — the only writer, reached only from the two settlement
+  closures.
+* `_verifyMysteryAction` — carries it (repair A).
+* `resolveActions`' `SpellCastAction` case — reads it into `enhancements.fizzle`, which
+  suppresses resolution and regresses the chain. This is the sole gate for every
+  immediate cast, ordinary or Mystery-converted.
+* `resolveActions`' `MysterySpellCastAction` case — reads it and declines to queue
+  (repair B).
+
+A delayed *fire* rebuilds a fresh `SpellCastAction` from its `PendingDelayedSpell` with
+`fizzledForMana` defaulting to false, and that is correct: the affordability verdict was
+consumed at declaration, and a record that fizzled never reaches the pending list to be
+rebuilt from. Nothing else constructs a `SpellCastAction` from an action that could
+carry the flag.
+
+### Test results
+
+* `mystery_fizzle_characterization_test.dart` — 11/11.
+* Replay corpus — 3/3 (10 scripts; the nine prior goldens are byte-identical).
+* Full `test/battle/` — 959/959.
+* Full suite — 1770 pass, **2 pre-existing failures** in
+  `test/ui/vocabulary_screen_test.dart` ("a too-short word is refused with a reason",
+  "suggests a number of attunements per word, with no ceiling"). Verified pre-existing
+  by stashing this change and re-running: they fail identically on the unmodified tree,
+  in isolation, and touch no battle code. Not the rotating full-suite-load flake — these
+  fail alone too.
+* Analyzer — 39 issues, **identical to the pre-change baseline**, none in changed code.
+
+### Still open
+
+Unchanged by this slice and still outstanding: M4.19 (`isSummon` steering certified
+chain affinity from a wire field), M4.20's contradictory-formula policy, and the
+two-device hardware pass M4.10b left open — this work sits at integration-test level by
+CLAUDE.md's verification hierarchy.
