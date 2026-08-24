@@ -7082,3 +7082,178 @@ Unchanged by this slice and still outstanding: M4.19 (`isSummon` steering certif
 chain affinity from a wire field), M4.20's contradictory-formula policy, and the
 two-device hardware pass M4.10b left open — this work sits at integration-test level by
 CLAUDE.md's verification hierarchy.
+
+---
+
+## M4.22 — A summon cast breaks lockstep the turn it is cast (characterized 2026-08-24)
+
+**Status: characterized, NOT fixed.** Root cause proven and reproduced offline from the
+exact shipped asset the hardware gate used. No `lib/` change made.
+
+### The hardware evidence
+
+`M4_engine_v4_two_device_gate_REPORT.md` (2026-08-23, commit 8ee51fc, engine v4,
+Pixel 6 host + Linux desktop join): two Meditate turns held lockstep; an ordinary
+Earthworks cast settled correctly on both devices; **casting Basic Windhound produced
+"state hash mismatch on turn 3" every time** — with one summoner and with two, across
+two independent matches. Proof verification succeeded before every divergence.
+
+### Root cause: resolution reads a different element sequence on each device
+
+`DeterministicResolution.resolveActions` looks up a cast's certified semantics as
+
+```dart
+final cert = delayedCertified[action] ?? certifiedPeerCasts[spell.commitmentHex];
+```
+
+`certifiedPeerCasts` is populated only by `TurnLoop._verifyPeerSpellCast`. **The
+caster's own immediate cast is never in it.** So `certElementSequence` is null on the
+caster's device and `applySpell` falls back to
+`DeterministicResolution.elementSequence(spell)` — the authored `SpellAsset.formula`,
+a wire field no proof attests — while the verifier resolves the same cast from
+`TrajectoryParser.certifiedElementSequence` over the verified public outputs.
+
+Between honest clients those two are supposed to be the same list. That assumption is
+load-bearing and unenforced, and `assets/basic_spells/basic_windhound.json` violates it:
+
+| | sequence |
+|---|---|
+| authored `SpellAsset.formula` (12) | air water earth air water fire air earth water fire air earth |
+| certified trajectory (3) | fire water water |
+
+**The certified side is correct.** `stepper.dart` — canonical per CLAUDE.md — replayed
+over the asset's own `initialGrid` for its own `T=23` reproduces the proof's dominance
+trajectory and supreme flags byte-for-byte and commits `[fire, water, water]`. The
+commitment, `T`, `segmentCount` and `dotCount` all match the proof; only the authored
+prose fields are wrong. No `T` in 1..48 on that grid produces the authored sequence, so
+it came from a different grid or a pre-ink-substrate replay.
+
+Origin of the bad content: `inscribeSpell` (lib/spells/inscribe.dart) takes `formula`,
+`supremeTags` and `manaCost` as **caller-supplied arguments** and never checks them
+against the proof it has just generated and self-verified. `main.dart` passes
+`_formulaTracker.committed` from the live UI session. A stale tracker is persisted
+verbatim, survives `scripts/export_basic_spells.dart` (which copies the field through by
+design), and ships.
+
+### The first canonical field to diverge is mana, not the minion
+
+`wireBaseManaCost` counts effects from the authored formula (4 formulas → ×1.5³);
+`PeerCastVerifier.certifiedBaseManaCost` counts them from the certified one (1 formula →
+×1.5⁰). Base is `5×0 + 8 = 8`, grown by `1.05^23`:
+
+* caster charges itself **83**
+* verifier charges the caster **25**
+
+`BattleState.toCanonicalBytes` writes `WizardAvatar.mana` in the avatar block, at **byte
+offset 56** — `0x00000011` (17) against `0x0000004b` (75) from a 100-mana start. The
+minion block is ~200 bytes further on. Everything after is downstream: chain affinity
+(air vs water), the creature's stat block (3 HP air hound vs 0 HP water hound — the
+latter reaped on spawn, so the verifier ends the turn with **zero** minions), and the
+opponent's HP once the surviving hound attacks.
+
+### Minion.id / RNG position is NOT the cause
+
+Traced with temporary instrumentation on `HashRng` (since reverted). Single-summon turn,
+both devices combined: 3 draws.
+
+```
+nextInt(2^30) -> 69911839   _castSummon <- applySpell          [caster]
+nextInt(1)    -> 0          _nearestEnemyEntity <- _creatureTurn <- resolveSummonActions
+nextInt(2^30) -> 69911839   _castSummon <- applySpell          [verifier]
+```
+
+Both devices draw the minion id at the **same RNG position and get the same value**;
+the ids are identical. The extra `_nearestEnemyEntity` draw is the caster's surviving
+hound taking its Phase-5b action — a *consequence* of the divergence, not a cause, but
+it does mean the two RNG streams are at different positions from that point on, which
+would desync subsequent turns independently.
+
+Double-summon turn: 4 draws, 2 per device, pairwise identical. RNG stays in lockstep in
+both cases.
+
+### Why single and double summon both fail
+
+The gate report's hypothesis — that a double summon cancels the local-vs-peer asymmetry
+because each device runs one of each — was never valid. `toCanonicalBytes` encodes mana
+**per player**, so the two devices **cross** rather than cancel:
+
+| | device A | device B |
+|---|---|---|
+| player_a mana | 17 (local, authored) | 75 (peer, certified) |
+| player_b mana | 75 (peer, certified) | 17 (local, authored) |
+
+Mirrored, never equal — exactly the mirrored hashes the hardware showed. Canonical
+resolution order (group → T → commitmentHex → playerId) is identical on both devices, so
+both resolve the same cast first; each simply resolves its *own* cast from wire data and
+the *peer's* from certified data.
+
+### What the offline harness was missing
+
+`certified_cast_fixture.dart`'s `spellFromElements` derives the wire `formula` **from**
+the element list its synthetic proof attests, and computes `manaCost` from the same list.
+Every fixture spell is honest by construction, so no `TurnSessionPair` script could ever
+exercise the divergence. Nothing about real proofs, joint entropy, leyline seeds,
+transport ordering or Pixel-vs-Linux runtime was involved — the harness models all of
+those adequately. The one thing it could not model was a spell asset that lies about
+itself.
+
+Importing the real asset closed the gap: driving `assets/basic_spells/basic_windhound.json`
+through the existing `TurnSessionPair` reproduces the hardware failure exactly, with no
+fuzzing and no new harness machinery.
+
+### Library audit
+
+Scanned every asset in `~/Documents/spells` with proof bytes: **7 consistent, 2
+mismatched** — "Basic Windhound" (shipped) and "Doggy". "Doggo", a tier-48 summon, is
+consistent, so this is not "all summons". For "Doggy" the certified sequence is a strict
+subsequence of the authored one (authored over-commits activations).
+
+### Tests
+
+* `test/battle/engine/peer_summon_replication_test.dart` (the M4.16 regression) —
+  **strengthened**. It asserted only `minions.hasLength(1)` per device, which cannot see
+  a creature that replicates with a divergent id/position/HP/affinity/stats/abilities/
+  personality/size. It now also compares every canonically-hashed `Minion` field
+  field-by-field and compares `toCanonicalBytes()` across the pair — the exact
+  comparison `_exchangeStateHash` performs. **Still green**, as expected: its fixture
+  spell is honest. Kept regardless; the hole must not silently reopen.
+* `test/battle/engine/m422_summon_desync_characterization_test.dart` — NEW, 4/4 green.
+  Pins the content defect, the stepper-vs-proof agreement, the single-summon desync
+  (including the mana values and the verifier's empty minion list), and the crossed
+  double-summon mana. **These assert the broken behaviour and must be inverted by the
+  fix.**
+* `test/battle/engine/simultaneous_summon_desync_repro_test.dart` — kept, header updated
+  to record that both variants remain green and why, and that its "cancels out"
+  hypothesis is wrong.
+* Full `test/battle/` — **965/965**.
+* No `lib/` file modified.
+
+### Recommended repair (not implemented)
+
+Two defects, two repairs, smallest first:
+
+1. **Content (immediate, no version bump).** Regenerate `formula`, `supremeTags` and
+   `manaCost` for `basic_windhound` from its own proof, and add a build-time assertion
+   to `scripts/export_basic_spells.dart` that refuses to export any spell whose authored
+   fields disagree with `PeerCastVerifier.semanticsOf` on its own proof bytes. This alone
+   makes the hardware gate pass. It is a data change, not a rules change: no transcript
+   currently accepted by engine v4 resolves differently, so **no `kBattleEngineVersion`
+   bump**.
+
+2. **Engine (the actual hole).** Have the caster resolve its own immediate cast from
+   `certifiedFromProofBytes(spell)` — the seam already exists and the Mystery declaration
+   path at `deterministic_resolution.dart:2769` already uses it — instead of falling back
+   to the wire formula, and price it from the same source. That makes authored `formula`
+   presentational everywhere and removes the whole class of defect, including the sibling
+   `manaCost` field. It **does** change canonical resolution of transcripts v4 accepts
+   (any spell whose authored fields drifted), so it requires **`kBattleEngineVersion`
+   4 → 5**. No ruleset or protocol bump: the CA rules and the wire format are unchanged.
+
+Repair 2 subsumes repair 1 semantically but not operationally — the shipped asset's
+83-mana price and its air-hound artwork are player-visible, so the asset should be
+regenerated either way.
+
+Note this is adjacent to but distinct from **M4.19** (`isSummon` and `summonPersonality`
+authored rather than certified). M4.19 was *not* a contributor here: both devices read
+the same wire values for those two fields, so they agreed. Repair 2 would leave M4.19
+exactly as it is.
