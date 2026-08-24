@@ -1521,10 +1521,21 @@ class TurnLoop
   /// The local player's committed cast, as a Phase-5 settlement — or null when
   /// this turn's action is not a chargeable cast.
   ///
-  /// Prices from the caster's own [SpellAsset]. Trusting the wire here is sound
-  /// because it is the caster's own spell; the peer's cast is priced from
-  /// certified proof outputs instead, by [_certifiedPeerCastSettlement]. See
-  /// [_CastSettlement] on why those two never merge.
+  /// Prices from the semantics this device reconstructs from the spell's OWN
+  /// proof bytes (M4.22) — the same bytes the peer is about to verify — rather
+  /// than from the authored `SpellAsset` fields beside them. "It is the
+  /// caster's own spell, so the wire is trustworthy" was true about intent and
+  /// false about arithmetic: `formula`, `supremeTags` and `manaCost` are
+  /// caller-supplied at inscribe time and never checked against the proof, so
+  /// a stale asset priced itself one way here and another way on the peer's
+  /// device. The shipped Basic Windhound charged 83 locally and 25 remotely,
+  /// and the pair forfeited on the state hash (docs/M4_findings.md §M4.22).
+  ///
+  /// This is NOT verification. [certifiedFromProofBytes] parses without
+  /// verifying, which is exactly right for bytes this device authored and would
+  /// be exactly wrong for a peer's — the peer's cast is priced by
+  /// [_certifiedPeerCastSettlement] from outputs `PeerCastVerifier` actually
+  /// verified. See [_CastSettlement] on why those two never merge.
   _CastSettlement? _localCastSettlement(TurnAction action) {
     final committedSpell = switch (action) {
       SpellCastAction(:final spell) => spell,
@@ -1564,12 +1575,18 @@ class TurnLoop
         // is what makes it true.
         final av = _localAvatar();
         final castingEnhancements = _castingEnhancementsFor(action);
+        // Derived once and reused for both the preview and the charge: two
+        // parses of the same bytes would give the same answer, but sharing the
+        // value makes it structurally impossible for the fizzle test and the
+        // deduction to price the cast differently.
+        final certified = certifiedFromProofBytes(committedSpell);
 
         // Price it WITHOUT charging first, so a shortfall can fizzle-and-refund
         // rather than silently clamping to zero (VOCAL_RECALL_PLAN.md §4).
         final preview = _resolution.spellCostBreakdown(
           committedSpell,
           av,
+          certified: certified,
           enhancements: castingEnhancements,
           recall: recall,
           isVocalComponents: isVocalComponents,
@@ -1583,6 +1600,7 @@ class TurnLoop
                 _resolution.applySpellManaCost(
                   committedSpell,
                   av,
+                  certified: certified,
                   enhancements: castingEnhancements,
                   recall: recall,
                   isVocalComponents: isVocalComponents,
@@ -3660,6 +3678,11 @@ class TurnLoop
     return _resolution.spellCostBreakdown(
       spell,
       _localAvatar(),
+      // The same proof-derived semantics [_localCastSettlement] will charge
+      // from (M4.22). The quote and the deduction must not be able to disagree,
+      // which is the whole reason this method exists rather than a second copy
+      // of the formula in the UI.
+      certified: certifiedFromProofBytes(spell),
       enhancements: enhancements,
       isVocalComponents: isVocalComponents,
     ).cost;

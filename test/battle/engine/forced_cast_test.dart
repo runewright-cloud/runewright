@@ -126,6 +126,10 @@ CertifiedCast _semantics(BorderZone tag) => CertifiedCast(
       formulas: const [],
       elementSequence: [tag],
       wildMagic: const [],
+      // Irrelevant here: a forced cast is free (A8), so nothing on these paths
+      // reads the base price. Zero rather than a real number so a test that
+      // starts depending on it fails loudly instead of quietly agreeing.
+      baseManaCost: 0,
     );
 
 const _request = ForcedCastRequest(

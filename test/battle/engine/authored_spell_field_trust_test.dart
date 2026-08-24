@@ -19,21 +19,32 @@
 //   name     — presentation-only. Identical casts differing ONLY in name
 //              produce byte-identical canonical state.
 //
-//   formula  — superseded by the verifier's certified element sequence on the
-//              ordinary cast path, and — since the M4.20 fix — on the
-//              forced-cast path too. It used to leak there:
-//              `TurnLoop.resolveForcedCast` called `applySpell` with no
-//              certified arguments, so a Spontaneous Combustion reveal
-//              resolved the sender's authored formula while both devices
-//              stayed in lockstep. `ForcedCastHost.verifyForcedReveal` now
-//              returns the `CertifiedCast` it was already computing,
-//              `ForcedCastPick` carries it, and resolution reads it.
+//   formula  — superseded by the proof-derived element sequence on every
+//              gameplay path, on BOTH devices.
+//
+//              Three fixes got it there. B-1 made the RECEIVING device resolve
+//              a peer's cast from the verified outputs. M4.20 closed the
+//              forced-cast path, where `TurnLoop.resolveForcedCast` called
+//              `applySpell` with no certified arguments and a Spontaneous
+//              Combustion reveal resolved the sender's authored formula.
+//              M4.22 closed the last one: the CASTER's own immediate cast,
+//              which is never in `certifiedPeerCasts` and so fell through to
+//              `elementSequence(spell)` / `wireBaseManaCost(spell)` while the
+//              peer resolved the certified trajectory. That was not merely a
+//              trust hole — it was a live desync, because the two devices
+//              resolved one cast from two different lists whenever an asset's
+//              authored fields had drifted from its proof, which the shipped
+//              Basic Windhound had (docs/M4_findings.md §M4.22).
 //
 // Sections 1 and 2 are characterization — they assert what the code does, so
 // the boundary is pinned rather than assumed. Section 3 is a regression suite:
 // it keeps ONE historical pin of the pre-fix shape (a pick with no certified
 // semantics falls back to the wire, which is what M4.20 was) and then proves
-// the forced-cast path can no longer produce such a pick.
+// neither the ordinary nor the forced-cast path can produce one. Section 3's
+// ordinary-cast tests are also M4.22's NON-SUMMON adversarial regression: a
+// proof certifying one sequence against an authored formula deliberately
+// claiming another, proving the repair is about the authority boundary and not
+// about Windhound.
 
 import 'dart:async';
 import 'dart:typed_data';
@@ -360,37 +371,107 @@ void main() {
         vkBytes: Uint8List(0),
       );
 
-  test('ordinary cast path: the certified sequence replaces the authored '
-      'formula on the receiving device', () async {
-    final stateCaster = makeDuelState();
-    final statePeer = makeDuelState();
-    final pair = TurnSessionPair();
-    final spell = forgedCloudSpell();
-    final loopCaster = loopFor(stateCaster, pair.sessionA, 'player_a')
-      ..localChapterCommitments = [spell.commitmentHex];
-    final loopPeer = loopFor(statePeer, pair.sessionB, 'player_b');
+  test(
+    'M4.22: an ordinary NON-SUMMON cast whose authored formula contradicts its '
+    'own proof stays in lockstep, and resolves the certified trajectory on '
+    'BOTH devices',
+    () async {
+      // The general form of the M4.22 defect, with no summon anywhere in
+      // sight. `forgedCloudSpell` proves an all-earth trajectory and authors
+      // `water, water, fire` — a Water-Fire Clouds formula. Before the fix the
+      // caster resolved the AUTHORED list and dropped a persistent cloud on the
+      // battlefield while the receiver resolved the CERTIFIED earth trajectory
+      // and dropped none, and the pair forfeited on the state hash. That is the
+      // same authority split that made the shipped Basic Windhound desync; the
+      // Windhound simply reached it through stale content rather than through a
+      // deliberate forgery.
+      //
+      // A cloud is the right observable because `state.clouds` is canonical,
+      // persistent, and independent of where a target landed: it answers "which
+      // formula did THIS device resolve?" with a battlefield hazard that either
+      // exists or does not.
+      final stateCaster = makeDuelState();
+      final statePeer = makeDuelState();
+      final pair = TurnSessionPair();
+      final spell = forgedCloudSpell();
+      final loopCaster = loopFor(stateCaster, pair.sessionA, 'player_a')
+        ..localChapterCommitments = [spell.commitmentHex];
+      final loopPeer = loopFor(statePeer, pair.sessionB, 'player_b');
 
-    // An immediate forgery legitimately desyncs: the caster resolves its own
-    // wire formula, the receiver the certified one, and the state-hash
-    // exchange forfeits. That divergence IS the property under test, so both
-    // turns are allowed to fail and only the resulting states are asserted on.
-    await Future.wait([
-      loopCaster
-          .runTurn(TurnInput(
-            action:
-                SpellCastAction(spell: spell, targetHex: const HexCoord(1, 0)),
-          ))
-          .catchError((Object _) => null),
-      loopPeer
-          .runTurn(TurnInput(action: PassAction()))
-          .catchError((Object _) => null),
-    ]).timeout(const Duration(seconds: 20));
+      final errors = <Object>[];
+      await Future.wait([
+        loopCaster
+            .runTurn(TurnInput(
+              action: SpellCastAction(
+                  spell: spell, targetHex: const HexCoord(1, 0)),
+            ))
+            .catchError(collectError(errors)),
+        loopPeer
+            .runTurn(TurnInput(action: PassAction()))
+            .catchError(collectError(errors)),
+      ]).timeout(const Duration(seconds: 20));
 
-    expect(stateCaster.clouds, isNotEmpty,
-        reason: 'the caster resolves its own (authored) wire formula');
-    expect(statePeer.clouds, isEmpty,
-        reason: 'the receiver must resolve the CERTIFIED earth trajectory');
-  });
+      expect(errors, isEmpty,
+          reason: 'no state-hash mismatch: the authored formula no longer '
+              'steers the caster\'s own resolution');
+
+      // Neither device creates the forged cloud — the proof says earth.
+      expect(stateCaster.clouds, isEmpty,
+          reason: 'the CASTER must resolve the certified earth trajectory too, '
+              'not the water/fire formula it authored');
+      expect(statePeer.clouds, isEmpty,
+          reason: 'the receiver resolves the CERTIFIED earth trajectory');
+
+      // The exact comparison `_exchangeStateHash` performs.
+      expect(stateCaster.toCanonicalBytes(),
+          equals(statePeer.toCanonicalBytes()),
+          reason: 'full canonical state must agree across the pair');
+    },
+  );
+
+  test(
+    'M4.22: the same proof implies the same canonical state whatever the '
+    'authored formula says (ordinary immediate cast)',
+    () async {
+      // The forgery and its honest twin share a grid, a commitment and
+      // byte-identical proof bytes; only `SpellAsset.formula` differs. If the
+      // authored field still reached resolution anywhere on the local path,
+      // these two runs would diverge. This is the property M4.22 buys, stated
+      // directly rather than through a symptom.
+      Future<List<int>> canonicalAfterCasting(SpellAsset spell) async {
+        final stateCaster = makeDuelState();
+        final statePeer = makeDuelState();
+        final pair = TurnSessionPair();
+        final loopCaster = loopFor(stateCaster, pair.sessionA, 'player_a')
+          ..localChapterCommitments = [spell.commitmentHex];
+        final loopPeer = loopFor(statePeer, pair.sessionB, 'player_b');
+
+        final errors = <Object>[];
+        await Future.wait([
+          loopCaster
+              .runTurn(TurnInput(
+                action: SpellCastAction(
+                    spell: spell, targetHex: const HexCoord(1, 0)),
+              ))
+              .catchError(collectError(errors)),
+          loopPeer
+              .runTurn(TurnInput(action: PassAction()))
+              .catchError(collectError(errors)),
+        ]).timeout(const Duration(seconds: 20));
+        expect(errors, isEmpty);
+        expect(stateCaster.toCanonicalBytes(),
+            equals(statePeer.toCanonicalBytes()));
+        return stateCaster.toCanonicalBytes();
+      }
+
+      expect(
+        await canonicalAfterCasting(forgedCloudSpell()),
+        equals(await canonicalAfterCasting(honestEarthTwin())),
+        reason: 'identical proofs must imply identical gameplay — the authored '
+            'formula is presentation, not semantics',
+      );
+    },
+  );
 
   // ── 3b. The forced-cast path (M4.20) ──────────────────────────────────────
 

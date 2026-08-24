@@ -4,7 +4,7 @@
   "tier": 24,
   "t": 23,
   "ownerPubkeyHex": "0x2bc53f13330a98d7ca96d43f476f13154446762523d2b64e54021a64708eba22",
-  "manaCost": 83,
+  "manaCost": 25,
   "segmentCount": 0,
   "dotCount": 8,
   "initialGrid": [
@@ -483,22 +483,13 @@
   "commitmentHex": "0x2d587d7e5de727d798b351845299c755fe65c95ef76b9bc0b52bc04aac506194",
   "spellHashHex": "0x1e053eb1afa520784b7c4acfec9c81c98d6b7a32e8aa6f45eab5b486c6172919",
   "formula": [
-    "air",
-    "water",
-    "earth",
-    "air",
-    "water",
     "fire",
-    "air",
-    "earth",
     "water",
-    "fire",
-    "air",
-    "earth"
+    "water"
   ],
   "supremeTags": [
-    "air",
-    "earth"
+    "fire",
+    "water"
   ],
   "isSummon": true,
   "summonPersonality": "evasive",

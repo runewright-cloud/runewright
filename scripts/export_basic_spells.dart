@@ -18,6 +18,29 @@
 // up" here (CLAUDE.md invariant 1: never reimplement the circuit's crypto;
 // this script only rewrites bookkeeping fields, never proof-adjacent ones).
 //
+// VALIDATION (M4.22). "Copied through unchanged" was doing more work than it
+// looked like. `formula`, `supremeTags` and `manaCost` are NOT free-form
+// prose: a peer re-derives all three from the verified proof, so an asset
+// whose authored fields disagree with its own proof makes the two devices
+// resolve one cast two ways. `basic_windhound.json` shipped exactly that —
+// a 12-element authored trajectory over a proof attesting three, priced at 83
+// against the peer's 25 (docs/M4_findings.md §M4.22). The root cause is
+// upstream: `inscribeSpell` takes those three as caller-supplied arguments and
+// never checks them, so main.dart's live UI FormulaTracker is persisted
+// verbatim, stale or not.
+//
+// This script is the last gate before that reaches players, so it no longer
+// serializes the source library blindly. Every selected spell is audited
+// against its own proof (`auditSpellJson`) and a mismatch ABORTS the export
+// with a non-zero status. Repair the SOURCE library first — that is where the
+// bad data lives:
+//
+//   dart run scripts/audit_spell_assets.dart --fix ~/Documents/spells
+//
+// Do not "fix" a failure by relaxing the check or by patching the exported
+// asset: the exported file would then disagree with the library it claims to
+// be exported from, and the next run would silently undo it.
+//
 // Run with: dart run scripts/export_basic_spells.dart [--source <dir>]
 // Default --source is ~/Documents/spells (the Linux dev machine's app
 // documents spells directory).
@@ -26,6 +49,8 @@
 
 import 'dart:convert';
 import 'dart:io';
+
+import 'package:rune_duel/spells/spell_asset_integrity.dart';
 
 /// (selector spellHashHex, output slug) pairs, in the shipped display order.
 /// spellHashHex is Poseidon2(commitment, T) — see SpellAsset.spellHashHex's
@@ -98,7 +123,11 @@ void main(List<String> args) {
   final assetsDir = Directory('assets/basic_spells');
   assetsDir.createSync(recursive: true);
 
-  final registryEntries = <String>[];
+  // ── Pass 1: select, rewrite bookkeeping, and VALIDATE. Nothing is written
+  // to disk in this pass, so a mismatch anywhere leaves assets/basic_spells
+  // exactly as it was rather than half-updated.
+  final selected = <(String slug, String spellHashHex, Map<String, dynamic> json)>[];
+  var faulted = false;
 
   for (final (spellHashHex, slug) in _kSelection) {
     final source = bySpellHash[spellHashHex];
@@ -114,6 +143,48 @@ void main(List<String> args) {
       ..['id'] = slug
       ..['createdAt'] = _kFixedCreatedAt;
 
+    // Does this spell agree with its own proof? Audited on the REWRITTEN map,
+    // which is what would actually be written — `id`/`createdAt` are
+    // bookkeeping no proof attests, but auditing the shipped bytes rather than
+    // the source bytes is the property worth having.
+    List<SpellSemanticMismatch> faults;
+    try {
+      faults = auditSpellJson(rewritten);
+    } on SpellSemanticsUnavailable catch (e) {
+      stderr.writeln('$slug: cannot verify against its own proof — $e');
+      faulted = true;
+      continue;
+    }
+    if (faults.isNotEmpty) {
+      stderr.writeln(
+        '$slug ("${rewritten['name']}"): authored metadata contradicts its own '
+        'proof — refusing to export.',
+      );
+      for (final f in faults) {
+        stderr.writeln('  $f');
+      }
+      faulted = true;
+      continue;
+    }
+
+    selected.add((slug, spellHashHex, rewritten));
+  }
+
+  if (faulted) {
+    stderr.writeln(
+      '\nA peer derives formula/supremeTags/manaCost from the verified proof, '
+      'so shipping an asset that disagrees with its own proof desyncs the '
+      'match (docs/M4_findings.md §M4.22). Nothing was written.\n'
+      'Repair the SOURCE library, not the export:\n'
+      '  dart run scripts/audit_spell_assets.dart --fix $sourceDir',
+    );
+    exit(1);
+  }
+
+  // ── Pass 2: write. Everything here is already validated.
+  final registryEntries = <String>[];
+
+  for (final (slug, spellHashHex, rewritten) in selected) {
     final outFile = File('${assetsDir.path}/$slug.json');
     outFile.writeAsStringSync(
       const JsonEncoder.withIndent('  ').convert(rewritten),

@@ -53,6 +53,7 @@ class CertifiedCast {
     required this.formulas,
     required this.elementSequence,
     required this.wildMagic,
+    required this.baseManaCost,
   });
 
   /// Formula triplets grouped from the certified trajectory — replaces
@@ -67,4 +68,19 @@ class CertifiedCast {
   /// Wild-magic triggers derived from the certified outputs + [formulas] +
   /// the agreed community seed (WILD_MAGIC_PLAN.md §4.6).
   final List<WildMagicTrigger> wildMagic;
+
+  /// `5×segmentCount + dotCount`, grown by `1.05^T × 1.5^effectCount` — step 1
+  /// of the mana chain, from the same outputs as everything above.
+  ///
+  /// Carried HERE rather than beside this object (M4.22) because the price and
+  /// the trajectory are two readings of one proof and must never be sourced
+  /// separately. `effectCount` is derived from [formulas], so a cast priced
+  /// from this field and resolved from that list cannot disagree about how
+  /// many effects the spell had — which is exactly the disagreement that made
+  /// the caster charge itself 83 for a Windhound the verifier charged 25.
+  ///
+  /// `CertifiedPeerCast.baseManaCost` is this value for a verified peer cast;
+  /// it stays a separate field on that type because the peer path's copy
+  /// crossed a trust boundary this one did not.
+  final int baseManaCost;
 }

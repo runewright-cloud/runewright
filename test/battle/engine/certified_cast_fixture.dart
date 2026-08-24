@@ -306,3 +306,17 @@ BattleState makeDuelState({
     battlefield: battlefield,
   );
 }
+
+/// Collects a failed turn's error into [sink] and completes the future
+/// normally, so a deliberately-desyncing pair can be driven to completion and
+/// then asserted on.
+///
+/// `TurnLoop.runTurn` returns `Future<WinCheckResult?>`, so a bare
+/// `.catchError(errors.add)` puts a `void`-returning handler in a
+/// `FutureOr<WinCheckResult?>` slot: the analyzer flags it
+/// (`invalid_return_type_for_catch_error`) and it would throw at runtime the
+/// moment the handler actually ran. This gives the handler the right shape.
+WinCheckResult? Function(Object) collectError(List<Object> sink) => (Object e) {
+      sink.add(e);
+      return null;
+    };

@@ -149,6 +149,59 @@
 // a Mystery claim is untouched) and no framing changes, so `kRulesetVersion`
 // stays 3 and `kBattleProtocolVersion` stays 5. See docs/M4_findings.md M4.21.
 //
+// v5 (2026-08-24, M4.22) — a caster's own proof-backed immediate cast resolves
+// and is priced from the semantics reconstructed from **its own proof bytes**,
+// not from the authored `SpellAsset.formula`/`manaCost` stored beside them.
+//
+// Under v1–v4 an immediate cast had two semantic authorities. The caster's own
+// cast is never in `certifiedPeerCasts` (only `_verifyPeerSpellCast` writes
+// that map), so `DeterministicResolution.resolveActions` found no
+// `CertifiedCast` for it and every consumer fell through to the authored wire
+// fields: `elementSequence(spell)` for resolution and counter-charm matching,
+// `wireBaseManaCost(spell)` for the price. The VERIFIER resolved the same cast
+// from `PeerCastVerifier.semanticsOf` over verified public outputs. Between
+// honest clients those are supposed to be the same list — an assumption that
+// was load-bearing and unenforced.
+//
+// `assets/basic_spells/basic_windhound.json` broke it. `inscribeSpell` takes
+// `formula`, `supremeTags` and `manaCost` as caller-supplied arguments and
+// never checks them against the proof it just generated, so a stale UI
+// `FormulaTracker` shipped: 12 authored elements over a proof attesting three
+// (fire, water, water). The caster charged itself 83 and the verifier charged
+// it 25, `WizardAvatar.mana` diverged at byte 56 of `toCanonicalBytes`, and a
+// Pixel 6 ↔ Linux pair forfeited "state hash mismatch on turn 3" every time
+// that spell was cast.
+//
+// v5 branches on ownership, the way the Mystery declaration path already did:
+// our own cast parses its own proof (`certifiedFromProofBytes` — semantic
+// reconstruction, NOT verification: this device authored the bytes), a peer's
+// keeps reading what real `PeerCastVerifier` verification derived. Same proof
+// bytes now mean the same element sequence and the same base cost on both
+// devices, whatever the authored fields say.
+//
+// The gate has to fire, on the usual test. **The same wire transcript** — same
+// `0x01` action bytes, same proofs, same VK — yields a different canonical
+// `BattleState` on either side of the change for any spell whose authored
+// fields have drifted from its proof: a v4 build resolves the authored
+// trajectory locally, a v5 build the certified one, and mana, chain state, the
+// summoned creature's whole stat block and everything downstream diverge. Note
+// the v4 canonical state for such a transcript was never well-defined — v4's
+// two peers already disagreed, which was the bug — so like v3 this supplies a
+// rule rather than changing one. The gate still has to fire, or a mixed pair
+// desyncs mid-match instead of being refused at the handshake.
+//
+// The shipped Windhound was ALSO regenerated from its own proof in the same
+// change. That half is pure content and needs no epoch: it changes generated
+// input data, not how an identical transcript is interpreted. The epoch is for
+// the engine half, which does.
+//
+// Deliberately NOT included: `isSummon` and `summonPersonality` remain authored
+// and unbound (M4.19). They are wire fields both devices read identically, so
+// they were never a contributor here, and deriving them is a separate defect
+// with a separate fix. No proof semantics participate and no framing changes,
+// so `kRulesetVersion` stays 3 and `kBattleProtocolVersion` stays 5. See
+// docs/M4_findings.md M4.22.
+//
 // There is deliberately no v0 build. Nothing has shipped, so pretending an
 // earlier epoch was ever negotiated would be fiction; 0 is reserved as the
 // sentinel for a peer that predates this field entirely and therefore declares
@@ -162,7 +215,7 @@
 /// [DeviceCapabilities.battleEngineVersion] both default to it rather than
 /// restating a literal, exactly as `MatchConfig.rulesetVersion` derives from
 /// `kRulesetVersion`. See this file's header for what forces a bump.
-const int kBattleEngineVersion = 4;
+const int kBattleEngineVersion = 5;
 
 /// What a peer that predates the engine-version gate implicitly declares: it
 /// omits the field, and an omitted field cannot be read as agreement.

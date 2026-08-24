@@ -259,6 +259,7 @@ class PeerCastVerifier {
       formulas: formulas,
       elementSequence: TrajectoryParser.certifiedElementSequence(outputs),
       wildMagic: WildMagic.triggersFor(outputs, formulas, communitySeed),
+      baseManaCost: certifiedBaseManaCost(outputs, formulas),
     );
   }
 
@@ -473,7 +474,6 @@ class PeerCastVerifier {
     // because the Cantrip exemption needs the CERTIFIED element count, not the
     // peer-claimed `spell.formula.length`.
     final semantics = semanticsOf(outputs, communitySeed);
-    final certFormulas = semantics.formulas;
     final List<BorderZone> certElementSequence = semantics.elementSequence;
 
     // 2. Duplicate grid detection — skipped for a shipped Basic spell or a
@@ -582,7 +582,7 @@ class PeerCastVerifier {
     return PeerCastCertified(CertifiedPeerCast(
       commitmentHex: outputs.commitmentHex,
       semantics: semantics,
-      baseManaCost: certifiedBaseManaCost(outputs, certFormulas),
+      baseManaCost: semantics.baseManaCost,
       isEfficiency: claimsEfficiency,
     ));
   }

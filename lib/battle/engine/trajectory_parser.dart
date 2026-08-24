@@ -22,7 +22,7 @@ import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/engine/ca_run.dart' show ruleFromIndex, activeZoneFor;
 import 'package:rune_duel/engine/formula.dart';
 
-import 'proof_intake.dart' show VerifiedSpellOutputs;
+import 'proof_outputs.dart' show VerifiedSpellOutputs;
 
 // ── Parsed formula ────────────────────────────────────────────────────────────
 

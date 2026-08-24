@@ -2463,13 +2463,44 @@ class DeterministicResolution {
           // consumer below (counter-charm matching, applySpell, mana, chain
           // state) so they can never disagree about what the proof said.
           //
-          // A delayed fire brings its own, captured on its declaration turn;
-          // a current-turn peer cast reads what the caller's peer verification
-          // derived moments ago. The delayed entry is checked FIRST: its
-          // commitmentHex may well collide with a same-grid cast this turn, and
-          // the pending record is the one that belongs to this action.
-          final cert =
-              delayedCertified[action] ?? certifiedPeerCasts[spell.commitmentHex];
+          // A delayed fire brings its own, captured on its declaration turn, and
+          // is checked FIRST: its commitmentHex may well collide with a
+          // same-grid cast this turn, and the pending record is the one that
+          // belongs to this action.
+          //
+          // Otherwise this branches on WHICH DEVICE owns the cast, exactly as
+          // the Mystery declaration path below does, and for the same reasons:
+          //
+          //   * Our OWN cast reconstructs its semantics from its own proof
+          //     bytes. That is NOT verification — this device authored the
+          //     spell and has nothing to prove to itself. It is how we
+          //     guarantee we read our own proof the way the peer's verifier
+          //     will. Before M4.22 this fell through to `elementSequence(spell)`
+          //     / `wireBaseManaCost(spell)` — the AUTHORED `SpellAsset.formula`,
+          //     which no proof attests — so the two devices resolved one cast
+          //     from two different element sequences whenever an asset's
+          //     authored metadata had drifted from its proof. The shipped
+          //     Basic Windhound had drifted (12 authored elements against three
+          //     certified), and the pair forfeited on the state hash the turn it
+          //     was cast. See docs/M4_findings.md §M4.22.
+          //   * A PEER's cast reads what [certifiedPeerCasts] holds — the
+          //     semantics real `PeerCastVerifier` verification derived from
+          //     VERIFIED outputs moments ago. That branch is untouched and must
+          //     stay that way: a peer's proof is verified or the match forfeits.
+          //     The parse behind it is only reached when verification never ran
+          //     at all (solo, or no verifier/VK wired), which is the pre-existing
+          //     `PeerCastUncertified` case — no weaker than the wire formula it
+          //     replaces there, and identical on both devices.
+          //
+          // Branching on ownership rather than on map presence matters: the map
+          // is keyed by commitmentHex, and the commitment is grid-only
+          // (CLAUDE.md invariant 2), so a peer casting the same grid this turn
+          // would otherwise hand the local caster the peer's certified entry.
+          final cert = delayedCertified[action] ??
+              (ctx.host.isLocalPlayer(actor.playerId)
+                  ? ctx.host.certifiedFromProofBytes(spell)
+                  : certifiedPeerCasts[spell.commitmentHex] ??
+                      ctx.host.certifiedFromProofBytes(spell));
           final certFormulas = cert?.formulas;
           final certElementSequence = cert?.elementSequence;
           final certWildMagic = cert?.wildMagic;
@@ -2557,10 +2588,22 @@ class DeterministicResolution {
             // legality check above reads the DECLARED hex: the roll is not
             // the player's choice, so it can't make their cast illegal.
             final resolvedTarget = _turbulentTarget(ctx, actor, targetHex);
+            // The cast's element sequence, from the proof wherever there is a
+            // proof to read (M4.22). Everything below reads THIS, so the orb
+            // that flies, the charm that matches it and the effects that
+            // resolve are all one reading of one cast.
+            final castSequence = certElementSequence ?? elementSequence(spell);
             // The orb still flies for a countered cast (it visibly happened
             // and drew a counter, unlike a fizzle) — emitted once here for
             // both outcomes below, then the two diverge.
-            final affinity = primaryFormulaAffinity(spell.formula);
+            //
+            // Presentation only (the orb's colour), but sourced from the
+            // certified sequence anyway: it costs nothing, and an orb whose
+            // colour disagreed with the effects it delivered would be a tell
+            // that the two devices were reading different data.
+            final affinity = castSequence.isEmpty
+                ? null
+                : spellAffinityFromZone(castSequence.first);
             if (affinity != null) {
               ctx.castEvents.add(
                 SpellCastEvent(
@@ -2572,12 +2615,11 @@ class DeterministicResolution {
               );
             }
             // Counter charms match the cast's certified element sequence, so
-            // the trigger test reads exactly what applySpell would resolve:
-            // the certified sequence for a verified peer cast or a delayed
-            // fire, the local wire formula for our own spell (the same
-            // fallback every other consumer of this data uses — see
-            // applySpell's certFormulas).
-            final castSequence = certElementSequence ?? elementSequence(spell);
+            // the trigger test reads exactly what applySpell resolves. Since
+            // M4.22 that is the certified sequence on BOTH devices for any
+            // proof-backed cast — a charm that countered a peer's Windhound
+            // used to slide off the caster's own copy of it, because the two
+            // were matching different lists.
             final counterHit = _findCounteringCharm(castSequence);
             // Whether the charm swallowed the WHOLE cast. Measured in
             // formulas for an incantation and in elements for a summon,
@@ -3527,8 +3569,23 @@ class DeterministicResolution {
     return cost.clamp(0, _kMaxMana);
   }
 
-  /// Step 1 of [applySpellManaCost], written to be the exact local mirror of
-  /// [PeerCastVerifier.certifiedBaseManaCost]: same inputs, same operations, same order.
+  /// Step 1 of [applySpellManaCost] for a cast with NO proof to price from —
+  /// the `kAllowProoflessSpells` dev-flag case, and nothing else.
+  ///
+  /// **Not the ordinary path any more (M4.22).** A proof-backed cast is priced
+  /// from `CertifiedCast.baseManaCost`, derived from the same proof bytes the
+  /// peer verifies, because this function's inputs (`spell.segmentCount`,
+  /// `spell.dotCount`, `spell.t`, and the authored formula behind
+  /// [parsedFormulas]) are all WIRE fields that nothing binds to the proof.
+  /// When they drift, this and [PeerCastVerifier.certifiedBaseManaCost] return
+  /// different numbers for one cast — 83 against 25 on the shipped Basic
+  /// Windhound — and `WizardAvatar.mana` diverges at byte 56 of
+  /// `toCanonicalBytes`. See docs/M4_findings.md §M4.22.
+  ///
+  /// Kept, rather than deleted, because a proofless spell has nothing to derive
+  /// from and both devices fall back here identically. It is still written to
+  /// be the exact local mirror of [PeerCastVerifier.certifiedBaseManaCost]:
+  /// same inputs, same operations, same order.
   ///
   /// Deliberately recomputed rather than read off [SpellAsset.manaCost].
   /// That field is baked at inscribe time from the *activation* count —
@@ -3565,11 +3622,13 @@ class DeterministicResolution {
   int applySpellManaCost(
     SpellAsset spell,
     WizardAvatar caster, {
+    CertifiedCast? certified,
     CastingEnhancements? enhancements,
     IncantationRecall? recall,
     bool isVocalComponents = false,
   }) {
     final b = spellCostBreakdown(spell, caster,
+        certified: certified,
         enhancements: enhancements,
         recall: recall,
         isVocalComponents: isVocalComponents);
@@ -3602,12 +3661,27 @@ class DeterministicResolution {
   spellCostBreakdown(
     SpellAsset spell,
     WizardAvatar caster, {
+    CertifiedCast? certified,
     CastingEnhancements? enhancements,
     IncantationRecall? recall,
     bool isVocalComponents = false,
   }) {
+    // The proof-attested semantics of the caster's OWN cast (M4.22), when this
+    // device holds proof bytes to reconstruct them from. Every read below
+    // prefers them over the authored `SpellAsset` fields, because those are
+    // what the OPPONENT will price this cast from — see [certifiedManaCost],
+    // which is this method's mirror on the far side of the trust boundary and
+    // reads exactly the same three things.
+    //
+    // Null means there is genuinely nothing to derive from — a
+    // `kAllowProoflessSpells` Test Lab spell — and only then does the authored
+    // fallback apply. Both devices see the same absence, so the fallback is
+    // desync-safe even though it is not trust-safe; see [wireBaseManaCost].
+    final certFormulas = certified?.formulas;
+    final certElements = certified?.elementSequence;
+
     // 1. Base + growth — mirrors certifiedManaCost step 1.
-    var cost = wireBaseManaCost(spell);
+    var cost = certified?.baseManaCost ?? wireBaseManaCost(spell);
 
     // Chain: a pending chainSurcharge (potent Air-flavor Chain Interaction)
     // overrides the ordinary chain lookup for this one cast, regardless of
@@ -3620,9 +3694,14 @@ class DeterministicResolution {
     if (surchargeIdx >= 0) {
       cost = (cost * pow(0.9, -1)).ceil();
     } else {
+      // isSummon is read off the wire asset, deliberately and unchanged — that
+      // is M4.19, a separate defect with its own fix. What M4.22 changes is the
+      // SEQUENCE the creature's affinity is read from, which the proof does
+      // attest. Mirrors certifiedManaCost's step 2 exactly.
       final pureAffinity = spell.isSummon
-          ? CreatureSpec.fromElements(elementSequence(spell))?.affinity
-          : pureAffinityOf(parsedFormulas(spell));
+          ? CreatureSpec.fromElements(certElements ?? elementSequence(spell))
+              ?.affinity
+          : pureAffinityOf(certFormulas ?? parsedFormulas(spell));
       cost = (cost * caster.chainCostMultiplier(pureAffinity)).ceil();
     }
 
@@ -3637,10 +3716,12 @@ class DeterministicResolution {
     // the same relative position (after the chain and Efficiency discounts, so
     // a shaky recital inflates the already-discounted cost).
     //
-    // Reads the LOCAL element sequence where the certified path reads the
-    // certified one. That is the same trust split every step here already
-    // uses: this path prices the caster's own cast, and the certified path is
-    // what the peer charges them.
+    // The EXPECTED recital is derived from the same certified element sequence
+    // the peer scores against (M4.22). It used to read the authored
+    // `SpellAsset.formula` here while `certifiedManaCost` read the certified
+    // one — so on an asset whose authored fields had drifted, the two devices
+    // scored the same spoken incantation against two different expected
+    // recitals and charged different multipliers for it.
     //
     // Null means "not spoken yet" here, and prices at base — that is
     // TurnLoop.previewSpellCost's path. The charging path never passes null; see
@@ -3649,7 +3730,9 @@ class DeterministicResolution {
       cost = recall
           .tallyAgainst(
             expectedIsSummon: spell.isSummon,
-            expectedElements: expectedRecitalSlots(elementSequence(spell)),
+            expectedElements: expectedRecitalSlots(
+              certElements ?? elementSequence(spell),
+            ),
           )
           .applyTo(cost);
     }

@@ -7257,3 +7257,192 @@ Note this is adjacent to but distinct from **M4.19** (`isSummon` and `summonPers
 authored rather than certified). M4.19 was *not* a contributor here: both devices read
 the same wire values for those two fields, so they agreed. Repair 2 would leave M4.19
 exactly as it is.
+
+---
+
+## M4.22 — FIXED (2026-08-24). Engine v5: one proof, one meaning, both devices
+
+**Status: fixed.** Two repairs — content and engine — landed together.
+`kBattleEngineVersion` 4 → 5. `kRulesetVersion` stays 3,
+`kBattleProtocolVersion` stays 5, no circuit or framing change.
+
+### Repair 1 — content (no epoch)
+
+`assets/basic_spells/basic_windhound.json` regenerated from its own proof:
+
+| field | before | after |
+|---|---|---|
+| `formula` | air water earth air water fire air earth water fire air earth (12) | fire water water (3) |
+| `supremeTags` | {air, earth} | {fire, water} |
+| `manaCost` | 83 | 25 |
+
+`initialGrid`, `t` (23), `commitmentHex`, `proofBytesBase64`, `spellHashHex`,
+`id`, `segmentCount` (0), `dotCount` (8), `isSummon` and `summonPersonality`
+are byte-identical. Regenerating input data cannot change how an identical
+transcript is interpreted, so this half needs no version bump.
+
+Two consequences worth knowing about, both of them the *correction* rather than
+a side effect:
+
+* **Windhound is now a Cantrip.** `kinKey` is derived (never persisted) from
+  `formula` + `manaCost`, and a 3-element trajectory is under
+  `kKinshipMinElements` (9). The peer's verifier already treated it as one —
+  `certifyPeerCast`'s duplicate-grid exemption reads the CERTIFIED element
+  count — so this only makes the local view agree with the remote one.
+* **Its eligible enhancements changed** from Velocity/Mystery (air/earth) to
+  Potency/Efficiency (fire/water). The old tags were unbacked: picking one
+  would have been rejected by the peer as `unbacked_enhancement_claim`. The fix
+  removes a live forfeit path.
+
+The same audit over `~/Documents/spells` found **four** inconsistent assets, not
+the two the characterization reported — the earlier pass compared only
+`formula`. "Doggo" and "boom" have correct trajectories and stale prices (139 vs
+93, 100 vs 67 — each exactly one extra ×1.5), which is the pre-2026-07-29
+`(activations − 1) ~/ 3` effect-count bug still sitting in assets inscribed
+before it was fixed. All four were repaired in place. None of them is a repo
+asset, so no shipped regression can pin them.
+
+### Repair 2 — the engine authority boundary (engine v5)
+
+`DeterministicResolution.resolveActions` now branches on ownership, exactly as
+the Mystery declaration path already did:
+
+```dart
+final cert = delayedCertified[action] ??
+    (ctx.host.isLocalPlayer(actor.playerId)
+        ? ctx.host.certifiedFromProofBytes(spell)          // own proof bytes
+        : certifiedPeerCasts[spell.commitmentHex] ??       // real verification
+            ctx.host.certifiedFromProofBytes(spell));      // unwired: parse
+```
+
+Ownership rather than map presence, because the map is keyed by commitmentHex
+and the commitment is grid-only: a peer casting the same grid this turn would
+otherwise hand the local caster the peer's certified entry.
+
+**The trust roles stay distinct.** `certifiedFromProofBytes` parses WITHOUT
+verifying, which is right for bytes this device authored and would be wrong for
+a peer's. The peer branch still reads what `PeerCastVerifier` actually verified;
+its parse fallback is only reached in the pre-existing `PeerCastUncertified`
+case (solo, no verifier/VK wired) where it is no weaker than the wire formula it
+replaces. No `certified: bool` API was introduced.
+
+Pricing was threaded the same way. `CertifiedCast` gained `baseManaCost`, so the
+price and the trajectory are two readings of one proof that cannot be sourced
+separately; `spellCostBreakdown` / `applySpellManaCost` take an optional
+`certified` and prefer it for the base, the chain affinity and the expected
+recital; `TurnLoop._localCastSettlement` derives it once and hands the same
+value to both the fizzle preview and the charge; `previewSpellCost` uses it too,
+so the UI quote and the deduction still cannot disagree.
+
+`wireBaseManaCost` survives as the proofless-only fallback and says so.
+
+### Windhound, before and after
+
+| | before (v4) | after (v5) |
+|---|---|---|
+| caster charges itself | 83 → mana 17 | 25 → mana 75 |
+| verifier charges caster | 25 → mana 75 | 25 → mana 75 |
+| caster's creature | 3 HP air hound | none (0 HP water hound, reaped on spawn) |
+| verifier's creature | none | none |
+| `toCanonicalBytes()` | differ at byte 56 | equal |
+| turn outcome | "state hash mismatch on turn 3" | clean |
+
+Double summon: was (a=17, b=75) against (a=75, b=17) — mirrored, never equal.
+Now 75 across the board on both devices.
+
+### Proofless behaviour
+
+`kAllowProoflessSpells` is untouched and still `false`. `_isProoflessBypass` is
+`allowProoflessSpells && spell.proofBytes.isEmpty`, so a proof-backed cast can
+never take it. After this change the authored fallback in pricing and resolution
+is reachable **only** when `certifiedFromProofBytes` returns null — empty or
+malformed proof bytes — which both devices see identically. It is no longer
+reachable for a normal proof-backed production cast, which was the point.
+
+### M4.19 deliberately unchanged
+
+`isSummon` and `summonPersonality` remain authored and unbound.
+`summon_declaration_trust_test.dart` still passes unmodified. They were never a
+contributor here — both devices read the same wire values for them, so they
+agreed — and this repair concerns formula/element/base-cost semantics that were
+already available from proof bytes.
+
+### Content gate
+
+* `lib/spells/spell_asset_integrity.dart` — the shared derivation. Deliberately
+  Flutter-free, which forced a small split: `VerifiedSpellOutputs`, the
+  exception and the pure ABI parser moved to
+  `lib/battle/engine/proof_outputs.dart`, re-exported from `proof_intake.dart`
+  so no importer changed. `proof_intake.dart` reaches `ProofVerifier` and
+  `initSrsCached` and therefore `dart:ui`, which `dart run` cannot load.
+* `scripts/export_basic_spells.dart` — validates all five selections BEFORE
+  writing any of them, and exits 1 on a mismatch. Verified against the pre-fix
+  Windhound: it refuses, prints the three offending fields, and leaves
+  `assets/basic_spells` untouched.
+* `scripts/audit_spell_assets.dart` — audits (`--fix` repairs) a directory or a
+  file. Repairs only the three derivable fields, preserves the file's existing
+  JSON style, and REFUSES an asset whose proof disagrees with its identity.
+
+### Tests
+
+* `m422_summon_desync_characterization_test.dart` — **inverted**, 5/5. The
+  hardware-input offline reproduction is kept as a permanent regression: both
+  devices charge 25, both resolve fire/water/water, minion fingerprints agree,
+  `toCanonicalBytes()` agrees, and the double-summon table is 75 across.
+* `authored_spell_field_trust_test.dart` — the ordinary-cast test **inverted**
+  (it used to assert "the caster resolves its own authored wire formula" as the
+  property under test) and extended into M4.22's **non-summon** adversarial
+  regression: a proof certifying all-earth against an authored `water, water,
+  fire` Clouds formula now stays in lockstep, creates no cloud on either device,
+  and produces canonical state byte-identical to its honest twin. 27/27.
+* `test/spells/spell_asset_integrity_test.dart` — NEW, 10/10. Positive corpus
+  (every shipped basic clean, zero mismatches) paired with its negatives: the
+  audit REPORTS the pre-fix Windhound's three fields, reports a Doggy-shaped
+  strict-subsequence mismatch, flags an identity fault and refuses to repair it,
+  audits a proofless spell clean, throws on unparseable bytes, and pins that
+  `repairSpellJson` rewrites exactly three keys. Also pins that the audit, the
+  verifier and the local mirror agree on the base price, and that the
+  duplicated tier table matches `tierForSteps` across 1..48.
+* `peer_summon_replication_test.dart` — M4.16's strengthened assertions kept
+  as-is, still green.
+* Replay corpus — **all 10 goldens byte-unchanged.** Every replay script builds
+  its spells with `spellFromElements`, which derives the wire `formula` FROM the
+  element list its synthetic proof attests, so they are honest by construction
+  and the certified sequence the local path now reads equals the authored one it
+  used to. That is also exactly why no `TurnSessionPair` script could ever have
+  caught this bug — the one thing the harness could not model was a spell asset
+  that lies about itself.
+* `test/battle/` 967/967. Full suite 1789 passed, 2 failed —
+  `test/ui/vocabulary_screen_test.dart` ("a too-short word is refused with a
+  reason", "suggests a number of attunements per word, with no ceiling"),
+  **pre-existing**: both fail identically with this work stashed, and neither
+  touches anything in it. Not the known full-suite UI flake — these fail in
+  isolation too.
+* `flutter analyze` — 39 issues, down from a 43 baseline: the four
+  `invalid_return_type_for_catch_error` warnings the characterization commit
+  introduced are fixed by a shared `collectError` helper in
+  `certified_cast_fixture.dart`. The one remaining warning
+  (`spell_test_lab_screen.dart` unused parameter) predates this work.
+
+### Still authored, and why that is acceptable
+
+Three UI reads of `SpellAsset.formula`/`supremeTags` were left alone. None can
+cause a silent divergence — the engine is authoritative and identical on both
+devices — and the corrected content makes all three agree today:
+
+* `battle_screen.dart:1425` — the enhancement picker gates on
+  `spell.supremeTags`. An unbacked pick is rejected by the peer as
+  `unbacked_enhancement_claim`, i.e. a clean forfeit, not a desync. Deriving it
+  would mean adding supreme tags to `CertifiedCast`, which is a wider change
+  than this slice.
+* `battle_screen.dart:1286` — `_expectedElementCount` tells the player how many
+  words the incantation wants. The engine now scores recall against the
+  certified sequence on both devices, so a drifted asset would mislead the
+  player without desyncing anyone.
+* `battle_screen.dart:200` — `spellNeedsConveyorDirection` decides whether to
+  prompt for a push direction. Both devices read the same transmitted
+  direction, so a spurious or missing prompt is a UX artifact only.
+
+Also still authored, by design and out of scope: the wire encoding of
+`spell.formula` (`battle_wire_codec.dart`), trade/apprentice transfer metadata,
+and every card-art / library / sound read.
