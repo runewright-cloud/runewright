@@ -7594,3 +7594,97 @@ Both are presentation/eligibility only — resolution is unaffected and identica
 on both devices. Fixing F1 removes the practical exposure; fixing F2 properly
 means deriving supreme tags and the creature summary from proof bytes, which
 implies carrying certified supreme tags on `CertifiedCast`.
+
+---
+
+## Engine-v5 two-peer gate, remaining scenarios (2026-08-24) — HALTED at vocal components
+
+Continued from the M4.22 revalidation, same rig (Pixel 6 host + Linux join,
+both `cb996b1`/engine v5), driven by `adb shell input` + `xdotool`. No
+production code changed.
+
+### Passed
+
+| # | scenario | result |
+|---|---|---|
+| 6 | affordable Mystery (delayed, delay 1) | **PASS** |
+| 1 | counter-charm interaction | **PASS** |
+| 9 | disconnect behaviour | **PASS** |
+
+**Mystery** — Earthworks certifies `earth,earth,earth` with supreme tag {earth},
+so Mystery is genuinely backed and it was the only enhancement offered.
+Declaration turn: Pixel 50→**37** (base 13), Linux meditated to **75**; both
+devices agreed and a pending orb was visible to the peer. Fire turn: Pixel
+**62**, Linux **100** on both devices, and the caster's chain read **Earth ×1**
+— the delayed fire resolved from the `CertifiedCast` captured at declaration.
+
+**Counter charm** — a `[fire,fire,fire]` charm on the Pixel against Linux's
+Basic Firebolt (certified `fire,fire,fire`). Pixel 50 → 75 (meditate) → **65**,
+the 10-mana per-trigger charm cost; Linux **37** (50−13, spent at commit); no
+HP moved on either side, i.e. the cast was fully countered. Both devices agreed.
+Note the wizards start ~8 tiles apart and the out-of-range check short-circuits
+*before* the charm test, so the caster must target within reach for the charm to
+be exercised at all.
+
+**Disconnect** — killing the Linux peer mid-turn put the Pixel into a clean
+terminal state ("Lost contact with the other wizard… the connection closed")
+with a Leave button. No hang, no state-hash mismatch, no forfeit.
+
+### HALTED — scenario 2, vocal components: cast never completes
+
+With VOCAL COMPONENTS on, holding CAST enters "SPEAK THE INCANTATION /
+Recording…" and **never leaves it**. CANCEL is disabled while recording, so the
+turn cannot proceed; the peer sits at "WAITING FOR OPPONENT — artifactCommit"
+indefinitely. Reproduced on **both** peers:
+
+* Linux desktop (PipeWire holds the ALSA capture device; `arecord -l` shows
+  0/1 free subdevices),
+* Pixel 6 with `android.permission.RECORD_AUDIO` `granted=true`.
+
+Waited ~40 s; no timeout fired. `adb shell input motionevent UP` and repeated
+`xdotool mouseup` did not end it. Nothing logged on either side.
+
+**Deliberately NOT classified as an engine-v5 defect.** No turn resolved, so no
+canonical state was computed and the state-hash gate never ran — both peers
+remained mutually consistent, merely stalled. The confound I cannot remove with
+synthetic input is whether the widget ever receives a release: the app clearly
+sees the touch DOWN (it enters Recording), but an injected UP may not be
+delivered to a Flutter long-press the way a real finger's is. **A single
+physical press-and-release on the Pixel's CAST button distinguishes a genuine
+capture hang from a synthetic-input limitation.** The devices were left in the
+stuck state for exactly that check.
+
+### Not constructible from available proof-backed content
+
+Determined by inventorying every proof-backed spell on both devices (certified
+trajectory, effects, supreme tags, creature spec):
+
+* **5, Phase-5 / SlowTile** and **7, mid-turn-drained Mystery** — a SlowTile
+  needs a **water/tileModification** cast (`effect_resolver.dart:221`). No
+  proof-backed spell on either device produces one, and no other mana-drain
+  source exists, so nothing can drain a caster between commit and settlement.
+* **8, free-move ordering** — needs an **air barrier** collapsing
+  (`freeMoveOnCollapse`, air affinity only) or a Boost from a
+  fire/water speedManipulation cast. The only barrier available is Earthworks
+  (earth) and the only speedManipulation is Speedboost (air). Neither grants a
+  free move.
+* **3, ordinary summon over subsequent turns** — the only surviving-creature
+  summons in either library are "Doggo" (air, 3 HP) and "Doggy" (fire, 1 HP),
+  both **expired loans** (`~/Documents/permissions`, `expiresAt`
+  2026-07-31), so a cast would be refused `unauthorized_spell`. Basic Windhound
+  certifies a 0 HP creature that is reaped on spawn, which the completed M4.22
+  checks already cover.
+
+### Potent summon is constructible after all
+
+Windhound's certified supreme tags are **{fire, water}**, so **Potency is
+backed** and the picker offers it. A Potent Windhound was set up but not yet run
+— the gate halted first. Note its creature is still 0 HP, so the Potent
+*bonus-action* sub-path would not be exercised even so.
+
+### Scaffolding
+
+Test chapters added on both devices ("S Firebolt", "S Earth", "S Charm" with a
+`[fire,fire,fire]` charm, "S FBE", "Hound Only"). A leyline seed search found
+**`gale` + Basic Firebolt triggers spontaneousCombustion**, which is what would
+make scenario 4 (forced cast) constructible when the gate resumes.
