@@ -7446,3 +7446,103 @@ devices — and the corrected content makes all three agree today:
 Also still authored, by design and out of scope: the wire encoding of
 `spell.formula` (`battle_wire_codec.dart`), trade/apprentice transfer metadata,
 and every card-art / library / sound read.
+
+---
+
+## M4.22 — two-device hardware gate on engine v5 (2026-08-24) — PASS
+
+Pixel 6 (`<device serial redacted>`, oriole, Android 17) host + Linux desktop join, both
+from `cb996b1`, driven over `adb shell input` + `xdotool`. Ground truth read
+from the UI and from `logcat`/stdout, not inferred.
+
+### The three checks
+
+| check | result |
+|---|---|
+| one Basic Windhound summon | **PASS** — both peers MP 25/75, no minion, turn advanced |
+| both players summon Windhound | **PASS** — both peers MP 25/25 (symmetric, not crossed) |
+| v4 ↔ v5 handshake negative control | **PASS** — refused at handshake |
+
+Each was run twice: once with the Pixel still holding the **stale** asset and
+Linux the repaired one (the harder case — divergent authored metadata,
+byte-identical proofs), then again with both repaired. Identical results.
+
+The negative control produced exactly the intended refusal, from
+`duel_setup.dart:203`, before any turn ran:
+
+```
+Duel setup failed: Bad state: battle engine version mismatch (local=5, peer=4) — match aborted
+```
+
+### The decisive evidence for repair 2
+
+Not the mana — the **chain affinity**. `_updateChainState` keys a summon's chain
+on `CreatureSpec.fromElements(...).affinity`. The certified sequence
+[fire, water, water] is **water**; the stale authored sequence opens on **air**.
+On the run where the Pixel still held the stale asset, the Pixel's own status
+line read **"Water ×1 (−10%)"** — the caster built a water chain from an asset
+whose own file says air. That is the local device resolving its own cast from
+its own proof bytes, observed on hardware.
+
+Both peers also ended with **no minion**, exactly as the offline regression
+predicts: the certified creature has 0 HP and is reaped on spawn. Under v4 the
+caster would have kept a 3 HP air hound.
+
+### NEW FINDING 1 — the content repair does not reach existing installs
+
+`seedBasicSpells` matches by `spellHashHex` and never overwrites an existing
+file. The repair deliberately preserved `spellHashHex` (Poseidon2(commitment,
+T) — neither changed), so **the corrected asset is inert on any device that has
+already seeded**. The Pixel still held the 83-mana Windhound from its
+2026-08-23 seed.
+
+Neither escape hatch works:
+
+* bumping `kBasicSpellSetVersion` does **not** help — the per-`spellHashHex`
+  existence check skips the file regardless of the marker;
+* Library → "Restore basic spells" (`force: true`) does **not** help — same
+  check.
+
+Nothing in the test suite could see this: the suite and the audit both read the
+**bundle**, not device state. Engine v5 makes it harmless for lockstep (both
+devices resolve from proof bytes either way), so this is a content-freshness
+bug, not a desync — but it is real and unfixed. A migration would need to
+compare the on-disk asset against its own proof and rewrite the three derived
+fields, which is exactly what `scripts/audit_spell_assets.dart --fix` does
+off-device.
+
+### NEW FINDING 2 — a stale asset offers enhancements its proof cannot back
+
+With the stale asset the Pixel's cast-time enhancement picker offered
+**Velocity** and **Mystery** (authored `supremeTags` {air, earth}) and greyed
+out Potency/Efficiency. The proof certifies {fire, water}. Picking either
+offered enhancement would have been rejected by the peer as
+`unbacked_enhancement_claim` — a clean forfeit, not a desync, but a live
+forfeit path reachable by an ordinary player on an un-migrated install.
+
+After the asset was repaired on the Pixel the picker offered **Potency** and
+**Efficiency** on both devices, matching the certified tags, and the
+best-case price shown on the card changed from 25 to 17 (the Efficiency −1/3 it
+had genuinely earned all along).
+
+This is the `battle_screen.dart:1425` authored read flagged in the M4.22 report
+as "cannot desync". That assessment holds — but it understated the cost:
+combined with Finding 1 it is reachable in normal play.
+
+### Presentation reads confirmed on hardware
+
+The summon preview on the cast bar reads the **authored** formula. With the
+stale asset the Pixel advertised "Air Creature · HP 3 · DMG 1 · Move 2 · Range 1"
+while quoting the proof-derived "25 mana" and resolving a water 0 HP creature;
+Linux's repaired copy correctly read "Water Creature · HP 0 · DMG 0 · Move 0 ·
+Range 0". Both devices resolved identically regardless. After repair the two
+UIs were identical.
+
+### Incidental
+
+* Linux still cannot advertise over mDNS ("Automatic discovery isn't available
+  here") — the known nsd gap, out of scope for M4.22. The manual-address
+  fallback carried every join.
+* Test scaffolding left in place: a "Hound Only" chapter (one Windhound, no
+  artifacts) on each device, used to make both hands deterministic at hand
+  size 1. The Pixel's stale asset was backed up before repair.
