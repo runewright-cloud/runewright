@@ -7546,3 +7546,51 @@ UIs were identical.
 * Test scaffolding left in place: a "Hound Only" chapter (one Windhound, no
   artifacts) on each device, used to make both hands deterministic at hand
   size 1. The Pixel's stale asset was backed up before repair.
+
+---
+
+## M4.22 follow-ups — DEFERRED, not engine-v5 gate blockers
+
+Both were found by the 2026-08-24 two-device hardware gate. Neither blocks the
+engine-v5 gate: v5 remains canonical and lockstep-safe, because both devices
+resolve and price a proof-backed cast from proof bytes regardless of what the
+authored caches say. Logged here so they are picked up as their own work.
+
+### M4.22-F1 — installed basic spells are not refreshed when bundled derived metadata changes
+
+`seedBasicSpells` (lib/spells/basic_spell_seed.dart) skips any spell whose
+`spellHashHex` is already on disk and **never overwrites**. `spellHashHex` is
+`Poseidon2(commitment, T)`, and a metadata-only repair changes neither — so a
+corrected bundle is inert on every already-seeded install.
+
+Neither existing lever helps: bumping `kBasicSpellSetVersion` only clears the
+marker gate, and Library → "Restore basic spells" passes `force: true`, but both
+still fall through the same per-`spellHashHex` existence check.
+
+Invisible to the whole test suite, because the suite and
+`scripts/audit_spell_assets.dart` read the **bundle**, never device state.
+
+Shape of a fix: an on-device migration that audits each installed asset against
+its own proof and rewrites `formula` / `supremeTags` / `manaCost` in place —
+what `audit_spell_assets.dart --fix` already does off-device — keyed on a
+migration version rather than on `spellHashHex`. Identity, grid, proof bytes and
+the summon declaration must stay untouched.
+
+### M4.22-F2 — UI enhancement eligibility and creature preview still read authored caches
+
+Two proof-backed reads were left authored by M4.22 and are now confirmed
+player-visible on hardware:
+
+* `battle_screen.dart:1425` gates the cast-time enhancement picker on
+  `SpellAsset.supremeTags`. On a stale asset it offered **Velocity/Mystery**
+  ({air, earth}) for a spell certifying {fire, water}. Claiming either is
+  rejected by the peer as `unbacked_enhancement_claim` — a clean forfeit rather
+  than a desync, but reachable in ordinary play on an un-migrated install.
+* the cast-bar summon preview reads the authored formula, so a stale asset
+  advertised "Air Creature · HP 3 · DMG 1 · Move 2 · Range 1" while the engine
+  resolved a water 0 HP creature and the price line correctly said 25.
+
+Both are presentation/eligibility only — resolution is unaffected and identical
+on both devices. Fixing F1 removes the practical exposure; fixing F2 properly
+means deriving supreme tags and the creature summary from proof bytes, which
+implies carrying certified supreme tags on `CertifiedCast`.
