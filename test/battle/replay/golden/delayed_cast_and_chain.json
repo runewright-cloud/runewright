@@ -5,7 +5,7 @@
     {
       "turn": 1,
       "note": "player_a declares a Mystery (delay 1); player_b passes",
-      "stateHash": "e23501786e4c9c27b711da583e12bb35d8af4c84fcc08c22801431d4e8418384",
+      "stateHash": "669639cd1ba02dee6340acb1bfc22ec0ac1cfcf5b4850c13f6be3d354524c467",
       "events": {
         "castEvents": 0,
         "resolvedSpells": 0,
@@ -49,7 +49,7 @@
     {
       "turn": 2,
       "note": "the delayed spell fires while player_b casts — both resolve this turn, so resolution order is under test",
-      "stateHash": "b21f0b1147d979dbe60379e301ab0e10f4d125d6b55ae58c08819473d7c3e6f7",
+      "stateHash": "476a96ccca24afb0b34de2a53034920295275404f040c223babecb70722c084e",
       "events": {
         "castEvents": 2,
         "resolvedSpells": 2,
@@ -93,7 +93,7 @@
     {
       "turn": 3,
       "note": "both move; chain state should regress on the non-casting turn",
-      "stateHash": "073c4f6bc74303d9b70dcb43cdac9400841a223c395ca064874c1ec9f1ed84bf",
+      "stateHash": "a8d614b96b2e8c5458e836a8de2700b461d6b6fb76c40b80340f290ebbad3d08",
       "events": {
         "castEvents": 0,
         "resolvedSpells": 0,
@@ -137,7 +137,7 @@
     {
       "turn": 4,
       "note": "player_a casts a second, distinct grid — the duplicate-grid set must accept it while still remembering the first",
-      "stateHash": "3bfe22c5a13bc1aea1b41282ce4141f57faac14df5c40528e50d0df182bc4b21",
+      "stateHash": "de1140495159302f0f6bd76364195b879646b2a9c9ab107d1987f5b150dfc811",
       "events": {
         "castEvents": 1,
         "resolvedSpells": 1,

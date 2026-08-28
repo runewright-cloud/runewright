@@ -291,6 +291,12 @@ Future<_ImportCounts> _importChapters(
       createdAt: chapter.createdAt,
       entries: remappedEntries,
       artifacts: chapter.artifacts,
+      // Same remap, same rule as the entries above: an armor whose spell
+      // wasn't in this backup is dropped rather than left dangling (a
+      // dangling binding would consume its slots with nothing to resolve).
+      armorSpellId: chapter.armorSpellId == null
+          ? null
+          : spellIdRemap[chapter.armorSpellId!],
     ).save();
     existingIds.add(id);
     added++;

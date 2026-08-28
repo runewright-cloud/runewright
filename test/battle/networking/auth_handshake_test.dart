@@ -92,9 +92,12 @@ void main() {
       Uint8List.fromList([...attackerIdentity.publicKeyBytes, ...garbageSig]),
     );
 
-    final forfeitFrame = attackerSession.framesOfType(BattleMsgType.forfeit).first;
+    // `peerForfeit` rather than a raw framesOfType listen: the session claims
+    // the forfeit frame itself now (BattleSession._pumpPeerForfeit), so it has
+    // exactly one consumer and a second listener here would wait forever.
+    final forfeitReason = attackerSession.peerForfeit;
     await expectLater(authFuture, throwsA(isA<StateError>()));
-    expect(utf8.decode((await forfeitFrame).payload), equals('auth_failed'));
+    expect(await forfeitReason, equals('auth_failed'));
 
     await transportA.disconnect();
     await transportAttacker.disconnect();
@@ -131,9 +134,12 @@ void main() {
       Uint8List.fromList([...attackerIdentity.publicKeyBytes, ...sigOverWrongNonce]),
     );
 
-    final forfeitFrame = attackerSession.framesOfType(BattleMsgType.forfeit).first;
+    // `peerForfeit` rather than a raw framesOfType listen: the session claims
+    // the forfeit frame itself now (BattleSession._pumpPeerForfeit), so it has
+    // exactly one consumer and a second listener here would wait forever.
+    final forfeitReason = attackerSession.peerForfeit;
     await expectLater(authFuture, throwsA(isA<StateError>()));
-    expect(utf8.decode((await forfeitFrame).payload), equals('auth_failed'));
+    expect(await forfeitReason, equals('auth_failed'));
 
     await transportA.disconnect();
     await transportAttacker.disconnect();
@@ -156,9 +162,12 @@ void main() {
     await attackerSession.framesOfType(BattleMsgType.authResponse).first;
     attackerSession.send(BattleMsgType.authResponse, Uint8List(10)); // way too short
 
-    final forfeitFrame = attackerSession.framesOfType(BattleMsgType.forfeit).first;
+    // `peerForfeit` rather than a raw framesOfType listen: the session claims
+    // the forfeit frame itself now (BattleSession._pumpPeerForfeit), so it has
+    // exactly one consumer and a second listener here would wait forever.
+    final forfeitReason = attackerSession.peerForfeit;
     await expectLater(authFuture, throwsA(isA<StateError>()));
-    expect(utf8.decode((await forfeitFrame).payload), equals('auth_malformed_response'));
+    expect(await forfeitReason, equals('auth_malformed_response'));
 
     await transportA.disconnect();
     await transportAttacker.disconnect();

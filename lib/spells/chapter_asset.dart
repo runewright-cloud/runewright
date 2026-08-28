@@ -124,6 +124,7 @@ class ChapterAsset {
     required this.createdAt,
     this.entries = const [],
     this.artifacts = const [],
+    this.armorSpellId,
   });
 
   final String id;
@@ -132,7 +133,70 @@ class ChapterAsset {
   final List<ChapterEntry> entries;
   final List<ArtifactEntry> artifacts;
 
-  int get artifactSlotsRemaining => maxArtifactSlots - artifacts.length;
+  /// [SpellAsset.id] of the Aetherial Armor worn with this chapter, or null
+  /// for a chapter with no armor (including every chapter persisted before
+  /// armor existed).
+  ///
+  /// Armor is a chapter binding of its own rather than an [ArtifactEntry]
+  /// because it behaves nothing like one: it costs a variable number of
+  /// artifact slots (`ceil(T/4)`), it is permanent equipment rather than
+  /// something activated or consumed, it carries a proof-backed inscription,
+  /// and at most one may be worn — which is exactly what a single nullable
+  /// field enforces structurally, with no validation to forget.
+  ///
+  /// Stored as an ID, not an embedded [SpellAsset]: a second copy of the asset
+  /// would go stale against the library the moment the spell was renamed, and
+  /// would double every proof's bytes in the chapter file. The trade-off is
+  /// that this class cannot resolve the armor itself — see [artifactSlotsUsed]
+  /// and lib/spells/chapter_armor.dart.
+  final String? armorSpellId;
+
+  bool get hasArmor => armorSpellId != null;
+
+  /// Ordinary artifacts, which cost one slot each. Armor is not among them.
+  int get ordinaryArtifactCount => artifacts.length;
+
+  /// Total artifact slots consumed: one per ordinary artifact plus the armor's
+  /// [armorSlotCost], which is `ceil(T/4)` and therefore not knowable from the
+  /// chapter alone.
+  ///
+  /// [armorSlotCost] must be supplied by a caller that has resolved
+  /// [armorSpellId] to its [SpellAsset] — required, not defaulted to 0, so a
+  /// caller cannot silently under-count a chapter's armor and let it slip past
+  /// the 12-slot budget. It is ignored entirely when [hasArmor] is false.
+  /// lib/spells/chapter_armor.dart is the seam that does the resolving.
+  int artifactSlotsUsed({required int armorSlotCost}) =>
+      artifacts.length + (hasArmor ? armorSlotCost : 0);
+
+  int artifactSlotsRemaining({required int armorSlotCost}) =>
+      maxArtifactSlots - artifactSlotsUsed(armorSlotCost: armorSlotCost);
+
+  /// Binds [spellId] as this chapter's armor, replacing any current binding —
+  /// which is what releases the outgoing armor's slots.
+  ///
+  /// Deliberately unvalidated: whether [spellId] names an armor at all, and
+  /// whether it fits the remaining budget, both need the [SpellAsset] this
+  /// class cannot see. Prefer `bindArmor` in lib/spells/chapter_armor.dart,
+  /// which checks both and calls this.
+  ChapterAsset withArmor(String spellId) => ChapterAsset(
+        id: id,
+        name: name,
+        createdAt: createdAt,
+        entries: entries,
+        artifacts: artifacts,
+        armorSpellId: spellId,
+      );
+
+  /// Removes the armor binding, immediately freeing its slots. Note this is
+  /// the one copy path below that deliberately does NOT carry [armorSpellId].
+  ChapterAsset withoutArmor() => ChapterAsset(
+        id: id,
+        name: name,
+        createdAt: createdAt,
+        entries: entries,
+        artifacts: artifacts,
+        armorSpellId: null,
+      );
 
   int get unattunedCounterCharmCount =>
       artifacts.where((a) => a.isUnattunedCounterCharm).length;
@@ -155,6 +219,7 @@ class ChapterAsset {
       createdAt: createdAt,
       entries: entries,
       artifacts: updated,
+      armorSpellId: armorSpellId,
     );
   }
 
@@ -167,6 +232,7 @@ class ChapterAsset {
         createdAt: createdAt,
         entries: entries,
         artifacts: artifacts,
+        armorSpellId: armorSpellId,
       );
 
   /// Returns a new, independent chapter named [newName] with a fresh [id]
@@ -182,6 +248,7 @@ class ChapterAsset {
         createdAt: DateTime.now().toUtc(),
         entries: entries,
         artifacts: artifacts,
+        armorSpellId: armorSpellId,
       );
 
   ChapterAsset withEntry(ChapterEntry entry) => ChapterAsset(
@@ -190,6 +257,7 @@ class ChapterAsset {
         createdAt: createdAt,
         entries: [...entries, entry],
         artifacts: artifacts,
+        armorSpellId: armorSpellId,
       );
 
   ChapterAsset withoutEntryAt(int index) {
@@ -200,6 +268,7 @@ class ChapterAsset {
       createdAt: createdAt,
       entries: updated,
       artifacts: artifacts,
+      armorSpellId: armorSpellId,
     );
   }
 
@@ -209,6 +278,7 @@ class ChapterAsset {
         createdAt: createdAt,
         entries: entries,
         artifacts: [...artifacts, artifact],
+        armorSpellId: armorSpellId,
       );
 
   /// Replaces the artifact at [index] — the re-attune path, now that a charm's
@@ -223,6 +293,7 @@ class ChapterAsset {
       createdAt: createdAt,
       entries: entries,
       artifacts: updated,
+      armorSpellId: armorSpellId,
     );
   }
 
@@ -234,6 +305,7 @@ class ChapterAsset {
       createdAt: createdAt,
       entries: entries,
       artifacts: updated,
+      armorSpellId: armorSpellId,
     );
   }
 
@@ -243,6 +315,9 @@ class ChapterAsset {
         'createdAt': createdAt.toIso8601String(),
         'entries': entries.map((e) => e.toJson()).toList(),
         'artifacts': artifacts.map((a) => a.toJson()).toList(),
+        // Omitted entirely when absent, so a chapter with no armor serialises
+        // byte-identically to how it did before armor existed.
+        if (armorSpellId != null) 'armorSpellId': armorSpellId,
       };
 
   static ChapterAsset fromJson(Map<String, dynamic> json) => ChapterAsset(
@@ -255,6 +330,9 @@ class ChapterAsset {
         artifacts: (json['artifacts'] as List<dynamic>? ?? [])
             .map((a) => ArtifactEntry.fromJson(a as Map<String, dynamic>))
             .toList(),
+        // Absent in every chapter persisted before armor existed: those load
+        // as no-armor chapters.
+        armorSpellId: json['armorSpellId'] as String?,
       );
 
   static Future<Directory> _chaptersDir() async {
@@ -319,22 +397,28 @@ class ChapterAsset {
   }
 
   /// Strips every [ChapterEntry] whose [ChapterEntry.spellId] is [spellId]
-  /// out of every persisted chapter, saving only the chapters that actually
-  /// changed. Called whenever a spell is deleted (crafted or loaned — both
+  /// out of every persisted chapter — and clears [armorSpellId] on any chapter
+  /// wearing it as armor — saving only the chapters that actually changed.
+  ///
+  /// The armor half matters for more than tidiness: a dangling armor binding
+  /// would keep consuming its `ceil(T/4)` slots forever, since the only thing
+  /// that knows the cost is the [SpellAsset] that was just deleted. Called whenever a spell is deleted (crafted or loaned — both
   /// are [SpellAsset]s, and a [ChapterEntry] always points at a
   /// [SpellAsset.id] regardless of which tab it was added from) so a chapter
   /// never carries a dangling reference; previously this was only masked at
   /// battle-resolve time by [Chapter.fromChapterAsset]'s silent drop.
   static Future<void> removeSpellFromAllChapters(String spellId) async {
     for (final chapter in await loadAll()) {
-      final idx = chapter.entries.indexWhere((e) => e.spellId == spellId);
-      if (idx < 0) continue;
+      final hasEntry = chapter.entries.any((e) => e.spellId == spellId);
+      final wornAsArmor = chapter.armorSpellId == spellId;
+      if (!hasEntry && !wornAsArmor) continue;
       var updated = chapter;
       while (true) {
         final i = updated.entries.indexWhere((e) => e.spellId == spellId);
         if (i < 0) break;
         updated = updated.withoutEntryAt(i);
       }
+      if (wornAsArmor) updated = updated.withoutArmor();
       await updated.save();
     }
   }

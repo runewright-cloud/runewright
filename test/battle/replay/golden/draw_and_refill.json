@@ -5,7 +5,7 @@
     {
       "turn": 1,
       "note": "hands were dealt by startBattle, so turn 1 casts from slot 0 and takes the first refill",
-      "stateHash": "dae6a38cb87cd3f7c4efca53acb40777a76577b63510889e23df4ff636a8ecb1",
+      "stateHash": "e639a909487481cd4a0b8dc5b7a9f1dc45b57bf9fb96b84f962ed606e7ea1c71",
       "events": {
         "castEvents": 2,
         "resolvedSpells": 2,
@@ -69,7 +69,7 @@
     {
       "turn": 2,
       "note": "slot 0 now holds a different card; casting it again drains the deck a second time",
-      "stateHash": "bd40c9b82f59c7ee8130361601ed32472f9724885b5698a17d2ce74419c0b4c2",
+      "stateHash": "33c5b7a2f2c8d1cae5ce5a5262d6c3e8775e17a82e81f0a1cbd053a4ae5acab3",
       "events": {
         "castEvents": 2,
         "resolvedSpells": 2,
@@ -133,7 +133,7 @@
     {
       "turn": 3,
       "note": "a quiet turn — draw state must NOT advance when nobody casts",
-      "stateHash": "ac73ab63a2e1f18d0e0750fced3572f8e02c857b9ae686ac845d59e1221d99ec",
+      "stateHash": "d82e98acd1547e7e9a731de933e4ae73105bcb4cc9681443b4ff22856df61865",
       "events": {
         "castEvents": 0,
         "resolvedSpells": 0,
@@ -197,7 +197,7 @@
     {
       "turn": 4,
       "note": "cast again after the pause; the nonce must pick up where it left off rather than replaying an earlier draw",
-      "stateHash": "9cb55492f423467c45990b9db5268a6c77315dfbd00f905032a5133d4c27a1bd",
+      "stateHash": "eb4534ad444035884d3f0ec87b15595a801f7479f07e02ffa0fa431af5b5c5a8",
       "events": {
         "castEvents": 2,
         "resolvedSpells": 2,

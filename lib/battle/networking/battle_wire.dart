@@ -52,6 +52,13 @@ enum BattleMsgType {
   // (older peer, dropped catalog entry) degrades to the default via
   // avatarArtById returning null. See docs/AVATAR_PICKER_PLAN.md §5.2.
   avatarId(0x1E),         // UTF-8 bytes, may be empty
+  // Equipped Aetherial Armor (docs/AETHERIAL_ARMOR.md §slice 4). Exchanged on
+  // EVERY duel, armor or not: `{"armor":null}` is a complete declaration, and
+  // a conditional frame would leave two peers in different handshake states
+  // waiting on each other. Carries the proof plus a routing tier and nothing
+  // else — the semantics are re-derived from the verified public outputs on
+  // both devices (armor_certification.dart).
+  armorLoadout(0x1F),     // JSON: {"armor": null | {"tier": int, "proofB64": str}}
 
   // Commit-reveal entropy (§3)
   nonceCommit(0x20),
@@ -141,7 +148,24 @@ enum BattleMsgType {
   // sequential mode only, is never awaited by the engine's exchange
   // sequence, and a client that never sends it merely leaves the next
   // player's controls locked (a stall, not a desync).
-  componentsDone(0x46);
+  componentsDone(0x46),
+
+  // Setup-finalization barrier (docs/AETHERIAL_ARMOR.md §3d). Sent by each
+  // side once EVERY setup validation has passed — armor certified, slot budget
+  // recomputed, permissions verified — and awaited before either side builds a
+  // BattleState. Empty payload: it asserts nothing except "I found no reason
+  // to refuse this match".
+  //
+  // The point is what it makes impossible. Without it, a side that validates
+  // successfully has already finished setup by the time its opponent rejects
+  // something, so it enters the battle screen for a match that is already
+  // over. Every refusal path forfeits, and a forfeit now interrupts a blocked
+  // typed wait (BattleSession._awaitFrame), so this barrier turns "one side
+  // succeeded, one side aborted" into "both sides aborted".
+  //
+  // Allocated in the 0x4x block for the same reason as artifactCommit: the
+  // 0x10–0x1F setup block is full.
+  setupReady(0x47);
 
   const BattleMsgType(this.byte);
   final int byte;

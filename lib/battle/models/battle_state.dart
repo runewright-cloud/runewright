@@ -401,6 +401,56 @@ class BattleState {
         buf.writeUint8(entry.value.multiplier);
         buf.writeUint8(entry.value.remainingTurns);
       }
+
+      // Aetherial Armor (engine v6). Hashed because armor now moves
+      // deterministic gameplay — starting HP, melee, move speed, spell range —
+      // so two devices holding different readings of the same worn armor must
+      // not be able to agree on a state hash.
+      //
+      // The COMPLETE certified semantics go in, not just the four numbers that
+      // are live today. Two armors can grant identical active bonuses off
+      // different element counts, keyword sets and trajectories; encoding only
+      // the bonuses would let such a pair hash equal while the devices disagree
+      // about what is worn, and the first keyword to become live would then
+      // silently desync a match that had looked in lockstep. Nothing authored
+      // participates — no proof bytes, no `SpellAsset` metadata — for the same
+      // reason `CertifiedArmor` never reads them (M4.22).
+      //
+      // Presence is its own byte, so "no armor" and "an armor whose sequence
+      // happens to be empty" stay distinguishable.
+      final armor = a.armor;
+      buf.writeUint8(armor == null ? 0 : 1);
+      if (armor != null) {
+        // T alongside slotCost: the cost is a lossy function of T (four T
+        // values share each rung), so agreeing on the cost is not agreeing on
+        // the armor.
+        buf.writeUint8(armor.t);
+        buf.writeUint8(armor.slotCost);
+        buf.writeUint8(armor.fireCount);
+        buf.writeUint8(armor.airCount);
+        buf.writeUint8(armor.waterCount);
+        buf.writeUint8(armor.earthCount);
+        buf.writeUint8(armor.meleeBonus);
+        buf.writeUint8(armor.moveSpeedBonus);
+        buf.writeUint8(armor.spellRangeBonus);
+        buf.writeUint8(armor.armorHpBonus);
+        // Keywords as a bitmask over ArmorKeyword's declaration order, exactly
+        // as a minion's abilities are encoded below — a Set's iteration order
+        // is insertion order and would make the bytes depend on the order the
+        // patterns happened to match.
+        var keywordMask = 0;
+        for (final k in armor.keywords) {
+          keywordMask |= 1 << k.index;
+        }
+        buf.writeUint16(keywordMask);
+        // The certified dominance sequence, encoded exactly like a counter
+        // charm's trajectory above (length-prefixed, one byte per zone) — one
+        // BorderZone encoding in this function, not two.
+        buf.writeUint8(armor.elementSequence.length);
+        for (final z in armor.elementSequence) {
+          buf.writeUint8(z.index);
+        }
+      }
     }
 
     // Teams

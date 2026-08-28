@@ -110,7 +110,16 @@ Future<SpellAsset> inscribeSpell({
   List<String> formula = const [],
   List<String> supremeTags = const [],
   bool isSummon = false,
+  bool isArmor = false,
 }) async {
+  // Inscription mode is exclusive (SpellAsset.isArmor). Checked here as well
+  // as in the SpellAsset constructor so a caller gets the same InscribeException
+  // channel as every other refusal on this path, before ~10s of proving.
+  if (isSummon && isArmor) {
+    throw InscribeException(
+      'cannot inscribe: a spell cannot be both a Summon and an Aetherial Armor',
+    );
+  }
   final tier = tierForSteps(steps);
   if (tier == null) {
     throw InscribeException(
@@ -193,6 +202,7 @@ Future<SpellAsset> inscribeSpell({
     formula: formula,
     supremeTags: supremeTags,
     isSummon: isSummon,
+    isArmor: isArmor,
   );
   await asset.save();
   return asset;

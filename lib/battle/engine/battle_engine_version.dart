@@ -202,6 +202,83 @@
 // so `kRulesetVersion` stays 3 and `kBattleProtocolVersion` stays 5. See
 // docs/M4_findings.md M4.22.
 //
+// v6 (2026-08-26, Aetherial Armor slice 5) — a certified Aetherial Armor is
+// canonical battle state, and its four numerical bonuses are deterministic
+// gameplay.
+//
+// Slices 1–4.6 built the armor derivation, its persistence, the `armorLoadout`
+// (0x1F) setup frame and two-sided certification, then deliberately stopped: as
+// of v5 both devices agreed on an armor's complete semantics and applied none
+// of them. This closes that gap. `DuelSetupResult.localArmor`/`peerArmor` — the
+// already-certified `CertifiedArmor`s, re-derived from nothing — are seated on
+// the two `WizardAvatar`s by `buildDuelBattleState`'s existing pubkey ordering,
+// and four bonuses go live:
+//
+//   * Fire  -> `+meleeBonus` on the one wizard melee path
+//              (`DeterministicResolution.applyHaymaker`), composing with the
+//              Air haymaker's distance bonus.
+//   * Air   -> `+moveSpeedBonus` inside `WizardAvatar.effectiveMoveSpeed`.
+//   * Water -> `+spellRangeBonus` inside `WizardAvatar.effectiveSpellRange`.
+//   * Earth -> `+armorHpBonus` folded into starting HP, and into the one other
+//              path that assigns a full pool (the Statuesque wild-magic heal).
+//
+// Air and Water go into the two *effective-stat* getters, which are the single
+// authoritative definitions of those stats, so every consumer inherits them —
+// including Dash (`effectiveMoveSpeed * 2`, so base 2 + Air 1 dashes 6),
+// Watery Inertia's `1..range` scatter, and the wild-magic random-target radius.
+// That breadth is the ruling, not an oversight: there is no "base excluding
+// armor" reading anywhere.
+//
+// Armor keywords are canonical and hashed but **inert** — no keyword touches
+// gameplay in v6, and `WizardAvatar.isFlying` still derives solely from the
+// Flying status effect, so a certified Flying armor leaves it false.
+//
+// The gate has to fire, on the usual test. Canonical `BattleState` bytes gain a
+// per-avatar armor record (presence, T, slot cost, the four element counts, the
+// four bonuses, a keyword bitmask, the certified element sequence), so the same
+// wire transcript hashes differently under v5 and v6 the moment either side
+// wears anything — and even with no armor worn, the added presence byte moves
+// every hash. Beyond the bytes, v5 and v6 resolve an armored match differently
+// in HP, damage, reach and movement. A mixed pair must be refused at the
+// handshake rather than desync on turn 1.
+//
+// No proof semantics change and no framing changes — armor is certified at
+// setup and never re-read — so `kRulesetVersion` stays 3 and
+// `kBattleProtocolVersion` stays 7. See docs/AETHERIAL_ARMOR.md §9.
+//
+// v7 (2026-08-27, Aetherial Armor slice 6) — two certified armor keywords stop
+// being inert: **Charger** (`FAFA`) and **Muddy** (`WEWE`).
+//
+// Neither grows a mechanic. Each ORs itself into an EXISTING capability getter
+// on `WizardAvatar`, and the existing haymaker code downstream is unchanged:
+//
+//   * Charger -> `hasHaymakerDistanceBonus`, so the wearer's punch gains the
+//     Air haymaker's `tilesWalked ~/ 2` — measured, rounded, dashed and
+//     ordered against the Fire melee bonus exactly as that mechanic already
+//     defines. It composes additively with `meleeBonus`: 1 + Fire + distance.
+//   * Muddy   -> `hasHaymakerSlow`, so the wearer's punch applies the Earth
+//     haymaker's existing `speedDown -1` for 2 turns, with its existing target
+//     eligibility, magnitude, duration, status representation and stacking.
+//
+// A wearer who also holds the corresponding status effect is not doubled: both
+// sources feed one boolean, and `applyHaymaker` reads that boolean once.
+//
+// The other five keywords (`flying`, `cleave`, `moltenCarapace`, `stealthy`,
+// `anchored`) stay inert, and Morphic stays unbuilt. `WizardAvatar.isFlying`
+// still derives solely from the Flying status effect.
+//
+// The gate has to fire because this is a deterministic behaviour change with
+// NO serialization change to announce it: canonical `BattleState` bytes are
+// byte-identical to v6 for the same state — the keyword bitmask that carries
+// Charger and Muddy shipped in v6 — so a v6 device and a v7 device would agree
+// on the opening hash and then diverge the first time an armored wizard threw
+// a punch. That is precisely the shape the epoch exists to refuse: same bytes,
+// different meaning.
+//
+// No proof semantics change and no framing changes — the keywords were already
+// certified, hashed and agreed in v6 — so `kRulesetVersion` stays 3 and
+// `kBattleProtocolVersion` stays 7. See docs/AETHERIAL_ARMOR.md §11.
+//
 // There is deliberately no v0 build. Nothing has shipped, so pretending an
 // earlier epoch was ever negotiated would be fiction; 0 is reserved as the
 // sentinel for a peer that predates this field entirely and therefore declares
@@ -215,7 +292,7 @@
 /// [DeviceCapabilities.battleEngineVersion] both default to it rather than
 /// restating a literal, exactly as `MatchConfig.rulesetVersion` derives from
 /// `kRulesetVersion`. See this file's header for what forces a bump.
-const int kBattleEngineVersion = 5;
+const int kBattleEngineVersion = 7;
 
 /// What a peer that predates the engine-version gate implicitly declares: it
 /// omits the field, and an omitted field cannot be read as agreement.

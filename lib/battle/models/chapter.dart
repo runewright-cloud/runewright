@@ -43,7 +43,15 @@ class Chapter {
   /// against the device's persisted spell library.
   ///
   /// Spells not found on disk are silently dropped (e.g. deleted after the
-  /// chapter was created). Returned list is sorted by commitmentHex.
+  /// chapter was created), as is any entry naming an **Aetherial Armor**: an
+  /// armor is worn equipment bound through [ChapterAsset.armorSpellId] and
+  /// priced in artifact slots, not a castable draw, and the engine has no
+  /// resolution for one in the hand. The library UI already refuses to add
+  /// one, so this is a backstop for chapter data that did not come from this
+  /// build's UI — a hand-edited file, a backup restored from an older build,
+  /// or a future import path that forgets the rule.
+  ///
+  /// Returned list is sorted by commitmentHex.
   ///
   /// [bookmarkCount] is taken from [MatchConfig.bookmarkCount] at call site.
   static Future<Chapter> fromChapterAsset(
@@ -57,6 +65,7 @@ class Chapter {
         .map((e) {
           final spell = byId[e.spellId];
           if (spell == null) return null;
+          if (spell.isArmor) return null;
           // design doc "Personalities": bind the per-chapter-entry glyph
           // chosen when this spell was added here, not at inscription.
           final personality = e.summonPersonality;

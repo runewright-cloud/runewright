@@ -78,6 +78,62 @@ void main() {
     );
   });
 
+  test('Armor mode persists isArmor without a second proof pipeline', () async {
+    final grid = HexGrid(12);
+    grid.setState(Element.alive, const HexCoord(0, 0));
+    final identity = await Identity.ephemeral();
+
+    final asset = await inscribeSpell(
+      initialGrid: grid,
+      steps: 1,
+      identity: identity,
+      manaCost: 7,
+      segmentCount: 0,
+      dotCount: 1,
+      name: 'Stormplate',
+      isArmor: true,
+      loadCircuitJson: rootBundle.loadString,
+      loadVkBytes: (path) async => (await rootBundle.load(path)).buffer.asUint8List(),
+    );
+
+    expect(asset.isArmor, isTrue);
+    expect(asset.isSummon, isFalse);
+    // The same proof path as any other spell: real bytes, real commitment,
+    // self-verified before persisting.
+    expect(asset.proofBytes, isNotEmpty);
+    expect(asset.commitmentHex, isNotEmpty);
+    expect(asset.tier, equals(12));
+
+    final reloaded = (await SpellAsset.loadAll()).firstWhere((s) => s.id == asset.id);
+    expect(reloaded.isArmor, isTrue);
+    expect(reloaded.isSummon, isFalse);
+  });
+
+  test('rejects a spell claiming to be both a Summon and an Armor, without '
+      'proving', () async {
+    final grid = HexGrid(12);
+    final identity = await Identity.ephemeral();
+
+    expect(
+      () => inscribeSpell(
+        initialGrid: grid,
+        steps: 1,
+        identity: identity,
+        manaCost: 0,
+        segmentCount: 0,
+        dotCount: 0,
+        name: 'Irrelevant',
+        isSummon: true,
+        isArmor: true,
+        loadCircuitJson: (_) async =>
+            throw StateError('should not load a circuit for a contradictory mode'),
+        loadVkBytes: (_) async =>
+            throw StateError('should not load a VK for a contradictory mode'),
+      ),
+      throwsA(isA<InscribeException>()),
+    );
+  });
+
   test('prove -> self-verify -> persist round-trips a real spell', () async {
     final grid = HexGrid(12);
     grid.setState(Element.alive, const HexCoord(0, 0));

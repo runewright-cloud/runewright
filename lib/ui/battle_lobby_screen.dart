@@ -19,6 +19,7 @@
 // LanSocketTransport.connectTo, bypassing `nsd` entirely.
 
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
@@ -30,6 +31,8 @@ import '../battle/models/wild_magic_effect.dart'
 import '../battle/networking/match_discovery.dart';
 import '../dev_flags.dart' show kShowDevSurfaces;
 import '../ffi/prover.dart' as prover;
+import '../protocol/match_session.dart' show ProofVerifier;
+import '../spells/inscribe.dart' show kInscribeTiers;
 import '../ffi/srs_cache.dart';
 import '../identity/identity.dart';
 import '../protocol/lan_socket_transport.dart';
@@ -43,6 +46,58 @@ import 'solo_practice_settings_screen.dart';
 import 'spell_test_lab_screen.dart';
 
 enum _LobbyMode { idle, hosting, joining, connecting, preparingDuel }
+
+/// The proof-verification resources duel setup needs to certify the peer's
+/// equipped Aetherial Armor, loaded here because this is the layer allowed to
+/// touch `rootBundle` — `duel_setup.dart` stays asset-free and takes them
+/// injected (docs/AETHERIAL_ARMOR.md).
+///
+/// Mirrors `BattleScreen._initTurnLoop`'s own initialisation, deliberately and
+/// with the same two rules:
+///
+///   * ALL three tiers' VKs, not just the match's negotiated one. An armor is
+///     proven at the smallest tier covering its own T, which routinely differs
+///     from `config.tier`; loading only that one aborts verification inside
+///     barretenberg with "num_public_inputs mismatch with VK".
+///   * The SRS initialises from the LARGEST tier's bytecode, because it must
+///     cover the biggest proof this device might verify, and the cache is sized
+///     to the tier-48 floor regardless of which tier triggers it.
+///
+/// `initSrsCached` is called even when `_prepareDevice` already downloaded the
+/// cache earlier in this session: finding the cache on disk is not the same as
+/// initialising the process's global CRS, and a pure-verify path initialises it
+/// nowhere else (CLAUDE.md bug-avoidance #4). It is cheap when the file is
+/// already there.
+///
+/// BattleScreen still runs its own copy after setup. That duplicate VK load is
+/// a few KB and a already-warm SRS init; keeping it is deliberate for Friday —
+/// far safer than threading a shared proof-resource lifetime through the
+/// lobby → setup → screen hand-off on the eve of a playtest.
+class DuelVerifierResources {
+  const DuelVerifierResources({required this.verifyProof, required this.vkByTier});
+
+  final ProofVerifier verifyProof;
+  final Map<int, Uint8List> vkByTier;
+
+  Uint8List? vkBytesForTier(int tier) => vkByTier[tier];
+}
+
+Future<DuelVerifierResources> prepareDuelVerifierResources() async {
+  final vkByTier = {
+    for (final t in kInscribeTiers)
+      t: (await rootBundle.load('assets/circuits/ca_v2_4_tier$t.vk'))
+          .buffer
+          .asUint8List(),
+  };
+  final circuitJson = await rootBundle
+      .loadString('assets/circuits/ca_v2_4_tier${kInscribeTiers.last}.json');
+  final bytecode = await prover.extractBytecode(circuitJson);
+  await prover.initSrsCached(bytecode, cachePath: await srsCachePath());
+  return DuelVerifierResources(
+    verifyProof: prover.verifyProof,
+    vkByTier: vkByTier,
+  );
+}
 
 class BattleLobbyScreen extends StatefulWidget {
   const BattleLobbyScreen({super.key, this.pactIdHex});
@@ -316,12 +371,18 @@ class _BattleLobbyScreenState extends State<BattleLobbyScreen> {
     });
     try {
       final identity = await Identity.loadOrCreate();
+      // Loaded BEFORE the handshake: setup certifies the peer's armor mid-flow
+      // and cannot pause to fetch a VK, and a failure here must surface as a
+      // lobby error rather than as a hung exchange.
+      final verifier = await prepareDuelVerifierResources();
       final result = await runDuelSetup(
         transport: transport,
         role: _role!,
         localIdentity: identity,
         localChapter: _localChapter!,
         hostConfig: _hostConfig ?? const MatchConfig(),
+        verifyProof: verifier.verifyProof,
+        vkBytesForTier: verifier.vkBytesForTier,
       );
       if (!mounted) return;
       // The host is authoritative over MatchConfig (DECISION 3), so the guest

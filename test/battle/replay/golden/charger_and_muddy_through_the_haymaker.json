@@ -1,0 +1,94 @@
+{
+  "name": "charger_and_muddy_through_the_haymaker",
+  "description": "An armored wizard walks two tiles and punches: Fire and Charger stack on the one melee path (3 damage, not 2), and Muddy leaves the target slowed. The next turn the slowed wizard declares two tiles and walks one. Cleave, absent by construction, cannot account for any of it.",
+  "turns": [
+    {
+      "turn": 1,
+      "note": "a walks 2 and punches: 1 base + 1 Fire + 1 Charger, plus Muddy",
+      "stateHash": "9dd7745e24f0fbb8ea3c605b4004e19c01208e29b1b6f162db3e38671a9e84c1",
+      "events": {
+        "castEvents": 0,
+        "resolvedSpells": 0,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 1,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 1,
+        "avatars": {
+          "player_a": {
+            "hp": 26,
+            "mana": 500,
+            "chain": null,
+            "position": "1,-1",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 21,
+            "mana": 500,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 1
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 2,
+      "note": "b is slowed: two tiles declared, one walked",
+      "stateHash": "18de49833ad325ebabf6a5401e24bd8f17d8debc92d2f7d63b5fabd657188c58",
+      "events": {
+        "castEvents": 0,
+        "resolvedSpells": 0,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 2,
+        "avatars": {
+          "player_a": {
+            "hp": 26,
+            "mana": 500,
+            "chain": null,
+            "position": "1,-1",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 21,
+            "mana": 500,
+            "chain": null,
+            "position": "2,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    }
+  ]
+}

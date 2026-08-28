@@ -57,6 +57,7 @@ import 'package:rune_duel/battle/engine/book_commitment.dart';
 import 'package:rune_duel/battle/engine/draw_schedule.dart';
 import 'package:rune_duel/battle/engine/turn_loop.dart';
 import 'package:rune_duel/battle/models/battle_state.dart';
+import 'package:rune_duel/battle/models/certified_armor.dart';
 import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
 
@@ -114,6 +115,10 @@ class MatchScript {
     this.localCharms = const [],
     this.peerCharms = const [],
     this.startingMana = kStartMana,
+    this.localArmor,
+    this.peerArmor,
+    this.localMeleePicker,
+    this.peerMeleePicker,
   });
 
   /// Stable identifier; also the golden file's basename.
@@ -168,6 +173,27 @@ class MatchScript {
   /// scripts about affordability; the default keeps every other golden
   /// byte-identical.
   final int startingMana;
+
+  /// Already-certified Aetherial Armor worn by each wizard, or null for none
+  /// (engine v6).
+  ///
+  /// Equipment, not a derivation: the script hands over a [CertifiedArmor] the
+  /// same way `buildDuelBattleState` receives one from duel setup, and the
+  /// harness never parses or verifies anything. Earth's HP bonus is folded
+  /// into starting HP by [makeDuelState], so an armored script's very first
+  /// state hash already differs from an unarmored one — which is exactly the
+  /// property a transcript should pin.
+  final CertifiedArmor? localArmor;
+  final CertifiedArmor? peerArmor;
+
+  /// What each side does in the Phase-4b melee round, or null to never punch.
+  ///
+  /// A picker rather than a per-turn input because melee is not part of
+  /// [TurnInput] — it is its own commit-reveal round, asked of the UI only
+  /// when a target exists. `(c) async => c.first` is the deterministic "always
+  /// punch" answer: candidates come out of `hexNeighbors` in a fixed order.
+  final MeleeTargetPicker? localMeleePicker;
+  final MeleeTargetPicker? peerMeleePicker;
 }
 
 /// One turn's recorded outcome.
@@ -415,12 +441,20 @@ Future<MatchTranscript> runMatchScript(MatchScript script) async {
     localCharms: script.localCharms,
     peerCharms: script.peerCharms,
     startingMana: script.startingMana,
+    localArmor: script.localArmor,
+    peerArmor: script.peerArmor,
   );
+  // The peer device builds the SAME two wizards from the same certified
+  // armors — both sides of a real duel derive one reading of each proof
+  // (M4.22) and seat it on the same avatar. Handing the peer state a mirrored
+  // pair here would model a bug, not a device.
   final peerState = makeDuelState(
     bookmarks: script.bookmarks,
     localCharms: script.localCharms,
     peerCharms: script.peerCharms,
     startingMana: script.startingMana,
+    localArmor: script.localArmor,
+    peerArmor: script.peerArmor,
   );
 
   // Chapters must be sorted by commitmentHex before anything derives positions
@@ -451,6 +485,7 @@ Future<MatchTranscript> runMatchScript(MatchScript script) async {
     verifyProof: alwaysOk,
     vkBytes: Uint8List(0),
     commitNonceSource: localNonces.call,
+    meleeTargetPicker: script.localMeleePicker ?? ((_) async => null),
     peerBookRoot:
         peerChapter == null ? null : BookCommitment.computeRoot(hexes(peerChapter)),
     peerBookLeafCount: peerChapter?.length,
@@ -462,6 +497,7 @@ Future<MatchTranscript> runMatchScript(MatchScript script) async {
     verifyProof: alwaysOk,
     vkBytes: Uint8List(0),
     commitNonceSource: peerNonces.call,
+    meleeTargetPicker: script.peerMeleePicker ?? ((_) async => null),
     // Each side verifies the OTHER's book membership, so the roots cross over.
     peerBookRoot:
         localChapter == null ? null : BookCommitment.computeRoot(hexes(localChapter)),

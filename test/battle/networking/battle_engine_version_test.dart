@@ -25,7 +25,8 @@ import 'package:rune_duel/battle/models/match_config.dart';
 import 'package:rune_duel/battle/networking/battle_session.dart';
 import 'package:rune_duel/battle/networking/battle_wire.dart';
 import 'package:rune_duel/battle/networking/duel_setup.dart';
-import 'package:rune_duel/battle/networking/match_discovery.dart';
+import 'package:rune_duel/battle/networking/match_discovery.dart'
+    show DeviceCapabilities, kBattleProtocolVersion;
 import 'package:rune_duel/identity/identity.dart';
 import 'package:rune_duel/protocol/in_memory_transport.dart';
 import 'package:rune_duel/spells/chapter_asset.dart';
@@ -303,6 +304,74 @@ void main() {
 
     await transportLocal.disconnect();
     await transportPeer.disconnect();
+  });
+
+  // The Aetherial Armor slice-6 epoch. Pinned as a literal pair rather than as
+  // `kBattleEngineVersion - 1` so a future bump has to come back here and say
+  // what it broke, instead of silently re-pointing this at the new neighbour.
+  //
+  // This bump is the one the gate exists for and the one no other gate can
+  // see: canonical bytes are IDENTICAL between v6 and v7 (the keyword bitmask
+  // carrying Charger and Muddy shipped in v6), the wire is identical, and the
+  // proofs are identical. Only the meaning of a punch changed. A v6 build and
+  // a v7 build would agree on the opening hash and diverge the moment an
+  // armored wizard swung, so the refusal has to happen at the handshake.
+  group('v6 <-> v7 (Charger and Muddy become live)', () {
+    test('this build declares engine v7', () {
+      expect(kBattleEngineVersion, 7,
+          reason: 'two certified armor keywords now change resolution; '
+              'docs/AETHERIAL_ARMOR.md §11');
+      expect(kBattleProtocolVersion, 7,
+          reason: 'no framing changed — the armorLoadout frame shipped in '
+              'slice 4');
+      expect(kRulesetVersion, 3,
+          reason: 'no proof semantics changed — the keywords were already '
+              'certified and hashed in v6');
+    });
+
+    test('a v6 peer is refused by the capabilities gate', () async {
+      final localIdentity = await Identity.ephemeral();
+      final chapter = await makeChapter(
+        idSuffix: 'a6',
+        ownerPubkeyHex: await localIdentity.ownerPubkeyHex(),
+      );
+
+      final (transportLocal, transportPeer) = InMemoryTransport.pair();
+      final local = runDuelSetup(
+        transport: transportLocal,
+        role: DuelRole.host,
+        localIdentity: localIdentity,
+        localChapter: chapter,
+        hostConfig: const MatchConfig(),
+      );
+      final forfeitReason = fakePeer(transportPeer, engineVersion: 6);
+
+      await expectLater(
+        local,
+        throwsA(isA<StateError>().having(
+          (e) => e.message,
+          'message',
+          allOf(
+            contains('battle engine version mismatch'),
+            contains('local=7'),
+            contains('peer=6'),
+          ),
+        )),
+      );
+      expect(await forfeitReason, 'battle_engine_mismatch');
+
+      await transportLocal.disconnect();
+      await transportPeer.disconnect();
+    });
+
+    test('a host config pinned to v6 is refused as well', () async {
+      // The other half of the gate: a v6 build that hosts pins v6 in the match
+      // config it authors, and a v7 guest must refuse that too rather than
+      // play by rules it does not implement.
+      const v6Config = MatchConfig(battleEngineVersion: 6);
+      expect(const MatchConfig().matches(v6Config), isFalse);
+      expect(v6Config.battleEngineVersion, isNot(kBattleEngineVersion));
+    });
   });
 
   group('the engine epoch is independent of the proof epoch', () {

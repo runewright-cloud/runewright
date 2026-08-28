@@ -23,6 +23,7 @@ import 'package:rune_duel/engine/hex_grid.dart';
 
 import '../../spells/chapter_asset.dart' show ArtifactEntry;
 import 'accoutrement_loadout.dart';
+import 'certified_armor.dart';
 import 'battle_state.dart';
 import 'component_order.dart';
 import 'hex_battlefield.dart';
@@ -57,6 +58,16 @@ bool _hexLessThan(String a, String b) {
 /// order) spawns at the bottom vertex (`spawns[0]`); the higher spawns at the
 /// top (`spawns[1]`) — both devices compute this identically, with no
 /// knowledge of which side hosted or joined.
+///
+/// [localArmor]/[peerArmor] are the already-certified Aetherial Armors from
+/// duel setup (`DuelSetupResult.localArmor`/`peerArmor`) — the `CertifiedArmor`
+/// objects `certifyOwnArmor`/`certifyPeerArmor` derived from verified public
+/// outputs. They are equipment here and nothing more: **this function performs
+/// no proof parsing, verification or interpretation**, it only routes them onto
+/// avatars through the same local/peer → bottom/top mapping the artifact
+/// loadouts already use, so both devices seat the same armor on the same
+/// wizard. Both default to null, which is what solo/practice construction and
+/// an armourless duel produce alike.
 DuelBattleSetup buildDuelBattleState({
   required MatchConfig config,
   required List<ArtifactEntry> localArtifacts,
@@ -65,6 +76,8 @@ DuelBattleSetup buildDuelBattleState({
   required String peerOwnerHex,
   String localWizardName = '',
   String peerWizardName = '',
+  CertifiedArmor? localArmor,
+  CertifiedArmor? peerArmor,
 }) {
   final bottomHex = _hexLessThan(localOwnerHex, peerOwnerHex) ? localOwnerHex : peerOwnerHex;
   final topHex = bottomHex == localOwnerHex ? peerOwnerHex : localOwnerHex;
@@ -83,6 +96,7 @@ DuelBattleSetup buildDuelBattleState({
     required HexCoord position,
     required String teamId,
     required String wizardName,
+    required CertifiedArmor? armor,
   }) {
     final accoutrements = accoutrementsFromArtifacts(artifacts, idPrefix: idPrefix);
     final manaGems = accoutrements.where((a) => a.kind == AccoutrementKind.manaGem).length;
@@ -91,18 +105,29 @@ DuelBattleSetup buildDuelBattleState({
       playerId: ownerHex,
       ownerPubkeyHex: ownerHex,
       wizardName: wizardName,
-      hp: config.playerHp,
+      // Earth armor raises the pool the wizard starts with; there is no
+      // separate armor-HP bar and no max-HP cap (slice 5 scope fence). The
+      // provenance of the extra points stays readable through
+      // `avatar.armor!.armorHpBonus` for the eventual armor-breaking mechanic,
+      // so no redundant mutable copy of it is stored on the avatar.
+      hp: config.playerHp + (armor?.armorHpBonus ?? 0),
       mana: maxMana ~/ 2,
       maxMana: maxMana,
       position: position,
       teamId: teamId,
       baseSpellRange: config.baseRange,
       accoutrements: accoutrements,
+      armor: armor,
     );
   }
 
   final bottomArtifacts = bottomHex == localOwnerHex ? localArtifacts : peerArtifacts;
   final topArtifacts = bottomHex == localOwnerHex ? peerArtifacts : localArtifacts;
+  // Same pubkey-ordered selector as the artifacts above — deliberately the one
+  // mapping, not a second host/guest one. Whichever device runs this, the lower
+  // hex's armor lands on the bottom avatar.
+  final bottomArmor = bottomHex == localOwnerHex ? localArmor : peerArmor;
+  final topArmor = bottomHex == localOwnerHex ? peerArmor : localArmor;
 
   final bottomAvatar = buildAvatar(
     ownerHex: bottomHex,
@@ -111,6 +136,7 @@ DuelBattleSetup buildDuelBattleState({
     position: bottomPos,
     teamId: 'team_bottom',
     wizardName: bottomWizardName,
+    armor: bottomArmor,
   );
   final topAvatar = buildAvatar(
     ownerHex: topHex,
@@ -119,6 +145,7 @@ DuelBattleSetup buildDuelBattleState({
     position: topPos,
     wizardName: topWizardName,
     teamId: 'team_top',
+    armor: topArmor,
   );
 
   battlefield.occupancy[bottomHex] = bottomPos;

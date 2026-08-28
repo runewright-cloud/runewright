@@ -1060,12 +1060,20 @@ class ApprenticeSession {
       final upgraded = normed != null ? newByCommitment[normed] : null;
       return upgraded == null ? e : ChapterEntry(spellId: upgraded.id, summonPersonality: e.summonPersonality);
     }).toList();
+    final armorId = chapter.armorSpellId;
+    final upgradedArmor = armorId == null
+        ? null
+        : newByCommitment[_normHex(oldById[armorId]?.commitmentHex ?? '')];
     await ChapterAsset(
       id: chapter.id,
       name: chapter.name,
       createdAt: chapter.createdAt,
       entries: newEntries,
       artifacts: chapter.artifacts,
+      // The armor binding survives graduation, following the same
+      // commitment-keyed upgrade as the entries above when the armor itself
+      // was one of the received spells.
+      armorSpellId: upgradedArmor?.id ?? armorId,
     ).save();
 
     await deleteApprenticePermissionsByIds(existing.permissionIds);

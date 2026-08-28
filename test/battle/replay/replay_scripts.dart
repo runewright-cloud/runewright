@@ -28,6 +28,7 @@ import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
 
 import '../engine/certified_cast_fixture.dart';
+import '../models/certified_armor_fixture.dart';
 import 'match_replay.dart';
 
 /// Every script in the corpus. The test iterates this list.
@@ -46,7 +47,170 @@ Future<List<MatchScript>> allScripts() async => [
       await _unbackedMysteryClaimForfeits(),
       _slowTileDrainsACastIntoAFizzle(),
       await _mysteryFizzleIsNotAFreeCast(),
+      _armoredWizardOutreachesAnUnarmoredOne(),
+      _chargerAndMuddyResolveThroughTheHaymaker(),
     ];
+
+/// Aetherial Armor's four numerical bonuses, across four turns of a real duel
+/// (engine v6, docs/AETHERIAL_ARMOR.md §9).
+///
+/// ## Why this one is worth a script
+///
+/// Because armor is the first thing in the game whose effect is *ambient*: it
+/// is not declared, not revealed, not consumed, and it moves four different
+/// numbers at once from a single object seated at setup. The unit tests in
+/// `test/battle/engine/armor_numerical_effects_test.dart` pin each bonus in
+/// isolation; this pins the whole of it as **bytes**, on **both devices**,
+/// turn after turn — which is the only form that can catch an armor that
+/// applies on one device and not the other, or one that quietly stops applying
+/// on turn 3.
+///
+/// player_a wears a T=21 armor certified as `F×7 A×4 W×4 E×6`:
+/// melee +1, move +1, range +1, armor HP +5, keywords `{cleave, flying,
+/// anchored}` — every one of which must stay inert. player_b wears nothing, so
+/// every turn is a paired comparison rather than an absolute claim.
+///
+///   1. Both punch. a deals 2 (1 + armor), b deals 1 — visible in the golden
+///      as b losing two HP to a's one. Turn 1 also records the asymmetric
+///      OPENING HP, 29 against 24, which is Earth.
+///   2. a walks a three-step path and arrives at `0,3`. Base speed is 2, so
+///      the third tile is purely the Air bonus; an unarmored a would be
+///      recorded at `0,2`.
+///   3. a walks one more tile, to sit exactly 4 hexes from b.
+///   4. a casts from there and b takes the damage. Base range is 3, so the
+///      cast is legal only because of Water — an unarmored a would be refused
+///      out of range, `resolvedSpells` would be 0, and b's HP would not move.
+MatchScript _armoredWizardOutreachesAnUnarmoredOne() {
+  // Certified from a proof attesting this dominance run; see
+  // certified_armor_fixture.dart for why the fixture goes through
+  // `fromOutputs` rather than the editor's preview path.
+  final armor = armorOf('F' * 7 + 'A' * 4 + 'W' * 4 + 'E' * 6);
+  assert(armor.meleeBonus == 1 && armor.moveSpeedBonus == 1);
+  assert(armor.spellRangeBonus == 1 && armor.armorHpBonus == 5);
+
+  final lance = spellFromElements(
+    elements: const [BorderZone.fire, BorderZone.fire, BorderZone.fire],
+    variant: 30,
+    name: 'Armored Lance',
+  );
+
+  // player_a starts at (0,0), player_b at (1,0) — adjacent, so turn 1's
+  // punches land. Walking down the +r axis takes a to (0,4), which is 4 hexes
+  // from b: one past an unarmored caster's reach. b stands still from turn 2
+  // on, so it is still standing on the tile a aims at.
+  const walk = [HexCoord(0, 1), HexCoord(0, 2), HexCoord(0, 3)];
+
+  return MatchScript(
+    name: 'armor_bonuses_across_a_duel',
+    description:
+        'An armored wizard against an unarmored one: Earth in the opening HP, '
+        'Fire in a punch, Air in a three-tile walk the unarmored wizard cannot '
+        'match, and Water in a cast from one tile past base range. Every '
+        'certified keyword (cleave, flying, anchored) must stay inert '
+        'throughout.',
+    localArmor: armor,
+    localChapterCommitments: [lance.commitmentHex],
+    // Both always punch when a target is adjacent; after turn 1 they separate
+    // and no candidate exists, so this only fires on turn 1.
+    localMeleePicker: (candidates) async => candidates.first,
+    peerMeleePicker: (candidates) async => candidates.first,
+    turns: [
+      ScriptedTurn.fixed(
+        note: 'both punch: armored 2, unarmored 1',
+        local: TurnInput(action: PassAction()),
+        peer: TurnInput(action: PassAction()),
+      ),
+      ScriptedTurn.fixed(
+        note: 'a walks all 3 declared tiles: base 2 + Air 1',
+        local: TurnInput(action: PassAction(), movePath: walk),
+        peer: TurnInput(action: PassAction()),
+      ),
+      ScriptedTurn.fixed(
+        note: 'a steps to (0,4) — exactly 4 hexes from b',
+        local: TurnInput(action: PassAction(), movePath: [HexCoord(0, 4)]),
+        peer: TurnInput(action: PassAction()),
+      ),
+      ScriptedTurn.fixed(
+        note: 'a casts at range 4, legal only with Water',
+        local: TurnInput(
+          action: SpellCastAction(spell: lance, targetHex: const HexCoord(1, 0)),
+        ),
+        peer: TurnInput(action: PassAction()),
+      ),
+    ],
+  );
+}
+
+
+/// Charger and Muddy, the two armor keywords that go live at engine v7
+/// (docs/AETHERIAL_ARMOR.md §11), resolving through the haymaker mechanics
+/// that already existed.
+///
+/// ## Why this one is worth a script
+///
+/// Because Muddy's whole point is a status that outlives the turn that applied
+/// it. Turn 1 lands the slow; turn 2 is where it costs the victim a tile, and
+/// a single-turn test structurally cannot see that. Charger rides along
+/// because it is the other half of the same punch and because its input — how
+/// far the attacker actually walked — is itself a cross-phase value (movement
+/// resolves in Phase 2, the punch reads the walked path in Phase 4b).
+///
+/// The keyword source is also worth pinning as bytes: canonical state is
+/// **identical** to v6 here, so a v6 device replaying this script would agree
+/// on every field the summary prints and still compute a different HP. Only
+/// the transcript catches that.
+///
+/// player_a wears a T=10 armor certified `F A F A F F W E W E`: fire 4 (melee
+/// +1), earth 2 (HP +2, hence the 26 in the opening), and the two keyword
+/// patterns `FAFA` (Charger) and `WEWE` (Muddy). Deliberately NOT four
+/// consecutive fires, so Cleave is absent and cannot be confused for the
+/// damage. player_b wears nothing.
+///
+///   1. a walks two tiles to `1,-1` — still adjacent to b — and punches. The
+///      punch is 3: 1 base + 1 Fire + (2 tiles ~/ 2). Under v6 the same walk
+///      and the same armor produce 2, which is the whole difference this
+///      golden records. Muddy leaves b with one `speedDown` status.
+///   2. b declares a two-tile walk and arrives at `2,0`, one tile short: the
+///      slow from turn 1 is still on it, so its speed is 1. An unslowed b
+///      would be recorded at `3,0`. a stands still and is no longer adjacent,
+///      so nobody punches and the turn is purely the status's consequence.
+MatchScript _chargerAndMuddyResolveThroughTheHaymaker() {
+  final armor = armorOf('FAFAFFWEWE');
+  assert(armor.meleeBonus == 1, 'four fires is the first melee rung');
+  assert(armor.armorHpBonus == 2, 'the two earths in WEWE are a real rung');
+  assert(armor.keywords.length == 2, 'Charger and Muddy, and nothing else');
+
+  return MatchScript(
+    name: 'charger_and_muddy_through_the_haymaker',
+    description:
+        'An armored wizard walks two tiles and punches: Fire and Charger stack '
+        'on the one melee path (3 damage, not 2), and Muddy leaves the target '
+        'slowed. The next turn the slowed wizard declares two tiles and walks '
+        'one. Cleave, absent by construction, cannot account for any of it.',
+    localArmor: armor,
+    // Only a punches. b is unarmored, and leaving its picker null keeps every
+    // point of damage in the transcript attributable to one wizard.
+    localMeleePicker: (candidates) async => candidates.first,
+    turns: [
+      ScriptedTurn.fixed(
+        note: 'a walks 2 and punches: 1 base + 1 Fire + 1 Charger, plus Muddy',
+        local: TurnInput(
+          action: PassAction(),
+          movePath: const [HexCoord(0, -1), HexCoord(1, -1)],
+        ),
+        peer: TurnInput(action: PassAction()),
+      ),
+      ScriptedTurn.fixed(
+        note: 'b is slowed: two tiles declared, one walked',
+        local: TurnInput(action: PassAction()),
+        peer: TurnInput(
+          action: PassAction(),
+          movePath: const [HexCoord(2, 0), HexCoord(3, 0)],
+        ),
+      ),
+    ],
+  );
+}
 
 /// A caster who cannot pay gets nothing, whether or not they route it through
 /// Mystery.

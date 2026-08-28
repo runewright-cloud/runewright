@@ -18,7 +18,10 @@ import 'battle/models/effect_kind.dart' show formulaTripletKind;
 import 'audio/spell_sound_player.dart' show SpellSoundPlayer;
 import 'audio/spell_sound_settings.dart' show SpellSoundSettings;
 import 'identity/identity.dart';
+import 'battle/models/certified_armor.dart' show CertifiedArmor;
+import 'spells/armor_summary.dart' show kArmorKeywordLabel;
 import 'spells/inscribe.dart';
+import 'spells/inscription_mode.dart';
 import 'spells/recipe_book.dart';
 import 'spells/spell_art_import.dart'
     show SpellArtBytes, SpellArtImportException, importSpellArt;
@@ -134,13 +137,24 @@ class _GameScreenState extends State<GameScreen>
   // picks "transfer" onto the SpellAsset it creates.
   _SpellDraft _draft = const _SpellDraft();
 
-  // Rune Craft mode: whether the next inscription reads this grid's element
-  // sequence as an incantation effect (default) or a summoned creature (see
-  // CreatureSpec.fromElements) -- design doc "Summons". Personality (design
-  // doc "Personalities") is no longer chosen here -- it's picked per-chapter
-  // when the summon is added to a Chapter, not at inscribe time (see
-  // library_screen.dart's _pickSummonPersonality).
-  bool _isSummonMode = false;
+  // Rune Craft mode: what the next inscription reads this grid's trajectory
+  // as -- an incantation effect (default), a summoned creature (see
+  // CreatureSpec.fromElements, design doc "Summons"), or an Aetherial Armor
+  // (CertifiedArmor). Personality (design doc "Personalities") is no longer
+  // chosen here -- it's picked per-chapter when the summon is added to a
+  // Chapter, not at inscribe time (see library_screen.dart's
+  // _pickSummonPersonality).
+  InscriptionMode _mode = InscriptionMode.incantation;
+
+  bool get _isSummonMode => _mode.isSummon;
+  bool get _isArmorMode => _mode.isArmor;
+
+  // Every generation's dominant element, repeats kept -- the raw signal
+  // Aetherial Armor scores, as opposed to _formulaTracker's compressed
+  // lead-change/pulse view. Live-editor state only: once inscribed, an
+  // armor's semantics are re-read from its own proof
+  // (armor_summary.dart's localCertifiedArmor), never from this list.
+  final _dominantPerGeneration = <BorderZone>[];
 
   // How many of _formulaTracker.formulas we've already reported to the
   // RecipeBook -- lets _recordNewFormulas() process only newly-completed
@@ -182,21 +196,14 @@ class _GameScreenState extends State<GameScreen>
     _growth = CurvedAnimation(parent: _growthCtrl, curve: Curves.easeOutCubic);
     final spell = widget.loadedSpell;
     if (spell != null) {
-      _isSummonMode = spell.isSummon;
+      _mode = InscriptionMode.of(spell);
       _initialGrid = HexGrid.fromPackedState(spell.initialGrid, _radius);
       _grid = _initialGrid!.copy();
       _rules = CARules.neutral;
       for (int gen = 0; gen < spell.t; gen++) {
         final next = CAStep.step(_grid, _rules);
         final dom = advanceDominance(_rules, next);
-        if (dom.isSupreme) {
-          final zone = FormulaTracker.zoneFor(dom.dominant);
-          if (zone != null) _supremeElements.add(zone.name);
-        }
-        _formulaTracker.step(
-          FormulaTracker.zoneFor(dom.dominant),
-          supremeDominant: dom.isSupreme,
-        );
+        _feedDominance(dom.dominant, isSupreme: dom.isSupreme);
         _grid = next;
         _rules = dom.rule;
       }
@@ -301,6 +308,21 @@ class _GameScreenState extends State<GameScreen>
     return true;
   }
 
+  // Feeds one generation's dominant into every accumulator that watches it:
+  // the supreme-tag set, the formula tracker (compressed -- lead change,
+  // supreme, or cadence pulse) and the raw per-generation list the Armor
+  // preview reads. Kept in one method because three code paths step the grid
+  // (load, single-step, run), and each previously repeated this block --
+  // one more copy is one more chance for the views to disagree.
+  void _feedDominance(CARules dominant, {required bool isSupreme}) {
+    final zone = FormulaTracker.zoneFor(dominant);
+    if (zone != null) {
+      if (isSupreme) _supremeElements.add(zone.name);
+      _dominantPerGeneration.add(zone);
+    }
+    _formulaTracker.step(zone, supremeDominant: isSupreme);
+  }
+
   void _stepOnce() {
     // Hard stop at the largest inscribable tier: stepping past T=48 can
     // never be inscribed (kMaxInscribableSteps / tier_max), so the stepper
@@ -315,14 +337,7 @@ class _GameScreenState extends State<GameScreen>
       _previousGrid = previous;
       _grid = next;
       _rules = dominance.rule;
-      if (dominance.isSupreme) {
-        final zone = FormulaTracker.zoneFor(dominance.dominant);
-        if (zone != null) _supremeElements.add(zone.name);
-      }
-      _formulaTracker.step(
-        FormulaTracker.zoneFor(dominance.dominant),
-        supremeDominant: dominance.isSupreme,
-      );
+      _feedDominance(dominance.dominant, isSupreme: dominance.isSupreme);
       if (next.lastActivatedBorderCells.isNotEmpty) {
         _activatedCells = next.lastActivatedBorderCells;
       }
@@ -356,14 +371,7 @@ class _GameScreenState extends State<GameScreen>
           _previousGrid = previous;
           _grid = next;
           _rules = dominance.rule;
-          if (dominance.isSupreme) {
-            final zone = FormulaTracker.zoneFor(dominance.dominant);
-            if (zone != null) _supremeElements.add(zone.name);
-          }
-          _formulaTracker.step(
-            FormulaTracker.zoneFor(dominance.dominant),
-            supremeDominant: dominance.isSupreme,
-          );
+          _feedDominance(dominance.dominant, isSupreme: dominance.isSupreme);
           if (next.lastActivatedBorderCells.isNotEmpty) {
             _activatedCells = next.lastActivatedBorderCells;
           }
@@ -391,6 +399,7 @@ class _GameScreenState extends State<GameScreen>
       _recordedFormulaCount = 0;
       _recordedAbilities.clear();
       _supremeElements.clear();
+      _dominantPerGeneration.clear();
     });
   }
 
@@ -409,7 +418,8 @@ class _GameScreenState extends State<GameScreen>
       _recordedFormulaCount = 0;
       _recordedAbilities.clear();
       _supremeElements.clear();
-      _isSummonMode = false;
+      _dominantPerGeneration.clear();
+      _mode = InscriptionMode.incantation;
       _draft = const _SpellDraft();
     });
   }
@@ -565,7 +575,7 @@ class _GameScreenState extends State<GameScreen>
     // library_screen.dart's per-chapter personality picker.
     final details = await showDialog<_InscribeDetails>(
       context: context,
-      builder: (_) => _SpellNameDialog(isSummon: _isSummonMode, initialName: _draft.name),
+      builder: (_) => _SpellNameDialog(mode: _mode, initialName: _draft.name),
     );
     if (details == null || !mounted) return;
     final spellName = details.name;
@@ -596,6 +606,7 @@ class _GameScreenState extends State<GameScreen>
         formula: _formulaTracker.committed.map((z) => z.name).toList(),
         supremeTags: _supremeElements.toList(),
         isSummon: _isSummonMode,
+        isArmor: _isArmorMode,
         loadCircuitJson: rootBundle.loadString,
         loadVkBytes: (path) async => (await rootBundle.load(path)).buffer.asUint8List(),
         onProgress: (message) => status.value = message,
@@ -756,16 +767,22 @@ class _GameScreenState extends State<GameScreen>
           ),
           _ZoneCounters(activations: _grid.zoneActivations),
           _ModeBar(
-            isSummon: _isSummonMode,
-            onSelect: (v) => setState(() => _isSummonMode = v),
+            mode: _mode,
+            onSelect: (v) => setState(() => _mode = v),
           ),
-          _isSummonMode
-              ? _SummonPreview(sequence: _formulaTracker.committed)
-              : FormulaBar(
-                  formulas: _formulaTracker.formulas,
-                  residuals: _formulaTracker.residuals,
-                  pendingZone: _formulaTracker.pendingZone,
-                ),
+          switch (_mode) {
+            InscriptionMode.summon =>
+              _SummonPreview(sequence: _formulaTracker.committed),
+            InscriptionMode.armor => _ArmorPreview(
+                sequence: _dominantPerGeneration,
+                steps: _grid.stepCount,
+              ),
+            InscriptionMode.incantation => FormulaBar(
+                formulas: _formulaTracker.formulas,
+                residuals: _formulaTracker.residuals,
+                pendingZone: _formulaTracker.pendingZone,
+              ),
+          },
           _RuleBar(
             selected: _rules,
             onSelect: (r) => setState(() => _rules = r),
@@ -777,7 +794,11 @@ class _GameScreenState extends State<GameScreen>
             onStepOnce: _stepOnce,
             onInscribe: _canInscribe ? _inscribe : null,
             stepCount: _grid.stepCount,
-            manaCost: _manaCost,
+            // Armor is never cast, so it is never priced: the readout would
+            // quote a number nothing spends. The cost is still computed and
+            // persisted on the asset (every SpellAsset carries one), just not
+            // advertised in a mode where it means nothing.
+            manaCost: _isArmorMode ? null : _manaCost,
           ),
         ],
       ),
@@ -792,7 +813,9 @@ class _BottomBar extends StatelessWidget {
   final VoidCallback onStepOnce;
   final VoidCallback? onInscribe;
   final int stepCount;
-  final int manaCost;
+
+  /// Null in Armor mode -- see the call site.
+  final int? manaCost;
 
   bool get atMax => stepCount >= kMaxInscribableSteps;
 
@@ -824,15 +847,17 @@ class _BottomBar extends StatelessWidget {
                   letterSpacing: 1,
                 ),
               ),
-              const SizedBox(width: 16),
-              Text(
-                'Mana Cost: $manaCost',
-                style: const TextStyle(
-                  color: Color(0xFF9BBFD4),
-                  fontSize: 13,
-                  letterSpacing: 1,
+              if (manaCost != null) ...[
+                const SizedBox(width: 16),
+                Text(
+                  'Mana Cost: $manaCost',
+                  style: const TextStyle(
+                    color: Color(0xFF9BBFD4),
+                    fontSize: 13,
+                    letterSpacing: 1,
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
           const SizedBox(height: 10),
@@ -933,9 +958,9 @@ class _InscribeDetails {
 }
 
 class _SpellNameDialog extends StatefulWidget {
-  const _SpellNameDialog({required this.isSummon, this.initialName = ''});
+  const _SpellNameDialog({required this.mode, this.initialName = ''});
 
-  final bool isSummon;
+  final InscriptionMode mode;
 
   /// Pre-fills the name field with whatever was typed into the Preview
   /// dialog's name field, so a name chosen there "transfers" to the final
@@ -968,7 +993,11 @@ class _SpellNameDialogState extends State<_SpellNameDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text(widget.isSummon ? 'Name Your Summon' : 'Name Your Spell'),
+      title: Text(switch (widget.mode) {
+        InscriptionMode.summon => 'Name Your Summon',
+        InscriptionMode.armor => 'Name Your Armor',
+        InscriptionMode.incantation => 'Name Your Spell',
+      }),
       content: TextField(
         controller: _ctrl,
         autofocus: true,
@@ -1487,13 +1516,14 @@ class _MediaRow extends StatelessWidget {
 /// hand-rolled toggle row rather than a Material SegmentedButton, to match
 /// the rest of this screen.
 class _ModeBar extends StatelessWidget {
-  final bool isSummon;
-  final ValueChanged<bool> onSelect;
+  final InscriptionMode mode;
+  final ValueChanged<InscriptionMode> onSelect;
 
-  const _ModeBar({required this.isSummon, required this.onSelect});
+  const _ModeBar({required this.mode, required this.onSelect});
 
-  Widget _button(String label, bool value) {
-    final active = isSummon == value;
+  Widget _button(InscriptionMode value) {
+    final active = mode == value;
+    final label = value.label;
     return Padding(
       padding: const EdgeInsets.only(right: 8),
       child: TextButton(
@@ -1521,8 +1551,68 @@ class _ModeBar extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       child: Row(
         children: [
-          _button('Incantation', false),
-          _button('Summon', true),
+          for (final m in InscriptionMode.values) _button(m),
+        ],
+      ),
+    );
+  }
+}
+
+/// Live "what will this inscribe as" preview for Armor mode, the counterpart
+/// to [_SummonPreview]: slot cost, the stat bonuses the trajectory has earned
+/// so far, and any keyword it has spelled.
+///
+/// Reads [CertifiedArmor.previewFromElementSequence] over the dominance the stepper
+/// is producing right now, because there is no proof to read yet -- exactly
+/// how _SummonPreview previews CreatureSpec.fromElements. Every rule shown is
+/// the same code the certified reading uses; only the sequence's source
+/// differs. Once inscribed, the library and chapter screens re-derive all of
+/// this from the spell's own proof bytes instead.
+class _ArmorPreview extends StatelessWidget {
+  const _ArmorPreview({required this.sequence, required this.steps});
+
+  /// Per-generation dominants so far, repeats kept, neutrals absent.
+  final List<BorderZone> sequence;
+
+  /// Generations stepped so far -- what T would be if inscribed now.
+  final int steps;
+
+  @override
+  Widget build(BuildContext context) {
+    final armor = CertifiedArmor.previewFromElementSequence(sequence, t: steps);
+    final parts = <String>[
+      if (armor.meleeBonus > 0) '+${armor.meleeBonus} melee',
+      if (armor.moveSpeedBonus > 0) '+${armor.moveSpeedBonus} move',
+      if (armor.spellRangeBonus > 0) '+${armor.spellRangeBonus} range',
+      if (armor.armorHpBonus > 0) '+${armor.armorHpBonus} armor HP',
+      for (final k in armor.keywords) kArmorKeywordLabel[k]!,
+    ];
+    final slots = steps == 0 ? 0 : armor.slotCost;
+    return Container(
+      color: const Color(0xFF1E0E08),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      width: double.infinity,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Aetherial Armor  ·  T $steps  ·  '
+            '$slots artifact slot${slots == 1 ? '' : 's'}',
+            style: const TextStyle(color: Color(0xFFF5F0E8), fontSize: 12),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'F ${armor.fireCount}   A ${armor.airCount}   '
+            'W ${armor.waterCount}   E ${armor.earthCount}',
+            style: const TextStyle(color: Color(0xFF9A9488), fontSize: 11),
+          ),
+          if (parts.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              parts.join('  ·  '),
+              style: const TextStyle(color: Color(0xFFB8860B), fontSize: 11),
+            ),
+          ],
         ],
       ),
     );

@@ -65,7 +65,27 @@ import '../../protocol/transport.dart';
 ///
 /// The personality is a [SummonPersonality] index, which makes that enum's
 /// declaration order wire-visible: **append only, never reorder or remove.**
-const kBattleProtocolVersion = 5;
+/// **v6** adds the mandatory `armorLoadout` (0x1F) setup frame: every duel
+/// exchanges exactly one armor declaration per side, `{"armor":null}` when
+/// nothing is worn (docs/AETHERIAL_ARMOR.md).
+///
+/// **v7** adds the mandatory `setupReady` (0x47) barrier at the end of setup:
+/// each side declares that every check passed and waits for the other's
+/// declaration before building any state.
+///
+/// Both are frames a lower-version client neither sends nor expects, so a
+/// mismatched pair would deadlock — each blocking on a frame the other will
+/// never send — or, worse, misread the following frame. The version gate in
+/// `runDuelSetup` runs before any setup frame is exchanged, so a mismatched
+/// pair is refused rather than hung.
+///
+/// v7 is a separate bump from v6 even though neither has shipped and both land
+/// in the same uncommitted series. The scenario it protects against is real
+/// and immediate: two dev devices flashed a day apart during a playtest week
+/// would otherwise both call themselves v6 and hang at the barrier. Bumps are
+/// free while nothing has shipped — which is exactly when the habit is worth
+/// keeping (CLAUDE.md on `RULESET_VERSION`).
+const kBattleProtocolVersion = 7;
 
 /// The max circuit tier (12 / 24 / 48) this device can reliably prove.
 ///

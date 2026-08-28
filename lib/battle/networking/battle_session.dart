@@ -25,6 +25,7 @@ import '../../spells/chapter_asset.dart' show ArtifactEntry;
 import '../../spells/spell_permission.dart';
 import '../engine/book_commitment.dart';
 import '../engine/commit_reveal.dart';
+import '../models/armor_envelope.dart';
 import '../models/match_config.dart';
 import '../models/match_outcome.dart';
 import 'battle_wire.dart';
@@ -254,6 +255,38 @@ abstract class BattleTurnSession {
   Future<void> close() async {}
 }
 
+// ── Interrupted-wait exceptions ───────────────────────────────────────────────
+
+/// The peer told us they were ending the match while we were blocked waiting
+/// for a frame from them.
+///
+/// [reason] is their transmitted forfeit string, verbatim — the same value
+/// [BattleTurnSession.peerForfeit] yields and `_forfeitExplanation` turns into
+/// a sentence. Passing it through unaltered is the point: the peer diagnosed
+/// something, and "they stopped answering" is a strictly worse thing to tell a
+/// player than what they actually said.
+class PeerForfeitException implements Exception {
+  PeerForfeitException(this.reason);
+  final String reason;
+  @override
+  String toString() => 'PeerForfeitException: the other device ended the match '
+      '($reason)';
+}
+
+/// The connection dropped while we were blocked waiting for a frame.
+///
+/// Deliberately a DIFFERENT type from [PeerForfeitException], never folded
+/// into it: "they decided to stop, and here is why" and "they vanished" are
+/// different events, and only the first one has a diagnosis in it. Conflating
+/// them is how a rejected armor comes to read as bad Wi-Fi.
+class PeerConnectionLostException implements Exception {
+  PeerConnectionLostException(this.reason);
+  final String reason;
+  @override
+  String toString() => 'PeerConnectionLostException: lost contact with the '
+      'other device ($reason)';
+}
+
 // ── Network session ───────────────────────────────────────────────────────────
 
 class BattleSession implements BattleTurnSession {
@@ -274,6 +307,9 @@ class BattleSession implements BattleTurnSession {
     // before something is watching for it. This is the whole reason the
     // signal is latched rather than streamed — see [peerComponentsDone].
     _pumpComponentsDone();
+    // Likewise for the forfeit frame, which must be consumed exactly once and
+    // observed by many — see [_pumpPeerForfeit].
+    _pumpPeerForfeit();
   }
 
   final Transport _transport;
@@ -301,11 +337,71 @@ class BattleSession implements BattleTurnSession {
   @override
   Future<String> get peerConnectionLost => _connectionLost.future;
 
+  // ── Waking blocked waits (docs/AETHERIAL_ARMOR.md §3b finding) ────────────
+  //
+  // A typed wait used to end exactly one way: the frame it asked for. So when
+  // the peer diagnosed a problem, forfeited and stopped, whoever was blocked
+  // in [_awaitFrame] stayed blocked until the socket died — and then reported
+  // a connection loss, which is the one explanation that is certainly wrong
+  // when the peer just told you the real one. Setup made this obvious (a
+  // rejected armor is a long silence, then "lost contact"), but it was never
+  // specific to setup or to armor: every typed wait in the session had it.
+  //
+  // Both signals below already existed and are already multi-observer safe
+  // ([peerForfeit] is a single `late final` future; [_connectionLost] a single
+  // Completer). What was missing is that nothing connected them to the waits.
+  // These three members are that connection, and nothing here changes what
+  // [peerForfeit] / [peerConnectionLost] themselves do — battle_screen.dart's
+  // existing `.then` callbacks are untouched.
+
+  /// Live [_awaitFrame] waits, to be failed the moment the peer forfeits or
+  /// the connection drops. Registered on entry, removed in `finally`, so this
+  /// holds only genuinely blocked waits rather than growing with the match.
+  final Set<Completer<BattleFrame>> _abortWaiters = {};
+
+  /// Set once the peer forfeits or the connection drops. Latched so a wait
+  /// STARTED after the event fails immediately instead of blocking forever on
+  /// a peer that is already gone.
+  Object? _abortError;
+
+  /// Consumes the forfeit frame exactly once, on behalf of everyone.
+  ///
+  /// [peerForfeit] is a `late final` future over
+  /// `framesOfType(forfeit).first`, and `framesOfType` is queue-backed and
+  /// CONSUMPTIVE — a second listener would compete for the frame, and the
+  /// loser would wait forever. So this touches the same shared future rather
+  /// than opening its own listener, and every blocked wait is woken from here.
+  /// Pumping it from the constructor also pins the moment of consumption: the
+  /// listener is registered before any exchange starts, so a forfeit that
+  /// arrives during the handshake is claimed by this and not by a passing
+  /// `framesOfType` caller.
+  void _pumpPeerForfeit() {
+    peerForfeit.then(
+      (reason) => _abortPendingWaits(PeerForfeitException(reason)),
+      // A forfeit future that errors is not a thing today; swallow rather than
+      // raise an unhandled async error out of a constructor-time callback.
+      onError: (Object _) {},
+    );
+  }
+
+  /// Fails every blocked wait with [error] and latches it for later waits.
+  /// First writer wins: a forfeit followed by the socket closing (the normal
+  /// sequence) must report the forfeit, which is the half with a diagnosis.
+  void _abortPendingWaits(Object error) {
+    if (_abortError != null) return;
+    _abortError = error;
+    for (final waiter in _abortWaiters.toList()) {
+      if (!waiter.isCompleted) waiter.completeError(error);
+    }
+    _abortWaiters.clear();
+  }
+
   /// Records the drop, once. Guarded because onError-then-onDone is a normal
   /// socket teardown sequence, and completing twice throws.
   void _noteConnectionLost(String reason) {
     if (_connectionLost.isCompleted) return;
     _connectionLost.complete(reason);
+    _abortPendingWaits(PeerConnectionLostException(reason));
     // Release anyone blocked on the sequential-components gate. Their signal
     // rides the same dead socket, so waiting on it now means waiting forever;
     // the screen is about to show the connection-lost error over the top
@@ -358,24 +454,62 @@ class BattleSession implements BattleTurnSession {
 
   static const _kStallThreshold = Duration(seconds: 8);
 
-  /// [framesOfType].first, wrapped so the wait is visible to [stalledExchange].
-  Future<BattleFrame> _awaitFrame(BattleMsgType type) {
+  /// The next frame of [type] — or a [PeerForfeitException] /
+  /// [PeerConnectionLostException] the instant the peer stops being able to
+  /// send one.
+  ///
+  /// The wait ends three ways, not one: the frame arrives, the peer forfeits,
+  /// or the connection drops. Before this raced the abort signal, only the
+  /// first ended it, so a peer that rejected the match left us blocked until
+  /// TCP teardown and then reported the wrong cause (see [_abortWaiters]).
+  ///
+  /// Also wrapped so the wait is visible to [stalledExchange].
+  Future<BattleFrame> _awaitFrame(BattleMsgType type) async {
     final label = type.name;
     _pendingExchange = label;
     _pendingSince = DateTime.now();
-    return framesOfType(type).first.whenComplete(() {
+
+    final completer = Completer<BattleFrame>();
+    // Already over: fail now rather than block on a peer that has gone.
+    if (_abortError != null) {
+      completer.completeError(_abortError!);
+    } else {
+      _abortWaiters.add(completer);
+    }
+    StreamSubscription<BattleFrame>? sub;
+    if (!completer.isCompleted) {
+      sub = framesOfType(type).listen((frame) {
+        if (!completer.isCompleted) completer.complete(frame);
+      });
+    }
+    try {
+      return await completer.future;
+    } finally {
+      // Cancelling removes this wait's entry from the reader's per-type waiter
+      // list (see BattleFrameReader.framesOfType's onCancel), so an aborted
+      // wait does not leave a claim on the next frame of that type.
+      await sub?.cancel();
+      _abortWaiters.remove(completer);
       // Guarded: a longer-running overlapping wait must not have its marker
       // cleared by this one finishing first.
       if (_pendingExchange == label) {
         _pendingExchange = null;
         _pendingSince = null;
       }
-    });
+    }
   }
 
   /// The next frame of exactly [type] — buffers if it already arrived, never
   /// drops it. See [BattleFrameReader.framesOfType]'s doc comment for why
   /// this isn't a `.where()` filter over [frames].
+  ///
+  /// CONSUMPTIVE: each frame is handed to exactly one listener. Two listeners
+  /// on the same type race, and the loser waits forever.
+  ///
+  /// [BattleMsgType.forfeit] in particular is already claimed, from the
+  /// constructor, by [peerForfeit] (see [_pumpPeerForfeit]) — do not listen for
+  /// it here. Read [peerForfeit]; it is a plain future and any number of
+  /// callers may await it.
   Stream<BattleFrame> framesOfType(BattleMsgType type) => _reader.framesOfType(type);
 
   void send(BattleMsgType type, Uint8List payload) {
@@ -627,6 +761,53 @@ class BattleSession implements BattleTurnSession {
     return decoded
         .map((j) => ArtifactEntry.fromJson(j as Map<String, dynamic>))
         .toList();
+  }
+
+  /// Both sides declare their equipped Aetherial Armor simultaneously
+  /// (docs/AETHERIAL_ARMOR.md). Setup only — armor is chosen before a match
+  /// and never changes during one, so this deliberately does NOT belong on
+  /// [BattleTurnSession].
+  ///
+  /// Sent on EVERY duel: `null` in, `null` out is "wearing none", a complete
+  /// declaration. Making the frame conditional on owning armor would let the
+  /// two peers sit in different handshake states, each blocking on a frame the
+  /// other had already decided not to send — which is a hang, not an error
+  /// message. This is why [kBattleProtocolVersion] went to 6.
+  ///
+  /// Like the artifact loadout above, this is PUBLIC equipment: exchanged in
+  /// the clear, unlike the Chapter's spells. Unlike it, the payload is not
+  /// trusted at all — [ArmorEnvelope] carries a proof and a routing tier, and
+  /// every property the armor confers is re-derived from the verified public
+  /// outputs by armor_certification.dart. Nothing the sender asserts about
+  /// their own armor crosses this call.
+  ///
+  /// Throws [FormatException] on a malformed payload; setup treats that as a
+  /// failed handshake, never as "the peer has no armor".
+  Future<ArmorEnvelope?> exchangeArmorLoadout(ArmorEnvelope? ours) async {
+    send(BattleMsgType.armorLoadout, ArmorEnvelope.encode(ours));
+    final frame = await _awaitFrame(BattleMsgType.armorLoadout);
+    return ArmorEnvelope.decode(frame.payload);
+  }
+
+  /// The setup-finalization barrier: "every check on my side passed".
+  ///
+  /// Sent only after ALL setup validation has succeeded, and awaited before
+  /// the caller builds any state (docs/AETHERIAL_ARMOR.md §3d). It carries no
+  /// payload and asserts nothing about the match — only that this side found
+  /// no reason to refuse it.
+  ///
+  /// This closes the asymmetric-rejection shape: previously, a side whose own
+  /// checks passed had already finished setup by the time its opponent
+  /// rejected something, and walked into a battle screen for a match that no
+  /// longer existed. Blocking here means a refusal on either side aborts both
+  /// — the refusing side forfeits, and that forfeit interrupts this wait
+  /// (see [_awaitFrame]) instead of leaving it for the socket to time out.
+  ///
+  /// Sent unconditionally, exactly like [exchangeArmorLoadout] and for the
+  /// same reason: a conditional barrier is not a barrier.
+  Future<void> exchangeSetupReady() async {
+    send(BattleMsgType.setupReady, Uint8List(0));
+    await _awaitFrame(BattleMsgType.setupReady);
   }
 
   /// Post-match: both sides reveal their sorted KIN-STACKING LEAF list

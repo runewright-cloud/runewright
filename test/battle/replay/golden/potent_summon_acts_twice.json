@@ -5,7 +5,7 @@
     {
       "turn": 1,
       "note": "player_a casts a Potent summon two tiles from player_b; the creature closes on its bonus action and strikes on the sweep",
-      "stateHash": "f45a4ba34e6ac858902c3272d1c7a23cbe321ea088e3fa4a83e03bc07ecb257a",
+      "stateHash": "ece2554fe60be07abc53a80a8645b58d5b60cb61537d7e2a5ce556d7917e12cd",
       "events": {
         "castEvents": 1,
         "resolvedSpells": 1,
@@ -49,7 +49,7 @@
     {
       "turn": 2,
       "note": "nobody acts — the creature takes its ONE ordinary action, which is the contrast that makes turn 1 mean something",
-      "stateHash": "2f0afbd116f896cc243432d9eaca3fb36ddf9b5b80658b59e15f5fbc338903f0",
+      "stateHash": "01fd6c761949181cdd66482290fe5f305f3f3441bd3519aecda4589a343784cb",
       "events": {
         "castEvents": 0,
         "resolvedSpells": 0,
@@ -93,7 +93,7 @@
     {
       "turn": 3,
       "note": "a third turn, to catch a cadence that is off by one",
-      "stateHash": "d6209a28b8d3522ea11501c9ec5878337f1bfd2f7ec567bc5c31b929e64a0856",
+      "stateHash": "f291cb28d5de981a68c9717b672f186769e8c6ff47578839eb9fb89fb37ba97a",
       "events": {
         "castEvents": 0,
         "resolvedSpells": 0,

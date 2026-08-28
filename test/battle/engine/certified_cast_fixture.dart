@@ -16,6 +16,7 @@
 import 'dart:typed_data';
 
 import 'package:rune_duel/battle/models/battle_state.dart';
+import 'package:rune_duel/battle/models/certified_armor.dart';
 import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/battle/models/hex_battlefield.dart' show Battlefield;
 import 'package:rune_duel/battle/models/match_config.dart';
@@ -193,6 +194,7 @@ Uint8List syntheticProof({
   required Uint8List commitmentBytes,
   required int rulesetVersion,
   List<BorderZone>? elements,
+  Uint8List? ownerPubkeyBytes,
 }) {
   final zones = elements ?? List.filled(kActivations, BorderZone.earth);
   final count = 10 + 2 * tier;
@@ -203,6 +205,12 @@ Uint8List syntheticProof({
   data.setUint32(0, count, Endian.big);
   setField(0, t);
   setField(2, rulesetVersion);
+  // Field 1 = owner_pubkey. Left zero unless a caller needs it: only the
+  // armor path (armor_certification.dart) binds a proof to an authenticated
+  // wearer, and a zero owner is exactly what an unbound fixture should read as.
+  if (ownerPubkeyBytes != null) {
+    bytes.setRange(4 + 1 * 32, 4 + 1 * 32 + 32, ownerPubkeyBytes);
+  }
   bytes.setRange(4 + 3 * 32, 4 + 3 * 32 + 32, commitmentBytes);
   for (var gen = 0; gen < zones.length; gen++) {
     setField(8 + gen, dominanceIndexOf(zones[gen]));
@@ -244,11 +252,20 @@ bool bytesEqual(List<int> a, List<int> b) {
 /// [maxMana], for the one script that needs a cast to sit close enough to a
 /// player's pool that ten mana decides whether it can be paid for. Defaults to
 /// [kStartMana] so every existing golden stays byte-identical.
+///
+/// [localArmor]/[peerArmor] equip `player_a`/`player_b` with an already-
+/// certified Aetherial Armor, exactly as `buildDuelBattleState` does from
+/// `DuelSetupResult` — including folding Earth's [CertifiedArmor.armorHpBonus]
+/// into starting HP, which is the one place armor touches a stored field
+/// rather than a derived one. Both default to null; an unarmored duel is what
+/// every pre-armor script wants.
 BattleState makeDuelState({
   int bookmarks = 0,
   List<List<BorderZone>> localCharms = const [],
   List<List<BorderZone>> peerCharms = const [],
   int startingMana = kStartMana,
+  CertifiedArmor? localArmor,
+  CertifiedArmor? peerArmor,
 }) {
   List<Accoutrement> accoutrementsFor(
     String id,
@@ -279,24 +296,26 @@ BattleState makeDuelState({
       WizardAvatar(
         playerId: 'player_a',
         ownerPubkeyHex: '0x${'00' * 32}',
-        hp: 24,
+        hp: 24 + (localArmor?.armorHpBonus ?? 0),
         mana: startingMana,
         maxMana: kStartMana,
         position: posA,
         teamId: 'team_a',
         baseSpellRange: 3,
         accoutrements: accoutrementsFor('player_a', localCharms),
+        armor: localArmor,
       ),
       WizardAvatar(
         playerId: 'player_b',
         ownerPubkeyHex: '0x${'11' * 32}',
-        hp: 24,
+        hp: 24 + (peerArmor?.armorHpBonus ?? 0),
         mana: startingMana,
         maxMana: kStartMana,
         position: posB,
         teamId: 'team_b',
         baseSpellRange: 3,
         accoutrements: accoutrementsFor('player_b', peerCharms),
+        armor: peerArmor,
       ),
     ],
     teams: [

@@ -110,6 +110,33 @@ class TrajectoryParser {
   static List<BorderZone> certifiedElementSequence(VerifiedSpellOutputs outputs) =>
       _drive(outputs).committed;
 
+  /// One certified dominant element for EVERY non-neutral generation in
+  /// `0 .. outputs.t - 1`, in order, with repeated generations preserved.
+  /// Aetherial Armor semantics (lib/battle/models/certified_armor.dart) read
+  /// this; nothing else should without reading the next paragraph first.
+  ///
+  /// This is deliberately NOT [certifiedElementSequence], which is the
+  /// compressed spell-formula view. That one runs the trajectory through
+  /// [FormulaTracker], which is the *formula* rule set —
+  /// it commits an element only on a lead change, a supreme generation, or a
+  /// cadence pulse, so four consecutive fire generations yield two entries,
+  /// not four. Formulas want that (a spell's inscribed word); anything that
+  /// scores how long an element actually held the lead does not.
+  ///
+  /// Both readings come from the same certified array via the same
+  /// [ruleFromIndex]/[activeZoneFor] pair, so there is still exactly one
+  /// interpretation of a dominance index in the codebase; what differs is the
+  /// accumulation rule layered on top. Neutral generations (index 0, ties, and
+  /// the masked entries at gen ≥ t) contribute nothing to either.
+  static List<BorderZone> certifiedPerGenerationDominantSequence(VerifiedSpellOutputs outputs) {
+    final seq = <BorderZone>[];
+    for (var gen = 0; gen < outputs.t; gen++) {
+      final zone = activeZoneFor(ruleFromIndex(outputs.dominanceTrajectory[gen]));
+      if (zone != null) seq.add(zone);
+    }
+    return List.unmodifiable(seq);
+  }
+
   static FormulaTracker _drive(VerifiedSpellOutputs outputs) {
     final tracker = FormulaTracker();
     for (var gen = 0; gen < outputs.t; gen++) {

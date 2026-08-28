@@ -11,9 +11,14 @@
 // authenticated ownerPubkeyHex, and verified peerPermissions are all
 // returned in DuelSetupResult for BattleScreen to wire into TurnLoop
 // (verifyProof/vkBytes/peerBookRoot/peerOwnerPubkeyHex/peerPermissions).
-// This file itself does no proof verification — that's BattleScreen's job
-// (loading the VK asset + initializing the SRS/CRS is Flutter-asset-bundle
-// work, out of place in a Flutter-free handshake orchestrator).
+// This file does no proof verification of its own account and loads no Flutter
+// assets — but it now RUNS one verification during setup, for the peer's
+// equipped Aetherial Armor, which must be certified before a BattleState
+// exists. The resources for that ([verifyProof] + [vkBytesForTier]) are
+// INJECTED by the lobby, which is the layer that may touch rootBundle; the
+// asset loading and `initSrsCached` call stay there (see
+// battle_lobby_screen.dart's prepareDuelVerifierResources). Spell-cast
+// verification is still BattleScreen's job and is unchanged.
 //
 // Sequence (fail-closed on every negative — forfeit + throw, never silent
 // accept, mirroring BattleSession.exchangeIdentityAuth's own discipline):
@@ -29,7 +34,19 @@
 //   6. Book commitment/hash (feeds peerBookRoot for membership-proof checks).
 //   7. Artifact-loadout exchange (required — see duel_battle_setup.dart's
 //      doc comment on why this can't be deferred).
+//   7b. Armor-loadout exchange + certification (docs/AETHERIAL_ARMOR.md) —
+//      sent on every duel, `{"armor":null}` when nothing is worn; the peer's
+//      proof is cryptographically verified here and both sides' armor is
+//      derived through the one `CertifiedArmor.fromOutputs`.
+//   7c. Setup-ready barrier — each side declares that every check above
+//      passed, and waits for the other's declaration, so a refusal on either
+//      side aborts BOTH rather than leaving one device in a battle screen for
+//      a match the other has already abandoned.
 //   8. buildDuelBattleState — symmetric, pubkey-ordered (DECISION 2).
+//      UNCHANGED by armor this slice: the certified armors are returned in
+//      [DuelSetupResult] and applied to nothing yet, deliberately, so that
+//      "both devices agree on the armor" can be proven before armor can move
+//      the lockstep state.
 //
 // Construction note (found while implementing, not in the original plan
 // prose — worth keeping here since it's a real correctness constraint):
@@ -58,9 +75,13 @@ import '../../spells/spell_asset.dart' show SpellAsset;
 import '../../spells/spell_identity.dart'
     show SpellKinEntry, kinStackingLeaves, newKinRevealSalt;
 import '../../spells/spell_permission.dart' show SpellPermission;
+import '../../protocol/match_session.dart' show ProofVerifier;
+import '../engine/armor_certification.dart';
 import '../engine/battle_engine_version.dart' show kBattleEngineVersion;
 import '../engine/book_commitment.dart';
+import '../models/armor_envelope.dart';
 import '../models/battle_state.dart';
+import '../models/certified_armor.dart';
 import '../models/duel_battle_setup.dart';
 import '../models/match_config.dart';
 import 'battle_session.dart';
@@ -87,6 +108,8 @@ class DuelSetupResult {
     required this.peerPermissions,
     required this.localAvatarId,
     required this.peerAvatarId,
+    required this.localArmor,
+    required this.peerArmor,
   });
 
   final BattleSession session;
@@ -140,22 +163,97 @@ class DuelSetupResult {
   /// The peer's batch leaf hash from [BattleSession.exchangeBookHash] — the
   /// `expectedPeerHash` their post-match reveal is checked against.
   final Uint8List peerBookHash;
+
+  /// This device's equipped armor as its own proof attests it, or null if
+  /// nothing is worn (docs/AETHERIAL_ARMOR.md).
+  ///
+  /// Derived via `ProofIntake.parseOwn` — our own bytes, so no verification —
+  /// then through the same `CertifiedArmor.fromOutputs` the peer's goes
+  /// through, so the two devices' readings of one proof cannot diverge.
+  ///
+  /// **Applied to nothing yet.** Setup produces it; the next slice feeds it
+  /// into avatar/state construction. The one-slice gap is deliberate: it lets
+  /// us prove both devices agree on the armor before armor can influence
+  /// canonical state.
+  final CertifiedArmor? localArmor;
+
+  /// The peer's equipped armor as THEIR proof attests it, or null if they
+  /// declared none.
+  ///
+  /// Derived via `ProofIntake.verifyAndParse` — their bytes, so the proof is
+  /// cryptographically verified first — and then through the identical
+  /// derivation. Nothing the peer asserted about their armor is used; only the
+  /// verified public outputs.
+  final CertifiedArmor? peerArmor;
 }
 
 /// Runs the full LAN duel handshake over an already-connected [transport]
 /// and returns everything needed to push [BattleScreen]. Throws (after
 /// sending forfeit where applicable) on any handshake failure — callers
 /// should catch, disconnect the transport, and return to the lobby.
+///
+/// [verifyProof] and [vkBytesForTier] are the injected verification resources
+/// for step 7b (peer armor certification). The lobby loads the VK assets and
+/// initialises the SRS/CRS before calling — see
+/// `prepareDuelVerifierResources` in battle_lobby_screen.dart, and CLAUDE.md
+/// bug-avoidance #4 for why finding the SRS cache on disk is not the same as
+/// initialising it.
+///
+/// They are optional so that a caller with no armor on either side (and every
+/// existing test) needs no proving stack. That is NOT a loophole: if the peer
+/// declares an armor and these are absent, certification refuses it and the
+/// match aborts. A missing verifier can only ever cost you a match, never buy
+/// an unverified armor.
 Future<DuelSetupResult> runDuelSetup({
   required Transport transport,
   required DuelRole role,
   required Identity localIdentity,
   required ChapterAsset localChapter,
   required MatchConfig hostConfig,
+  ProofVerifier? verifyProof,
+  Uint8List? Function(int tier)? vkBytesForTier,
 }) async {
   // Step 0: placeholder-matchId session — see header comment for why.
   final session = BattleSession(transport, Uint8List(16));
 
+  try {
+    return await _runSetupSteps(
+      session: session,
+      role: role,
+      localIdentity: localIdentity,
+      localChapter: localChapter,
+      hostConfig: hostConfig,
+      verifyProof: verifyProof,
+      vkBytesForTier: vkBytesForTier,
+    );
+  } on PeerForfeitException {
+    // They already stopped and told us why; forfeiting back at a device that
+    // has gone is noise.
+    rethrow;
+  } on PeerConnectionLostException {
+    rethrow;
+  } catch (_) {
+    // Backstop for every refusal path that does not forfeit on its own —
+    // corrupt local library JSON, an unreadable identity, anything unforeseen.
+    // Load-bearing now that the peer blocks on [BattleSession.exchangeSetupReady]:
+    // an unforfeited throw here would leave them waiting for a readiness frame
+    // that is never coming, right up until the socket dies. A second forfeit
+    // on a path that already sent one is harmless — the peer consumes the
+    // first and the rest sit unread.
+    session.sendForfeit('setup_failed');
+    rethrow;
+  }
+}
+
+Future<DuelSetupResult> _runSetupSteps({
+  required BattleSession session,
+  required DuelRole role,
+  required Identity localIdentity,
+  required ChapterAsset localChapter,
+  required MatchConfig hostConfig,
+  required ProofVerifier? verifyProof,
+  required Uint8List? Function(int tier)? vkBytesForTier,
+}) async {
   // Yield once before the first network write. This matters only when both
   // roles run in the same isolate (i.e. every test using InMemoryTransport,
   // never real cross-device play): `Future.wait([runDuelSetup(...host),
@@ -296,6 +394,88 @@ Future<DuelSetupResult> runDuelSetup({
   // duel_battle_setup.dart's doc comment.
   final peerArtifacts = await session.exchangeArtifactLoadout(localChapter.artifacts);
 
+  // Step 7b: armor loadout — exchanged on every duel, then certified.
+  //
+  // Ordering matters twice over. It is AFTER identity auth because both
+  // certifications bind a proof to an authenticated owner_pubkey, and before
+  // auth there is no authenticated peer key to bind to — an armor checked
+  // against a self-declared identity is not checked at all. It is BEFORE
+  // buildDuelBattleState because a match with an armor neither side can agree
+  // on must never reach a BattleState at all.
+  //
+  // Local armor is certified first, so a broken local loadout fails before we
+  // ask the peer to trust anything.
+  final SpellAsset? localArmorAsset;
+  try {
+    localArmorAsset = await _resolveEquippedArmor(localChapter);
+  } on StateError {
+    // A binding whose asset is gone is still a refusal, and the peer is
+    // blocked on our armor frame — forfeit before rethrowing or they wait for
+    // a frame that is never coming.
+    session.sendForfeit('armor_certification_failed');
+    rethrow;
+  }
+  final CertifiedArmor? localArmor;
+  try {
+    localArmor = certifyOwnArmor(
+      armor: localArmorAsset,
+      wearerOwnerPubkeyHex: myOwnerHex,
+      ordinaryArtifactCount: localChapter.ordinaryArtifactCount,
+    );
+  } on ArmorCertificationException catch (e) {
+    session.sendForfeit('armor_certification_failed');
+    throw StateError('local armor cannot be certified: ${e.reason} — match aborted');
+  }
+
+  // The envelope carries the proof and a routing tier; nothing derived. The
+  // tier is re-derived from our own T rather than read off SpellAsset.tier,
+  // for the same reason certifyOwnArmor does it: the stored tier is authored.
+  final ArmorEnvelope? localEnvelope = localArmorAsset == null
+      ? null
+      : ArmorEnvelope(
+          tier: armorProofTier(localArmorAsset),
+          proofBytes: localArmorAsset.proofBytes,
+        );
+
+  final ArmorEnvelope? peerEnvelope;
+  try {
+    peerEnvelope = await session.exchangeArmorLoadout(localEnvelope);
+  } on FormatException catch (e) {
+    // A malformed payload is a failed handshake, never "they have no armor".
+    session.sendForfeit('armor_loadout_malformed');
+    throw StateError('peer armor loadout is malformed: $e — match aborted');
+  }
+
+  final CertifiedArmor? peerArmor;
+  try {
+    peerArmor = await certifyPeerArmor(
+      envelope: peerEnvelope,
+      wearerOwnerPubkeyHex: peer.ownerPubkeyHex,
+      ordinaryArtifactCount: peerArtifacts.length,
+      verifyProof: verifyProof,
+      vkBytesForTier: vkBytesForTier,
+    );
+  } on ArmorCertificationException catch (e) {
+    session.sendForfeit('armor_certification_failed');
+    throw StateError('peer armor cannot be certified: ${e.reason} — match aborted');
+  }
+
+  // Step 7c: the setup-finalization barrier. Everything that can refuse this
+  // match has now run on this side, so declare readiness and wait for theirs.
+  //
+  // This is what makes a refusal two-sided. Certification is asymmetric in
+  // time — the side whose armor is fine finishes its own checks while the
+  // other side is still verifying — so without this barrier a rejected match
+  // could leave one device in a battle screen and the other in the lobby. Any
+  // refusal forfeits, and a forfeit interrupts this wait
+  // (BattleSession._awaitFrame, slice 4.5), so both sides end up aborting on
+  // the same cause.
+  //
+  // Deliberately AFTER armor certification and BEFORE buildDuelBattleState:
+  // readiness has to mean "I have finished checking", and no state may exist
+  // for a match that either side is about to reject.
+  await session.exchangeSetupReady();
+
   // Step 8: symmetric, pubkey-ordered BattleState construction (DECISION 2).
   final setup = buildDuelBattleState(
     config: effectiveConfig,
@@ -305,6 +485,12 @@ Future<DuelSetupResult> runDuelSetup({
     peerOwnerHex: peer.ownerPubkeyHex,
     localWizardName: myWizardName,
     peerWizardName: peerWizardName,
+    // Already certified above — handed on as equipment, never re-read. The
+    // builder's pubkey ordering decides which avatar each lands on, so both
+    // devices seat the same armor on the same wizard without a host/guest
+    // branch.
+    localArmor: localArmor,
+    peerArmor: peerArmor,
   );
 
   return DuelSetupResult(
@@ -322,6 +508,29 @@ Future<DuelSetupResult> runDuelSetup({
     peerPermissions: peerPermissions,
     localAvatarId: myAvatarId,
     peerAvatarId: peerAvatarId,
+    localArmor: localArmor,
+    peerArmor: peerArmor,
+  );
+}
+
+/// The [SpellAsset] this chapter equips as armor, or null if it equips none.
+///
+/// Resolves exactly [ChapterAsset.armorSpellId] — the local binding — and
+/// nothing else. A binding that no longer resolves is a hard error rather than
+/// a silent "no armor": the player believes they are wearing something, and
+/// starting the duel without it would be a surprise mid-match, not a
+/// convenience. (Deleting an armor clears the binding from every chapter, so
+/// this should be unreachable outside hand-edited data.)
+Future<SpellAsset?> _resolveEquippedArmor(ChapterAsset chapter) async {
+  final id = chapter.armorSpellId;
+  if (id == null) return null;
+  final all = await SpellAsset.loadAll();
+  for (final s in all) {
+    if (s.id == id) return s;
+  }
+  throw StateError(
+    'chapter "${chapter.name}" equips armor $id, which is no longer in the '
+    'library — match aborted',
   );
 }
 

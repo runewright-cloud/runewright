@@ -20,6 +20,14 @@ import '../battle/models/effect_kind.dart' show formulaEffectLabels;
 import '../battle/models/minion.dart' show SummonPersonality, kSummonPersonalityLabel;
 import '../spells/basic_spell_seed.dart' show seedBasicSpells;
 import '../spells/basic_spells.dart' show isBasicSpell;
+import '../spells/chapter_armor.dart'
+    show
+        ArmorBindError,
+        addArtifactWithinBudget,
+        armorBindError,
+        bindArmor,
+        chapterSlotsRemaining,
+        localArmorSlotCost;
 import '../spells/chapter_asset.dart';
 import '../spells/counter_charm.dart';
 import '../spells/sighting_asset.dart';
@@ -42,6 +50,8 @@ import 'spell_art_pack_screen.dart';
 import 'spell_card_painter.dart';
 import 'spell_test_lab_screen.dart' show kTestSpellNamePrefix;
 import 'vocabulary_screen.dart';
+import 'widgets/armor_picker_dialog.dart';
+import 'widgets/armor_summary_view.dart';
 
 // ── Custom spell art (P1: own library spells only) ──────────────────────────
 //
@@ -280,6 +290,27 @@ Future<bool> _blockedAsMastersChapter(
 /// True if [spell] may not be added to a chapter because this device's
 /// Runekey neither owns it nor holds a current grant for it. Shows the
 /// explanation as a side effect; callers must abort.
+/// Refuses to add an Aetherial Armor to a chapter's SPELL list. Armor is
+/// equipped in the chapter editor's ARMOR section, where it is priced in
+/// artifact slots; a [ChapterEntry] is a castable draw, and an armor in the
+/// hand is a spell the engine has no way to resolve.
+///
+/// The Craftings card hides "Add to Chapter" for armor, so this is the
+/// backstop for every other route in -- a loaned armor, a batch add, a future
+/// tab that reuses these methods.
+bool _blockedAsArmor(BuildContext context, SpellAsset spell) {
+  if (!spell.isArmor) return false;
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text(
+        '"${spell.name}" is an Aetherial Armor — equip it from a chapter\'s '
+        'Armor section, not its spell list.',
+      ),
+    ),
+  );
+  return true;
+}
+
 Future<bool> _blockedAsUnownedSpell(
   BuildContext context,
   SpellAsset spell,
@@ -661,6 +692,7 @@ class _CraftingsTabState extends State<_CraftingsTab>
     }
     if (await _blockedAsMastersChapter(context, chapterId)) return;
     if (!mounted) return;
+    if (_blockedAsArmor(context, spell)) return;
     if (await _blockedAsUnownedSpell(context, spell)) return;
     if (!mounted) return;
 
@@ -879,6 +911,10 @@ class _TestsTabState extends State<_TestsTab> with AutomaticKeepAliveClientMixin
       return;
     }
     if (await _blockedAsMastersChapter(context, chapterId)) return;
+    if (spells.any((s) => s.isArmor)) {
+      if (!mounted) return;
+      if (_blockedAsArmor(context, spells.firstWhere((s) => s.isArmor))) return;
+    }
     var chapter = await ChapterAsset.loadById(chapterId);
     if (chapter == null || !mounted) return;
 
@@ -1043,7 +1079,7 @@ class _SpellCard extends StatelessWidget {
   /// produced fewer than 3 activations forms no complete formula, so there is
   /// nothing to recite — see PracticeFormula.fromSpellFormula, which drops the
   /// same residuals FormulaTracker.formulas does.
-  bool get _canPractice => spell.formula.length >= 3;
+  bool get _canPractice => !spell.isArmor && spell.formula.length >= 3;
 
   /// True for one of the five shipped starter spells (docs/BASIC_SPELLS_PLAN.md).
   /// These ship with every install under a dev owner_pubkey that is NOT this
@@ -1107,9 +1143,16 @@ class _SpellCard extends StatelessWidget {
   String get _displayName =>
       spell.name.isNotEmpty ? spell.name : 'Unnamed Spell';
 
-  String get _meta => 'Gen ${spell.t}  ·  ♦ ${spell.manaCost}';
+  // Armor is worn, never cast, so it has no mana price to quote -- the field
+  // exists on every SpellAsset but means nothing here.
+  String get _meta => spell.isArmor
+      ? 'Aetherial Armor  ·  Gen ${spell.t}'
+      : 'Gen ${spell.t}  ·  ♦ ${spell.manaCost}';
 
   String get _formulaText {
+    // An armor's read-out is proof-derived (ArmorSummaryView below); the
+    // authored formula string this getter reads must never stand in for it.
+    if (spell.isArmor) return '';
     if (spell.formula.isEmpty) return '';
     if (spell.isSummon) return summonSummaryFromFormula(spell.formula) ?? '';
     final labels = formulaEffectLabels(spell.formula);
@@ -1190,6 +1233,8 @@ class _SpellCard extends StatelessWidget {
                   SpellCardWidget(spell: spell, size: 84),
                   if (spell.isSummon)
                     const Positioned(right: 3, bottom: 3, child: _SummonBadge()),
+                  if (spell.isArmor)
+                    const Positioned(right: 3, bottom: 3, child: _ArmorBadge()),
                 ],
               ),
             ),
@@ -1228,7 +1273,12 @@ class _SpellCard extends StatelessWidget {
                                 value: 'practice',
                                 child: Text('Practice Incantation'),
                               ),
-                            const PopupMenuItem(value: 'add', child: Text('Add to Chapter')),
+                            // Armor is equipped from a chapter's ARMOR
+                            // section, not added to its spell list: a
+                            // ChapterEntry is a castable draw, and an armor
+                            // must never enter the hand.
+                            if (!spell.isArmor)
+                              const PopupMenuItem(value: 'add', child: Text('Add to Chapter')),
                             const PopupMenuItem(value: 'rename', child: Text('Rename')),
                             PopupMenuItem(
                               value: 'set_art',
@@ -1259,6 +1309,10 @@ class _SpellCard extends StatelessWidget {
                         style: manuscriptCaptionStyle(color: kInkColor.withValues(alpha: 0.55))
                             .copyWith(fontStyle: FontStyle.normal, fontSize: 11),
                       ),
+                    ],
+                    if (spell.isArmor) ...[
+                      const SizedBox(height: 3),
+                      ArmorSummaryView(spell: spell),
                     ],
                     const SizedBox(height: 2),
                     Text(_date, style: manuscriptCaptionStyle()),
@@ -1384,6 +1438,25 @@ class _SummonBadge extends StatelessWidget {
         border: Border.all(color: kIlluminationGold.withValues(alpha: 0.7), width: 0.5),
       ),
       child: const Icon(Icons.pets, size: 10, color: kIlluminationGold),
+    );
+  }
+}
+
+/// Small corner marker distinguishing an Aetherial Armor from an incantation
+/// or a summon at a glance -- the shield to [_SummonBadge]'s paw.
+class _ArmorBadge extends StatelessWidget {
+  const _ArmorBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        color: kParchmentPanelColor,
+        borderRadius: BorderRadius.circular(3),
+        border: Border.all(color: kIlluminationGold.withValues(alpha: 0.7), width: 0.5),
+      ),
+      child: const Icon(Icons.shield_outlined, size: 10, color: kIlluminationGold),
     );
   }
 }
@@ -1683,6 +1756,12 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
   late bool _isActive;
   // Parallel to _chapter.entries; null means the spell was deleted from library.
   List<SpellAsset?>? _spells;
+  // The chapter's bound armor, resolved from _chapter.armorSpellId. Null both
+  // when no armor is worn and while the library is still loading -- see
+  // _slotsRemaining, which reads those two cases differently.
+  SpellAsset? _armor;
+  // Every armor in the library, for the equip picker.
+  List<SpellAsset> _armorCandidates = const [];
 
   @override
   void initState() {
@@ -1698,8 +1777,82 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
     final byId = {for (final s in all) s.id: s};
     setState(() {
       _spells = _chapter.entries.map((e) => byId[e.spellId]).toList();
+      _armor = _chapter.armorSpellId == null ? null : byId[_chapter.armorSpellId!];
+      _armorCandidates = all.where((s) => s.isArmor).toList();
     });
   }
+
+  /// Equips [armor], replacing whatever was worn. Rejected (with a reason) by
+  /// [armorBindError] rather than by any rule written here -- the 12-slot
+  /// budget lives in chapter_armor.dart, and a second copy in widget code is
+  /// exactly how the two would drift apart.
+  Future<void> _equipArmor(SpellAsset armor) async {
+    if (_readOnly) return;
+    final updated = bindArmor(_chapter, armor);
+    if (updated == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(_armorRejectionText(armorBindError(_chapter, armor)!, armor))),
+      );
+      return;
+    }
+    await updated.save();
+    if (!mounted) return;
+    setState(() {
+      _chapter = updated;
+      _armor = armor;
+    });
+    widget.onChapterChanged();
+  }
+
+  Future<void> _removeArmor() async {
+    if (_readOnly || !_chapter.hasArmor) return;
+    final updated = _chapter.withoutArmor();
+    await updated.save();
+    if (!mounted) return;
+    setState(() {
+      _chapter = updated;
+      _armor = null;
+    });
+    widget.onChapterChanged();
+  }
+
+  Future<void> _pickArmor() async {
+    if (_readOnly) return;
+    final chosen = await showDialog<SpellAsset>(
+      context: context,
+      builder: (_) => ArmorPickerDialog(
+        // Only armor-marked assets are offered at all, so an incantation or a
+        // summon cannot reach the armor slot through this screen.
+        candidates: _armorCandidates,
+        equippedId: _chapter.armorSpellId,
+        rejectionFor: (a) => armorBindError(_chapter, a),
+        rejectionText: _armorRejectionText,
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    await _equipArmor(chosen);
+  }
+
+  String _armorRejectionText(ArmorBindError error, SpellAsset armor) =>
+      switch (error) {
+        ArmorBindError.notAnArmor =>
+          '"${armor.name}" is not an Aetherial Armor.',
+        ArmorBindError.exceedsSlotBudget =>
+          'Needs ${localArmorSlotCost(armor)} slots; only '
+              '${ChapterAsset.maxArtifactSlots - _chapter.ordinaryArtifactCount} '
+              'free after this chapter\'s artifacts.',
+      };
+
+  /// Artifact slots left in this chapter, failing CLOSED while a bound armor
+  /// is still resolving: until the library load finishes we don't know the
+  /// armor's `ceil(T/4)` cost, and guessing zero would let the player add
+  /// artifacts past the 12-slot budget in that window. A binding that never
+  /// resolves can't persist -- deleting a spell clears any chapter wearing it
+  /// (ChapterAsset.removeSpellFromAllChapters).
+  int get _slotsRemaining => _chapter.hasArmor && _armor == null
+      ? 0
+      : chapterSlotsRemaining(_chapter, _armor);
 
   void _setActive() {
     widget.onSetActive();
@@ -1750,7 +1903,13 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
     );
     if (kind == null || !mounted) return;
 
-    final updated = _chapter.withArtifact(ArtifactEntry(kind: kind));
+    if (_slotsRemaining <= 0) return;
+    final updated = addArtifactWithinBudget(
+      _chapter,
+      ArtifactEntry(kind: kind),
+      armor: _armor,
+    );
+    if (updated == null) return;
     await updated.save();
     if (!mounted) return;
     setState(() => _chapter = updated);
@@ -1759,7 +1918,13 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
 
   Future<void> _incrementArtifact(ArtifactKind kind) async {
     if (_readOnly) return;
-    final updated = _chapter.withArtifact(ArtifactEntry(kind: kind));
+    if (_slotsRemaining <= 0) return;
+    final updated = addArtifactWithinBudget(
+      _chapter,
+      ArtifactEntry(kind: kind),
+      armor: _armor,
+    );
+    if (updated == null) return;
     await updated.save();
     setState(() => _chapter = updated);
     widget.onChapterChanged();
@@ -1927,7 +2092,7 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
       ArtifactKind.bookmark,
       ArtifactKind.rodOfSpreading,
     ];
-    final slotsRemaining = _chapter.artifactSlotsRemaining;
+    final slotsRemaining = _slotsRemaining;
 
     final readOnly = widget.fromMaster;
 
@@ -1938,6 +2103,18 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
           _MastersChapterBanner(remaining: widget.masterLoanRemaining),
           const SizedBox(height: 12),
         ],
+        const _SectionDivider(label: 'ARMOR'),
+        const SizedBox(height: 8),
+        _ArmorSection(
+          armor: _armor,
+          // A binding whose asset hasn't resolved yet is not the same as no
+          // armor: saying "none equipped" there would invite equipping a
+          // second one. Same fail-closed reasoning as _slotsRemaining.
+          resolving: _chapter.hasArmor && _armor == null,
+          onEquip: readOnly ? null : _pickArmor,
+          onRemove: readOnly ? null : _removeArmor,
+        ),
+        const SizedBox(height: 16),
         _ArtifactSectionHeader(
           remaining: slotsRemaining,
           onAdd: readOnly || slotsRemaining == 0 ? null : _addArtifact,
@@ -2252,6 +2429,94 @@ class _SectionDivider extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// The chapter's armor row: what is worn (with its proof-derived summary), or
+/// an invitation to equip one.
+class _ArmorSection extends StatelessWidget {
+  const _ArmorSection({
+    required this.armor,
+    required this.resolving,
+    required this.onEquip,
+    required this.onRemove,
+  });
+
+  final SpellAsset? armor;
+
+  /// True while a bound armor's asset is still loading from the library.
+  final bool resolving;
+
+  final VoidCallback? onEquip;
+  final VoidCallback? onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    if (resolving) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Text('Reading the equipped armor…', style: manuscriptCaptionStyle()),
+      );
+    }
+    final worn = armor;
+    if (worn == null) {
+      return Row(
+        children: [
+          Expanded(
+            child: Text('No armor equipped.', style: manuscriptCaptionStyle()),
+          ),
+          if (onEquip != null)
+            TextButton.icon(
+              icon: const Icon(Icons.shield_outlined, size: 15),
+              label: const Text('Equip'),
+              onPressed: onEquip,
+              style: TextButton.styleFrom(foregroundColor: kInkColor),
+            ),
+        ],
+      );
+    }
+    return Container(
+      padding: const EdgeInsets.fromLTRB(10, 8, 4, 8),
+      decoration: BoxDecoration(
+        color: kParchmentPanelColor,
+        border: Border.all(color: kIlluminationGold.withValues(alpha: 0.4)),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  worn.name.isNotEmpty ? worn.name : 'Unnamed Armor',
+                  style: const TextStyle(
+                    fontFamily: 'serif',
+                    fontSize: 15,
+                    color: kInkColor,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                ArmorSummaryView(spell: worn),
+              ],
+            ),
+          ),
+          if (onEquip != null)
+            TextButton(
+              onPressed: onEquip,
+              style: TextButton.styleFrom(foregroundColor: kInkColor),
+              child: const Text('Replace'),
+            ),
+          if (onRemove != null)
+            TextButton(
+              onPressed: onRemove,
+              style: TextButton.styleFrom(foregroundColor: kRubricRed),
+              child: const Text('Remove'),
+            ),
+        ],
+      ),
     );
   }
 }
@@ -2919,6 +3184,7 @@ class _LoansTabState extends State<_LoansTab> with AutomaticKeepAliveClientMixin
     }
     if (await _blockedAsMastersChapter(context, chapterId)) return;
     if (!mounted) return;
+    if (_blockedAsArmor(context, spell)) return;
     // A loan is the case this gate is *meant* to let through — but only while
     // the grant is current. An expired one stops here rather than in a duel.
     if (await _blockedAsUnownedSpell(context, spell)) return;

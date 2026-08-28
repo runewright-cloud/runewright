@@ -184,6 +184,46 @@ void main() {
     });
   });
 
+  group('TrajectoryParser.certifiedPerGenerationDominantSequence', () {
+    test('keeps one entry per non-neutral generation, repeats included -- '
+        'unlike the compressed certifiedElementSequence', () {
+      // Four straight fire generations: the formula view commits fire twice
+      // (lead change at gen 1, cadence pulse at gen 4); the per-generation
+      // view keeps all four. Armor reads the latter.
+      final out = _outputs(
+        t: 4,
+        trajectory: _pad([1, 1, 1, 1], 12),
+        supremeFlags: _pad([], 12),
+      );
+      expect(
+        TrajectoryParser.certifiedPerGenerationDominantSequence(out),
+        List.filled(4, BorderZone.fire),
+      );
+      expect(TrajectoryParser.certifiedElementSequence(out),
+          [BorderZone.fire, BorderZone.fire]);
+    });
+
+    test('neutral generations contribute nothing', () {
+      final out = _outputs(
+        t: 5,
+        trajectory: _pad([1, 0, 0, 2, 0], 12),
+        supremeFlags: _pad([], 12),
+      );
+      expect(TrajectoryParser.certifiedPerGenerationDominantSequence(out),
+          [BorderZone.fire, BorderZone.air]);
+    });
+
+    test('only generations 0..t-1 are read', () {
+      final out = _outputs(
+        t: 2,
+        trajectory: _pad([4, 4, 1, 1, 1], 12),
+        supremeFlags: _pad([], 12),
+      );
+      expect(TrajectoryParser.certifiedPerGenerationDominantSequence(out),
+          [BorderZone.earth, BorderZone.earth]);
+    });
+  });
+
   group('TrajectoryParser.certifiedElementSequence — design doc "Summons"', () {
     test('all neutral → empty sequence', () {
       final out = _outputs(

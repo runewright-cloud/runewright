@@ -1,0 +1,182 @@
+{
+  "name": "armor_bonuses_across_a_duel",
+  "description": "An armored wizard against an unarmored one: Earth in the opening HP, Fire in a punch, Air in a three-tile walk the unarmored wizard cannot match, and Water in a cast from one tile past base range. Every certified keyword (cleave, flying, anchored) must stay inert throughout.",
+  "turns": [
+    {
+      "turn": 1,
+      "note": "both punch: armored 2, unarmored 1",
+      "stateHash": "ea64bbd77d33a58109e20a83fbc22feaa1d58db55c24cb4529918675dc5692db",
+      "events": {
+        "castEvents": 0,
+        "resolvedSpells": 0,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 2,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 1,
+        "avatars": {
+          "player_a": {
+            "hp": 28,
+            "mana": 500,
+            "chain": null,
+            "position": "0,0",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 22,
+            "mana": 500,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 2,
+      "note": "a walks all 3 declared tiles: base 2 + Air 1",
+      "stateHash": "f2b43db242b9cd69cf0ad7bea212a2940023bb63823913629936cf9ac3acf6c2",
+      "events": {
+        "castEvents": 0,
+        "resolvedSpells": 0,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 2,
+        "avatars": {
+          "player_a": {
+            "hp": 28,
+            "mana": 500,
+            "chain": null,
+            "position": "0,3",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 22,
+            "mana": 500,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 3,
+      "note": "a steps to (0,4) — exactly 4 hexes from b",
+      "stateHash": "8fd351bd52fd50ca2cafa8719bceaecdd49c4f54dc8520d9610c5cc7758f113a",
+      "events": {
+        "castEvents": 0,
+        "resolvedSpells": 0,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 3,
+        "avatars": {
+          "player_a": {
+            "hp": 28,
+            "mana": 500,
+            "chain": null,
+            "position": "0,4",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 22,
+            "mana": 500,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    },
+    {
+      "turn": 4,
+      "note": "a casts at range 4, legal only with Water",
+      "stateHash": "3ed9ac6dec545fa2d34439319e982c260b552a4091b02c82714f6d87a5ae1335",
+      "events": {
+        "castEvents": 1,
+        "resolvedSpells": 1,
+        "counterCharmProcs": 0,
+        "avatarMoves": 2,
+        "minionMoves": 0,
+        "minionAttacks": 0,
+        "meleeAttacks": 0,
+        "wildMagic": 0,
+        "conveyorChains": 0
+      },
+      "summary": {
+        "turnNumber": 4,
+        "avatars": {
+          "player_a": {
+            "hp": 28,
+            "mana": 480,
+            "chain": "fire",
+            "position": "0,4",
+            "statuses": 0
+          },
+          "player_b": {
+            "hp": 18,
+            "mana": 500,
+            "chain": null,
+            "position": "1,0",
+            "statuses": 0
+          }
+        },
+        "pendingDelayedSpells": 0,
+        "minions": 0,
+        "clouds": 0,
+        "tileEffects": 0,
+        "terrainBarriers": 0,
+        "terrainHp": 0,
+        "reflectionLinks": 0,
+        "divinationLinks": 0,
+        "wizardIllusions": 0
+      }
+    }
+  ]
+}

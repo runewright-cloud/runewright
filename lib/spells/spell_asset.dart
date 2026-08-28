@@ -53,6 +53,7 @@ class SpellAsset {
     this.formula = const [],
     this.supremeTags = const [],
     this.isSummon = false,
+    this.isArmor = false,
     this.summonPersonality = 'aggressive',
     this.artHash,
     this.artSource,
@@ -63,7 +64,19 @@ class SpellAsset {
     this.soundUpdatedAt,
     this.soundPackId,
     this.gridWithheld = false,
-  });
+  }) {
+    // Inscription mode is exclusive: a grid is inscribed as an ordinary spell,
+    // a Summon, or an Aetherial Armor. Enforced here rather than left to
+    // callers because every consumer branches on these two flags and none of
+    // them has a sensible reading of "both" -- see [isArmor]. [fromJson]
+    // sanitises rather than throws, so a hand-edited file can't brick a
+    // library load.
+    if (isSummon && isArmor) {
+      throw ArgumentError(
+        'a spell asset cannot be both a Summon and an Aetherial Armor',
+      );
+    }
+  }
 
   /// Unique within a device install -- a microsecond timestamp is more than
   /// sufficient for a single-player, button-press-cadence action (not a
@@ -137,6 +150,23 @@ class SpellAsset {
   /// from [formula] (see CreatureSpec.fromElements) instead of resolving it
   /// as a 16-cell incantation effect. False for ordinary spells.
   final bool isSummon;
+
+  /// True iff this spell was inscribed as an **Aetherial Armor**: worn rather
+  /// than cast, its certified trajectory read as armor semantics
+  /// (lib/battle/models/certified_armor.dart) instead of as a castable effect.
+  /// False for ordinary spells and for summons.
+  ///
+  /// Mutually exclusive with [isSummon]; the constructor rejects a spell that
+  /// claims both, and [fromJson] drops the armor marker rather than throwing
+  /// if an old or hand-edited file somehow carries both (summon behaviour is
+  /// the one already in the field, so it wins).
+  ///
+  /// This marker is a LOCAL persistence fact only. Nothing about it is bound
+  /// to the proof — like [formula] and [manaCost], a modified client can write
+  /// anything here, so it may gate what the player can equip on their own
+  /// device and must never be trusted across the wire. The authoritative armor
+  /// reading is [CertifiedArmor.fromOutputs] over the proof's public outputs.
+  final bool isArmor;
 
   /// design doc "Personalities": the battlefield-behavior glyph this summon
   /// will fight with, stored as the SummonPersonality enum name
@@ -244,6 +274,7 @@ class SpellAsset {
         'formula': formula,
         'supremeTags': supremeTags,
         'isSummon': isSummon,
+        if (isArmor) 'isArmor': isArmor,
         'summonPersonality': summonPersonality,
         if (artHash != null) 'artHash': artHash,
         if (artSource != null) 'artSource': artSource!.name,
@@ -256,7 +287,13 @@ class SpellAsset {
         if (gridWithheld) 'gridWithheld': gridWithheld,
       };
 
-  static SpellAsset fromJson(Map<String, dynamic> json) => SpellAsset(
+  static SpellAsset fromJson(Map<String, dynamic> json) {
+    // Absent in every spell persisted before Aetherial Armor existed: those
+    // load as ordinary spells. A file claiming both modes loads as a summon
+    // (see [isArmor]) rather than throwing mid-library-load.
+    final isSummon = (json['isSummon'] as bool?) ?? false;
+    final isArmor = !isSummon && ((json['isArmor'] as bool?) ?? false);
+    return SpellAsset(
         id: json['id'] as String,
         createdAt: DateTime.parse(json['createdAt'] as String),
         tier: json['tier'] as int,
@@ -274,7 +311,8 @@ class SpellAsset {
         spellHashHex: (json['spellHashHex'] as String?) ?? '',
         formula: (json['formula'] as List<dynamic>? ?? []).cast<String>(),
         supremeTags: (json['supremeTags'] as List<dynamic>? ?? []).cast<String>(),
-        isSummon: (json['isSummon'] as bool?) ?? false,
+        isSummon: isSummon,
+        isArmor: isArmor,
         summonPersonality: (json['summonPersonality'] as String?) ?? 'aggressive',
         artHash: json['artHash'] as String?,
         artSource: switch (json['artSource'] as String?) {
@@ -298,6 +336,7 @@ class SpellAsset {
         soundPackId: json['soundPackId'] as String?,
         gridWithheld: (json['gridWithheld'] as bool?) ?? false,
       );
+  }
 
   static Future<Directory> _spellsDir() async {
     final docs = await getApplicationDocumentsDirectory();
@@ -328,6 +367,7 @@ class SpellAsset {
         formula: formula,
         supremeTags: tags,
         isSummon: isSummon,
+        isArmor: isArmor,
         summonPersonality: summonPersonality,
         artHash: artHash,
         artSource: artSource,
@@ -358,6 +398,7 @@ class SpellAsset {
         formula: formula,
         supremeTags: supremeTags,
         isSummon: isSummon,
+        isArmor: isArmor,
         summonPersonality: summonPersonality,
         artHash: artHash,
         artSource: artSource,
@@ -394,6 +435,7 @@ class SpellAsset {
         formula: formula,
         supremeTags: supremeTags,
         isSummon: isSummon,
+        isArmor: isArmor,
         summonPersonality: personality,
         artHash: artHash,
         artSource: artSource,
@@ -429,6 +471,7 @@ class SpellAsset {
         formula: formula,
         supremeTags: supremeTags,
         isSummon: isSummon,
+        isArmor: isArmor,
         summonPersonality: summonPersonality,
         artHash: hash,
         artSource: source,
@@ -467,6 +510,7 @@ class SpellAsset {
       formula: formula,
       supremeTags: supremeTags,
       isSummon: isSummon,
+      isArmor: isArmor,
       summonPersonality: summonPersonality,
       artHash: entry.sha256,
       artSource: SpellArtSource.builtIn,
@@ -502,6 +546,7 @@ class SpellAsset {
         formula: formula,
         supremeTags: supremeTags,
         isSummon: isSummon,
+        isArmor: isArmor,
         summonPersonality: summonPersonality,
         soundHash: soundHash,
         soundSource: soundSource,
@@ -531,6 +576,7 @@ class SpellAsset {
         formula: formula,
         supremeTags: supremeTags,
         isSummon: isSummon,
+        isArmor: isArmor,
         summonPersonality: summonPersonality,
         artHash: artHash,
         artSource: artSource,
@@ -566,6 +612,7 @@ class SpellAsset {
       formula: formula,
       supremeTags: supremeTags,
       isSummon: isSummon,
+      isArmor: isArmor,
       summonPersonality: summonPersonality,
       artHash: artHash,
       artSource: artSource,
@@ -600,6 +647,7 @@ class SpellAsset {
         formula: formula,
         supremeTags: supremeTags,
         isSummon: isSummon,
+        isArmor: isArmor,
         summonPersonality: summonPersonality,
         artHash: artHash,
         artSource: artSource,
@@ -638,6 +686,7 @@ class SpellAsset {
         formula: formula,
         supremeTags: supremeTags,
         isSummon: isSummon,
+        isArmor: isArmor,
         summonPersonality: summonPersonality,
         artHash: artHash,
         artSource: artSource,

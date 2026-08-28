@@ -991,7 +991,12 @@ class DeterministicResolution {
     // a naive re-query by position would otherwise apply the DoT to a wizard
     // whose punch never actually landed.
     final redirected = <String>{};
-    var damage = 1;
+    // Fire armor's melee bonus (engine v6). Added ONCE, at the single wizard
+    // melee path, so it reaches a punch thrown at a wizard and a punch thrown
+    // at a minion alike and reaches nothing else — spell damage is priced
+    // elsewhere, and a minion's own attack never runs through here. It sits
+    // above the Air haymaker's distance bonus so the two compose additively.
+    var damage = 1 + (actor.armor?.meleeBonus ?? 0);
 
     // Air haymaker: bonus damage = half the tiles actually traversed this
     // turn (path length, not net displacement), rounded down. Uses the
@@ -2098,7 +2103,12 @@ class DeterministicResolution {
     for (final id in state.wildMagic.statuesquePlayerIds.toList()..sort()) {
       final av = avatarById(id);
       if (av == null || !av.isAlive) continue;
-      av.hp = state.config.playerHp;
+      // "Full" means the pool this wizard actually started the match with,
+      // armor included — restoring to the bare config value would silently
+      // strip an Earth armor's contribution and make Statuesque a downgrade
+      // for the wearer. Ordinary healing stays uncapped and untouched; this is
+      // the one path that ASSIGNS an HP total rather than adding to one.
+      av.hp = state.config.playerHp + (av.armor?.armorHpBonus ?? 0);
       applyManaGain(av, av.maxMana - av.mana);
     }
     // A dead player can never break the latch by moving or casting, so drop

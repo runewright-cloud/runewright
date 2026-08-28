@@ -52,6 +52,7 @@ import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/battle/models/effect_kind.dart' show SpellAffinity;
 import 'package:rune_duel/battle/models/barrier.dart';
+import 'package:rune_duel/battle/models/certified_armor.dart';
 import 'package:rune_duel/battle/models/match_config.dart';
 import 'package:rune_duel/battle/models/status_effect_ids.dart';
 
@@ -238,6 +239,7 @@ class WizardAvatar {
     Map<SpellAffinity, int>? chainLengths,
     Map<SpellAffinity, PendingMultiplier>? pendingEffectMultipliers,
     this.activeChainElement,
+    this.armor,
   })  : accoutrements = accoutrements ?? [],
         activeStatusEffects = activeStatusEffects ?? [],
         barriers = barriers ?? {},
@@ -255,6 +257,35 @@ class WizardAvatar {
   /// when unknown (e.g. solo/practice dummy); callers fall back to a
   /// playerId-derived label.
   final String wizardName;
+
+  /// The Aetherial Armor this wizard is wearing, or null for none.
+  ///
+  /// **The certified semantic object, never a `SpellAsset`.** It is produced
+  /// once, at duel setup, by `CertifiedArmor.fromOutputs` over verified public
+  /// outputs — `certifyOwnArmor` on the wearer's device, `certifyPeerArmor` on
+  /// the opponent's — and is never re-parsed, re-verified or re-derived after
+  /// that. Nothing downstream of here may reach for the authored fields beside
+  /// the proof (`SpellAsset.formula`, `manaCost`, `isArmor`); that is the split
+  /// M4.22 closed, and armor is deliberately born on the far side of it.
+  ///
+  /// Optional and defaulting to null so the solo/practice builders — which
+  /// have no duel setup and therefore no certification — keep producing
+  /// armourless wizards without naming the field at all.
+  ///
+  /// Its four numerical bonuses are live as of engine v6:
+  /// [CertifiedArmor.meleeBonus] in `DeterministicResolution.applyHaymaker`,
+  /// [CertifiedArmor.moveSpeedBonus] in [effectiveMoveSpeed],
+  /// [CertifiedArmor.spellRangeBonus] in [effectiveSpellRange], and
+  /// [CertifiedArmor.armorHpBonus] folded into starting [hp] at build time.
+  ///
+  /// Two of its [CertifiedArmor.keywords] are live as of engine v7, each by
+  /// turning an EXISTING capability getter true rather than by growing a
+  /// mechanic of its own: **Charger** ([hasHaymakerDistanceBonus]) and
+  /// **Muddy** ([hasHaymakerSlow]). Every other keyword is canonical state —
+  /// hashed, agreed, displayed — and **inert**. In particular
+  /// `armor!.hasKeyword(ArmorKeyword.flying)` and [isFlying] remain unrelated;
+  /// see [isFlying].
+  final CertifiedArmor? armor;
 
   int hp;
   int mana;
@@ -362,8 +393,15 @@ class WizardAvatar {
 
   // ── Derived stats from status effects ─────────────────────────────────────
 
+  /// Tiles this wizard may walk in one movement phase.
+  ///
+  /// **The single authoritative definition** — every consumer inherits every
+  /// term, armor's included. TurnLoop's per-turn `speeds` snapshot doubles this
+  /// for a Dash, so an Air armor's +1 is doubled with the rest of the stat
+  /// (base 2 + 1 = 3 normally, 6 dashing). That is intended: there is no
+  /// "base excluding armor" reading, here or anywhere.
   int get effectiveMoveSpeed {
-    var speed = _kBaseMoveSpeed;
+    var speed = _kBaseMoveSpeed + (armor?.moveSpeedBonus ?? 0);
     for (final fx in activeStatusEffects) {
       if (fx.isDormant) continue;
       if (fx.effectTypeId == StatusEffectId.speedUp ||
@@ -375,8 +413,15 @@ class WizardAvatar {
     return speed.clamp(0, 999);
   }
 
+  /// How far this wizard's spells reach.
+  ///
+  /// **The single authoritative definition**, exactly as [effectiveMoveSpeed]
+  /// is for movement. Water armor therefore also widens Watery Inertia's
+  /// `1..range` scatter roll and the wild-magic random-target radius, both of
+  /// which draw their bounds from this getter. Intended; neither is
+  /// special-cased.
   int get effectiveSpellRange {
-    var range = baseSpellRange;
+    var range = baseSpellRange + (armor?.spellRangeBonus ?? 0);
     for (final fx in activeStatusEffects) {
       if (fx.isDormant) continue;
       if (fx.effectTypeId == StatusEffectId.rangeUp ||
@@ -411,6 +456,14 @@ class WizardAvatar {
   /// Wild magic (Updraft): this wizard ignores terrain while moving —
   /// chasms, walls, lava, slow tiles, ice sliding, and conveyor pushes.
   /// See StatusEffectId.flying.
+  ///
+  /// Derives from the status-effect machinery and from **nothing else**. An
+  /// armor certified with [ArmorKeyword.flying] is canonical, hashed state and
+  /// still leaves this false. Slice 6 activated two keywords (Charger, Muddy)
+  /// and deliberately not this one: wiring a keyword to an existing hook
+  /// because the names line up is the opportunistic connection the scope fence
+  /// forbids, and Flying's hook — terrain immunity for a whole match — is not
+  /// the small haymaker-shaped integration those two were.
   bool get isFlying => activeStatusEffects
       .any((fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.flying);
 
@@ -434,14 +487,35 @@ class WizardAvatar {
   bool get hasHaymakerDot => activeStatusEffects
       .any((fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.haymakerDot);
 
-  bool get hasHaymakerSlow => activeStatusEffects
-      .any((fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.haymakerSlow);
+  /// Also granted by a certified armor's **Muddy** keyword (engine v7).
+  ///
+  /// An OR over the existing status source, never a second slow path: the
+  /// keyword turns this one getter true and `applyHaymaker`'s existing branch
+  /// does the rest, so target eligibility, magnitude, duration, status
+  /// representation, timing and stacking are whatever they already were. A
+  /// wearer who also holds the Earth-haymaker status is still one source of
+  /// truth here, so the slow lands once, not twice.
+  bool get hasHaymakerSlow =>
+      (armor?.hasKeyword(ArmorKeyword.muddy) ?? false) ||
+      activeStatusEffects
+          .any((fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.haymakerSlow);
 
   bool get hasHaymakerStatusDrain => activeStatusEffects.any(
       (fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.haymakerStatusDrain);
 
-  bool get hasHaymakerDistanceBonus => activeStatusEffects.any(
-      (fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.haymakerDistanceBonus);
+  /// Also granted by a certified armor's **Charger** keyword (engine v7).
+  ///
+  /// Same shape as [hasHaymakerSlow]: an OR over the existing status source,
+  /// so the *mechanic* stays exactly where it was. `applyHaymaker` alone
+  /// decides how the walked distance is measured (path length from
+  /// `resolveAvatarMovement`, not net displacement), how it rounds (`~/ 2`),
+  /// what a Dash means for it (a longer budget, hence a longer path, hence
+  /// more of this) and how it orders against the Fire melee bonus (it adds on
+  /// top). Charger buys a wearer into that mechanic and changes none of it.
+  bool get hasHaymakerDistanceBonus =>
+      (armor?.hasKeyword(ArmorKeyword.charger) ?? false) ||
+      activeStatusEffects.any(
+          (fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.haymakerDistanceBonus);
 
   bool get canRevealCounterCharms => activeStatusEffects.any(
       (fx) => !fx.isDormant && fx.effectTypeId == StatusEffectId.revealCounterCharms);

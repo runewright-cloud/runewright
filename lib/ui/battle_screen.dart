@@ -2794,6 +2794,20 @@ class _BattleScreenState extends State<BattleScreen>
         // never range-restricts). A 4-second snackbar is exactly how that
         // stays invisible until it looks like an unrelated rendering bug, so
         // this stops the duel and shows what actually broke.
+        //
+        // Two exceptions, literally: a turn that ends because the PEER
+        // forfeited or their connection dropped is not a lockstep break and
+        // must not be reported as one. Those two now interrupt a blocked
+        // exchange instead of leaving it hanging until teardown (see
+        // BattleSession._awaitFrame), which means they can surface here for
+        // the first time — and `_turnError` outranks both dedicated banners in
+        // build(), so reporting them here would replace "they ended the duel,
+        // and here is why they said" with "this duel broke lockstep". The
+        // session's own peerForfeit/peerConnectionLost callbacks have already
+        // set the right state; this just declines to overwrite it.
+        if (e is PeerForfeitException || e is PeerConnectionLostException) {
+          return;
+        }
         setState(() => _turnError = '$e');
       } else {
         ScaffoldMessenger.of(
@@ -3363,6 +3377,11 @@ class _BattleScreenState extends State<BattleScreen>
       case 'battle_protocol_mismatch':
         return 'The two devices are running incompatible battle protocol '
             'versions. Update both to the same build.';
+      case 'armor_certification_failed':
+      case 'armor_loadout_malformed':
+        return 'An equipped Aetherial Armor could not be certified before the '
+            'duel began — its proof, its owner, or the artifact slots it costs '
+            'did not check out on one of the two devices.';
       case 'bad_state_signature':
       case 'missing_state_signature':
       case 'auth_failed':
@@ -3945,7 +3964,10 @@ class _BattleScreenState extends State<BattleScreen>
             if (local != null)
               _PlayerHud(
                 avatar: local,
-                maxHp: config.playerHp,
+                // Same presentation-only adjustment as the opponent chips
+                // above: the bar is scaled to the pool this wizard started
+                // with, armor included.
+                maxHp: config.playerHp + (local.armor?.armorHpBonus ?? 0),
                 pendingManaSpend: _freeMoveGrant.boostResource == SpellAffinity.water
                     ? _freeMoveCost
                     : 0,
@@ -5471,7 +5493,12 @@ class _OpponentHudRow extends StatelessWidget {
             Expanded(
               child: _OpponentChip(
                 avatar: avatars[i],
-                maxHp: maxHp,
+                // Presentation only: an Earth armor raises the pool this
+                // wizard started with, so the bar's denominator has to follow
+                // or an armored opponent reads as pinned at full until they
+                // drop below the innate total. There is no max-HP mechanic
+                // behind this — healing stays uncapped (engine v6, slice 5).
+                maxHp: maxHp + (avatars[i].armor?.armorHpBonus ?? 0),
                 onOpenGraveyard: onOpenGraveyard == null
                     ? null
                     : () => onOpenGraveyard!(avatars[i].playerId),
