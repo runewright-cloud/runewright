@@ -783,10 +783,7 @@ class _GameScreenState extends State<GameScreen>
                 pendingZone: _formulaTracker.pendingZone,
               ),
           },
-          _RuleBar(
-            selected: _rules,
-            onSelect: (r) => setState(() => _rules = r),
-          ),
+          _RuleBar(selected: _rules),
           _BottomBar(
             running: _running,
             inscribing: _inscribing,
@@ -1670,13 +1667,30 @@ class _SummonPreview extends StatelessWidget {
   }
 }
 
+/// Read-only readout of which element the ink is currently infused with --
+/// i.e. the rule that will evolve the grid on the next step.
+///
+/// Deliberately NOT a control. Infusion is *earned*: advanceDominance only
+/// dispatches a non-neutral rule while that element's decayed zone pressure
+/// is supreme, and the proof oracle (ca_run.dart's runStepper) always replays
+/// a spell from CARules.neutral. A hand-picked infusion would therefore evolve
+/// the on-screen grid down a trajectory the circuit can never reproduce --
+/// the formula bar, armor preview, mana cost and recipe discoveries would all
+/// describe a spell different from the one Inscribe certifies. This used to be
+/// a row of TextButtons that set _rules directly; that was the bug.
 class _RuleBar extends StatelessWidget {
   final CARules selected;
-  final ValueChanged<CARules> onSelect;
 
   static const _presets = [CARules.neutral, CARules.fire, CARules.earth, CARules.water, CARules.wind];
 
-  const _RuleBar({required this.selected, required this.onSelect});
+  const _RuleBar({required this.selected});
+
+  // Colors live on the Text style rather than on an enclosing button theme so
+  // that "which element is active" stays readable from a widget test without
+  // a tappable ancestor to key off (see
+  // game_screen_dominance_characterization_test.dart).
+  static const _activeInk = Color(0xFFF5F0E8);
+  static const _idleInk = Color(0xFF9A9488);
 
   @override
   Widget build(BuildContext context) {
@@ -1684,34 +1698,48 @@ class _RuleBar extends StatelessWidget {
       color: const Color(0xFF1E0E08),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       child: Row(
-        children: _presets.map((r) {
-          final active = r.name == selected.name;
-          return Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: TextButton(
-              onPressed: active ? null : () => onSelect(r),
-              style: TextButton.styleFrom(
-                foregroundColor: active
-                    ? const Color(0xFFF5F0E8)
-                    : const Color(0xFF9A9488),
-                backgroundColor: active
-                    ? const Color(0xFF5A3828)
-                    : Colors.transparent,
+        children: [
+          const Padding(
+            padding: EdgeInsets.only(right: 10),
+            child: Text(
+              'INK',
+              style: TextStyle(
+                color: Color(0xFF6B5C4A),
+                fontSize: 11,
+                letterSpacing: 2,
+              ),
+            ),
+          ),
+          ..._presets.map((r) {
+            final active = r.name == selected.name;
+            return Padding(
+              key: ValueKey('rule-chip-${r.name}'),
+              padding: const EdgeInsets.only(right: 8),
+              child: Container(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                shape: RoundedRectangleBorder(
+                decoration: BoxDecoration(
+                  color: active
+                      ? const Color(0xFF5A3828)
+                      : Colors.transparent,
                   borderRadius: BorderRadius.circular(4),
-                  side: BorderSide(
+                  border: Border.all(
                     color: active
                         ? const Color(0xFF5A3828)
                         : const Color(0xFF4A3020),
                   ),
                 ),
+                child: Text(
+                  r.name,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: active ? _activeInk : _idleInk,
+                  ),
+                ),
               ),
-              child: Text(r.name, style: const TextStyle(fontSize: 12)),
-            ),
-          );
-        }).toList(),
+            );
+          }),
+        ],
       ),
     );
   }

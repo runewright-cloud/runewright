@@ -72,18 +72,27 @@ bool _supremeBannerShown() => find.textContaining('SUPREME DOMINANCE').evaluate(
 String _snapshot(Map<String, int> counters, bool supreme) =>
     '${['Fire', 'Air', 'Water', 'Earth'].map((z) => '$z:${counters[z]}').join(',')},supreme:$supreme';
 
-// The RuleBar highlights exactly one preset button -- the active/dispatched
-// one -- by disabling it (onPressed: null); every other preset stays
-// tappable. This is the most directly player-visible signal of what's
-// actually running, distinct from the zone counters (which reflect
-// pressure, not dispatch) and the supreme banner (which already existed
-// pre-A1 and doesn't by itself prove dispatch is gated).
+// The RuleBar highlights exactly one preset -- the active/dispatched one --
+// with the bright ink color; every other preset is dimmed. This is the most
+// directly player-visible signal of what's actually running, distinct from
+// the zone counters (which reflect pressure, not dispatch) and the supreme
+// banner (which already existed pre-A1 and doesn't by itself prove dispatch
+// is gated).
+//
+// The bar is a read-only readout, so there is no tappable ancestor to key
+// off: each preset is keyed 'rule-chip-<Name>' and carries its state in its
+// own Text color. (It used to be a row of TextButtons whose active one was
+// disabled -- but those buttons let a player *set* the infusion by hand,
+// bypassing supreme dominance entirely, so they're gone.)
 String _activeRuleBarLabel(WidgetTester tester) {
   for (final label in ['Neutral', 'Fire', 'Earth', 'Water', 'Wind']) {
-    final button = tester.widget<TextButton>(
-      find.ancestor(of: find.text(label), matching: find.byType(TextButton)),
+    final text = tester.widget<Text>(
+      find.descendant(
+        of: find.byKey(ValueKey('rule-chip-$label')),
+        matching: find.byType(Text),
+      ),
     );
-    if (button.onPressed == null) return label;
+    if (text.style?.color == const Color(0xFFF5F0E8)) return label;
   }
   throw StateError('no RuleBar preset is highlighted as active');
 }
