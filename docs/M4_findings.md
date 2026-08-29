@@ -7767,3 +7767,72 @@ stays 7, `kRulesetVersion` stays 3.
 suite 2059 pass, the same 2 pre-existing `vocabulary_screen` failures (which
 reproduce in isolation, so they are not full-suite flake). Analyzer 39 issues,
 identical to baseline.
+
+---
+
+## Rune Craft ink infusion was a control, not a consequence — FIXED (2026-08-29)
+
+Found by Soren during the 1.1.0 playtest build, fixed for **1.1.1+7**.
+
+### The bug
+
+`_RuleBar` in `lib/main.dart` rendered the five ink presets (Neutral / Fire /
+Earth / Water / Wind) as `TextButton`s wired directly to state:
+
+```dart
+_RuleBar(
+  selected: _rules,
+  onSelect: (r) => setState(() => _rules = r),   // <-- the bug
+),
+```
+
+So a player could tap "Fire" and infuse the ink on the spot, at step 0, with
+zero border pressure. Infusion is supposed to be *earned*: `advanceDominance`
+(`lib/engine/ca_run.dart`) returns `rule: supreme ? dominant : CARules.neutral`,
+so a non-neutral rule dispatches only while that element's decayed zone pressure
+strictly exceeds the sum of all others.
+
+### Why it was not cosmetic
+
+`_rules` is the rule `CAStep.step` evolves the grid under. The proof oracle,
+`runStepper`, **always replays a spell from `CARules.neutral`** and re-derives
+every generation's rule from the initial grid — it has no parameter for a
+hand-picked one, and the circuit has no witness for one either.
+
+So a forced infusion put the live editor on a trajectory the circuit *cannot
+reproduce*. Everything downstream of the live trajectory — the formula bar,
+`_dominantPerGeneration` (hence the armor preview), the mana-cost readout, and
+RecipeBook discoveries — described a spell different from the one Inscribe
+certifies. The grid itself is the only thing that survives to the proof, so
+Inscribe never produced an *invalid* spell; it produced a spell the player had
+not been shown. This is the same class as M4.22 (local semantics diverging from
+certified semantics), reached through the editor instead of the wire.
+
+It is worth noting what it was *not*: not a soundness hole. The circuit was
+never asked to accept a hand-picked rule, `kRulesetVersion` is untouched, and
+no golden or negative vector moves. This is a client-side WYSIWYG defect.
+
+### The fix
+
+`_RuleBar` is now a read-only readout of the current infusion, labelled `INK`,
+chip styling otherwise unchanged — the signal stays visible (it remains the
+clearest indication of what is actually dispatching, distinct from the zone
+counters, which show pressure, and the supreme banner) while the control is
+gone. `_rules` now has exactly one writer path: `advanceDominance`, via
+`initState` / `_stepOnce` / `_toggleRun`, plus the neutral resets in
+`_revert` / `_reset`.
+
+### Test seam
+
+`test/ui/game_screen_dominance_characterization_test.dart` identified the active
+preset as "the one `TextButton` with `onPressed: null`". With no tappable
+ancestor left, each chip is keyed `rule-chip-<Name>` and carries its state in
+its own `Text` color (`0xFFF5F0E8` active / `0xFF9A9488` idle), and the helper
+reads that. Both A1/A3 cases still pass, including the one asserting that a
+leading-but-not-supreme generation dispatches neutral — which is precisely the
+invariant the buttons let a player walk around.
+
+**Generalization worth keeping:** any UI affordance that writes a variable the
+proof oracle re-derives is a WYSIWYG bug waiting to happen. `_rules` is the
+obvious one; check any future editor control against "does `runStepper` take
+this as input?" If it doesn't, the control must not exist.
