@@ -7688,3 +7688,82 @@ Test chapters added on both devices ("S Firebolt", "S Earth", "S Charm" with a
 `[fire,fire,fire]` charm, "S FBE", "Hound Only"). A leyline seed search found
 **`gale` + Basic Firebolt triggers spontaneousCombustion**, which is what would
 make scenario 4 (forced cast) constructible when the gate resumes.
+
+---
+
+## M4.22-F1 — FIXED (2026-08-29). An on-device migration, because no reseed can reach it
+
+Fixed while preparing the 1.1.0 Play build. F1 is an **upgrade** defect, and a
+Play update is delivered to exactly the population it affects, so it could not
+ride along to 1.1.1.
+
+### Why the fix could not be a reseed
+
+Restated because it is the whole shape of the bug: `seedBasicSpells` skips any
+spell whose `spellHashHex` is already on disk. `spellHashHex` is
+`Poseidon2(commitment, T)`, and the M4.22 repair rewrote only `formula`,
+`supremeTags` and `manaCost` — it changed neither the commitment nor T. So the
+hash is *identical before and after the repair*, and the existence check hits
+every time. Bumping `kBasicSpellSetVersion` only clears the marker gate;
+Library → "Restore basic spells" passes `force: true`; both still fall through
+that same per-`spellHashHex` check.
+
+`test/spells/spell_semantics_migration_test.dart` pins this directly — it
+stales an asset, runs `seedBasicSpells()` *and* `seedBasicSpells(force: true)`,
+and asserts the asset is **still stale**. If that test ever goes red, F1 has
+been fixed somewhere else and this migration may be redundant.
+
+### The fix
+
+`lib/spells/spell_semantics_migration.dart` — `migrateSpellSemantics()`, keyed
+on `kSpellSemanticsMigrationVersion` (now 1) via a
+`<docs>/spells/_semantics_migration.txt` marker, **not** on any spell's
+identity. That is the load-bearing choice: identity is precisely what a
+metadata repair leaves untouched, so identity cannot gate the repair.
+
+It is `scripts/audit_spell_assets.dart --fix` pointed at device state instead
+of the bundle, reusing `auditSpellJson` / `repairSpellJson` unchanged — no
+second repair oracle. Wired into `app_root.dart` after `seedBasicSpells()`
+(seed writes already-correct bundle assets; the migration fixes what was
+already on disk), fire-and-forget, failure swallowed, never a gate on routing.
+
+Per-file best-effort: an unreadable or unparseable asset is counted `refused`
+and the pass continues, so one bad file cannot leave the rest of the library
+un-migrated. The marker is written only after a completed pass, so a thrown
+pass retries next launch.
+
+It repairs **any** installed spell, not just bundled basics — a spell inscribed
+while the write path was still unchecked has the same defect and no reseed
+reaches it at all.
+
+### What it refuses
+
+An asset whose proof contradicts its **identity** (`t`, `commitmentHex`,
+`segmentCount`, `dotCount`) is counted `refused` and left byte-for-byte as
+found. That is not stale prose, that is the wrong proof, and rewriting the
+prose to match would launder it into looking self-consistent. Inherited
+straight from `repairSpellJson`'s existing guard.
+
+### Why the tests read device state, never the bundle
+
+F1 survived M4.22 because the entire suite and the audit script read the
+**bundle**. Every test in the new file writes a stale asset to the fake
+device's disk and asserts against that disk afterwards. Asserting against the
+bundle would rebuild the exact blind spot that let F1 ship.
+
+### M4.22-F2 deliberately still open
+
+F2 (the enhancement picker and summon preview reading authored caches) is
+untouched. Fixing F1 removes its practical exposure — there is no longer a
+stale asset for the picker to misread — but the presentation reads are still
+authored, and fixing them properly means carrying certified supreme tags on
+`CertifiedCast`. No epoch: this migration changes no rule, no wire format and
+no proof semantics. `kBattleEngineVersion` stays 7, `kBattleProtocolVersion`
+stays 7, `kRulesetVersion` stays 3.
+
+### Tests
+
+12 new in `test/spells/spell_semantics_migration_test.dart`, all green. Full
+suite 2059 pass, the same 2 pre-existing `vocabulary_screen` failures (which
+reproduce in isolation, so they are not full-suite flake). Analyzer 39 issues,
+identical to baseline.

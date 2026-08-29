@@ -22,6 +22,7 @@ import 'package:flutter/material.dart';
 
 import '../identity/identity.dart';
 import '../spells/basic_spell_seed.dart';
+import '../spells/spell_semantics_migration.dart';
 import '../spells/wild_magic_preview.dart';
 import 'manuscript_theme.dart';
 import 'menu_screen.dart';
@@ -30,8 +31,27 @@ import 'onboarding/onboarding_landing_screen.dart';
 class AppRoot extends StatelessWidget {
   const AppRoot({super.key});
 
+  /// Seeds the bundled basics, then repairs any installed spell whose
+  /// authored metadata its own proof contradicts (M4.22-F1). Ordered: the
+  /// seed writes bundle assets that are already correct, the migration fixes
+  /// the ones that were already on disk. Both are swallowed for the same
+  /// reason the seed alone was — neither is a gate on routing.
+  Future<void> _seedThenMigrate() async {
+    try {
+      await seedBasicSpells();
+    } catch (_) {
+      // Seeding is a nice-to-have; a failure here must not skip the
+      // migration, which repairs spells the seed can never reach.
+    }
+    try {
+      await migrateSpellSemantics();
+    } catch (_) {
+      // Marker unwritten, so the next launch retries.
+    }
+  }
+
   Future<bool> _identityExistsAfterSeeding() async {
-    unawaited(seedBasicSpells().catchError((_) => 0));
+    unawaited(_seedThenMigrate());
     // Primes the leyline seed word every spell card previews its wild magic
     // under. Same rationale as the seeding above: fire-and-forget, its own
     // failure already swallowed, never a gate on routing.
