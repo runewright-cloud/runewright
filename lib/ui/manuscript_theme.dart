@@ -15,6 +15,8 @@
 
 import 'package:flutter/material.dart';
 
+import 'safe_layout.dart';
+
 /// Base parchment background -- matches the existing app scaffold color
 /// (lib/main.dart, lib/ui/menu_screen.dart) so onboarding doesn't visually
 /// clash with what's already shipped.
@@ -85,7 +87,7 @@ class ParchmentScaffold extends StatelessWidget {
     );
     return Scaffold(
       backgroundColor: kParchmentColor,
-      body: SafeArea(
+      body: SafeScreenBody(
         child: scrollable ? SingleChildScrollView(child: body) : body,
       ),
     );

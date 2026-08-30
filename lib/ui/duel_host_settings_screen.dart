@@ -23,6 +23,7 @@ import 'manuscript_theme.dart';
 import 'widgets/chapter_picker.dart';
 import 'widgets/component_toggles.dart';
 import 'widgets/int_stepper_row.dart';
+import 'safe_layout.dart';
 
 /// What the host picked — chapter for its own artifact loadout, config for
 /// the whole match (both sides' shared HP/grid/sorcerer settings).
@@ -113,42 +114,56 @@ class _DuelHostSettingsScreenState extends State<DuelHostSettingsScreen> {
           style: manuscriptHeaderStyle(fontSize: 20, color: kParchmentColor),
         ),
       ),
-      body: SafeArea(
+      body: SafeScreenBody(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
+          // The settings above HOST are taller than a phone screen, and a
+          // Spacer cannot absorb a negative remainder: once they overflowed,
+          // the HOST button was pushed off the bottom and the screen became a
+          // dead end. Scrolling the settings and pinning the button keeps the
+          // layout identical wherever it already fitted.
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              ChapterPicker(
-                selected: _selectedChapter,
-                onChanged: (c) => setState(() => _selectedChapter = c),
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      ChapterPicker(
+                        selected: _selectedChapter,
+                        onChanged: (c) => setState(() => _selectedChapter = c),
+                      ),
+                      const SizedBox(height: 24),
+                      Divider(color: kInkColor.withValues(alpha: 0.12)),
+                      const SizedBox(height: 20),
+                      IntStepperRow(
+                        label: 'STARTING HP',
+                        value: _hp,
+                        min: _hpMin,
+                        max: _hpMax,
+                        step: _hpStep,
+                        onChanged: (v) => setState(() => _hp = v),
+                      ),
+                      const SizedBox(height: 28),
+                      IntStepperRow(
+                        label: 'GRID SIZE',
+                        caption: 'Radius of the battlefield in tiles',
+                        value: _gridRadius,
+                        min: _gridRadiusMin,
+                        max: _gridRadiusMax,
+                        step: 1,
+                        onChanged: (v) => setState(() => _gridRadius = v),
+                      ),
+                      const SizedBox(height: 28),
+                      _buildComponentToggles(),
+                      const SizedBox(height: 28),
+                      _buildSeedWordField(),
+                    ],
+                  ),
+                ),
               ),
-              const SizedBox(height: 24),
-              Divider(color: kInkColor.withValues(alpha: 0.12)),
-              const SizedBox(height: 20),
-              IntStepperRow(
-                label: 'STARTING HP',
-                value: _hp,
-                min: _hpMin,
-                max: _hpMax,
-                step: _hpStep,
-                onChanged: (v) => setState(() => _hp = v),
-              ),
-              const SizedBox(height: 28),
-              IntStepperRow(
-                label: 'GRID SIZE',
-                caption: 'Radius of the battlefield in tiles',
-                value: _gridRadius,
-                min: _gridRadiusMin,
-                max: _gridRadiusMax,
-                step: 1,
-                onChanged: (v) => setState(() => _gridRadius = v),
-              ),
-              const SizedBox(height: 28),
-              _buildComponentToggles(),
-              const SizedBox(height: 28),
-              _buildSeedWordField(),
-              const Spacer(),
+              const SizedBox(height: 16),
               SizedBox(
                 height: 52,
                 child: OutlinedButton(

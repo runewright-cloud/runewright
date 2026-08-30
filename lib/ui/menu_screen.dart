@@ -15,6 +15,7 @@ import 'manuscript_theme.dart' show kIlluminationGold, kRubricRed, kInkColor;
 import 'onboarding/onboarding_landing_screen.dart';
 import 'vocabulary_screen.dart';
 import 'settings_screen.dart';
+import 'safe_layout.dart';
 import 'sigil_painter.dart';
 
 class MenuScreen extends StatelessWidget {
@@ -24,20 +25,33 @@ class MenuScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF5F0E8),
-      body: SafeArea(
+      body: SafeScreenBody(
         child: Center(
           child: SingleChildScrollView(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 const SizedBox(height: 32),
-                const Text(
-                  'RUNEWRIGHT',
-                  style: TextStyle(
-                    color: Color(0xFF2C1810),
-                    fontSize: 48,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 8,
+                // 48pt at 8pt letterspacing over ten unbreakable characters is
+                // wider than a 360dp phone, so the wordmark was being clipped
+                // at both ends on narrow screens and under raised display
+                // scaling. It keeps its full size wherever there is room and
+                // scales down to fit where there isn't, rather than wrapping
+                // or truncating — this is a wordmark, not copy.
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 24),
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      'RUNEWRIGHT',
+                      maxLines: 1,
+                      style: TextStyle(
+                        color: Color(0xFF2C1810),
+                        fontSize: 48,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 8,
+                      ),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 20),

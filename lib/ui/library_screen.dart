@@ -52,6 +52,7 @@ import 'spell_test_lab_screen.dart' show kTestSpellNamePrefix;
 import 'vocabulary_screen.dart';
 import 'widgets/armor_picker_dialog.dart';
 import 'widgets/armor_summary_view.dart';
+import 'safe_layout.dart';
 
 // ── Custom spell art (P1: own library spells only) ──────────────────────────
 //
@@ -466,30 +467,32 @@ class _LibraryScreenState extends State<LibraryScreen> {
             ],
           ),
         ),
-        body: TabBarView(
-          children: [
-            _CraftingsTab(
-              key: _craftingsKey,
-              selectedChapterId: _selectedChapterId,
-              onChaptersChanged: _loadChapters,
-            ),
-            const _SightingsTab(),
-            _LoansTab(
-              selectedChapterId: _selectedChapterId,
-              onChaptersChanged: _loadChapters,
-            ),
-            _ChaptersTab(
-              chapters: _chapters,
-              selectedChapterId: _selectedChapterId,
-              onChapterSelected: _onChapterSelected,
-              onChaptersChanged: _loadChapters,
-            ),
-            if (kShowDevSurfaces)
-              _TestsTab(
+        body: SafeScreenBody(
+          child: TabBarView(
+            children: [
+              _CraftingsTab(
+                key: _craftingsKey,
                 selectedChapterId: _selectedChapterId,
                 onChaptersChanged: _loadChapters,
               ),
-          ],
+              const _SightingsTab(),
+              _LoansTab(
+                selectedChapterId: _selectedChapterId,
+                onChaptersChanged: _loadChapters,
+              ),
+              _ChaptersTab(
+                chapters: _chapters,
+                selectedChapterId: _selectedChapterId,
+                onChapterSelected: _onChapterSelected,
+                onChaptersChanged: _loadChapters,
+              ),
+              if (kShowDevSurfaces)
+                _TestsTab(
+                  selectedChapterId: _selectedChapterId,
+                  onChaptersChanged: _loadChapters,
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -2233,9 +2236,11 @@ class _ChapterDetailScreenState extends State<_ChapterDetailScreen> {
           ),
         ],
       ),
-      body: spells == null
-          ? const Center(child: CircularProgressIndicator(color: kIlluminationGold))
-          : _buildBody(spells),
+      body: SafeScreenBody(
+        child: spells == null
+            ? const Center(child: CircularProgressIndicator(color: kIlluminationGold))
+            : _buildBody(spells),
+      ),
     );
   }
 }

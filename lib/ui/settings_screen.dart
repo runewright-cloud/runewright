@@ -25,6 +25,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import '../audio/spell_sound_settings.dart';
+import '../dev_flags.dart' show kShowDevSurfaces;
 import '../battle/models/wild_magic_effect.dart'
     show kDefaultCommunitySeed, normalizeCommunitySeed;
 import '../identity/identity.dart';
@@ -36,6 +37,7 @@ import 'avatars/avatar_sprites.dart';
 import 'about_screen.dart';
 import 'manuscript_theme.dart' show kIlluminationGold;
 import 'onboarding/onboarding_landing_screen.dart';
+import 'safe_layout.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -331,183 +333,257 @@ class _SettingsScreenState extends State<SettingsScreen> {
       // No longer gated on a load: the strictness dial was the only setting
       // that had to be read from disk before anything could render, and it
       // retired with the streaming scorer.
-      body: ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                Card(
-                  child: ListTile(
-                    leading: SizedBox(
-                      width: 48,
-                      height: 48,
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(6),
-                        child: _AvatarThumbnail(
-                          avatarId: _avatarId,
-                          atlas: _portraitAtlas,
+      body: SafeScreenBody(
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            Card(
+              child: ListTile(
+                leading: SizedBox(
+                  width: 48,
+                  height: 48,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(6),
+                    child: _AvatarThumbnail(
+                      avatarId: _avatarId,
+                      atlas: _portraitAtlas,
+                    ),
+                  ),
+                ),
+                title: const Text('Avatar'),
+                subtitle: Text(_avatarLabel(_avatarId)),
+                trailing: TextButton(
+                  onPressed: () => unawaited(_changeAvatar()),
+                  child: const Text('Change'),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Leyline Seed Word',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Your community’s word. Spells find different '
+                      'wild magic under different traditions; both '
+                      'duelists must use the same word.',
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _seedController,
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      onChanged: (_) => setState(() {}),
+                    ),
+                    const SizedBox(height: 6),
+                    // Show the normalized form so "Rivendell!" visibly
+                    // becoming "rivendell" is never a surprise.
+                    Text(
+                      'Reads as: ${normalizeCommunitySeed(_seedController.text)}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 8),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: FilledButton(
+                        onPressed:
+                            _seedController.text.trim() == _savedSeed
+                                ? null
+                                : () => unawaited(_saveSeed()),
+                        child: const Text('Save'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Library Backup',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'A complete copy of your spells, chapters, sightings, '
+                      'loans, and recipes. Importing only adds what you '
+                      "don't already have -- it never overwrites anything.",
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: _exportingLibrary ? null : () => unawaited(_exportLibrary()),
+                            child: Text(_exportingLibrary ? 'Exporting…' : 'Export'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: _importingLibrary ? null : () => unawaited(_importLibrary()),
+                            child: Text(_importingLibrary ? 'Importing…' : 'Import'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'Spell Sound',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        Switch(
+                          value: !_soundSettings.muted,
+                          onChanged: (on) => unawaited(_setSoundMuted(!on)),
+                        ),
+                      ],
+                    ),
+                    const Text(
+                      'Volume for spells resolving in battle. Imported and '
+                      'synced sounds play quieter than the built-in pack, '
+                      'since they cannot be loudness-matched on this device.',
+                    ),
+                    Slider(
+                      value: _soundSettings.volume,
+                      onChanged: _soundSettings.muted
+                          ? null
+                          : (v) => unawaited(_setSoundVolume(v)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.badge_outlined),
+                title: const Text('Credits & Licences'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const AboutScreen(initialTab: 1)),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.warning_amber_outlined),
+                title: const Text('DEBUG: Reset Identity'),
+                onTap: () async {
+                  if (!await _confirmResetIdentity()) return;
+                  await Identity.deleteOnDevice();
+                  if (!context.mounted) return;
+                  Navigator.of(context).pushAndRemoveUntil(
+                    MaterialPageRoute(
+                        builder: (_) => const OnboardingLandingScreen()),
+                    (route) => false,
+                  );
+                },
+              ),
+            ),
+            // DEV FLAG (kShowDevSurfaces — lib/dev_flags.dart): the
+            // window metrics every layout decision in safe_layout.dart
+            // depends on, read off the device that is actually
+            // misbehaving. A bug report saying "the bar covers the
+            // buttons" is much cheaper to act on with these numbers
+            // attached than without.
+            if (kShowDevSurfaces) ...[
+              const SizedBox(height: 12),
+              const _WindowMetricsCard(),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// DEV FLAG (kShowDevSurfaces — lib/dev_flags.dart): a read-out of the
+/// platform-reported window insets.
+///
+/// Never shown in a player build. Deliberately a read-out rather than an
+/// overlay: it reports what the platform says, it does not draw over the UI
+/// being diagnosed.
+class _WindowMetricsCard extends StatelessWidget {
+  const _WindowMetricsCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final view = View.of(context);
+    String e(EdgeInsets i) => 'l${i.left.round()} t${i.top.round()} '
+        'r${i.right.round()} b${i.bottom.round()}';
+    final rows = <(String, String)>[
+      ('size', '${MediaQuery.sizeOf(context)}'),
+      ('padding', e(MediaQuery.paddingOf(context))),
+      ('viewPadding', e(MediaQuery.viewPaddingOf(context))),
+      ('gestureInsets', e(MediaQuery.systemGestureInsetsOf(context))),
+      ('devicePixelRatio', '${view.devicePixelRatio}'),
+      ('textScale', '${MediaQuery.textScalerOf(context).scale(14) / 14}'),
+    ];
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'DEBUG: Window metrics',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            for (final (label, value) in rows)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 2),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      width: 120,
+                      child: Text(label, style: const TextStyle(fontSize: 12)),
+                    ),
+                    Expanded(
+                      child: SelectableText(
+                        value,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontFamily: 'monospace',
                         ),
                       ),
                     ),
-                    title: const Text('Avatar'),
-                    subtitle: Text(_avatarLabel(_avatarId)),
-                    trailing: TextButton(
-                      onPressed: () => unawaited(_changeAvatar()),
-                      child: const Text('Change'),
-                    ),
-                  ),
+                  ],
                 ),
-                const SizedBox(height: 12),
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Leyline Seed Word',
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                        const SizedBox(height: 4),
-                        const Text(
-                          'Your community’s word. Spells find different '
-                          'wild magic under different traditions; both '
-                          'duelists must use the same word.',
-                        ),
-                        const SizedBox(height: 8),
-                        TextField(
-                          controller: _seedController,
-                          decoration: const InputDecoration(
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                          ),
-                          onChanged: (_) => setState(() {}),
-                        ),
-                        const SizedBox(height: 6),
-                        // Show the normalized form so "Rivendell!" visibly
-                        // becoming "rivendell" is never a surprise.
-                        Text(
-                          'Reads as: ${normalizeCommunitySeed(_seedController.text)}',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                        const SizedBox(height: 8),
-                        Align(
-                          alignment: Alignment.centerRight,
-                          child: FilledButton(
-                            onPressed:
-                                _seedController.text.trim() == _savedSeed
-                                    ? null
-                                    : () => unawaited(_saveSeed()),
-                            child: const Text('Save'),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Library Backup',
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                        const SizedBox(height: 4),
-                        const Text(
-                          'A complete copy of your spells, chapters, sightings, '
-                          'loans, and recipes. Importing only adds what you '
-                          "don't already have -- it never overwrites anything.",
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: OutlinedButton(
-                                onPressed: _exportingLibrary ? null : () => unawaited(_exportLibrary()),
-                                child: Text(_exportingLibrary ? 'Exporting…' : 'Export'),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: OutlinedButton(
-                                onPressed: _importingLibrary ? null : () => unawaited(_importLibrary()),
-                                child: Text(_importingLibrary ? 'Importing…' : 'Import'),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text(
-                              'Spell Sound',
-                              style: Theme.of(context).textTheme.titleMedium,
-                            ),
-                            Switch(
-                              value: !_soundSettings.muted,
-                              onChanged: (on) => unawaited(_setSoundMuted(!on)),
-                            ),
-                          ],
-                        ),
-                        const Text(
-                          'Volume for spells resolving in battle. Imported and '
-                          'synced sounds play quieter than the built-in pack, '
-                          'since they cannot be loudness-matched on this device.',
-                        ),
-                        Slider(
-                          value: _soundSettings.volume,
-                          onChanged: _soundSettings.muted
-                              ? null
-                              : (v) => unawaited(_setSoundVolume(v)),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Card(
-                  child: ListTile(
-                    leading: const Icon(Icons.badge_outlined),
-                    title: const Text('Credits & Licences'),
-                    trailing: const Icon(Icons.chevron_right),
-                    onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => const AboutScreen(initialTab: 1)),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Card(
-                  child: ListTile(
-                    leading: const Icon(Icons.warning_amber_outlined),
-                    title: const Text('DEBUG: Reset Identity'),
-                    onTap: () async {
-                      if (!await _confirmResetIdentity()) return;
-                      await Identity.deleteOnDevice();
-                      if (!context.mounted) return;
-                      Navigator.of(context).pushAndRemoveUntil(
-                        MaterialPageRoute(
-                            builder: (_) => const OnboardingLandingScreen()),
-                        (route) => false,
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
+              ),
+          ],
+        ),
+      ),
     );
   }
 }

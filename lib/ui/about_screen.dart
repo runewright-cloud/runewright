@@ -16,6 +16,7 @@ import 'package:flutter/services.dart' show rootBundle;
 
 import 'credits_screen.dart';
 import 'manuscript_theme.dart';
+import 'safe_layout.dart';
 
 class AboutScreen extends StatelessWidget {
   const AboutScreen({super.key, this.initialTab = 0});
@@ -48,11 +49,13 @@ class AboutScreen extends StatelessWidget {
             ],
           ),
         ),
-        body: const TabBarView(
-          children: [
-            _ReadmeTab(),
-            CreditsScreen(),
-          ],
+        body: SafeScreenBody(
+          child: const TabBarView(
+            children: [
+              _ReadmeTab(),
+              CreditsScreen(),
+            ],
+          ),
         ),
       ),
     );

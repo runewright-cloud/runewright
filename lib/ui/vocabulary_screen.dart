@@ -47,6 +47,7 @@ import '../spells/spell_asset.dart';
 import 'practice_screen.dart';
 import 'widgets/gesture_training_panel.dart';
 import 'widgets/hold_to_record_control.dart';
+import 'safe_layout.dart';
 
 class VocabularyScreen extends StatefulWidget {
   const VocabularyScreen({super.key, this.proceedToPracticeWith});
@@ -402,11 +403,13 @@ class _VocabularyScreenState extends State<VocabularyScreen> {
             ],
           ),
         ),
-        body: TabBarView(
-          children: [
-            _buildVocalTab(context),
-            const GestureTrainingPanel(),
-          ],
+        body: SafeScreenBody(
+          child: TabBarView(
+            children: [
+              _buildVocalTab(context),
+              const GestureTrainingPanel(),
+            ],
+          ),
         ),
       ),
     );

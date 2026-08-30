@@ -26,6 +26,7 @@ import '../spells/chapter_asset.dart';
 import '../spells/spell_asset.dart';
 import '../spells/spell_authorization.dart';
 import 'manuscript_theme.dart';
+import 'safe_layout.dart';
 
 enum ApprenticeOfferRole { master, apprentice }
 
@@ -403,7 +404,7 @@ class _ApprenticeOfferScreenState extends State<ApprenticeOfferScreen> {
         elevation: 0,
         title: Text(title, style: manuscriptHeaderStyle(fontSize: 18, color: kParchmentColor)),
       ),
-      body: SafeArea(
+      body: SafeScreenBody(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
           child: _buildStage(),

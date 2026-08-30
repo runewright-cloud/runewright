@@ -19,6 +19,7 @@ import '../identity/identity.dart';
 import 'apprentice_offer_screen.dart';
 import 'graduation_screen.dart';
 import 'manuscript_theme.dart';
+import 'safe_layout.dart';
 
 bool _hexEq(String a, String b) {
   BigInt parse(String s) => BigInt.parse(s.startsWith('0x') ? s.substring(2) : s, radix: 16);
@@ -226,7 +227,7 @@ class _ApprenticeshipScreenState extends State<ApprenticeshipScreen> {
         elevation: 0,
         title: Text('APPRENTICESHIP', style: manuscriptHeaderStyle(fontSize: 20, color: kParchmentColor)),
       ),
-      body: SafeArea(
+      body: SafeScreenBody(
         child: FutureBuilder<_HubData>(
           future: _dataFuture,
           builder: (context, snapshot) {

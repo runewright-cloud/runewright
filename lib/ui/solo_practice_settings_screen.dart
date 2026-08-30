@@ -18,6 +18,7 @@ import 'manuscript_theme.dart';
 import 'widgets/chapter_picker.dart';
 import 'widgets/component_toggles.dart';
 import 'widgets/int_stepper_row.dart';
+import 'safe_layout.dart';
 
 class SoloPracticeSettingsScreen extends StatefulWidget {
   const SoloPracticeSettingsScreen({super.key});
@@ -82,22 +83,34 @@ class _SoloPracticeSettingsScreenState
           style: manuscriptHeaderStyle(fontSize: 20, color: kParchmentColor),
         ),
       ),
-      body: SafeArea(
+      body: SafeScreenBody(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
+          // Same shape, same repair as duel_host_settings_screen.dart: these
+          // settings are taller than a phone screen, and a Spacer cannot
+          // absorb a negative remainder — BEGIN went off the bottom edge.
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _buildChapterPicker(),
-              const SizedBox(height: 24),
-              Divider(color: kInkColor.withValues(alpha: 0.12)),
-              const SizedBox(height: 20),
-              _buildHpStepper(),
-              const SizedBox(height: 28),
-              _buildGridRadiusStepper(),
-              const SizedBox(height: 28),
-              _buildComponentToggles(),
-              const Spacer(),
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _buildChapterPicker(),
+                      const SizedBox(height: 24),
+                      Divider(color: kInkColor.withValues(alpha: 0.12)),
+                      const SizedBox(height: 20),
+                      _buildHpStepper(),
+                      const SizedBox(height: 28),
+                      _buildGridRadiusStepper(),
+                      const SizedBox(height: 28),
+                      _buildComponentToggles(),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
               _buildBeginButton(context),
             ],
           ),

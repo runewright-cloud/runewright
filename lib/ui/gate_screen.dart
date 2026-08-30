@@ -34,6 +34,7 @@ import '../protocol/lan_socket_transport.dart';
 import '../protocol/match_session.dart';
 import '../protocol/transport.dart';
 import 'gate_runner.dart';
+import 'safe_layout.dart';
 
 class GateScreen extends StatefulWidget {
   const GateScreen({super.key});
@@ -294,7 +295,7 @@ class _GateScreenState extends State<GateScreen> {
         backgroundColor: Colors.black87,
         foregroundColor: Colors.white,
       ),
-      body: SafeArea(
+      body: SafeScreenBody(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(12),
           child: Column(

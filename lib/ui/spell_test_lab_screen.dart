@@ -27,6 +27,7 @@ import '../spells/chapter_asset.dart';
 import '../spells/spell_asset.dart';
 import 'battle_screen.dart';
 import 'manuscript_theme.dart';
+import 'safe_layout.dart';
 
 /// Prefix marking a spell as fabricated by this screen (zero cost, unproven).
 const String kTestSpellNamePrefix = '[TEST] ';
@@ -310,7 +311,7 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
           style: manuscriptHeaderStyle(fontSize: 20, color: kParchmentColor),
         ),
       ),
-      body: SafeArea(
+      body: SafeScreenBody(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
           children: [

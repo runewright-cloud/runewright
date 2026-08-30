@@ -36,6 +36,7 @@ import '../spells/sighting_asset.dart';
 import '../spells/spell_asset.dart';
 import 'battle_lobby_screen.dart';
 import 'manuscript_theme.dart';
+import 'safe_layout.dart';
 
 bool _hexEq(String a, String b) {
   BigInt parse(String s) => BigInt.parse(s.startsWith('0x') ? s.substring(2) : s, radix: 16);
@@ -539,7 +540,7 @@ class _GraduationScreenState extends State<GraduationScreen> {
         elevation: 0,
         title: Text(_title, style: manuscriptHeaderStyle(fontSize: 16, color: kParchmentColor)),
       ),
-      body: SafeArea(
+      body: SafeScreenBody(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
           child: _buildStage(),

@@ -23,6 +23,7 @@ import '../trade/trade_offer.dart';
 import '../trade/trade_session.dart';
 import 'manuscript_theme.dart';
 import 'spell_card_painter.dart' show showSpellCardFullscreen;
+import 'safe_layout.dart';
 
 enum _Stage {
   idle,
@@ -388,7 +389,7 @@ class _TradeScreenState extends State<TradeScreen> {
         elevation: 0,
         title: Text('TRADE', style: manuscriptHeaderStyle(fontSize: 20, color: kParchmentColor)),
       ),
-      body: SafeArea(
+      body: SafeScreenBody(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
           child: _buildStage(),

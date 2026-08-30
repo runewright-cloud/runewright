@@ -43,6 +43,7 @@ import 'ui/spell_art_pack_screen.dart' show pickSpellArtPackIcon, suggestedEleme
 import 'ui/spell_card_painter.dart' show SpellCardWidget;
 import 'ui/spell_sound_pack_screen.dart' show pickSpellSoundPackClip;
 import 'src/rust/frb_generated.dart';
+import 'ui/safe_layout.dart';
 
 // M2 spike: async main to init the Rust FFI bridge.
 // Revert to: void main() => runApp(const RuneDuelApp());
@@ -695,109 +696,111 @@ class _GameScreenState extends State<GameScreen>
           ),
         ],
       ),
-      body: Column(
-        children: [
-          Expanded(
-            child: GestureDetector(
-              onTapUp: _onTap,
-              onPanStart: _onPanStart,
-              onPanUpdate: _onPanUpdate,
-              onPanEnd: _onPanEnd,
-              // Default (DragStartBehavior.start) silently swallows the
-              // pointer movement consumed while recognizing the gesture, so
-              // the initial cell(s) under a fast swipe's first few pixels
-              // never reach onPanStart/onPanUpdate. `.down` reports the true
-              // touch-down position instead, closing that gap.
-              dragStartBehavior: DragStartBehavior.down,
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final size = Size(constraints.maxWidth, constraints.maxHeight);
-                  final hexSize = _hexSize(size);
-                  // The background (cell fills + grid lines) is static
-                  // across a step's growth animation, so it's a separate
-                  // painter/RepaintBoundary from the animated ink layer on
-                  // top — it skips the ~45 frame repaints the ink layer's
-                  // animation drives instead of being redrawn every frame.
-                  return Stack(
-                    children: [
-                      Positioned.fill(
-                        child: RepaintBoundary(
-                          child: CustomPaint(
-                            painter: HexGridBackgroundPainter(
-                              grid: _grid,
-                              hexSize: hexSize,
-                              innerRadius: _innerRadius,
+      body: SafeScreenBody(
+        child: Column(
+          children: [
+            Expanded(
+              child: GestureDetector(
+                onTapUp: _onTap,
+                onPanStart: _onPanStart,
+                onPanUpdate: _onPanUpdate,
+                onPanEnd: _onPanEnd,
+                // Default (DragStartBehavior.start) silently swallows the
+                // pointer movement consumed while recognizing the gesture, so
+                // the initial cell(s) under a fast swipe's first few pixels
+                // never reach onPanStart/onPanUpdate. `.down` reports the true
+                // touch-down position instead, closing that gap.
+                dragStartBehavior: DragStartBehavior.down,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final size = Size(constraints.maxWidth, constraints.maxHeight);
+                    final hexSize = _hexSize(size);
+                    // The background (cell fills + grid lines) is static
+                    // across a step's growth animation, so it's a separate
+                    // painter/RepaintBoundary from the animated ink layer on
+                    // top — it skips the ~45 frame repaints the ink layer's
+                    // animation drives instead of being redrawn every frame.
+                    return Stack(
+                      children: [
+                        Positioned.fill(
+                          child: RepaintBoundary(
+                            child: CustomPaint(
+                              painter: HexGridBackgroundPainter(
+                                grid: _grid,
+                                hexSize: hexSize,
+                                innerRadius: _innerRadius,
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                      Positioned.fill(
-                        child: RepaintBoundary(
-                          child: CustomPaint(
-                            key: _paintKey,
-                            painter: HexGridPainter(
-                              grid: _grid,
-                              hexSize: hexSize,
-                              innerRadius: _innerRadius,
-                              activeZone: activeZoneFor(_rules),
-                              activatedBorderCells: _activatedCells,
-                              previousGrid: _previousGrid,
-                              flicker: _flickerCtrl,
-                              growth: _growth,
+                        Positioned.fill(
+                          child: RepaintBoundary(
+                            child: CustomPaint(
+                              key: _paintKey,
+                              painter: HexGridPainter(
+                                grid: _grid,
+                                hexSize: hexSize,
+                                innerRadius: _innerRadius,
+                                activeZone: activeZoneFor(_rules),
+                                activatedBorderCells: _activatedCells,
+                                previousGrid: _previousGrid,
+                                flicker: _flickerCtrl,
+                                growth: _growth,
+                              ),
+                              child: const SizedBox.expand(),
                             ),
-                            child: const SizedBox.expand(),
                           ),
                         ),
-                      ),
-                    ],
-                  );
-                },
+                      ],
+                    );
+                  },
+                ),
               ),
             ),
-          ),
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 400),
-            transitionBuilder: (child, animation) => SizeTransition(
-              sizeFactor: animation,
-              child: FadeTransition(opacity: animation, child: child),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 400),
+              transitionBuilder: (child, animation) => SizeTransition(
+                sizeFactor: animation,
+                child: FadeTransition(opacity: animation, child: child),
+              ),
+              child: supremeZone != null
+                  ? _SupremeDominanceBanner(key: ValueKey(supremeZone), zone: supremeZone)
+                  : const SizedBox.shrink(key: ValueKey<BorderZone?>(null)),
             ),
-            child: supremeZone != null
-                ? _SupremeDominanceBanner(key: ValueKey(supremeZone), zone: supremeZone)
-                : const SizedBox.shrink(key: ValueKey<BorderZone?>(null)),
-          ),
-          _ZoneCounters(activations: _grid.zoneActivations),
-          _ModeBar(
-            mode: _mode,
-            onSelect: (v) => setState(() => _mode = v),
-          ),
-          switch (_mode) {
-            InscriptionMode.summon =>
-              _SummonPreview(sequence: _formulaTracker.committed),
-            InscriptionMode.armor => _ArmorPreview(
-                sequence: _dominantPerGeneration,
-                steps: _grid.stepCount,
-              ),
-            InscriptionMode.incantation => FormulaBar(
-                formulas: _formulaTracker.formulas,
-                residuals: _formulaTracker.residuals,
-                pendingZone: _formulaTracker.pendingZone,
-              ),
-          },
-          _RuleBar(selected: _rules),
-          _BottomBar(
-            running: _running,
-            inscribing: _inscribing,
-            onToggleRun: _toggleRun,
-            onStepOnce: _stepOnce,
-            onInscribe: _canInscribe ? _inscribe : null,
-            stepCount: _grid.stepCount,
-            // Armor is never cast, so it is never priced: the readout would
-            // quote a number nothing spends. The cost is still computed and
-            // persisted on the asset (every SpellAsset carries one), just not
-            // advertised in a mode where it means nothing.
-            manaCost: _isArmorMode ? null : _manaCost,
-          ),
-        ],
+            _ZoneCounters(activations: _grid.zoneActivations),
+            _ModeBar(
+              mode: _mode,
+              onSelect: (v) => setState(() => _mode = v),
+            ),
+            switch (_mode) {
+              InscriptionMode.summon =>
+                _SummonPreview(sequence: _formulaTracker.committed),
+              InscriptionMode.armor => _ArmorPreview(
+                  sequence: _dominantPerGeneration,
+                  steps: _grid.stepCount,
+                ),
+              InscriptionMode.incantation => FormulaBar(
+                  formulas: _formulaTracker.formulas,
+                  residuals: _formulaTracker.residuals,
+                  pendingZone: _formulaTracker.pendingZone,
+                ),
+            },
+            _RuleBar(selected: _rules),
+            _BottomBar(
+              running: _running,
+              inscribing: _inscribing,
+              onToggleRun: _toggleRun,
+              onStepOnce: _stepOnce,
+              onInscribe: _canInscribe ? _inscribe : null,
+              stepCount: _grid.stepCount,
+              // Armor is never cast, so it is never priced: the readout would
+              // quote a number nothing spends. The cost is still computed and
+              // persisted on the asset (every SpellAsset carries one), just not
+              // advertised in a mode where it means nothing.
+              manaCost: _isArmorMode ? null : _manaCost,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -834,7 +837,13 @@ class _BottomBar extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
+          // A Wrap, not a Row: at raised text scale the two readouts together
+          // are wider than the bar and a Row overflows. Wrapping costs a line
+          // only when they genuinely don't fit, so the normal one-line
+          // appearance is unchanged.
+          Wrap(
+            spacing: 16,
+            runSpacing: 2,
             children: [
               Text(
                 atMax ? 'Step $stepCount (max)' : 'Step $stepCount',
@@ -844,8 +853,7 @@ class _BottomBar extends StatelessWidget {
                   letterSpacing: 1,
                 ),
               ),
-              if (manaCost != null) ...[
-                const SizedBox(width: 16),
+              if (manaCost != null)
                 Text(
                   'Mana Cost: $manaCost',
                   style: const TextStyle(
@@ -854,7 +862,6 @@ class _BottomBar extends StatelessWidget {
                     letterSpacing: 1,
                   ),
                 ),
-              ],
             ],
           ),
           const SizedBox(height: 10),
@@ -1401,66 +1408,68 @@ class _SpellPreviewScreenState extends State<_SpellPreviewScreen> {
           leading: IconButton(icon: const Icon(Icons.arrow_back), onPressed: _close),
           title: Text('Preview', style: manuscriptHeaderStyle(fontSize: 20)),
         ),
-        body: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            Center(
-              child: SpellCardWidget(spell: _previewSpell, size: 220),
-            ),
-            const SizedBox(height: 8),
-            Center(
-              child: Text(
-                'Step ${widget.steps} · Mana ${widget.manaCost} — tap the card to view it full-size',
-                style: manuscriptCaptionStyle(color: kInkMutedColor),
-                textAlign: TextAlign.center,
+        body: SafeScreenBody(
+          child: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              Center(
+                child: SpellCardWidget(spell: _previewSpell, size: 220),
               ),
-            ),
-            const SizedBox(height: 20),
-            TextField(
-              controller: _nameCtrl,
-              decoration: const InputDecoration(labelText: 'Spell name'),
-              textCapitalization: TextCapitalization.words,
-              onChanged: (v) => setState(() => _draft = _draft.withName(v)),
-            ),
-            const SizedBox(height: 12),
-            _MediaRow(
-              icon: Icons.palette_outlined,
-              title: 'Card Art',
-              subtitle: switch (_draft.artSource) {
-                SpellArtSource.builtIn => 'Art pack icon',
-                SpellArtSource.localImport => 'Custom image',
-                _ => 'None — uses the generated coat of arms',
-              },
-              onChoose: _chooseArt,
-              onClear: _draft.artHash == null
-                  ? null
-                  : () => setState(() => _draft = _draft.withoutArt()),
-            ),
-            _MediaRow(
-              icon: Icons.music_note_outlined,
-              title: 'Resolution Sound',
-              subtitle: switch (_draft.soundSource) {
-                SpellSoundSource.builtIn => 'Sound pack clip',
-                SpellSoundSource.localImport => 'Custom sound',
-                _ => 'None — uses the elemental default',
-              },
-              onChoose: _chooseSound,
-              onPlay: _draft.soundHash == null ? null : _playCurrentSound,
-              onClear: _draft.soundHash == null
-                  ? null
-                  : () => setState(() => _draft = _draft.withoutSound()),
-            ),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: _close,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: kIlluminationGold,
-                foregroundColor: kInkColor,
-                padding: const EdgeInsets.symmetric(vertical: 14),
+              const SizedBox(height: 8),
+              Center(
+                child: Text(
+                  'Step ${widget.steps} · Mana ${widget.manaCost} — tap the card to view it full-size',
+                  style: manuscriptCaptionStyle(color: kInkMutedColor),
+                  textAlign: TextAlign.center,
+                ),
               ),
-              child: const Text('Done'),
-            ),
-          ],
+              const SizedBox(height: 20),
+              TextField(
+                controller: _nameCtrl,
+                decoration: const InputDecoration(labelText: 'Spell name'),
+                textCapitalization: TextCapitalization.words,
+                onChanged: (v) => setState(() => _draft = _draft.withName(v)),
+              ),
+              const SizedBox(height: 12),
+              _MediaRow(
+                icon: Icons.palette_outlined,
+                title: 'Card Art',
+                subtitle: switch (_draft.artSource) {
+                  SpellArtSource.builtIn => 'Art pack icon',
+                  SpellArtSource.localImport => 'Custom image',
+                  _ => 'None — uses the generated coat of arms',
+                },
+                onChoose: _chooseArt,
+                onClear: _draft.artHash == null
+                    ? null
+                    : () => setState(() => _draft = _draft.withoutArt()),
+              ),
+              _MediaRow(
+                icon: Icons.music_note_outlined,
+                title: 'Resolution Sound',
+                subtitle: switch (_draft.soundSource) {
+                  SpellSoundSource.builtIn => 'Sound pack clip',
+                  SpellSoundSource.localImport => 'Custom sound',
+                  _ => 'None — uses the elemental default',
+                },
+                onChoose: _chooseSound,
+                onPlay: _draft.soundHash == null ? null : _playCurrentSound,
+                onClear: _draft.soundHash == null
+                    ? null
+                    : () => setState(() => _draft = _draft.withoutSound()),
+              ),
+              const SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: _close,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: kIlluminationGold,
+                  foregroundColor: kInkColor,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+                child: const Text('Done'),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -1546,10 +1555,16 @@ class _ModeBar extends StatelessWidget {
     return Container(
       color: const Color(0xFF1E0E08),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      child: Row(
-        children: [
-          for (final m in InscriptionMode.values) _button(m),
-        ],
+      // Same shape as _RuleBar's chip strip, and the same narrow-phone
+      // overflow: the mode buttons are sized to their labels and there are
+      // more of them than fit at 360dp.
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            for (final m in InscriptionMode.values) _button(m),
+          ],
+        ),
       ),
     );
   }
@@ -1697,49 +1712,56 @@ class _RuleBar extends StatelessWidget {
     return Container(
       color: const Color(0xFF1E0E08),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      child: Row(
-        children: [
-          const Padding(
-            padding: EdgeInsets.only(right: 10),
-            child: Text(
-              'INK',
-              style: TextStyle(
-                color: Color(0xFF6B5C4A),
-                fontSize: 11,
-                letterSpacing: 2,
+      // The preset chips are a fixed-count strip whose natural width exceeds a
+      // narrow phone's — it overflowed by ~200px at 360dp. Scrolling keeps
+      // every preset reachable at its designed size, which suits a chip strip
+      // better than shrinking the labels would.
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            const Padding(
+              padding: EdgeInsets.only(right: 10),
+              child: Text(
+                'INK',
+                style: TextStyle(
+                  color: Color(0xFF6B5C4A),
+                  fontSize: 11,
+                  letterSpacing: 2,
+                ),
               ),
             ),
-          ),
-          ..._presets.map((r) {
-            final active = r.name == selected.name;
-            return Padding(
-              key: ValueKey('rule-chip-${r.name}'),
-              padding: const EdgeInsets.only(right: 8),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                decoration: BoxDecoration(
-                  color: active
-                      ? const Color(0xFF5A3828)
-                      : Colors.transparent,
-                  borderRadius: BorderRadius.circular(4),
-                  border: Border.all(
+            ..._presets.map((r) {
+              final active = r.name == selected.name;
+              return Padding(
+                key: ValueKey('rule-chip-${r.name}'),
+                padding: const EdgeInsets.only(right: 8),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  decoration: BoxDecoration(
                     color: active
                         ? const Color(0xFF5A3828)
-                        : const Color(0xFF4A3020),
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(
+                      color: active
+                          ? const Color(0xFF5A3828)
+                          : const Color(0xFF4A3020),
+                    ),
+                  ),
+                  child: Text(
+                    r.name,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: active ? _activeInk : _idleInk,
+                    ),
                   ),
                 ),
-                child: Text(
-                  r.name,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: active ? _activeInk : _idleInk,
-                  ),
-                ),
-              ),
-            );
-          }),
-        ],
+              );
+            }),
+          ],
+        ),
       ),
     );
   }
@@ -1762,23 +1784,35 @@ class _ZoneCounters extends StatelessWidget {
     return Container(
       color: const Color(0xFF1E0E08),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      // No mainAxisAlignment: every child is Expanded, so there is no free
+      // space left for one to distribute.
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: _zones.map((entry) {
           final (zone, label, color) = entry;
           final count = activations[zone] ?? 0;
-          return Row(
-            children: [
-              Container(width: 10, height: 10, color: color),
-              const SizedBox(width: 6),
-              Text(
-                '$label: $count',
-                style: const TextStyle(
-                  color: Color(0xFFB8A898),
-                  fontSize: 12,
-                ),
+          // One quarter of the row each, and the readout shrinks inside its
+          // share rather than pushing the row past the screen edge — four
+          // fixed-width chips overflowed by ~90px at 360dp. The counts have to
+          // stay side by side to be comparable at a glance, so scaling down
+          // beats wrapping or scrolling here.
+          return Expanded(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(width: 10, height: 10, color: color),
+                  const SizedBox(width: 6),
+                  Text(
+                    '$label: $count',
+                    style: const TextStyle(
+                      color: Color(0xFFB8A898),
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
               ),
-            ],
+            ),
           );
         }).toList(),
       ),

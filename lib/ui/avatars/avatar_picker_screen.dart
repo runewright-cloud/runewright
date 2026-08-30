@@ -14,6 +14,7 @@ import 'package:flutter/material.dart';
 
 import '../manuscript_theme.dart';
 import 'avatar_sprites.dart';
+import '../safe_layout.dart';
 
 /// Pushes [AvatarPickerScreen] and returns the chosen [AvatarArt.id], or null
 /// if the player backed out without choosing.
@@ -103,42 +104,44 @@ class _AvatarPickerScreenState extends State<AvatarPickerScreen> {
         elevation: 0,
         title: Text('Choose Avatar', style: manuscriptHeaderStyle(fontSize: 20)),
       ),
-      body: Column(
-        children: [
-          _CategoryFilterRow(
-            selected: _category,
-            onSelected: (c) => setState(() => _category = c),
-          ),
-          const Divider(height: 1, color: kParchmentPanelColor),
-          Expanded(
-            child: entries.isEmpty
-                ? Center(
-                    child: Text(
-                      'No avatars match this filter.',
-                      style: manuscriptBodyStyle(color: kInkMutedColor),
+      body: SafeScreenBody(
+        child: Column(
+          children: [
+            _CategoryFilterRow(
+              selected: _category,
+              onSelected: (c) => setState(() => _category = c),
+            ),
+            const Divider(height: 1, color: kParchmentPanelColor),
+            Expanded(
+              child: entries.isEmpty
+                  ? Center(
+                      child: Text(
+                        'No avatars match this filter.',
+                        style: manuscriptBodyStyle(color: kInkMutedColor),
+                      ),
+                    )
+                  : GridView.builder(
+                      padding: const EdgeInsets.all(12),
+                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 3,
+                        crossAxisSpacing: 8,
+                        mainAxisSpacing: 8,
+                        childAspectRatio: 0.82,
+                      ),
+                      itemCount: entries.length,
+                      itemBuilder: (context, i) {
+                        final art = entries[i];
+                        return _AvatarTile(
+                          art: art,
+                          atlas: _portraitAtlas,
+                          selected: art.id == widget.currentAvatarId,
+                          onTap: () => _openPreview(art),
+                        );
+                      },
                     ),
-                  )
-                : GridView.builder(
-                    padding: const EdgeInsets.all(12),
-                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 3,
-                      crossAxisSpacing: 8,
-                      mainAxisSpacing: 8,
-                      childAspectRatio: 0.82,
-                    ),
-                    itemCount: entries.length,
-                    itemBuilder: (context, i) {
-                      final art = entries[i];
-                      return _AvatarTile(
-                        art: art,
-                        atlas: _portraitAtlas,
-                        selected: art.id == widget.currentAvatarId,
-                        onTap: () => _openPreview(art),
-                      );
-                    },
-                  ),
-          ),
-        ],
+            ),
+          ],
+        ),
       ),
     );
   }

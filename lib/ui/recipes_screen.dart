@@ -28,6 +28,7 @@ import '../battle/models/creature_spec.dart'
 import '../battle/models/effect_kind.dart';
 import '../spells/recipe_book.dart';
 import 'manuscript_theme.dart';
+import 'safe_layout.dart';
 
 const Map<SpellAffinity, Color> _kAffinityColor = {
   SpellAffinity.fire:  Color(0xFFB84040),
@@ -146,7 +147,7 @@ class _RecipesScreenState extends State<RecipesScreen> {
         backgroundColor: const Color(0xFF2C1810),
         iconTheme: const IconThemeData(color: Color(0xFFF5F0E8)),
       ),
-      body: SafeArea(
+      body: SafeScreenBody(
         child: discovered == null
             ? const Center(child: CircularProgressIndicator())
             : isEmpty

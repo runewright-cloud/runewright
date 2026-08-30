@@ -21,6 +21,7 @@ import '../engine/stepper.dart';
 import '../spells/spell_asset.dart';
 import 'formula_bar.dart';
 import 'hex_grid_painter.dart';
+import 'safe_layout.dart';
 
 class SpellViewScreen extends StatefulWidget {
   const SpellViewScreen({super.key, required this.spell});
@@ -175,52 +176,54 @@ class _SpellViewScreenState extends State<SpellViewScreen>
           ),
         ],
       ),
-      body: Column(
-        children: [
-          Expanded(
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final size = Size(constraints.maxWidth, constraints.maxHeight);
-                return CustomPaint(
-                  key: _paintKey,
-                  painter: HexGridPainter(
-                    grid: _grid,
-                    hexSize: _hexSize(size),
-                    innerRadius: _innerRadius,
-                    activeZone: activeZoneFor(_rules),
-                    previousGrid: _previousGrid,
-                    growth: _growth,
-                  ),
-                  child: const SizedBox.expand(),
-                );
-              },
+      body: SafeScreenBody(
+        child: Column(
+          children: [
+            Expanded(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final size = Size(constraints.maxWidth, constraints.maxHeight);
+                  return CustomPaint(
+                    key: _paintKey,
+                    painter: HexGridPainter(
+                      grid: _grid,
+                      hexSize: _hexSize(size),
+                      innerRadius: _innerRadius,
+                      activeZone: activeZoneFor(_rules),
+                      previousGrid: _previousGrid,
+                      growth: _growth,
+                    ),
+                    child: const SizedBox.expand(),
+                  );
+                },
+              ),
             ),
-          ),
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 400),
-            transitionBuilder: (child, animation) => SizeTransition(
-              sizeFactor: animation,
-              child: FadeTransition(opacity: animation, child: child),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 400),
+              transitionBuilder: (child, animation) => SizeTransition(
+                sizeFactor: animation,
+                child: FadeTransition(opacity: animation, child: child),
+              ),
+              child: supremeZone != null
+                  ? _SupremeDominanceBanner(
+                      key: ValueKey(supremeZone), zone: supremeZone)
+                  : const SizedBox.shrink(key: ValueKey<BorderZone?>(null)),
             ),
-            child: supremeZone != null
-                ? _SupremeDominanceBanner(
-                    key: ValueKey(supremeZone), zone: supremeZone)
-                : const SizedBox.shrink(key: ValueKey<BorderZone?>(null)),
-          ),
-          _ZoneCounters(activations: _grid.zoneActivations),
-          FormulaBar(
-            formulas: _formulaTracker.formulas,
-            residuals: _formulaTracker.residuals,
-            pendingZone: _formulaTracker.pendingZone,
-          ),
-          _ViewBottomBar(
-            running: _running,
-            onToggleRun: _toggleRun,
-            onStepOnce: _stepOnce,
-            stepCount: _grid.stepCount,
-            manaCost: _manaCost,
-          ),
-        ],
+            _ZoneCounters(activations: _grid.zoneActivations),
+            FormulaBar(
+              formulas: _formulaTracker.formulas,
+              residuals: _formulaTracker.residuals,
+              pendingZone: _formulaTracker.pendingZone,
+            ),
+            _ViewBottomBar(
+              running: _running,
+              onToggleRun: _toggleRun,
+              onStepOnce: _stepOnce,
+              stepCount: _grid.stepCount,
+              manaCost: _manaCost,
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -21,6 +21,7 @@ import '../protocol/transport.dart';
 import '../trade/sync_art_discovery.dart';
 import '../trade/sync_art_session.dart';
 import 'manuscript_theme.dart';
+import 'safe_layout.dart';
 
 enum _Stage {
   idle,
@@ -180,7 +181,7 @@ class _SyncArtScreenState extends State<SyncArtScreen> {
         elevation: 0,
         title: Text('SYNC ART & SOUND', style: manuscriptHeaderStyle(fontSize: 20, color: kParchmentColor)),
       ),
-      body: SafeArea(
+      body: SafeScreenBody(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
           child: _buildStage(),

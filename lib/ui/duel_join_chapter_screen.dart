@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import '../spells/chapter_asset.dart';
 import 'manuscript_theme.dart';
 import 'widgets/chapter_picker.dart';
+import 'safe_layout.dart';
 
 class DuelJoinChapterScreen extends StatefulWidget {
   const DuelJoinChapterScreen({super.key});
@@ -46,7 +47,7 @@ class _DuelJoinChapterScreenState extends State<DuelJoinChapterScreen> {
           style: manuscriptHeaderStyle(fontSize: 20, color: kParchmentColor),
         ),
       ),
-      body: SafeArea(
+      body: SafeScreenBody(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
           child: Column(

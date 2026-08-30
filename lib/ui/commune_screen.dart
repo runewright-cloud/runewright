@@ -12,6 +12,7 @@ import 'apprenticeship_screen.dart';
 import 'manuscript_theme.dart';
 import 'sync_art_screen.dart';
 import 'trade_screen.dart';
+import 'safe_layout.dart';
 
 class CommuneScreen extends StatelessWidget {
   const CommuneScreen({super.key});
@@ -26,7 +27,7 @@ class CommuneScreen extends StatelessWidget {
         elevation: 0,
         title: Text('COMMUNE', style: manuscriptHeaderStyle(fontSize: 20, color: kParchmentColor)),
       ),
-      body: SafeArea(
+      body: SafeScreenBody(
         child: Center(
           child: SingleChildScrollView(
             child: Padding(

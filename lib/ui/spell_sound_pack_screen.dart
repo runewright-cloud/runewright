@@ -15,6 +15,7 @@ import '../audio/spell_sound_settings.dart';
 import '../spells/spell_sound_pack.dart';
 import 'about_screen.dart';
 import 'manuscript_theme.dart';
+import 'safe_layout.dart';
 
 // Mirrors spell_art_pack_screen.dart's private elemental palette -- kept as
 // a separate copy for the same reason that file's comment gives: each picker
@@ -126,42 +127,44 @@ class _SpellSoundPackScreenState extends State<SpellSoundPackScreen> {
         elevation: 0,
         title: Text('Choose Sound', style: manuscriptHeaderStyle(fontSize: 20)),
       ),
-      body: Column(
-        children: [
-          _ElementFilterRow(
-            selected: _element,
-            onSelected: (e) => setState(() => _element = e),
-          ),
-          _SubjectFilterRow(
-            subjects: _subjects,
-            selected: _subject,
-            onChanged: (s) => setState(() => _subject = s),
-          ),
-          const Divider(height: 1, color: kParchmentPanelColor),
-          Expanded(
-            child: entries.isEmpty
-                ? Center(
-                    child: Text(
-                      'No clips match this filter.',
-                      style: manuscriptBodyStyle(color: kInkMutedColor),
+      body: SafeScreenBody(
+        child: Column(
+          children: [
+            _ElementFilterRow(
+              selected: _element,
+              onSelected: (e) => setState(() => _element = e),
+            ),
+            _SubjectFilterRow(
+              subjects: _subjects,
+              selected: _subject,
+              onChanged: (s) => setState(() => _subject = s),
+            ),
+            const Divider(height: 1, color: kParchmentPanelColor),
+            Expanded(
+              child: entries.isEmpty
+                  ? Center(
+                      child: Text(
+                        'No clips match this filter.',
+                        style: manuscriptBodyStyle(color: kInkMutedColor),
+                      ),
+                    )
+                  : ListView.separated(
+                      padding: const EdgeInsets.all(12),
+                      itemCount: entries.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 6),
+                      itemBuilder: (context, i) {
+                        final entry = entries[i];
+                        return _SoundTile(
+                          entry: entry,
+                          onPlay: () => _play(entry),
+                          onTap: () => _openPreview(entry),
+                        );
+                      },
                     ),
-                  )
-                : ListView.separated(
-                    padding: const EdgeInsets.all(12),
-                    itemCount: entries.length,
-                    separatorBuilder: (_, _) => const SizedBox(height: 6),
-                    itemBuilder: (context, i) {
-                      final entry = entries[i];
-                      return _SoundTile(
-                        entry: entry,
-                        onPlay: () => _play(entry),
-                        onTap: () => _openPreview(entry),
-                      );
-                    },
-                  ),
-          ),
-          _AttributionFooter(),
-        ],
+            ),
+            _AttributionFooter(),
+          ],
+        ),
       ),
     );
   }

@@ -14,6 +14,7 @@ import 'package:flutter/material.dart';
 import '../spells/spell_art_pack.dart';
 import 'about_screen.dart';
 import 'manuscript_theme.dart';
+import 'safe_layout.dart';
 
 // Mirrors spell_card_painter.dart's private elemental palette -- kept as a
 // separate copy rather than exported from there, since that file's palette
@@ -116,42 +117,44 @@ class _SpellArtPackScreenState extends State<SpellArtPackScreen> {
         elevation: 0,
         title: Text('Choose Art', style: manuscriptHeaderStyle(fontSize: 20)),
       ),
-      body: Column(
-        children: [
-          _ElementFilterRow(
-            selected: _element,
-            onSelected: (e) => setState(() => _element = e),
-          ),
-          _SubjectFilterRow(
-            subjects: _subjects,
-            selected: _subject,
-            onChanged: (s) => setState(() => _subject = s),
-          ),
-          const Divider(height: 1, color: kParchmentPanelColor),
-          Expanded(
-            child: entries.isEmpty
-                ? Center(
-                    child: Text(
-                      'No icons match this filter.',
-                      style: manuscriptBodyStyle(color: kInkMutedColor),
+      body: SafeScreenBody(
+        child: Column(
+          children: [
+            _ElementFilterRow(
+              selected: _element,
+              onSelected: (e) => setState(() => _element = e),
+            ),
+            _SubjectFilterRow(
+              subjects: _subjects,
+              selected: _subject,
+              onChanged: (s) => setState(() => _subject = s),
+            ),
+            const Divider(height: 1, color: kParchmentPanelColor),
+            Expanded(
+              child: entries.isEmpty
+                  ? Center(
+                      child: Text(
+                        'No icons match this filter.',
+                        style: manuscriptBodyStyle(color: kInkMutedColor),
+                      ),
+                    )
+                  : GridView.builder(
+                      padding: const EdgeInsets.all(12),
+                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 3,
+                        crossAxisSpacing: 8,
+                        mainAxisSpacing: 8,
+                      ),
+                      itemCount: entries.length,
+                      itemBuilder: (context, i) {
+                        final entry = entries[i];
+                        return _ArtTile(entry: entry, onTap: () => _openPreview(entry));
+                      },
                     ),
-                  )
-                : GridView.builder(
-                    padding: const EdgeInsets.all(12),
-                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 3,
-                      crossAxisSpacing: 8,
-                      mainAxisSpacing: 8,
-                    ),
-                    itemCount: entries.length,
-                    itemBuilder: (context, i) {
-                      final entry = entries[i];
-                      return _ArtTile(entry: entry, onTap: () => _openPreview(entry));
-                    },
-                  ),
-          ),
-          _AttributionFooter(),
-        ],
+            ),
+            _AttributionFooter(),
+          ],
+        ),
       ),
     );
   }

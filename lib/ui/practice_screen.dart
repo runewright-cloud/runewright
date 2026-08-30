@@ -34,6 +34,7 @@ import '../sorcerer/incantation_recall.dart';
 import '../sorcerer/incantation_recall_scorer.dart';
 import '../sorcerer/vocal_slot.dart';
 import '../sorcerer/vocabulary_profile.dart';
+import 'safe_layout.dart';
 
 class PracticeScreen extends StatefulWidget {
   const PracticeScreen({super.key, required this.spell});
@@ -260,7 +261,9 @@ class _PracticeScreenState extends State<PracticeScreen> {
     // Spell Components (see the file header), leaving the drill itself.
     return Scaffold(
       appBar: AppBar(title: Text('Practice — $name')),
-      body: _buildDrill(),
+      body: SafeScreenBody(
+        child: _buildDrill(),
+      ),
     );
   }
 

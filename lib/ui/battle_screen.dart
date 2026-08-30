@@ -81,6 +81,7 @@ import 'scenery/scenery_map.dart';
 import 'scenery/scenery_painter.dart';
 import 'battlefield_painter.dart';
 import 'manuscript_theme.dart';
+import 'safe_layout.dart';
 import 'spell_card_painter.dart';
 import 'dart:async';
 import 'package:record/record.dart';
@@ -3412,25 +3413,27 @@ class _BattleScreenState extends State<BattleScreen>
   /// "continue anyway" for a match whose two devices disagree.
   Widget _blockingError(String message) => Scaffold(
     backgroundColor: const Color(0xFF1A1008),
-    body: Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.error_outline, color: Colors.redAccent, size: 48),
-            const SizedBox(height: 16),
-            SelectableText(
-              message,
-              style: manuscriptBodyStyle(fontSize: 14, color: kParchmentColor),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 24),
-            OutlinedButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Leave'),
-            ),
-          ],
+    body: SafeScreenBody(
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline, color: Colors.redAccent, size: 48),
+              const SizedBox(height: 16),
+              SelectableText(
+                message,
+                style: manuscriptBodyStyle(fontSize: 14, color: kParchmentColor),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              OutlinedButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Leave'),
+              ),
+            ],
+          ),
         ),
       ),
     ),
@@ -3522,13 +3525,14 @@ class _BattleScreenState extends State<BattleScreen>
           ),
         ],
       ),
-      // Samsung devices default to the 3-button nav bar, which is taller
-      // than the gesture pill this was originally tested against on Pixel
-      // (see M4/M5 findings) — without SafeArea it clips straight into the
-      // action bar / spell hand. AppBar already consumes the top inset, so
-      // this only adds bottom/side padding, matching the pattern used by
-      // menu_screen.dart and battle_lobby_screen.dart.
-      body: SafeArea(
+      // The app is edge-to-edge on Android (API 36 target; Android 15+ has no
+      // opt-out), so this body is laid out behind the system navigation bar
+      // and the spell hand at the bottom of the Column would be drawn under
+      // it. SafeScreenBody is the app-wide policy for that — see
+      // safe_layout.dart. It was first noticed on Samsung hardware, but only
+      // because Samsung defaults to the taller 3-button nav bar; the missing
+      // inset is the same on every device and the platform reports its size.
+      body: SafeScreenBody(
         child: Column(
           children: [
             // DEV FLAG (lib/dev_flags.dart): a duel running without proof
@@ -4703,6 +4707,14 @@ class _ActionBar extends StatelessWidget {
                                   : 'Tap a tile to target'))
                       : 'Choose a spell, Dash, or Meditate',
                   textAlign: TextAlign.center,
+                  // Capped because this prompt sits in the only flexible slot
+                  // of a Row it shares with fixed-width action buttons. On a
+                  // narrow phone that slot gets thin, and an uncapped prompt
+                  // wrapped far enough to grow the whole action bar past the
+                  // battlefield's share of the screen — pushing the spell hand
+                  // out of view. Two lines is enough for every string above.
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontFamily: 'serif',
                     fontSize: 13,
@@ -4726,6 +4738,11 @@ class _ActionBar extends StatelessWidget {
                             selectedSpell!.formula,
                           ).join('  ·  '),
                     textAlign: TextAlign.center,
+                    // Same reasoning as the prompt above, and this one is
+                    // formula-derived, so its length is not even bounded by a
+                    // fixed set of strings.
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontFamily: 'serif',
                       fontSize: 10,

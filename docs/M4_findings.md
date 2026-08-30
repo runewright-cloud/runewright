@@ -7836,3 +7836,152 @@ invariant the buttons let a player walk around.
 proof oracle re-derives is a WYSIWYG bug waiting to happen. `_rules` is the
 obvious one; check any future editor control against "does `runStepper` take
 this as input?" If it doesn't, the control must not exist.
+
+## Android system insets and narrow-phone layout — app-wide repair (2026-08-30)
+
+Reported as "Samsung's bottom bar covers the controls", most recently on a
+Galaxy S25, with a second observation that parts of the UI looked "wider than
+the screen". Neither turned out to be Samsung-specific.
+
+### Root cause 1 — the app is edge-to-edge and most screens never said so
+
+`android/app/build.gradle.kts` takes `flutter.targetSdkVersion`, which on
+Flutter 3.44 is **API 36**. Android 15 (API 35) removed the edge-to-edge
+opt-out, so the Flutter view is laid out *behind* the navigation bar and
+`MediaQuery.padding.bottom` is nonzero on every modern device. Nothing in the
+manifest, `styles.xml`, or Dart configures this either way — it is the platform
+default now.
+
+`Scaffold` only meets you halfway, and this is the part that is easy to get
+wrong: it removes the **top** padding from `body` when an `AppBar` is present,
+but it removes the **bottom** padding only when a `bottomNavigationBar` or
+`persistentFooterButtons` is present. Runewright uses neither, so on every
+screen the body was handed the full window height and whatever sat at its
+bottom edge was drawn under the navigation bar.
+
+Thirteen `Scaffold.body`s had no inset protection at all, including Rune
+Craft's Step/Run/Inscribe action bar (`main.dart`), Settings, Library,
+Vocabulary, Practice's hold-and-recite button, and `battle_screen.dart`'s own
+`_blockingError` page — whose only control is a **Leave** button.
+
+Samsung surfaced it first only because Samsung defaults to the taller 3-button
+navigation bar where Pixel defaults to the gesture pill: the same missing
+inset, roughly twice as wide.
+
+### Root cause 2 — layouts that assume a wide screen
+
+The whole widget suite runs at flutter_test's default **800x600** surface,
+which is wider in logical pixels than any phone. Nothing had ever been laid out
+at phone width. At 360x740:
+
+* the `RUNEWRIGHT` wordmark (48pt, 8pt letterspacing, ten unbreakable
+  characters) is wider than the screen and was silently clipped at both ends —
+  a single unbreakable word throws no overflow error and paints no stripe;
+* Rune Craft's `_RuleBar` overflowed by ~217px, `_ZoneCounters` by ~91px, and
+  `_ModeBar` by ~46px, at normal text scale;
+* `_BottomBar`'s readout row overflowed at raised text scale;
+* the battle screen's `_ActionBar` prompt shares a `Row` with fixed-width
+  buttons, so at narrow widths its `Expanded` slot got thin and the prompt
+  wrapped far enough to grow the bar from ~160px to ~540px tall — squeezing the
+  battlefield's `Expanded` to zero and pushing the spell hand off the bottom.
+  Same visible symptom as a missing inset, from the opposite direction;
+* `DuelHostSettings` (366px) and `SoloPracticeSettings` (64px) overflowed
+  vertically because their bottom action button sat after a `Spacer()`, and
+  **a `Spacer` cannot absorb a negative remainder** — once the content exceeded
+  the height, HOST / READY went off the end of the screen with no way to scroll
+  to them. `DuelHostSettings` overflowed on *any* phone, not just a narrow one.
+  `BattleLobby`'s idle section (99px) is the same failure via a centring
+  `Column` rather than a `Spacer`.
+
+### Why the dev device never showed it
+
+The Pixel 6 on this bench reports `wm density` **override 380** (physical 420),
+so its logical width is 1080 x 160 / 380 = **~455dp** — considerably *wider*
+than a stock phone, because the display-size setting is turned down. Its
+navigation mode is `gestural`, i.e. the thin pill.
+
+A Galaxy S25 is 1080x2340 at density 450 → **384dp**, and less again with
+display scaling raised; Samsung defaults to the 3-button bar. So the two
+devices differ by 70dp or more of width *and* by roughly double the bottom
+inset, which is exactly the band where the battle `_ActionBar` degrades: it
+measures 164px tall at 411dp, 297px at 384dp and 544px at 360dp. Development
+happened on the one configuration where none of this is visible.
+
+**Worth remembering:** `adb shell wm size` + `wm density` on the bench device
+before trusting "it looks fine here".
+
+### The policy
+
+`lib/ui/safe_layout.dart` — `SafeScreenBody`, applied to every `Scaffold.body`
+in the app (30 call sites). It protects all four edges and takes **no
+parameters**. Nothing keys off a device, a manufacturer, or a measured bar
+height. The battle screen's 2026-08-10 `SafeArea` was directionally right and
+stays — its comment now explains the structure rather than naming Samsung.
+
+An earlier draft of this patch carried a `hasAppBar` flag, on the theory that a
+body under an `AppBar` should decline the top inset. Measured, **the
+distinction does not exist**: `Scaffold` passes `removeTopPadding: appBar !=
+null` to its body, so under an app bar `padding.top` is already zero and
+`SafeArea(top: true)` contributes nothing — body top lands at 96.0 either way
+on a 40px status bar plus a 56px app bar. The flag could therefore only ever be
+*wrong*, never right: a future screen with no app bar taking the default would
+put its content 40px under the status bar. It was removed rather than made
+required — asking every author to answer a question that has no correct-answer
+consequence, and a bug for the wrong one, is worse than not asking.
+`test/ui/safe_layout_test.dart` pins the measurement that justifies this.
+
+### Traps worth keeping
+
+* **A `Spacer()` before a bottom action button is a trap.** It looks like
+  "push the button to the bottom" and behaves like it right up until the
+  content is one pixel too tall, at which point the button leaves the screen
+  entirely. `Expanded(child: SingleChildScrollView(...))` + a pinned button is
+  the shape that degrades gracefully; where the section centres itself, wrap it
+  in `LayoutBuilder` + `ConstrainedBox(minHeight: constraints.maxHeight)` so
+  centring survives when it fits and scrolling takes over when it doesn't.
+* **Scroll the section that overflows, not the container above it.** The first
+  attempt at the lobby wrapped `_buildModeSection()` — i.e. *every* lobby mode
+  — in that scroll view. `_JoiningSection` hands its peer list an `Expanded`,
+  and an `Expanded` inside a `Column` given unbounded height throws. Only the
+  idle section overflowed, so only the idle section scrolls. The narrow-phone
+  sweep did not catch this, because it only ever renders the idle mode; a
+  review pass reading the other four sections for flex children did.
+* **"It no longer overflows" is not "the button is reachable".** Once a screen
+  scrolls it cannot overflow, so an exception-only test goes green even if the
+  primary action scrolled out of reach. Every screen converted to scrolling
+  needs an explicit assertion on its action button.
+* **Clipped text is invisible to the test suite.** `RenderFlex` overflow throws;
+  a too-wide unbreakable `Text` does not. `safe_layout_test.dart` catches it by
+  comparing the laid-out paragraph width against a `TextPainter` measurement of
+  the same span — assert `size.width >= natural`, not the reverse.
+* **An uncapped `Text` in the only flexible slot of a `Row` is a vertical
+  bomb.** It cannot overflow horizontally, so it wraps instead, and the row
+  grows without limit. Give any such prompt `maxLines` + `overflow`.
+* **The 800x600 default test surface hides all of this.** New UI tests that
+  care about layout should set a phone-shaped surface *and* inject the
+  `MediaQuery` — `setSurfaceSize` alone changes the render viewport but not
+  what `SafeArea` reads, and the `MediaQuery` override alone changes what
+  `SafeArea` reads but never makes anything actually overflow.
+
+### Test seam
+
+`test/ui/safe_layout_test.dart` (53 tests): bottom-inset geometry per screen, a
+narrow-phone sweep of every no-argument screen at 1.0x and 1.3x, an explicit
+primary-action assertion for each screen converted to scrolling, two keyboard
+tests (the IME must not cover a bottom field, and no nav-bar-sized gap may be
+held open behind it), wordmark clipping, and three pinning `SafeScreenBody`
+itself — including a guard that counts the `Padding` widgets applying the
+bottom inset, so a doubled inset fails even though it would still clear the
+bar. **Eighteen** of them fail against the pre-fix tree. The battle screen is exercised for real — a solo
+`BattleScreen` is pumpable with `seedBasicSpells()` + a `ChapterAsset` of three
+bundled spells and an interleaved `runAsync`/`pump` loop; an empty chapter trips
+`spell_draw.dart`'s `chapter.isNotEmpty` assertion and renders the blocking-error
+page instead, which is what made it look untestable.
+
+### Not done
+
+`SettingsScreen` carries a `kShowDevSurfaces`-gated **DEBUG: Window metrics**
+card reading `MediaQuery` size / padding / viewPadding / systemGestureInsets /
+devicePixelRatio / text scale off the device. Off in player builds. The
+on-device pass — real S25, 3-button nav *and* gesture nav, raised display
+scaling — has not been run; that is what should close this out.

@@ -17,6 +17,7 @@ import 'package:flutter/services.dart' show rootBundle;
 import '../ffi/prover.dart';
 import '../ffi/srs_cache.dart';
 import '../spells/inscribe.dart' show rulesetVersionHex;
+import 'safe_layout.dart';
 
 // poseidon2_hash2(0, 0) — the interim dummy owner_pubkey used throughout
 // test_vectors/seeds.json and scripts/gen_vectors.dart until the identity
@@ -156,59 +157,61 @@ class _SpikeScreenState extends State<SpikeScreen> {
         foregroundColor: Colors.white,
       ),
       backgroundColor: Colors.black,
-      body: Column(
-        children: [
-          // ── Buttons ──────────────────────────────────────────────────────
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              children: [12, 24, 48].map((tier) {
-                return Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    child: ElevatedButton(
-                      onPressed: _busy ? null : () => _runSpike(tier),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.indigo[800],
-                        disabledBackgroundColor: Colors.grey[900],
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                      ),
-                      child: _busy
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white38,
+      body: SafeScreenBody(
+        child: Column(
+          children: [
+            // ── Buttons ──────────────────────────────────────────────────────
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [12, 24, 48].map((tier) {
+                  return Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: ElevatedButton(
+                        onPressed: _busy ? null : () => _runSpike(tier),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.indigo[800],
+                          disabledBackgroundColor: Colors.grey[900],
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                        ),
+                        child: _busy
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white38,
+                                ),
+                              )
+                            : Text(
+                                'Prove\nTier $tier',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(fontSize: 13),
                               ),
-                            )
-                          : Text(
-                              'Prove\nTier $tier',
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(fontSize: 13),
-                            ),
+                      ),
                     ),
-                  ),
-                );
-              }).toList(),
-            ),
-          ),
-
-          // ── Status log ───────────────────────────────────────────────────
-          Expanded(
-            child: Container(
-              margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.grey[950] ?? Colors.grey[900],
-                border: Border.all(color: Colors.grey[800]!),
-                borderRadius: BorderRadius.circular(4),
+                  );
+                }).toList(),
               ),
-              child: _LogView(entries: _log),
             ),
-          ),
-        ],
+
+            // ── Status log ───────────────────────────────────────────────────
+            Expanded(
+              child: Container(
+                margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.grey[950] ?? Colors.grey[900],
+                  border: Border.all(color: Colors.grey[800]!),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: _LogView(entries: _log),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

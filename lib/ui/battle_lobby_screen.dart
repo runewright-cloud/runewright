@@ -43,6 +43,7 @@ import 'duel_host_settings_screen.dart';
 import 'duel_join_chapter_screen.dart';
 import 'manuscript_theme.dart';
 import 'solo_practice_settings_screen.dart';
+import 'safe_layout.dart';
 import 'spell_test_lab_screen.dart';
 
 enum _LobbyMode { idle, hosting, joining, connecting, preparingDuel }
@@ -470,12 +471,16 @@ class _BattleLobbyScreenState extends State<BattleLobbyScreen> {
           style: manuscriptHeaderStyle(fontSize: 20, color: kParchmentColor),
         ),
       ),
-      body: SafeArea(
+      body: SafeScreenBody(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // Deliberately NOT wrapped in a scroll view: _JoiningSection
+              // gives its peer list an Expanded, so every mode section needs a
+              // bounded height. Only _IdleSection overflows, and it scrolls
+              // itself — see its build().
               Expanded(child: _buildModeSection()),
             ],
           ),
@@ -543,34 +548,51 @@ class _IdleSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (srsReady == false) ...[
-          _PrepareDeviceCard(
-            preparing: preparingSrs,
-            error: prepareError,
-            onPrepareTap: onPrepareTap,
+    // The "device is not ready" card plus the buttons are taller than a phone
+    // screen, and this Column centres itself, so the overflow pushed SOLO
+    // PRACTICE off the bottom with no way to reach it. The minHeight floor
+    // keeps the centring exactly as it was whenever the content fits, and lets
+    // it scroll when it doesn't.
+    //
+    // This lives here rather than around _buildModeSection because the other
+    // mode sections must NOT be handed an unbounded height: _JoiningSection
+    // gives its peer list an Expanded, which a scroll view would starve. This
+    // section has no flex children, so it is safe to scroll.
+    return LayoutBuilder(
+      builder: (context, constraints) => SingleChildScrollView(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minHeight: constraints.maxHeight),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (srsReady == false) ...[
+                _PrepareDeviceCard(
+                  preparing: preparingSrs,
+                  error: prepareError,
+                  onPrepareTap: onPrepareTap,
+                ),
+                const SizedBox(height: 24),
+              ],
+              _LobbyButton(label: 'HOST A DUEL', onTap: onHostTap),
+              const SizedBox(height: 12),
+              _LobbyButton(label: 'JOIN A DUEL', onTap: onJoinTap),
+              const SizedBox(height: 24),
+              Divider(color: kInkColor.withValues(alpha: 0.12)),
+              const SizedBox(height: 24),
+              _LobbyButton(label: 'SOLO PRACTICE', onTap: onSoloPracticeTap),
+              // DEV FLAG (kShowDevSurfaces — lib/dev_flags.dart). The lab's
+              // spells carry no proof, so they need kAllowProoflessSpells too.
+              if (kShowDevSurfaces) ...[
+                const SizedBox(height: 24),
+                Divider(color: kInkColor.withValues(alpha: 0.12)),
+                const SizedBox(height: 24),
+                _LobbyButton(label: 'SPELL TEST LAB', onTap: onSpellTestLabTap),
+              ],
+            ],
           ),
-          const SizedBox(height: 24),
-        ],
-        _LobbyButton(label: 'HOST A DUEL', onTap: onHostTap),
-        const SizedBox(height: 12),
-        _LobbyButton(label: 'JOIN A DUEL', onTap: onJoinTap),
-        const SizedBox(height: 24),
-        Divider(color: kInkColor.withValues(alpha: 0.12)),
-        const SizedBox(height: 24),
-        _LobbyButton(label: 'SOLO PRACTICE', onTap: onSoloPracticeTap),
-        // DEV FLAG (kShowDevSurfaces — lib/dev_flags.dart). The lab's spells
-        // carry no proof, so they need kAllowProoflessSpells too.
-        if (kShowDevSurfaces) ...[
-          const SizedBox(height: 24),
-          Divider(color: kInkColor.withValues(alpha: 0.12)),
-          const SizedBox(height: 24),
-          _LobbyButton(label: 'SPELL TEST LAB', onTap: onSpellTestLabTap),
-        ],
-      ],
+        ),
+      ),
     );
   }
 }
