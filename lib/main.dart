@@ -125,6 +125,9 @@ class _GameScreenState extends State<GameScreen>
   bool _running = false;
   bool _inscribing = false;
   Timer? _timer;
+  // The grid as it stood when the CURRENT simulation began -- what Revert
+  // restores, and the T=0 state Inscribe certifies. Re-captured on every
+  // fresh run (see _markSimulationStart), not latched on the first one.
   HexGrid? _initialGrid;
   // Grid state from just before the most recent step, retained only so the
   // painter can animate lines/dots growing or shrinking into `_grid`. Null
@@ -132,6 +135,14 @@ class _GameScreenState extends State<GameScreen>
   HexGrid? _previousGrid;
   final _formulaTracker = FormulaTracker();
   final _supremeElements = <String>{};
+
+  // Which element the formula most recently earned, and a monotonic token
+  // that changes on every such earning. _ZoneCounters watches the token
+  // (not the zone) so that two consecutive commits of the SAME element
+  // still read as two separate events and flash twice. Cleared -- zone to
+  // null, token left alone -- by revert/reset, so a wipe never flashes.
+  BorderZone? _flashZone;
+  int _flashToken = 0;
 
   // Name/art/sound picked from the Preview screen, ahead of inscription --
   // see _SpellDraft's header comment. Carried into _inscribe() so those
@@ -173,10 +184,21 @@ class _GameScreenState extends State<GameScreen>
   late Animation<double> _growth;
   Set<HexCoord> _activatedCells = {};
 
-  // Tracks the previous touch point during a drag-to-draw gesture on the
-  // grid, so onPanUpdate can interpolate between samples and activate every
-  // cell the finger crossed rather than just the ones landed on exactly.
-  Offset? _lastDragPosition;
+  // In-progress drag-to-draw stroke. A held stroke is normalized to a
+  // straight hex line -- see _extendStroke -- so all it needs to remember is
+  // where the line starts and which cells it has painted so far; the shape
+  // itself is recomputed from the live touch point every update, never
+  // accumulated.
+  //
+  // [_strokeAnchor] stays null until the finger is over an inscribable cell,
+  // so a drag that begins out in the buffer ring starts its line where it
+  // crosses in rather than being thrown away.
+  HexCoord? _strokeAnchor;
+
+  // Cells THIS stroke turned on, so swinging the line to a new direction can
+  // put them back. Deliberately not "cells the stroke covered": a cell that
+  // was already alive before the drag must survive the stroke moving off it.
+  final Set<HexCoord> _strokePainted = {};
 
   @override
   void initState() {
@@ -210,6 +232,9 @@ class _GameScreenState extends State<GameScreen>
       }
       _recordNewFormulas();
       _recordNewAbilities();
+      // The replay above fed T generations at once; none of them is a live
+      // "you just earned this" moment, so don't leave the last one primed.
+      _flashZone = null;
     } else {
       _grid = HexGrid(_radius);
       _rules = CARules.neutral;
@@ -227,15 +252,19 @@ class _GameScreenState extends State<GameScreen>
       [coord.q.abs(), coord.r.abs(), (coord.q + coord.r).abs()].reduce(max) >
       _innerRadius;
 
-  // activeZone not needed for hit-testing.
-  HexCoord? _hitTest(Offset localPosition, Size size) {
-    final painter = HexGridPainter(
-      grid: _grid,
-      hexSize: _hexSize(size),
-      innerRadius: _innerRadius,
-    );
-    return painter.pixelToHex(localPosition, size);
-  }
+  // A throwaway painter used purely as the hex layout oracle (pixelToHex /
+  // hexToPixel). Sharing the painter's math rather than restating it here is
+  // deliberate: a second copy of the coordinate transform would be a second
+  // oracle to keep in sync with what's actually drawn. activeZone and the
+  // animations aren't needed for geometry.
+  HexGridPainter _layout(Size size) => HexGridPainter(
+        grid: _grid,
+        hexSize: _hexSize(size),
+        innerRadius: _innerRadius,
+      );
+
+  HexCoord? _hitTest(Offset localPosition, Size size) =>
+      _layout(size).pixelToHex(localPosition, size);
 
   void _onTap(TapUpDetails details) {
     final box = _paintKey.currentContext?.findRenderObject() as RenderBox?;
@@ -258,48 +287,122 @@ class _GameScreenState extends State<GameScreen>
   }
 
   void _onPanStart(DragStartDetails details) {
-    _lastDragPosition = details.localPosition;
-    _activateAlongPath(details.localPosition, details.localPosition);
+    _strokeAnchor = null;
+    _strokePainted.clear();
+    _extendStroke(details.localPosition);
   }
 
   void _onPanUpdate(DragUpdateDetails details) {
-    final start = _lastDragPosition ?? details.localPosition;
-    _activateAlongPath(start, details.localPosition);
-    _lastDragPosition = details.localPosition;
+    _extendStroke(details.localPosition);
   }
 
   void _onPanEnd(DragEndDetails details) {
-    _lastDragPosition = null;
+    _strokeAnchor = null;
+    _strokePainted.clear();
   }
 
-  // Draw-to-activate: unlike a single tap (which toggles), dragging always
-  // switches touched cells to alive, and samples along the segment between
-  // the last and current touch point so a fast swipe doesn't leave gaps
-  // between the hexes it visibly crossed.
-  void _activateAlongPath(Offset start, Offset end) {
+  // The six directions a straight hex line can run in, and how far the touch
+  // point has travelled along the closest one.
+  //
+  // Every axial direction is the same pixel distance from a cell's center, so
+  // "which spoke is the finger nearest" is just the largest projection of the
+  // touch vector onto each spoke. The projection's length, in whole steps, is
+  // the line's length -- so sliding along a spoke grows and shrinks the line,
+  // and swinging across to another spoke rotates it.
+  (HexCoord, int) _snapStroke(
+    HexGridPainter layout,
+    Size size,
+    HexCoord anchor,
+    Offset touch,
+  ) {
+    final origin = layout.hexToPixel(anchor, size);
+    final reach = touch - origin;
+    var best = HexGrid.directions.first;
+    var bestSteps = 0;
+    var bestProjection = double.negativeInfinity;
+    for (final dir in HexGrid.directions) {
+      final step =
+          layout.hexToPixel(HexCoord(anchor.q + dir.q, anchor.r + dir.r), size) -
+              origin;
+      final stepLength = step.distance;
+      // Scalar projection of `reach` onto this spoke, in pixels.
+      final projection =
+          (reach.dx * step.dx + reach.dy * step.dy) / stepLength;
+      if (projection > bestProjection) {
+        bestProjection = projection;
+        best = dir;
+        // Negative when the finger is behind the anchor on every spoke
+        // (a backwards drag) -- clamped to a bare anchor rather than a
+        // line running the wrong way.
+        bestSteps = max(0, (projection / stepLength).round());
+      }
+    }
+    return (best, bestSteps);
+  }
+
+  // The cells of the straight line from [anchor], stopping at the edge of the
+  // inscribable region. A straight line that leaves that region never
+  // re-enters it, so stopping at the first cell outside is exact, not an
+  // approximation.
+  List<HexCoord> _strokeCells(HexCoord anchor, HexCoord dir, int length) {
+    final cells = <HexCoord>[anchor];
+    for (var k = 1; k <= length; k++) {
+      final cell = HexCoord(anchor.q + dir.q * k, anchor.r + dir.r * k);
+      if (!_grid.cells.containsKey(cell) || _isOuter(cell)) break;
+      cells.add(cell);
+    }
+    return cells;
+  }
+
+  // Draw-to-activate: unlike a single tap (which toggles one cell freely), a
+  // held drag draws a straight line -- a run of cells edge-adjacent along one
+  // of the six hex directions, all at the same slope. Straight lines are what
+  // the ink rules actually reward (Rule B extends a stroke's tip), so players
+  // draw a lot of them, and freehand dragging made them fiddly to hit exactly.
+  //
+  // The line is recomputed from scratch on every update rather than
+  // accumulated, so it stays live: sliding out lengthens it, sliding back
+  // shortens it, and swinging around the anchor rotates it to another spoke.
+  // Cells this stroke painted are put back when the line moves off them --
+  // cells that were already alive are left alone. Lift and drag again for the
+  // next line; taps still toggle individual cells for anything a line can't
+  // express.
+  void _extendStroke(Offset touch) {
     if (_grid.stepCount != 0) return;
     final box = _paintKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null) return;
     final size = box.size;
-    final hexSize = _hexSize(size);
-    final distance = (end - start).distance;
-    final steps = max(1, (distance / (hexSize / 3)).ceil());
-    final touched = <HexCoord>{};
-    for (var i = 0; i <= steps; i++) {
-      final point = Offset.lerp(start, end, i / steps)!;
-      final coord = _hitTest(point, size);
-      if (coord != null && !_isOuter(coord)) touched.add(coord);
+    final layout = _layout(size);
+
+    var anchor = _strokeAnchor;
+    if (anchor == null) {
+      final coord = layout.pixelToHex(touch, size);
+      // Still outside the inscribable region: no line to anchor yet, but the
+      // drag stays live in case the finger comes in.
+      if (coord == null || _isOuter(coord)) return;
+      anchor = _strokeAnchor = coord;
     }
-    final toActivate = touched.where((c) => _grid.cells[c] != Element.alive);
-    if (toActivate.isEmpty) return;
+
+    final (dir, length) = _snapStroke(layout, size, anchor, touch);
+    final line = _strokeCells(anchor, dir, length).toSet();
+
+    final toPaint = line.where((c) => _grid.cells[c] != Element.alive).toSet();
+    final toErase = _strokePainted.difference(line);
+    if (toPaint.isEmpty && toErase.isEmpty) return;
     // See _onTap: mutate a fresh copy so the grid gets new identity.
     setState(() {
       final next = _grid.copy();
-      for (final coord in toActivate) {
-        next.cells[coord] = Element.alive;
+      for (final cell in toErase) {
+        next.cells[cell] = Element.dead;
+      }
+      for (final cell in toPaint) {
+        next.cells[cell] = Element.alive;
       }
       _grid = next;
     });
+    _strokePainted
+      ..removeAll(toErase)
+      ..addAll(toPaint);
   }
 
   bool _gridsEqual(HexGrid a, HexGrid b) {
@@ -321,7 +424,29 @@ class _GameScreenState extends State<GameScreen>
       if (isSupreme) _supremeElements.add(zone.name);
       _dominantPerGeneration.add(zone);
     }
+    final before = _formulaTracker.committed.length;
     _formulaTracker.step(zone, supremeDominant: isSupreme);
+    // A commit is the moment an element is *earned* -- the same event the
+    // formula bar grows on. Flash that element's counter so the two reads
+    // as cause and effect rather than two unrelated rows changing.
+    if (_formulaTracker.committed.length > before) {
+      _flashZone = _formulaTracker.committed.last;
+      _flashToken++;
+    }
+  }
+
+  // Snapshots the starting state at the top of every step path. The grid is
+  // only editable while stepCount == 0, so a step taken from 0 is by
+  // definition the first step of a NEW simulation, and the state it starts
+  // from is what Revert owes the player.
+  //
+  // This used to be `_initialGrid ??= _grid.copy()`, which latched the very
+  // first run's seed forever: revert, edit the seed, run again, and Revert
+  // would throw away the edits and hand back the original drawing. Stepping
+  // from a non-zero count is a continuation, not a new simulation, so
+  // pausing and resuming a run still keeps the snapshot it started with.
+  void _markSimulationStart() {
+    if (_grid.stepCount == 0) _initialGrid = _grid.copy();
   }
 
   void _stepOnce() {
@@ -330,7 +455,7 @@ class _GameScreenState extends State<GameScreen>
     // itself refuses rather than letting the grid wander past what Inscribe
     // will ever accept.
     if (_grid.stepCount >= kMaxInscribableSteps) return;
-    _initialGrid ??= _grid.copy();
+    _markSimulationStart();
     final next = CAStep.step(_grid, _rules);
     final dominance = advanceDominance(_rules, next);
     final previous = _grid;
@@ -357,7 +482,7 @@ class _GameScreenState extends State<GameScreen>
       // Same hard stop as _stepOnce: never run past the largest inscribable
       // tier.
       if (_grid.stepCount >= kMaxInscribableSteps) return;
-      _initialGrid ??= _grid.copy();
+      _markSimulationStart();
       setState(() => _running = true);
       _timer = Timer.periodic(_stepInterval, (_) {
         final next = CAStep.step(_grid, _rules);
@@ -397,6 +522,7 @@ class _GameScreenState extends State<GameScreen>
       _running = false;
       _activatedCells = {};
       _formulaTracker.reset();
+      _flashZone = null;
       _recordedFormulaCount = 0;
       _recordedAbilities.clear();
       _supremeElements.clear();
@@ -416,6 +542,7 @@ class _GameScreenState extends State<GameScreen>
       _initialGrid = null;
       _activatedCells = {};
       _formulaTracker.reset();
+      _flashZone = null;
       _recordedFormulaCount = 0;
       _recordedAbilities.clear();
       _supremeElements.clear();
@@ -707,9 +834,10 @@ class _GameScreenState extends State<GameScreen>
                 onPanEnd: _onPanEnd,
                 // Default (DragStartBehavior.start) silently swallows the
                 // pointer movement consumed while recognizing the gesture, so
-                // the initial cell(s) under a fast swipe's first few pixels
-                // never reach onPanStart/onPanUpdate. `.down` reports the true
-                // touch-down position instead, closing that gap.
+                // onPanStart reports a position already a few pixels into the
+                // swipe. `.down` reports the true touch-down position instead
+                // -- which is where the stroke anchors, so on a fast swipe the
+                // line would otherwise start a cell late.
                 dragStartBehavior: DragStartBehavior.down,
                 child: LayoutBuilder(
                   builder: (context, constraints) {
@@ -767,7 +895,11 @@ class _GameScreenState extends State<GameScreen>
                   ? _SupremeDominanceBanner(key: ValueKey(supremeZone), zone: supremeZone)
                   : const SizedBox.shrink(key: ValueKey<BorderZone?>(null)),
             ),
-            _ZoneCounters(activations: _grid.zoneActivations),
+            _ZoneCounters(
+              activations: _grid.zoneActivations,
+              flashZone: _flashZone,
+              flashToken: _flashToken,
+            ),
             _ModeBar(
               mode: _mode,
               onSelect: (v) => setState(() => _mode = v),
@@ -785,7 +917,6 @@ class _GameScreenState extends State<GameScreen>
                   pendingZone: _formulaTracker.pendingZone,
                 ),
             },
-            _RuleBar(selected: _rules),
             _BottomBar(
               running: _running,
               inscribing: _inscribing,
@@ -1518,9 +1649,8 @@ class _MediaRow extends StatelessWidget {
 
 /// Incantation/Summon toggle (design doc "Summons") -- chooses whether
 /// _inscribe() reads this grid's element sequence as a 16-cell incantation
-/// effect (default) or a summoned creature. Styled like _RuleBar's own
-/// hand-rolled toggle row rather than a Material SegmentedButton, to match
-/// the rest of this screen.
+/// effect (default) or a summoned creature. A hand-rolled toggle row rather
+/// than a Material SegmentedButton, to match the rest of this screen.
 class _ModeBar extends StatelessWidget {
   final InscriptionMode mode;
   final ValueChanged<InscriptionMode> onSelect;
@@ -1555,9 +1685,8 @@ class _ModeBar extends StatelessWidget {
     return Container(
       color: const Color(0xFF1E0E08),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      // Same shape as _RuleBar's chip strip, and the same narrow-phone
-      // overflow: the mode buttons are sized to their labels and there are
-      // more of them than fit at 360dp.
+      // The mode buttons are sized to their labels and there are more of
+      // them than fit at 360dp, so the strip scrolls rather than overflowing.
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: Row(
@@ -1682,96 +1811,39 @@ class _SummonPreview extends StatelessWidget {
   }
 }
 
-/// Read-only readout of which element the ink is currently infused with --
-/// i.e. the rule that will evolve the grid on the next step.
+/// The elemental tracker: live decayed border pressure per zone.
 ///
-/// Deliberately NOT a control. Infusion is *earned*: advanceDominance only
-/// dispatches a non-neutral rule while that element's decayed zone pressure
-/// is supreme, and the proof oracle (ca_run.dart's runStepper) always replays
-/// a spell from CARules.neutral. A hand-picked infusion would therefore evolve
-/// the on-screen grid down a trajectory the circuit can never reproduce --
-/// the formula bar, armor preview, mana cost and recipe discoveries would all
-/// describe a spell different from the one Inscribe certifies. This used to be
-/// a row of TextButtons that set _rules directly; that was the bug.
-class _RuleBar extends StatelessWidget {
-  final CARules selected;
-
-  static const _presets = [CARules.neutral, CARules.fire, CARules.earth, CARules.water, CARules.wind];
-
-  const _RuleBar({required this.selected});
-
-  // Colors live on the Text style rather than on an enclosing button theme so
-  // that "which element is active" stays readable from a widget test without
-  // a tappable ancestor to key off (see
-  // game_screen_dominance_characterization_test.dart).
-  static const _activeInk = Color(0xFFF5F0E8);
-  static const _idleInk = Color(0xFF9A9488);
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      color: const Color(0xFF1E0E08),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      // The preset chips are a fixed-count strip whose natural width exceeds a
-      // narrow phone's — it overflowed by ~200px at 360dp. Scrolling keeps
-      // every preset reachable at its designed size, which suits a chip strip
-      // better than shrinking the labels would.
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            const Padding(
-              padding: EdgeInsets.only(right: 10),
-              child: Text(
-                'INK',
-                style: TextStyle(
-                  color: Color(0xFF6B5C4A),
-                  fontSize: 11,
-                  letterSpacing: 2,
-                ),
-              ),
-            ),
-            ..._presets.map((r) {
-              final active = r.name == selected.name;
-              return Padding(
-                key: ValueKey('rule-chip-${r.name}'),
-                padding: const EdgeInsets.only(right: 8),
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: active
-                        ? const Color(0xFF5A3828)
-                        : Colors.transparent,
-                    borderRadius: BorderRadius.circular(4),
-                    border: Border.all(
-                      color: active
-                          ? const Color(0xFF5A3828)
-                          : const Color(0xFF4A3020),
-                    ),
-                  ),
-                  child: Text(
-                    r.name,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: active ? _activeInk : _idleInk,
-                    ),
-                  ),
-                ),
-              );
-            }),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ZoneCounters extends StatelessWidget {
+/// The counters are also where "you just earned an element" is announced.
+/// The formula bar below shows *what* the trajectory has spelled so far,
+/// but a chip quietly appearing at the end of a scrolling row is easy to
+/// miss mid-run; flashing the source counter at the same instant makes the
+/// causal link legible -- this element just went into your formula.
+///
+/// The flash is keyed on [flashToken], not [flashZone]: the same element
+/// can be earned on consecutive generations, and those must read as two
+/// events rather than one continuous highlight.
+class _ZoneCounters extends StatefulWidget {
   final Map<BorderZone, int> activations;
 
-  const _ZoneCounters({required this.activations});
+  /// The element most recently added to the formula, or null if none has
+  /// been (or the tracker was just wiped).
+  final BorderZone? flashZone;
 
+  /// Changes on every formula addition -- see the class comment.
+  final int flashToken;
+
+  const _ZoneCounters({
+    required this.activations,
+    required this.flashZone,
+    required this.flashToken,
+  });
+
+  @override
+  State<_ZoneCounters> createState() => _ZoneCountersState();
+}
+
+class _ZoneCountersState extends State<_ZoneCounters>
+    with SingleTickerProviderStateMixin {
   static const _zones = [
     (BorderZone.fire,  'Fire',  Color(0xFFCC3311)),
     (BorderZone.air,   'Air',   Color(0xFF6699BB)),
@@ -1779,42 +1851,127 @@ class _ZoneCounters extends StatelessWidget {
     (BorderZone.earth, 'Earth', Color(0xFF7A5C28)),
   ];
 
+  // Shorter than the 1000ms auto-run step so a flash always resolves before
+  // the next generation can start one, rather than two overlapping.
+  static const _flashDuration = Duration(milliseconds: 800);
+
+  late final AnimationController _ctrl = AnimationController(
+    vsync: this,
+    duration: _flashDuration,
+  );
+
+  // The zone the *currently running* flash belongs to, latched when the
+  // flash starts. Not read from widget.flashZone at paint time: that field
+  // keeps its value after the animation ends, and a later rebuild would
+  // otherwise re-tint a counter with no animation running.
+  BorderZone? _flashing;
+
+  @override
+  void didUpdateWidget(covariant _ZoneCounters oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.flashToken != oldWidget.flashToken && widget.flashZone != null) {
+      _flashing = widget.flashZone;
+      _ctrl.forward(from: 0.0);
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  // 0 -> 1 -> 0 over the flash: a fast rise to full highlight, then a
+  // slower fade back, so the eye catches the onset and the readout returns
+  // to its calm state on its own.
+  double _intensity(double t) => t < 0.25
+      ? Curves.easeOut.transform(t / 0.25)
+      : 1.0 - Curves.easeIn.transform((t - 0.25) / 0.75);
+
+  Widget _counter(BorderZone zone, String label, Color color, double flash) {
+    final count = widget.activations[zone] ?? 0;
+    // One quarter of the row each, and the readout shrinks inside its
+    // share rather than pushing the row past the screen edge -- four
+    // fixed-width chips overflowed by ~90px at 360dp. The counts have to
+    // stay side by side to be comparable at a glance, so scaling down
+    // beats wrapping or scrolling here.
+    return Expanded(
+      child: FittedBox(
+        fit: BoxFit.scaleDown,
+        // Transform, not a larger box: the "pop" must not change the
+        // counter's laid-out size, or the FittedBox above would rescale the
+        // text mid-flash and the whole row would visibly jitter on a narrow
+        // phone. A Transform paints big and measures small.
+        child: Transform.scale(
+          scale: 1.0 + 0.10 * flash,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.22 * flash),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: color.withValues(alpha: 0.85 * flash)),
+              boxShadow: flash == 0
+                  ? null
+                  : [
+                      BoxShadow(
+                        color: color.withValues(alpha: 0.5 * flash),
+                        blurRadius: 12 * flash,
+                      ),
+                    ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 10,
+                  height: 10,
+                  color: Color.lerp(color, const Color(0xFFF5F0E8), 0.5 * flash),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  '$label: $count',
+                  style: TextStyle(
+                    // Brightens toward parchment white at the peak, so the
+                    // flash reads even where the zone color is dark.
+                    color: Color.lerp(
+                      const Color(0xFFB8A898),
+                      const Color(0xFFF5F0E8),
+                      flash,
+                    ),
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Container(
       color: const Color(0xFF1E0E08),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      // No mainAxisAlignment: every child is Expanded, so there is no free
-      // space left for one to distribute.
-      child: Row(
-        children: _zones.map((entry) {
-          final (zone, label, color) = entry;
-          final count = activations[zone] ?? 0;
-          // One quarter of the row each, and the readout shrinks inside its
-          // share rather than pushing the row past the screen edge — four
-          // fixed-width chips overflowed by ~90px at 360dp. The counts have to
-          // stay side by side to be comparable at a glance, so scaling down
-          // beats wrapping or scrolling here.
-          return Expanded(
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(width: 10, height: 10, color: color),
-                  const SizedBox(width: 6),
-                  Text(
-                    '$label: $count',
-                    style: const TextStyle(
-                      color: Color(0xFFB8A898),
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
-              ),
-            ),
+      child: AnimatedBuilder(
+        animation: _ctrl,
+        builder: (context, _) {
+          final flash = _ctrl.isAnimating ? _intensity(_ctrl.value) : 0.0;
+          // No mainAxisAlignment: every child is Expanded, so there is no
+          // free space left for one to distribute.
+          return Row(
+            children: [
+              for (final (zone, label, color) in _zones)
+                _counter(
+                  zone,
+                  label,
+                  color,
+                  zone == _flashing ? flash : 0.0,
+                ),
+            ],
           );
-        }).toList(),
+        },
       ),
     );
   }

@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// game_screen_drag_paint_test.dart — checks that dragging a finger across the
-// grid activates every hex the drag path crosses (not just the two cells the
-// pointer happened to land on at gesture start/end), and that a single tap
-// still toggles as before.
+// game_screen_drag_paint_test.dart — checks that a drag along a hex spoke
+// fills in the cells between the pointer's samples (not just the two it
+// happened to land on), and that a single tap still toggles as before.
+//
+// Drags are normalized to straight lines now, so the gap-filling here is a
+// property of the line rather than of path interpolation -- see
+// game_screen_straight_line_drag_test.dart for the normalization itself.
 
 import 'dart:math';
 
@@ -44,8 +47,9 @@ void main() {
 
     final gesture = await tester.startGesture(canvasTopLeft + localFor(start));
     await tester.pump();
-    // Only two moveTo calls (skipping past `mid`) -- this exercises the
-    // path-interpolation in _activateAlongPath, not just point sampling.
+    // One moveTo, skipping past `mid` entirely: the stroke is derived from
+    // the anchor and the touch point, so `mid` is filled because it lies on
+    // the line, not because the pointer was sampled there.
     await gesture.moveTo(canvasTopLeft + localFor(end));
     await tester.pump();
     await gesture.up();
@@ -53,7 +57,7 @@ void main() {
 
     final grid = gridNow();
     expect(grid.cells[start], Element.alive);
-    expect(grid.cells[mid], Element.alive, reason: 'cell between the two touch points should be filled in by interpolation');
+    expect(grid.cells[mid], Element.alive, reason: 'cell between the two touch points lies on the line and must be filled');
     expect(grid.cells[end], Element.alive);
   });
 

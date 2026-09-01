@@ -610,6 +610,15 @@ class HexGridPainter extends CustomPainter {
     );
   }
 
+  /// Center of [coord] in canvas-local pixels — the inverse of
+  /// [pixelToHex], exposed because the drag-to-draw gesture in main.dart
+  /// needs the same layout math to snap a stroke to a hex direction.
+  /// Pure geometry: [coord] need not be a cell of [grid].
+  Offset hexToPixel(HexCoord coord, Size canvasSize) => _hexToPixel(
+        coord,
+        Offset(canvasSize.width / 2, canvasSize.height / 2),
+      );
+
   HexCoord? pixelToHex(Offset pixel, Size canvasSize) {
     final center = Offset(canvasSize.width / 2, canvasSize.height / 2);
     final dx = pixel.dx - center.dx;

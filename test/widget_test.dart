@@ -13,6 +13,9 @@ void main() {
     await tester.pump();
     expect(find.text('Runewright'), findsOneWidget);
     expect(find.text('Step'), findsOneWidget);
-    expect(find.text('Fire'), findsOneWidget);
+    // The elemental tracker's four counters, which read "<Element>: N".
+    // (This used to assert a bare "Fire" -- the ink bar's preset chip --
+    // but that bar is gone; infusion is earned, never chosen.)
+    expect(find.text('Fire: 0'), findsOneWidget);
   });
 }

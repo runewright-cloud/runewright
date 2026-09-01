@@ -13,9 +13,8 @@
 // added specifically because the first test's seed never exercises A1 or
 // A3 (single zone throughout, never tied, supreme on first touch) -- it
 // uses three zones so a real "leading but not supreme" gap and a real tie
-// both occur, and checks the most directly player-visible signal of A1's
-// effect: which preset is highlighted in the RuleBar (i.e. what's actually
-// dispatched), not just the zone counters/banner.
+// both occur, and checks the dispatched ruleset itself (what's actually
+// evolving the grid), not just the zone counters/banner.
 //
 // _GameScreenState's functions are private to main.dart and unreachable
 // from a test in a different library, so the only way to characterize its
@@ -26,6 +25,7 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/engine/hex_grid.dart' show HexCoord;
 import 'package:rune_duel/main.dart';
 import 'package:rune_duel/ui/hex_grid_painter.dart';
@@ -72,29 +72,28 @@ bool _supremeBannerShown() => find.textContaining('SUPREME DOMINANCE').evaluate(
 String _snapshot(Map<String, int> counters, bool supreme) =>
     '${['Fire', 'Air', 'Water', 'Earth'].map((z) => '$z:${counters[z]}').join(',')},supreme:$supreme';
 
-// The RuleBar highlights exactly one preset -- the active/dispatched one --
-// with the bright ink color; every other preset is dimmed. This is the most
-// directly player-visible signal of what's actually running, distinct from
-// the zone counters (which reflect pressure, not dispatch) and the supreme
-// banner (which already existed pre-A1 and doesn't by itself prove dispatch
-// is gated).
+// Which ruleset is currently dispatched -- distinct from the zone counters
+// (which reflect pressure, not dispatch) and from the supreme banner (which
+// predates A1 and doesn't by itself prove dispatch is gated).
 //
-// The bar is a read-only readout, so there is no tappable ancestor to key
-// off: each preset is keyed 'rule-chip-<Name>' and carries its state in its
-// own Text color. (It used to be a row of TextButtons whose active one was
-// disabled -- but those buttons let a player *set* the infusion by hand,
-// bypassing supreme dominance entirely, so they're gone.)
-String _activeRuleBarLabel(WidgetTester tester) {
-  for (final label in ['Neutral', 'Fire', 'Earth', 'Water', 'Wind']) {
-    final text = tester.widget<Text>(
-      find.descendant(
-        of: find.byKey(ValueKey('rule-chip-$label')),
-        matching: find.byType(Text),
-      ),
-    );
-    if (text.style?.color == const Color(0xFFF5F0E8)) return label;
-  }
-  throw StateError('no RuleBar preset is highlighted as active');
+// Read off HexGridPainter.activeZone, which GameScreen builds from
+// activeZoneFor(_rules): it is the same value that decides how the next
+// generation evolves, so it can't drift from the dispatch under test. This
+// used to read the RuleBar's highlighted preset, but that bar is gone --
+// it was originally a row of TextButtons that let a player *set* the
+// infusion by hand, bypassing supreme dominance (and desyncing the on-screen
+// trajectory from the one the circuit certifies); once de-controlled it was
+// a readout of something the player never chooses, so it was removed
+// outright.
+String _dispatchedRuleLabel(WidgetTester tester, Finder paintFinder) {
+  final painter = tester.widget<CustomPaint>(paintFinder).painter as HexGridPainter;
+  return switch (painter.activeZone) {
+    null => 'Neutral',
+    BorderZone.fire => 'Fire',
+    BorderZone.air => 'Wind',
+    BorderZone.water => 'Water',
+    BorderZone.earth => 'Earth',
+  };
 }
 
 void main() {
@@ -208,7 +207,7 @@ void main() {
       await tester.tap(stepButton);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 500));
-      expect(_activeRuleBarLabel(tester), equals('Neutral'));
+      expect(_dispatchedRuleLabel(tester, paintFinder), equals('Neutral'));
       expect(_supremeBannerShown(), isFalse);
     }
 
@@ -217,7 +216,7 @@ void main() {
     await tester.tap(stepButton);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
-    expect(_activeRuleBarLabel(tester), equals('Water'));
+    expect(_dispatchedRuleLabel(tester, paintFinder), equals('Water'));
     expect(_supremeBannerShown(), isTrue);
 
     // Gen 5: Air and Fire both touch the border this generation. Water and
@@ -227,7 +226,7 @@ void main() {
     await tester.tap(stepButton);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
-    expect(_activeRuleBarLabel(tester), equals('Neutral'),
+    expect(_dispatchedRuleLabel(tester, paintFinder), equals('Neutral'),
         reason: 'water and air are tied for the lead -- a tie always dispatches neutral');
     expect(_supremeBannerShown(), isFalse);
     final gen5Counters = _zoneCounters(tester);
@@ -239,14 +238,14 @@ void main() {
     // decayed as heavily, having never been a tied leader) is now the sole
     // leader -- but fire's pressure (2) doesn't exceed the other zones'
     // combined pressure (1 + 1 = 2), so it isn't supreme. This is the A1
-    // proof: under the OLD ungated dispatch, the RuleBar would now
-    // highlight "Fire" (the new unique leader) -- under the gated system,
+    // proof: under the OLD ungated dispatch, Fire (the new unique leader)
+    // would now be dispatched -- under the gated system,
     // dispatch stays at neutral because the leader isn't supreme, even
     // though fire visibly, uniquely leads the zone counters.
     await tester.tap(stepButton);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
-    expect(_activeRuleBarLabel(tester), equals('Neutral'),
+    expect(_dispatchedRuleLabel(tester, paintFinder), equals('Neutral'),
         reason: 'fire leads this generation but is not supreme -- A1 must gate dispatch back to neutral');
     expect(_supremeBannerShown(), isFalse);
     final gen6Counters = _zoneCounters(tester);
