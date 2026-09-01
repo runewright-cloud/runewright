@@ -165,7 +165,11 @@ void main() {
     // they have a reason to look for it.
     expect(find.text('1 of ${VocalEnrollment.suggestedTakes} attunements'),
         findsNWidgets(VocalSlot.values.length));
-    expect(find.textContaining('no upper limit'), findsOneWidget);
+    // No assertion on the guidance copy: this test used to also look for the
+    // phrase 'no upper limit', which 9e598fb's rewrite of that paragraph
+    // deleted (it now says "More is better"). The no-ceiling behavior itself
+    // is proven by the sibling test below, which checks that the denominator
+    // is dropped rather than that a sentence says so.
   });
 
   testWidgets('drops the progress denominator once a word is well attuned',
@@ -219,7 +223,13 @@ void main() {
     await pumpScreen(tester);
     await tester.enterText(find.widgetWithText(TextField, 'ignis'), 'ig');
     await tester.pump();
-    expect(find.textContaining('at least'), findsOneWidget);
+    // Asserted against rejectReason's own output rather than a fragment of
+    // it: the reason string is this screen's to render but vocabulary_
+    // profile.dart's to word, so a paraphrase here can drift from it. It also
+    // can't collide with unrelated prose -- the loose 'at least' this used to
+    // match started finding the guidance paragraph too once 9e598fb reworded
+    // it, and failed as "too many" as if validation were broken.
+    expect(find.text(VocabularyProfile.rejectReason('ig')!), findsOneWidget);
   });
 
   testWidgets('two slots cannot share one word', (tester) async {

@@ -7985,3 +7985,90 @@ card reading `MediaQuery` size / padding / viewPadding / systemGestureInsets /
 devicePixelRatio / text scale off the device. Off in player builds. The
 on-device pass — real S25, 3-button nav *and* gesture nav, raised display
 scaling — has not been run; that is what should close this out.
+
+## Two long-red vocabulary tests were stale copy assertions — FIXED (2026-08-30)
+
+`test/ui/vocabulary_screen_test.dart` had been failing 12/14 since **2026-08-07**.
+Both failures had one cause and neither was a product bug: `9e598fb` ("Sound
+Updates") rewrote the guidance paragraph on the Vocal tab
+(`lib/ui/vocabulary_screen.dart:454`) and the tests, written at `80ba746`, were
+never updated with it. The screen and its validation were correct throughout.
+
+### The paragraph
+
+```
+before (3518bd2, last green)
+  "Attune each word about 4 times ... There is no upper limit: keep going
+   as long as you like, and your oldest attunement quietly retires ..."
+
+after (9e598fb)
+  "Preferably attune each word at least 4 times. More is better, so long as
+   each word has the same number of attunements ..."
+```
+
+The rewrite deleted a phrase one test matched on and introduced a phrase a
+second test was already matching on — so one finder went to 0 and the other
+went to 2.
+
+### Failure 1 — `find.textContaining('no upper limit')`, found 0
+
+Test: *suggests a number of attunements per word, with no ceiling* (line 168).
+The phrase was simply deleted. Note that `grep -rn "no upper limit" lib/` still
+**hits** — `lib/ui/widgets/gesture_training_panel.dart:213`, which is the
+*Somatic* tab and not mounted in this assertion's context. The string is alive
+in the repo and dead on this screen; the grep makes the test look correct.
+
+Fix: the assertion was deleted, not repointed. The test's surviving assertion
+(progress counts on every row) is the behavioural half, and the "no ceiling"
+claim in its name is genuinely proven by the sibling test *drops the progress
+denominator once a word is well attuned*. The deleted line was a copy check
+wearing a behaviour test's name.
+
+### Failure 2 — `find.textContaining('at least')`, found 2
+
+Test: *a too-short word is refused with a reason* (line 222). The new guidance
+copy contains "at least", so the loose finder matched it **and** the validation
+message, and `findsOneWidget` failed as *"too many"*.
+
+Fix: assert against the source of truth. `VocabularyProfile.rejectReason` is a
+pure function returning the exact string the screen renders:
+
+```dart
+- expect(find.textContaining('at least'), findsOneWidget);
++ expect(find.text(VocabularyProfile.rejectReason('ig')!), findsOneWidget);
+```
+
+Verified live rather than vacuous: asserting a deliberately wrong string fails,
+and the diagnostic now prints the full expected message instead of a match count.
+
+### Traps worth keeping
+
+* **`textContaining(<short prose fragment>)` + `findsOneWidget` fails in two
+  directions, and one of them lies.** A vanished fragment fails as "found 0",
+  which reads honestly as missing text and points at the right file. A fragment
+  that turns up twice fails as "too many", which reads as a broken feature and
+  points at the wrong one — this failure was named *a too-short word is refused
+  with a reason* while word validation was working perfectly. Where a constant
+  or pure function produces the string, assert on that; where the copy really
+  is under test, match enough of it to be unique on the screen.
+* **Prose-coupled assertions rot silently across a copy edit.** Nothing in
+  `9e598fb` touched a test, so the rewrite looked clean and the suite went red
+  three weeks before anyone traced it. Rewording user-facing copy is a
+  test-affecting change.
+* **Two permanently-red tests are a real cost even when nothing is broken.**
+  Every full-suite run ended in a two-line failure list that had to be
+  re-checked against whatever had just changed — that check ran three times in
+  the session that finally fixed them. A standing failure trains you to skim
+  the failure list, which is exactly the habit that lets a real regression
+  through.
+* **Confirm a copy-drift diagnosis by restoring the old copy.** Pasting the
+  pre-`9e598fb` paragraph back (nothing else touched) took the file to 14/14;
+  restoring HEAD brought both failures back. That is the whole proof, and it
+  costs one edit.
+
+### Scope
+
+Test-only. No production code was changed — the rewritten copy is the intended
+product. The repo has **70** `find.textContaining(...)` assertions across **18**
+test files; only this file's eight were audited, so nothing is claimed about the
+other 62.
