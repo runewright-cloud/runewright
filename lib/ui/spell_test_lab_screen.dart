@@ -11,6 +11,7 @@
 // custom spell's effects into an incoming hit. Both are test-only: regular
 // Solo Practice and the regular spell library are untouched.
 
+import 'dart:async' show unawaited;
 import 'dart:convert' show utf8;
 import 'dart:typed_data';
 
@@ -25,6 +26,7 @@ import '../battle/models/solo_battle_setup.dart';
 import '../battle/networking/solo_battle_session.dart';
 import '../spells/chapter_asset.dart';
 import '../spells/spell_asset.dart';
+import '../spells/wild_magic_preview.dart' show resolveLocalCasterPubkeyHex;
 import 'battle_screen.dart';
 import 'manuscript_theme.dart';
 import 'safe_layout.dart';
@@ -258,12 +260,23 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
 
   // ── Test battle ──────────────────────────────────────────────────────────
 
-  void _beginTestBattle() {
+  Future<void> _beginTestBattle() async {
     final chapter = _selectedChapter;
     if (chapter == null) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('No Chapter Selected')));
+      return;
+    }
+    // Same rule as Solo Practice: the lab's wizard is the device's real
+    // wizard, because Wild Magic keys on the caster and a test battle that
+    // rehearses someone else's spellbook is worse than no test battle.
+    final localOwnerPubkeyHex = await resolveLocalCasterPubkeyHex();
+    if (!mounted) return;
+    if (localOwnerPubkeyHex == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Could not read your Runekey')));
       return;
     }
     const localId = 'local';
@@ -272,7 +285,12 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
       gridRadius: _gridRadius,
       maxPlayers: 2,
     );
-    final setup = buildSoloBattleState(chapter, config, localId: localId);
+    final setup = buildSoloBattleState(
+      chapter,
+      config,
+      localOwnerPubkeyHex: localOwnerPubkeyHex,
+      localId: localId,
+    );
     final dummyPos = setup.dummyPosition;
     // "Two squares south" — south is +r at constant q on this hex layout
     // (battlefield_painter's axialToPixel: dy increases with r at q=0), i.e.
@@ -418,7 +436,7 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
             SizedBox(
               height: 52,
               child: OutlinedButton(
-                onPressed: _beginTestBattle,
+                onPressed: () => unawaited(_beginTestBattle()),
                 style: OutlinedButton.styleFrom(
                   foregroundColor: kRubricRed,
                   side: const BorderSide(color: kRubricRed, width: 2),

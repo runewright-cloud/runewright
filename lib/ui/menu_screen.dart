@@ -6,6 +6,8 @@ import '../dev_flags.dart' show kShowDevSurfaces;
 import '../identity/identity.dart';
 import '../identity/key_packing.dart';
 import '../main.dart';
+import '../spells/wild_magic_preview.dart'
+    show activeCasterPubkeyHex, activeWildMagicContext;
 import 'about_screen.dart';
 import 'apprenticeship_screen.dart';
 import 'battle_lobby_screen.dart';
@@ -61,6 +63,15 @@ class MenuScreen extends StatelessWidget {
                       final id = await Identity.loadOrCreate();
                       final name = await Identity.loadWizardName();
                       final hex = await id.ownerPubkeyHex();
+                      // The hub every session passes through, and the first
+                      // screen a freshly onboarded wizard reaches — so it is
+                      // where a caster identity that did not exist at boot
+                      // gets picked up. AppRoot primes the leyline half
+                      // unconditionally; only this half is identity-gated.
+                      if (activeCasterPubkeyHex == null) {
+                        activeWildMagicContext.value =
+                            activeWildMagicContext.value.withCaster(hex);
+                      }
                       return (fieldHexToLeBytes(hex, 32), name);
                     } catch (_) {
                       return (null, null);

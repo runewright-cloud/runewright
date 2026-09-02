@@ -62,6 +62,10 @@ void main() {
       final solo = buildSoloBattleState(
         ChapterAsset(id: 'ch', name: 'Test', createdAt: DateTime.utc(2026, 8, 26)),
         _config,
+        // An armor test, not a Wild Magic one — but the solo builder requires
+        // a real caster identity rather than defaulting to a stub, so name one.
+        localOwnerPubkeyHex:
+            '0x00000000000000000000000000000000000000000000000000000000000000a1',
       );
       for (final av in solo.state.avatars) {
         expect(av.armor, isNull);

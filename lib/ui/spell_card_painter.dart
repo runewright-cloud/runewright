@@ -35,10 +35,11 @@
 //
 // Wild magic is untelegraphed DURING a duel by design — the resolution reveal
 // is where an opponent learns it fired — but it is a fixed, public property of
-// the rune, and hiding it from the card's owner would just be a memory tax.
-// The panel previews under whichever leyline seed is in force
-// (activeLeylineSeed); see wild_magic_preview.dart on why that is not always
-// the player's own.
+// the rune for a given wizard, and hiding it from the card's holder would just
+// be a memory tax. The panel previews as whoever is holding the card, under
+// whichever leyline is in force (activeWildMagicContext); see
+// wild_magic_preview.dart on why neither is always the player's own default,
+// and why a card with no viewer identity shows nothing at all.
 
 import 'dart:async' show Timer;
 import 'dart:math' as math;
@@ -928,12 +929,13 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
                           // overlays: a countered copy still needs its red
                           // ribbon to read as red.
                           _tinted(
-                            // Rebuilds on a leyline-seed change so a card left
-                            // open across a settings edit can't keep claiming
-                            // wild magic it no longer has.
-                            ValueListenableBuilder<String>(
-                              valueListenable: activeLeylineSeed,
-                              builder: (_, seed, _) => AnimatedBuilder(
+                            // Rebuilds when the caster or the leyline changes,
+                            // so a card left open across a settings edit or a
+                            // duel handshake can't keep claiming wild magic it
+                            // no longer has.
+                            ValueListenableBuilder<WildMagicPreviewContext>(
+                              valueListenable: activeWildMagicContext,
+                              builder: (_, wmContext, _) => AnimatedBuilder(
                                 animation: _flip,
                                 builder: (_, _) => _CardFrame(
                                   spell: widget.spell,
@@ -947,7 +949,7 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
                                   liveMaxHp: widget.liveMaxHp,
                                   wildMagic: wildMagicPreviewFor(
                                     widget.spell,
-                                    seed,
+                                    wmContext,
                                   ),
                                 ),
                               ),
@@ -1660,10 +1662,12 @@ class _SpellCardWidgetState extends State<SpellCardWidget> {
     final art = SizedBox(
       width: widget.size,
       height: widget.size,
-      child: ValueListenableBuilder<String>(
-        valueListenable: activeLeylineSeed,
-        builder: (context, seed, child) {
-          if (wildMagicPreviewFor(widget.spell, seed).isEmpty) return child!;
+      child: ValueListenableBuilder<WildMagicPreviewContext>(
+        valueListenable: activeWildMagicContext,
+        builder: (context, wmContext, child) {
+          if (wildMagicPreviewFor(widget.spell, wmContext).isEmpty) {
+            return child!;
+          }
           // Thumbnails run as small as 36px in the battle hand tray, where the
           // full-card intensity all but disappears — push it up so the luster
           // still reads as "this one is wild" at a glance.

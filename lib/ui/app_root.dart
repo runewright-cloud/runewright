@@ -52,11 +52,15 @@ class AppRoot extends StatelessWidget {
 
   Future<bool> _identityExistsAfterSeeding() async {
     unawaited(_seedThenMigrate());
-    // Primes the leyline seed word every spell card previews its wild magic
-    // under. Same rationale as the seeding above: fire-and-forget, its own
-    // failure already swallowed, never a gate on routing.
-    unawaited(refreshActiveLeylineSeed());
-    return Identity.exists();
+    // Routing decided FIRST, then the priming: `refreshActiveWildMagicContext`
+    // reads the same key this check reads, and resolving the boot route before
+    // starting it keeps the two off each other's timeline.
+    final exists = await Identity.exists();
+    // Primes the caster identity and leyline every spell card previews its
+    // wild magic under. Same rationale as the seeding above: fire-and-forget,
+    // its own failure already swallowed, never a gate on routing.
+    unawaited(refreshActiveWildMagicContext());
+    return exists;
   }
 
   @override

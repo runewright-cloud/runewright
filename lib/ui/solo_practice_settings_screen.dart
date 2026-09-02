@@ -4,6 +4,8 @@
 // no network required. Hands off a MatchConfig to the battle screen once
 // the turn loop is implemented; for now routes to the match-starting stub.
 
+import 'dart:async' show unawaited;
+
 import 'package:flutter/material.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
 
@@ -14,6 +16,7 @@ import '../battle/models/leyline_config.dart'
 import '../identity/identity.dart';
 import '../battle/networking/solo_battle_session.dart';
 import '../spells/chapter_asset.dart';
+import '../spells/wild_magic_preview.dart' show resolveLocalCasterPubkeyHex;
 import 'battle_screen.dart';
 import 'manuscript_theme.dart';
 import 'widgets/chapter_picker.dart';
@@ -170,7 +173,7 @@ class _SoloPracticeSettingsScreenState
     return SizedBox(
       height: 52,
       child: OutlinedButton(
-        onPressed: _beginBattle,
+        onPressed: () => unawaited(_beginBattle()),
         style: OutlinedButton.styleFrom(
           foregroundColor: kIlluminationGold,
           side: const BorderSide(color: kIlluminationGold, width: 2),
@@ -190,7 +193,7 @@ class _SoloPracticeSettingsScreenState
     );
   }
 
-  void _beginBattle() {
+  Future<void> _beginBattle() async {
     final chapter = _selectedChapter;
     if (chapter == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -199,8 +202,27 @@ class _SoloPracticeSettingsScreenState
       return;
     }
 
+    // Practice must be fought by the REAL local wizard: Wild Magic keys on the
+    // caster, so a placeholder identity here would rehearse a spellbook the
+    // player does not own (docs/WILD_MAGIC_PLAN_VNEXT.md §2). No key, no
+    // practice — there is no honest substitute, and silently seating a stub
+    // wizard is exactly the bug this replaced.
+    final localOwnerPubkeyHex = await resolveLocalCasterPubkeyHex();
+    if (!mounted) return;
+    if (localOwnerPubkeyHex == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not read your Runekey')),
+      );
+      return;
+    }
+
     const localId = 'local';
-    final setup = buildSoloBattleState(chapter, _config, localId: localId);
+    final setup = buildSoloBattleState(
+      chapter,
+      _config,
+      localOwnerPubkeyHex: localOwnerPubkeyHex,
+      localId: localId,
+    );
     final dummyPos = setup.dummyPosition;
     // "Two squares south" — south is +r at constant q on this hex layout
     // (battlefield_painter's axialToPixel: dy increases with r at q=0), i.e.

@@ -1041,21 +1041,39 @@ so the old behaviour taxed memory rather than creating suspense. Nothing about a
 opponent's information changed.
 
 **Where the derivation lives.** `lib/spells/wild_magic_preview.dart`. It is **not** a second
-derivation path (§10 invariant 2): `WildMagic.seedHex`/`triggersFor` were split into
-`…FromParts` kernels that both the certified engine path and the card call, so the two can
-only ever disagree about where their inputs came from — the engine from certified proof
-outputs, the card from a stored `SpellAsset`. §4.6 / §10 invariant 6 is unchanged: nothing
-that can move battle state may read the preview. `test/spells/wild_magic_preview_test.dart`
-pins the agreement between them.
+derivation path (§10 invariant 2): `wildMagicPreviewFor` calls
+`PeerCastVerifier.certifyOwnProof` — the *same* call `TurnLoop.certifiedFromProofBytes`
+makes at cast time — so the card and the duel run one implementation over the spell's own
+proof. The only thing that differs is where the caster identity comes from: the engine
+takes it from the authenticated `WizardAvatar.ownerPubkeyHex` of the player casting, the
+card from the viewer's identity in `activeWildMagicContext`. §4.6 / §10 invariant 6 is
+unchanged: nothing that can move battle state may read the preview.
+`test/spells/wild_magic_preview_test.dart` pins the agreement between them.
 
-**Which seed a card previews under.** `activeLeylineSeed`, a `ValueNotifier` the library
-primes from `Identity.loadCommunitySeed()` and `BattleScreen` overrides with
-`MatchConfig.communitySeed` for the duration of a duel (restored on dispose). This matters
-because the guest adopts the host's word (§7.5) — during a duel a player's own setting is
-simply not what their spells hash under, and a card that previewed under it would lie at
-exactly the moment it mattered. Rotating the seed in Settings pushes the new value through
-the notifier, so the whole library visibly re-rolls, which is the anti-grinder lever (§2.6)
-made legible.
+*Updated by the Slice 3 preview/identity pass (2026-09-02).* Until then the card
+approximated §16's key from the stored `SpellAsset` — the INSCRIBER's pubkey, the authored
+formula and segment/dot counts, and an ordinary `LeylineConfig` rebuilt from a bare seed
+word. All three could disagree with the duel; a loaned rune previewed the lender's wild
+magic while the engine fired the borrower's. None of those authored fields is read any
+more.
+
+**Which caster and which leyline a card previews under.** `activeWildMagicContext`, a
+`ValueNotifier<WildMagicPreviewContext>` carrying the viewer's canonical pubkey and the
+structured `LeylineConfig` in force. `AppRoot` primes the leyline from
+`Identity.loadCommunitySeed()` and `MenuScreen` primes the caster from the local Runekey
+(the first screen a freshly onboarded wizard reaches); `BattleScreen` overrides BOTH for
+the duration of a duel — the local avatar's `ownerPubkeyHex` and `MatchConfig.leyline`,
+restored on dispose. The leyline half matters because the guest adopts the host's word
+(§7.5) — during a duel a player's own setting is simply not what their spells hash under,
+and a card that previewed under it would lie at exactly the moment it mattered. Rotating
+the seed in Settings pushes a new config through the notifier, so the whole library visibly
+re-rolls, which is the anti-grinder lever (§2.6) made legible.
+
+**No identity, no preview.** A surface with no viewer identity or no proof bytes — a
+trade-offer stub, a bestiary sighting, a card painted before the Runekey has been read —
+shows *no* wild magic rather than an approximation. A zero key would hand every
+unidentified viewer one shared magical identity, which is a consensus value invented out
+of nothing; the same reasoning `WildMagic.canonicalPubkeyBytes` already refuses it for.
 
 **One rendering trap, paid for once.** `Color.lerp` interpolates un-premultiplied, so a
 gradient stop of `0x00000000` drags the ramp through grey on its way to transparent. The

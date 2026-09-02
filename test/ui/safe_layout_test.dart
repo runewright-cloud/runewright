@@ -189,6 +189,13 @@ void expectTextNotClipped(
   );
 }
 
+/// A stand-in for the device's canonical gameplay key. These are layout tests
+/// — nothing here derives Wild Magic — but `buildSoloBattleState` requires a
+/// real caster identity rather than defaulting to a stub, so one is named here
+/// explicitly.
+const String _testLocalPubkeyHex =
+    '0x00000000000000000000000000000000000000000000000000000000000000a1';
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -290,7 +297,12 @@ void main() {
       // what needed to change.
       final chapter = await _seededChapter(tester);
       const config = MatchConfig();
-      final setup = buildSoloBattleState(chapter, config, localId: 'local');
+      final setup = buildSoloBattleState(
+        chapter,
+        config,
+        localOwnerPubkeyHex: _testLocalPubkeyHex,
+        localId: 'local',
+      );
 
       await pumpScreen(
         tester,
@@ -358,8 +370,12 @@ void main() {
       // screen — the same visible symptom as a missing inset, from the
       // opposite direction.
       final chapter = await _seededChapter(tester);
-      final setup =
-          buildSoloBattleState(chapter, const MatchConfig(), localId: 'local');
+      final setup = buildSoloBattleState(
+        chapter,
+        const MatchConfig(),
+        localOwnerPubkeyHex: _testLocalPubkeyHex,
+        localId: 'local',
+      );
 
       await pumpScreen(
         tester,

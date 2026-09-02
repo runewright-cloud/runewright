@@ -130,7 +130,14 @@ void main() {
         createdAt: DateTime.utc(2026, 7, 30),
         artifacts: const [ArtifactEntry(kind: ArtifactKind.bookmark)],
       );
-      final setup = buildSoloBattleState(chapter, _config);
+      final setup = buildSoloBattleState(
+        chapter,
+        _config,
+        // A mana-pool test, not a Wild Magic one — but the solo builder
+        // requires a real caster identity rather than defaulting to a stub.
+        localOwnerPubkeyHex:
+            '0x00000000000000000000000000000000000000000000000000000000000000a1',
+      );
       final local = setup.state.avatars.firstWhere((a) => a.playerId == 'local');
       expect(local.manaGemsEquipped, 0);
       expect(local.maxMana, _config.innateManaPool);

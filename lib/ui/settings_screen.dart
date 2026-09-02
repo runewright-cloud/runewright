@@ -26,12 +26,13 @@ import 'package:flutter/material.dart';
 
 import '../audio/spell_sound_settings.dart';
 import '../dev_flags.dart' show kShowDevSurfaces;
+import '../battle/models/leyline_config.dart' show LeylineConfig;
 import '../battle/models/wild_magic_effect.dart'
     show kDefaultCommunitySeed, normalizeCommunitySeed;
 import '../identity/identity.dart';
 import '../spells/library_backup_io.dart';
 import '../spells/spell_asset.dart';
-import '../spells/wild_magic_preview.dart' show activeLeylineSeed;
+import '../spells/wild_magic_preview.dart' show activeWildMagicContext;
 import 'avatars/avatar_picker_screen.dart';
 import 'avatars/avatar_sprites.dart';
 import 'about_screen.dart';
@@ -188,7 +189,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // the dialog above just promised the player exactly that, and a library
     // still showing the old tradition would make it look like nothing
     // happened.
-    activeLeylineSeed.value = raw;
+    activeWildMagicContext.value = activeWildMagicContext.value
+        .withLeyline(LeylineConfig.ordinary(raw));
     if (!mounted) return;
     setState(() => _savedSeed = raw);
   }

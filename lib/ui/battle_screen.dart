@@ -74,7 +74,10 @@ import '../spells/spell_sound_pack.dart' show loadPackSound;
 import '../spells/spell_sound_resolver.dart' show resolveSpellSound;
 import '../spells/supreme_tags.dart' show deriveSupremeTags;
 import '../spells/wild_magic_preview.dart'
-    show activeLeylineSeed, overrideLeylineSeed;
+    show
+        WildMagicPreviewContext,
+        activeWildMagicContext,
+        overrideWildMagicContext;
 import '../dev_flags.dart' show kAllowProoflessSpells;
 import 'avatars/avatar_sprites.dart' show AvatarAssignment, AvatarAtlas;
 import 'scenery/scenery_map.dart';
@@ -386,10 +389,11 @@ class _BattleScreenState extends State<BattleScreen>
       widget.soundPlayerForTesting ?? (_soundPlayerOrNull ??= SpellSoundPlayer());
   SpellSoundSettings _soundSettings = const SpellSoundSettings();
 
-  /// The library-wide leyline seed this duel displaces, restored on dispose.
-  /// Captured at construction rather than in initState so it is well-defined
-  /// on every path dispose can be reached by. See initState.
-  final String _leylineSeedBeforeDuel = activeLeylineSeed.value;
+  /// The library-wide preview context this duel displaces, restored on
+  /// dispose. Captured at construction rather than in initState so it is
+  /// well-defined on every path dispose can be reached by. See initState.
+  final WildMagicPreviewContext _wildMagicContextBeforeDuel =
+      activeWildMagicContext.value;
 
   // Stage 2 verifier init (see _initTurnLoop): true once _loop is safe to
   // read AND the battle-start opening deal has run (TurnLoop.startBattle), so
@@ -921,12 +925,19 @@ class _BattleScreenState extends State<BattleScreen>
       vsync: this,
       duration: _kAttackPlayback,
     );
-    // Cards opened during this duel must preview their wild magic under the
-    // duel's leyline seed, not the player's own — the host is authoritative
-    // over MatchConfig, so a guest fights under their host's tradition and
-    // their whole library finds different wild magic for the duration
-    // (WILD_MAGIC_PLAN.md §7.5). Restored in dispose().
-    overrideLeylineSeed(widget.state.config.communitySeed);
+    // Cards opened during this duel must preview their wild magic exactly as
+    // this duel will resolve it: as the LOCAL AVATAR (the identity TurnLoop
+    // keys the local caster on — `_casterOwnerPubkeyHex`, resolved from
+    // `WizardAvatar.ownerPubkeyHex`) under the MATCH's leyline. The host is
+    // authoritative over MatchConfig, so a guest fights under their host's
+    // tradition and their whole library finds different wild magic for the
+    // duration (WILD_MAGIC_PLAN.md §7.5). Restored in dispose().
+    overrideWildMagicContext(
+      WildMagicPreviewContext(
+        casterPubkeyHex: _localAvatarOwnerPubkeyHex(),
+        leyline: widget.state.config.leyline,
+      ),
+    );
     _initScenery();
     unawaited(_loadAvatarAtlas());
     _seedPeerAvatarChoice();
@@ -937,6 +948,20 @@ class _BattleScreenState extends State<BattleScreen>
     _initTurnLoop();
     _listenForPeerForfeit();
     unawaited(_loadSoundSettings());
+  }
+
+  /// The identity this duel's local casts are keyed on for Wild Magic — the
+  /// local `WizardAvatar.ownerPubkeyHex`, i.e. exactly what
+  /// `TurnLoop._casterOwnerPubkeyHex` resolves for [BattleScreen.localPlayerId]
+  /// (WILD_MAGIC_PLAN_VNEXT.md §2). Reading the avatar rather than the device's
+  /// own identity is what makes the card and the duel agree by construction:
+  /// whatever the avatar was seated with is what will actually cast.
+  ///
+  /// Null when the state has no avatar for the local player or its key is a
+  /// stub, which previews as no wild magic rather than as some other wizard's.
+  String? _localAvatarOwnerPubkeyHex() {
+    final hex = _local?.ownerPubkeyHex;
+    return (hex == null || hex.isEmpty) ? null : hex;
   }
 
   Future<void> _loadSoundSettings() async {
@@ -1475,7 +1500,7 @@ class _BattleScreenState extends State<BattleScreen>
 
   @override
   void dispose() {
-    activeLeylineSeed.value = _leylineSeedBeforeDuel;
+    activeWildMagicContext.value = _wildMagicContextBeforeDuel;
     _stallTimer?.cancel();
     _pulseController.dispose();
     _castAnimController.dispose();
