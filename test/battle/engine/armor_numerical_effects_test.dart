@@ -41,6 +41,7 @@ import 'package:rune_duel/battle/models/effect_kind.dart' show SpellAffinity;
 import 'package:rune_duel/battle/models/hex_battlefield.dart'
     show Battlefield, hexDistance;
 import 'package:rune_duel/battle/models/match_config.dart';
+import 'package:rune_duel/battle/models/leyline_config.dart' show LeylineConfig;
 import 'package:rune_duel/battle/models/minion.dart';
 import 'package:rune_duel/battle/models/status_effect_ids.dart';
 import 'package:rune_duel/battle/models/wizard_avatar.dart';
@@ -88,7 +89,7 @@ BattleState _state(
       playerHp: _kStartHp,
       gridRadius: radius,
       maxPlayers: 2,
-      communitySeed: communitySeed,
+      leyline: LeylineConfig.ordinary(communitySeed),
     ),
     avatars: List.of(avatars),
     teams: [

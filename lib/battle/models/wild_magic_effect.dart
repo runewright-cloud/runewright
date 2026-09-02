@@ -24,30 +24,17 @@
 
 import 'package:rune_duel/battle/models/effect_kind.dart' show SpellAffinity;
 
+export 'package:rune_duel/battle/models/leyline_config.dart'
+    show kDefaultCommunitySeed, normalizeCommunitySeed;
+
 // ── Community seed ────────────────────────────────────────────────────────────
-
-/// The leyline seed word used when a player has chosen none, and the fallback
-/// for any raw seed that normalizes to the empty string (`"---"`, `"日本"`).
-///
-/// Lives here rather than in `wild_magic.dart` so `MatchConfig` can default to
-/// it without the models layer depending on the engine layer.
-const String kDefaultCommunitySeed = 'universal';
-
-/// Design: *"case-insensitive, stripped of whitespace and punctuation"*.
-///
-/// THE ONE normalization implementation — `WildMagic.normalizeCommunitySeed`
-/// delegates here, and `MatchConfig.matches` compares normalized forms, so two
-/// duelists who typed `"Rivendell!"` and `"rivendell"` agree at the handshake
-/// exactly when their spells would hash identically. A second copy of this
-/// regex anywhere is a consensus bug waiting to happen.
-///
-/// The empty-result fallback matters: a seed of `"日本"` or `"---"` normalizes
-/// to the empty string, and an empty seed must not silently become a
-/// *different* magical tradition from [kDefaultCommunitySeed].
-String normalizeCommunitySeed(String raw) {
-  final s = raw.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
-  return s.isEmpty ? kDefaultCommunitySeed : s;
-}
+//
+// [kDefaultCommunitySeed] and [normalizeCommunitySeed] MOVED to
+// leyline_config.dart, where they belong: normalization is a property of the
+// leyline, not of the wild-magic effect table. They are re-exported here so
+// every existing `import 'wild_magic_effect.dart'` keeps working unchanged and
+// there is still exactly ONE implementation of the regex (the thing that must
+// never be copied — see leyline_config.dart's doc comment on why).
 
 // ── Rows ──────────────────────────────────────────────────────────────────────
 

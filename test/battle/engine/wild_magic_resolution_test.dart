@@ -17,6 +17,7 @@ import 'package:rune_duel/battle/engine/turn_loop.dart';
 import 'package:rune_duel/battle/models/battle_state.dart';
 import 'package:rune_duel/battle/models/hex_battlefield.dart' show Battlefield;
 import 'package:rune_duel/battle/models/match_config.dart';
+import 'package:rune_duel/battle/models/leyline_config.dart' show LeylineConfig;
 import 'package:rune_duel/battle/models/status_effect_ids.dart';
 import 'package:rune_duel/battle/models/terrain.dart';
 import 'package:rune_duel/battle/models/wild_magic_effect.dart';
@@ -171,7 +172,7 @@ _Ctx _setup({String seed = _seedRow1, int radius = 6}) {
       playerHp: 24,
       gridRadius: radius,
       maxPlayers: 1,
-      communitySeed: seed,
+      leyline: LeylineConfig.ordinary(seed),
     ),
     avatars: [local],
     teams: [Team(id: 'solo', playerIds: const [id])],

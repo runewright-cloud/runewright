@@ -12,8 +12,7 @@
 //
 // See docs/BATTLE_PROTOCOL.md §2 (matchConfig message) and §9 (caps/tiers).
 
-import 'package:rune_duel/battle/models/wild_magic_effect.dart'
-    show kDefaultCommunitySeed, normalizeCommunitySeed;
+import 'package:rune_duel/battle/models/leyline_config.dart' show LeylineConfig;
 import 'package:rune_duel/battle/engine/battle_engine_version.dart'
     show kBattleEngineVersion, kUndeclaredBattleEngineVersion;
 import 'package:rune_duel/spells/inscribe.dart' show kRulesetVersion;
@@ -49,7 +48,7 @@ class MatchConfig {
     this.vocalComponents = false,
     this.somaticComponents = false,
     this.simultaneousCasting = false,
-    this.communitySeed = kDefaultCommunitySeed,
+    this.leyline = LeylineConfig.ordinaryDefault,
   })  : assert(tier == 12 || tier == 24 || tier == 48, 'tier must be 12, 24, or 48'),
         assert(maxPlayers >= 1, 'maxPlayers must be ≥ 1'),
         assert(!experimentalMultiplayer || maxPlayers <= 6, 'LAN cap is 6');
@@ -170,22 +169,36 @@ class MatchConfig {
   /// take turns at, so ordering would be pure latency.
   bool get sequentialCasting => componentsEnabled && !simultaneousCasting;
 
-  /// The leyline seed word (design doc: "Community Seed Word") folded into
-  /// every spell's wild-magic hash — see WildMagic.seedHex. Stored RAW as the
-  /// player typed it; normalized at hash time so the settings UI can echo back
-  /// their own spelling.
+  /// The complete magical environment this match is fought under
+  /// (docs/LEYLINE_SEED_PLAN.md §2) — the community seed word plus the grammar
+  /// configuration that seed word does NOT encode.
+  ///
+  /// A struct rather than a string, and never parsed from one: "Rivendell 5"
+  /// means `communitySeed: 'rivendell'` with `formulaLength: 5`, not a seed
+  /// word that happens to end in a digit. See [LeylineConfig]'s header.
   ///
   /// Both sides must agree or the session aborts, which is exactly right: two
-  /// players from different traditions must explicitly settle on one word
-  /// before dueling, and a pre-wild-magic client fails agreement at the
-  /// handshake rather than silently desyncing mid-match.
+  /// players from different traditions must explicitly settle on one before
+  /// dueling, and a pre-wild-magic client fails agreement at the handshake
+  /// rather than silently desyncing mid-match.
   ///
-  /// Rotating this word is the ratified anti-grinder lever
+  /// Rotating the seed word is the ratified anti-grinder lever
   /// (WILD_MAGIC_PLAN.md §2.6): it invalidates every previously ground trigger
-  /// at zero cost and forces a grinder to start over after the new word is
-  /// announced. Recipe (formula) effects are deliberately unaffected, so a
-  /// travelling player's spellbook stays valid under any tradition.
-  final String communitySeed;
+  /// at zero cost. Recipe (formula) effects are deliberately unaffected under
+  /// an ordinary leyline, so a travelling player's spellbook stays valid under
+  /// any tradition.
+  final LeylineConfig leyline;
+
+  /// The leyline seed word, RAW as the player typed it — normalized at hash
+  /// time so the settings UI can echo back their own spelling.
+  ///
+  /// A delegating compatibility getter over [leyline]. Kept because a great
+  /// many call sites (the wild-magic derivation, both settings screens, the
+  /// lobby's tradition notice) want only the word; they need not know the
+  /// config grew a shape around it. Anything that cares about the *grammar*
+  /// must read [leyline] — see WildMagic.seedHex, whose v2 successor consumes
+  /// `leyline.leylineConfigHash` rather than this string.
+  String get communitySeed => leyline.communitySeed;
 
   // ── Agreement check ───────────────────────────────────────────────────────
 
@@ -206,12 +219,13 @@ class MatchConfig {
       vocalComponents == other.vocalComponents &&
       somaticComponents == other.somaticComponents &&
       simultaneousCasting == other.simultaneousCasting &&
-      // Compared NORMALIZED, so two duelists who typed "Rivendell!" and
-      // "rivendell" agree exactly when their spells would hash identically.
-      // A genuine mismatch here means they follow different traditions — the
-      // UI should say so rather than reporting a protocol error.
-      normalizeCommunitySeed(communitySeed) ==
-          normalizeCommunitySeed(other.communitySeed);
+      // LeylineConfig's own == compares the NORMALIZED seed plus every
+      // grammar field, so two duelists who typed "Rivendell!" and "rivendell"
+      // agree exactly when their spells would hash identically — one
+      // definition of agreement, shared with `leylineConfigHash`. A genuine
+      // mismatch here means they follow different traditions — the UI should
+      // say so rather than reporting a protocol error.
+      leyline == other.leyline;
 
   // ── Serialisation (wire + on-disk) ────────────────────────────────────────
 
@@ -232,7 +246,13 @@ class MatchConfig {
         'vocalComponents': vocalComponents,
         'somaticComponents': somaticComponents,
         'simultaneousCasting': simultaneousCasting,
+        // Emitted BOTH ways on purpose. The flat key is what a build
+        // predating [LeylineConfig] reads, and it still finds the seed exactly
+        // where it expects it — which is what makes this change compatible
+        // without a protocol bump. `LeylineConfig.fromMatchConfigJson` refuses
+        // a body whose two copies disagree.
         'communitySeed': communitySeed,
+        'leyline': leyline.toJson(),
       };
 
   static MatchConfig fromJson(Map<String, dynamic> j) => MatchConfig(
@@ -265,10 +285,17 @@ class MatchConfig {
             j['vocalComponents'] as bool? ?? j['sorcererMode'] as bool? ?? false,
         somaticComponents: j['somaticComponents'] as bool? ?? false,
         simultaneousCasting: j['simultaneousCasting'] as bool? ?? false,
-        // A pre-wild-magic peer omits this field entirely and lands on
-        // 'universal'. If they are actually running an unpatched client, the
-        // rest of the handshake (toCanonicalBytes' new suffix) diverges anyway
-        // — see WILD_MAGIC_PLAN.md §11.
-        communitySeed: j['communitySeed'] as String? ?? kDefaultCommunitySeed,
+        // Reads the structured `leyline` object, the legacy flat
+        // `communitySeed` string, or both — and throws
+        // [LeylineConfigException] if both are present and disagree, or if the
+        // structured object is non-canonical. Throwing is the right failure
+        // here: this decodes a wire frame, and a config we cannot read
+        // unambiguously must abort setup rather than be guessed at.
+        //
+        // A peer omitting both predates the leyline entirely and lands on the
+        // canonical ordinary 'universal' config. If they are actually running
+        // an unpatched client, the rest of the handshake diverges anyway — see
+        // WILD_MAGIC_PLAN.md §11.
+        leyline: LeylineConfig.fromMatchConfigJson(j),
       );
 }

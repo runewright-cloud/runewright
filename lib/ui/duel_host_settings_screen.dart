@@ -15,8 +15,8 @@
 import 'package:flutter/material.dart';
 
 import '../battle/models/match_config.dart';
-import '../battle/models/wild_magic_effect.dart'
-    show kDefaultCommunitySeed, normalizeCommunitySeed;
+import '../battle/models/leyline_config.dart'
+    show LeylineConfig, kDefaultCommunitySeed, normalizeCommunitySeed;
 import '../identity/identity.dart';
 import '../spells/chapter_asset.dart';
 import 'manuscript_theme.dart';
@@ -87,7 +87,10 @@ class _DuelHostSettingsScreenState extends State<DuelHostSettingsScreen> {
         vocalComponents: _vocalComponents,
         somaticComponents: _somaticComponents,
         simultaneousCasting: _simultaneousCasting,
-        communitySeed: _seedController.text.trim(),
+        // Ordinary grammar. The host settings screen deliberately exposes
+        // only the seed word for now; a mutable-leyline picker arrives with
+        // the behaviour that backs it (LEYLINE_SEED_PLAN.md §16).
+        leyline: LeylineConfig.ordinary(_seedController.text.trim()),
       );
 
   void _onReady() {

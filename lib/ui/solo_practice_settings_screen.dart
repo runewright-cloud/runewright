@@ -9,7 +9,8 @@ import 'package:rune_duel/engine/hex_grid.dart';
 
 import '../battle/models/match_config.dart';
 import '../battle/models/solo_battle_setup.dart';
-import '../battle/models/wild_magic_effect.dart' show kDefaultCommunitySeed;
+import '../battle/models/leyline_config.dart'
+    show LeylineConfig, kDefaultCommunitySeed;
 import '../identity/identity.dart';
 import '../battle/networking/solo_battle_session.dart';
 import '../spells/chapter_asset.dart';
@@ -67,7 +68,9 @@ class _SoloPracticeSettingsScreenState
         maxPlayers: 2,
         vocalComponents: _vocalComponents,
         somaticComponents: _somaticComponents,
-        communitySeed: _communitySeed,
+        // Solo practice is always the ordinary grammar — mutable leylines
+        // are a tournament/workshop format (LEYLINE_SEED_PLAN.md §1).
+        leyline: LeylineConfig.ordinary(_communitySeed),
       );
 
   @override
