@@ -53,6 +53,7 @@ import 'package:test/test.dart';
 import 'package:rune_duel/battle/engine/forced_cast.dart'
     show ForcedCast, ForcedCastPick, ForcedCastRequest;
 import 'package:rune_duel/battle/engine/peer_cast_verifier.dart';
+import 'package:rune_duel/battle/models/leyline_config.dart';
 import 'package:rune_duel/battle/engine/hash_rng.dart';
 import 'package:rune_duel/battle/engine/turn_loop.dart';
 import 'package:rune_duel/battle/models/battle_state.dart' show BattleState;
@@ -199,7 +200,8 @@ void main() {
         action,
         merkleProof,
         rulesetVersion: kRulesetVersion,
-        communitySeed: '',
+        leyline: LeylineConfig.ordinaryDefault,
+        casterOwnerPubkeyHex: '0x${'22' * 32}',
         peerDrawSchedule: null,
       );
       return (decodedT, verdict);
@@ -556,7 +558,8 @@ void main() {
       final spell = forgedCloudSpell();
       // The route ForcedCast.run takes for our own picks: nobody sends
       // themselves a reveal, so the semantics come off our own proof bytes.
-      final certified = loop.certifiedFromProofBytes(spell);
+      final certified =
+          loop.certifiedFromProofBytes(spell, casterPlayerId: 'player_a');
       expect(certified, isNotNull);
       await resolve(loop, spell, certified);
       expect(state.clouds, isEmpty);
@@ -568,7 +571,11 @@ void main() {
       final (peerState, peerLoop) = device('player_b');
       final spell = forgedCloudSpell();
 
-      await resolve(localLoop, spell, localLoop.certifiedFromProofBytes(spell));
+      await resolve(
+        localLoop,
+        spell,
+        localLoop.certifiedFromProofBytes(spell, casterPlayerId: 'player_a'),
+      );
       await resolve(peerLoop, spell,
           await peerLoop.verifyForcedReveal('player_a', 0, spell, null));
 

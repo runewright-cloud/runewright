@@ -29,24 +29,38 @@ import 'package:rune_duel/spells/spell_asset.dart';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
-/// The commitment every fixture spell uses: bytes 0x01…0x20. The seed words
-/// below were searched against exactly this commitment at the T each fixture
-/// spell declares — change T and they stop landing on their row.
+/// The commitment every fixture spell uses: bytes 0x01…0x20. Wild Magic v2 does
+/// not hash it (WILD_MAGIC_PLAN_VNEXT.md §3) — it is here because `SpellAsset`
+/// and the proof ABI both need one, and it no longer participates in any seed
+/// search.
 final Uint8List _commitment = Uint8List.fromList(List.generate(32, (i) => i + 1));
 
 String get _commitmentHex =>
     '0x${_commitment.map((b) => b.toRadixString(16).padLeft(2, '0')).join()}';
 
-/// Seed words whose hash of (_commitment, T=5, word) contains exactly one
-/// trigger pattern. Recomputing these means re-running the search; the first
-/// group of tests pins the effect each must produce.
-const _seedRow1 = 'w35'; // one run of exactly three '0'
-const _seedRow2 = 'w34'; // one run of exactly three '1'
-const _seedRow3 = 'w23'; // one ascending run 0123
-const _seedQuiet = 'w0'; // no trigger at all — at T=5 and at T=20
+/// Seed words whose Wild Magic v2 hash contains exactly one trigger pattern for
+/// the fixture spells below. Recomputing these means re-running the search; the
+/// first group of tests pins the effect each must produce.
+///
+/// What they are searched AGAINST changed with v2. The key is now
+/// `(caster, certified trajectory, certified base mana cost, leyline)`, so each
+/// seed is pinned to a specific fixture SPELL rather than to a commitment and a
+/// T — and [_seedRow1] has to satisfy two spells at once, because the summon
+/// test below fires the same row off a pure-EARTH trajectory:
+///
+///   caster                   0x00…00 (the solo avatar's ownerPubkeyHex)
+///   certified trajectory     [fire, fire, fire] — and [earth × 3] for row 1
+///   certified base mana cost 8   = round((5×1 + 1) × 1.05^5)
+///   leyline                  LeylineConfig.ordinary(seed)
+const _seedRow1 = 'w19'; // one run of exactly three '0' — fire AND earth
+const _seedRow2 = 'w24'; // one run of exactly three '1'
+const _seedRow3 = 'w459'; // one ascending run 0123
+const _seedQuiet = 'w0'; // no trigger at all — for every fixture here
 
-/// The same, for the four-element fixture spell at T=20.
-const _seedRow1AtT20 = 'w281';
+/// The same, for the four-element fixture spell: trajectory
+/// `[fire×3, air×3, water×3, earth×3]` at certified base cost
+/// 54 = round((5×1 + 1) × 1.05^20 × 1.5^3).
+const _seedRow1AtT20 = 'w122';
 
 /// A structurally real proof blob: `[4 BE field count][count × 32-byte fields]`
 /// in the ABI order ProofIntake documents. Not a valid SNARK — solo mode never

@@ -14,9 +14,11 @@ import 'dart:typed_data';
 
 import 'package:test/test.dart';
 
+import 'package:rune_duel/battle/engine/peer_cast_verifier.dart';
 import 'package:rune_duel/battle/engine/proof_intake.dart';
 import 'package:rune_duel/battle/engine/trajectory_parser.dart';
 import 'package:rune_duel/battle/engine/wild_magic.dart';
+import 'package:rune_duel/battle/models/leyline_config.dart';
 import 'package:rune_duel/battle/models/wild_magic_effect.dart';
 import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
@@ -24,20 +26,31 @@ import 'package:rune_duel/spells/wild_magic_preview.dart';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
-/// A commitment whose hash under "universal" at T=7 contains a run of exactly
-/// three '0's — one Row-1 trigger, bracketSteps 0 — and NO trigger at all
-/// under "rivendell". Found by brute force over SHA-256; see the seed-rotation
-/// test, which is the reason a single commitment covering both cases is worth
-/// pinning.
-const String _wildCommitment =
+/// An OWNER key whose v2 semantic hash for the default fixture below contains a
+/// run of exactly three '0's — one Row-1 trigger, bracketSteps 0 — under
+/// "universal", and NO trigger at all under "rivendell". Found by brute force
+/// over SHA-256; see the seed-rotation test, which is why one key covering both
+/// cases is worth pinning.
+///
+/// It is the OWNER and no longer the commitment because Wild Magic v2 is keyed
+/// on `caster x certified spell behavior x leyline` — the grid commitment left
+/// the preimage entirely (WILD_MAGIC_PLAN_VNEXT.md §3).
+const String _wildOwner =
+    '0x419179f21ff142f1d784a5b3978f68b16c8aec4574303697527137e251565623';
+
+/// An owner key that fires nothing for the same fixture — the ~97% case.
+const String _quietOwner =
+    '0x940e527f060f6f645e112f2faef63e3e73f948fbd5aea9a23ca845d057cee783';
+
+/// A commitment. Kept on the fixture because `SpellAsset` requires one, and
+/// deliberately shared by every spell here: it must not be able to change a
+/// preview.
+const String _someCommitment =
     '0xf9bce34e2b06068661f4537c136070f5b15e9a59ed3f302c3134f6084796d5af';
 
-/// A commitment that fires nothing under "universal" at T=7 — the ~97% case.
-const String _quietCommitment =
-    '0x5a118d8d2ee3639ad4f4b729acd8eaeb2c08da393de9f3c265fadee25f28e93c';
-
 SpellAsset _spell({
-  required String commitmentHex,
+  required String ownerPubkeyHex,
+  String commitmentHex = _someCommitment,
   int t = 7,
   List<String> formula = const ['fire', 'fire', 'fire'],
 }) => SpellAsset(
@@ -45,7 +58,7 @@ SpellAsset _spell({
   createdAt: DateTime.utc(2026, 8, 5),
   tier: 12,
   t: t,
-  ownerPubkeyHex: '0x00',
+  ownerPubkeyHex: ownerPubkeyHex,
   manaCost: 10,
   segmentCount: 1,
   dotCount: 0,
@@ -94,7 +107,7 @@ void main() {
   group('preview agrees with the engine', () {
     test('same triggers as WildMagic.triggersFor on equivalent inputs', () {
       const t = 7;
-      final outputs = _alternatingOutputs(commitmentHex: _wildCommitment, t: t);
+      final outputs = _alternatingOutputs(commitmentHex: _someCommitment, t: t);
       final certified = TrajectoryParser.parse(outputs).formulas;
 
       // Sanity: the certified path really did produce complete formulas AND a
@@ -106,20 +119,33 @@ void main() {
 
       // Exactly how main.dart builds SpellAsset.formula at inscribe time.
       final asset = _spell(
-        commitmentHex: _wildCommitment,
+        ownerPubkeyHex: _wildOwner,
         t: t,
         formula: [for (final z in committed) z.name],
       );
 
+      // The preview's authored inputs and the engine's certified ones agree
+      // for a well-formed asset, so the two must produce the same triggers.
+      // (Where they can DISAGREE — a loaned spell, a drifted asset, a mutable
+      // leyline — is documented on `wildMagicPreviewFor` and is Slice 3's
+      // problem, not a property this test can assert.)
       expect(
         wildMagicPreviewFor(asset, kDefaultCommunitySeed),
-        WildMagic.triggersFor(outputs, certified, kDefaultCommunitySeed),
+        WildMagic.triggersFor(
+          casterPubkeyHex: asset.ownerPubkeyHex,
+          certifiedTrajectory: committed,
+          certifiedBaseManaCost:
+              PeerCastVerifier.certifiedBaseManaCost(outputs, certified),
+          leylineConfigHash:
+              LeylineConfig.ordinary(kDefaultCommunitySeed).leylineConfigHash,
+          formulas: certified,
+        ),
       );
     });
 
     test('fires the pinned Row-1 fire effect for the wild fixture', () {
       final triggers = wildMagicPreviewFor(
-        _spell(commitmentHex: _wildCommitment),
+        _spell(ownerPubkeyHex: _wildOwner),
         kDefaultCommunitySeed,
       );
       expect(triggers, hasLength(1));
@@ -130,7 +156,7 @@ void main() {
     test('the quiet fixture fires nothing', () {
       expect(
         wildMagicPreviewFor(
-          _spell(commitmentHex: _quietCommitment),
+          _spell(ownerPubkeyHex: _quietOwner),
           kDefaultCommunitySeed,
         ),
         isEmpty,
@@ -164,7 +190,7 @@ void main() {
       // design's "void effects entirely removed", for free.
       expect(
         wildMagicPreviewFor(
-          _spell(commitmentHex: _wildCommitment, formula: const ['fire']),
+          _spell(ownerPubkeyHex: _wildOwner, formula: const ['fire']),
           kDefaultCommunitySeed,
         ),
         isEmpty,
@@ -173,28 +199,63 @@ void main() {
   });
 
   group('degrades quietly instead of throwing', () {
-    test('a commitment that is not a 32-byte Field yields no wild magic', () {
+    test('an owner key that is not a 32-byte Field yields no wild magic', () {
       // Hand-built fixtures, legacy saves and trade-offer preview stubs all
-      // carry short commitments; `build` must survive them.
+      // carry stub owner keys; `build` must survive them.
       for (final hex in ['', '0x', '0xaabbcc', 'not-hex', '0x${'zz' * 32}']) {
         expect(
-          wildMagicPreviewFor(_spell(commitmentHex: hex), kDefaultCommunitySeed),
+          wildMagicPreviewFor(_spell(ownerPubkeyHex: hex), kDefaultCommunitySeed),
           isEmpty,
-          reason: 'commitment "$hex" should preview as no wild magic',
+          reason: 'owner key "$hex" should preview as no wild magic',
         );
       }
+    });
+
+    test('a legacy asset with no certified geometry yields no wild magic', () {
+      // segmentCount/dotCount are -1 on anything inscribed before
+      // RULESET_VERSION 3, so there is no base cost to key on.
+      final legacy = SpellAsset(
+        id: 'legacy',
+        createdAt: DateTime.utc(2026, 1, 1),
+        tier: 12,
+        t: 7,
+        ownerPubkeyHex: _wildOwner,
+        manaCost: 10,
+        segmentCount: -1,
+        dotCount: -1,
+        initialGrid: const [],
+        proofBytes: Uint8List(0),
+        name: 'Legacy',
+        commitmentHex: _someCommitment,
+        spellHashHex: '0xfeed',
+        formula: const ['fire', 'fire', 'fire'],
+      );
+      expect(wildMagicPreviewFor(legacy, kDefaultCommunitySeed), isEmpty);
+    });
+
+    test('the grid commitment does not change a preview (§3)', () {
+      expect(
+        wildMagicPreviewFor(
+          _spell(ownerPubkeyHex: _wildOwner, commitmentHex: '0x${'ab' * 32}'),
+          kDefaultCommunitySeed,
+        ),
+        wildMagicPreviewFor(
+          _spell(ownerPubkeyHex: _wildOwner, commitmentHex: '0x${'cd' * 32}'),
+          kDefaultCommunitySeed,
+        ),
+      );
     });
   });
 
   group('leyline seed', () {
     test('rotating the seed word re-rolls the spell', () {
-      final spell = _spell(commitmentHex: _wildCommitment);
+      final spell = _spell(ownerPubkeyHex: _wildOwner);
       expect(wildMagicPreviewFor(spell, 'universal'), hasLength(1));
       expect(wildMagicPreviewFor(spell, 'rivendell'), isEmpty);
     });
 
     test('normalization is shared with the handshake', () {
-      final spell = _spell(commitmentHex: _wildCommitment);
+      final spell = _spell(ownerPubkeyHex: _wildOwner);
       expect(
         wildMagicPreviewFor(spell, 'Rivendell!'),
         wildMagicPreviewFor(spell, 'rivendell'),

@@ -28,10 +28,13 @@
 // primes it from the player's own setting, and BattleScreen overrides it for
 // the duration of a duel.
 
+import 'dart:math' show pow;
+
 import 'package:flutter/foundation.dart' show ValueNotifier;
 
 import '../battle/engine/trajectory_parser.dart' show ParsedFormula;
 import '../battle/engine/wild_magic.dart';
+import '../battle/models/leyline_config.dart' show LeylineConfig;
 import '../battle/models/wild_magic_effect.dart';
 import '../engine/border_zone.dart';
 import '../identity/identity.dart';
@@ -84,24 +87,58 @@ String overrideLeylineSeed(String seed) {
 /// list for the ~97% of spells that fire none.
 ///
 /// Returns empty rather than throwing for any spell whose stored data can't
-/// support the derivation — a commitment that isn't a 32-byte Field (legacy
-/// saves, hand-built test fixtures, a trade-offer preview stub that carries
-/// display metadata only). A card that shows no wild magic is the correct
-/// failure mode; an exception thrown from `build` is not.
+/// support the derivation — an owner pubkey that isn't a Field, a legacy save
+/// with no certified geometry, a trade-offer preview stub that carries display
+/// metadata only. A card that shows no wild magic is the correct failure mode;
+/// an exception thrown from `build` is not.
+///
+/// ## KNOWN INCONSISTENT under Wild Magic v2 — see the header, and §5
+///
+/// v2 keys on `caster x certified spell behavior x leyline`, and this function
+/// has none of those three to hand at paint time:
+///
+///   * **Caster.** It uses `spell.ownerPubkeyHex` — the INSCRIBER — because the
+///     viewer's own identity is behind an async secure-storage read this
+///     synchronous painter cannot make. For your own spell those coincide; for
+///     a loaned or traded one the card will preview the LENDER's wild magic
+///     while the engine fires the borrower's.
+///   * **Certified behaviour.** It uses the authored `SpellAsset.formula` and
+///     `segmentCount`/`dotCount`, not the proof. Those are the wire fields
+///     M4.22 established resolution must never read; a drifted asset previews
+///     one thing and casts another.
+///   * **Leyline.** It builds an ORDINARY config from the active seed word, so
+///     a numbered/mutable leyline previews as its ordinary namesake.
+///
+/// Fixing all three is the preview/identity slice (Slice 3): the card needs the
+/// viewer's identity plumbed in and its inputs re-sourced from the spell's own
+/// proof via `PeerCastVerifier.certifyOwnProof`. Until then this is a label,
+/// and — as the header already says — nothing here may reach battle state.
 List<WildMagicTrigger> wildMagicPreviewFor(SpellAsset spell, String communitySeed) {
-  if (!_isFieldHex(spell.commitmentHex)) return const [];
+  if (!_isFieldHex(spell.ownerPubkeyHex)) return const [];
+  if (spell.segmentCount < 0 || spell.dotCount < 0) return const [];
 
-  final key = '${spell.commitmentHex}|${spell.t}|$communitySeed|'
-      '${spell.formula.join(",")}';
+  final key = '${spell.ownerPubkeyHex}|${spell.t}|$communitySeed|'
+      '${spell.segmentCount}|${spell.dotCount}|${spell.formula.join(",")}';
   final cached = _cache[key];
   if (cached != null) return cached;
 
-  final triggers = WildMagic.triggersFromParts(
-    commitmentHex: spell.commitmentHex,
-    t: spell.t,
-    formulas: completedFormulasFromNames(spell.formula),
-    communitySeed: communitySeed,
-  );
+  final zones = borderZonesFromNames(spell.formula);
+  final formulas = completedFormulasFromZones(zones);
+  final List<WildMagicTrigger> triggers;
+  try {
+    triggers = WildMagic.triggersFor(
+      casterPubkeyHex: spell.ownerPubkeyHex,
+      certifiedTrajectory: zones,
+      certifiedBaseManaCost: _authoredBaseManaCost(spell, formulas.length),
+      leylineConfigHash:
+          LeylineConfig.ordinary(communitySeed).leylineConfigHash,
+      formulas: formulas,
+    );
+  } on ArgumentError {
+    // Malformed stored data (a pubkey that parses as a Field but isn't, a
+    // trajectory element with no pinned byte). A blank card, not a crash.
+    return const [];
+  }
 
   // Cards repaint per frame during battle animations and a SHA-256 per card
   // per frame is wasteful, if not actually expensive. Flat cap, cleared
@@ -115,16 +152,14 @@ List<WildMagicTrigger> wildMagicPreviewFor(SpellAsset spell, String communitySee
 const int _kCacheLimit = 512;
 final Map<String, List<WildMagicTrigger>> _cache = {};
 
-/// `SpellAsset.formula`'s flat zone-name sequence, regrouped into the complete
-/// triplets [WildMagic.eligibleElements] wants.
+/// `SpellAsset.formula`'s zone-name sequence as `BorderZone`s.
 ///
 /// `SpellAsset.formula` is `FormulaTracker.committed` mapped through
-/// `BorderZone.name` (main.dart), i.e. the same flat committed sequence
-/// `TrajectoryParser.certifiedElementSequence` recovers from a proof — so
-/// chunking it by 3 and dropping the 0–2 element residual reproduces
-/// `TrajectoryParser.parse`'s complete-triplets-only view. Unrecognised names
-/// are dropped first, matching `_borderZoneSequence` in spell_card_painter.dart.
-List<ParsedFormula> completedFormulasFromNames(List<String> formula) {
+/// `BorderZone.name` (main.dart), i.e. the authored analogue of the flat
+/// committed sequence `TrajectoryParser.certifiedElementSequence` recovers from
+/// a proof. Unrecognised names are dropped, matching `_borderZoneSequence` in
+/// spell_card_painter.dart.
+List<BorderZone> borderZonesFromNames(List<String> formula) {
   final zones = <BorderZone>[];
   for (final name in formula) {
     final zone = switch (name.toLowerCase()) {
@@ -136,18 +171,38 @@ List<ParsedFormula> completedFormulasFromNames(List<String> formula) {
     };
     if (zone != null) zones.add(zone);
   }
-  return [
-    for (var i = 0; i + 3 <= zones.length; i += 3)
-      ParsedFormula(
-        affinity: zones[i],
-        effectType1: zones[i + 1],
-        effectType2: zones[i + 2],
-      ),
-  ];
+  return zones;
+}
+
+/// Chunks a flat zone sequence by 3, dropping the 0–2 element residual — the
+/// complete-triplets-only view `TrajectoryParser.parse` produces and
+/// [WildMagic.eligibleElements] wants.
+List<ParsedFormula> completedFormulasFromZones(List<BorderZone> zones) => [
+      for (var i = 0; i + 3 <= zones.length; i += 3)
+        ParsedFormula(
+          affinity: zones[i],
+          effectType1: zones[i + 1],
+          effectType2: zones[i + 2],
+        ),
+    ];
+
+/// [completedFormulasFromZones] over raw names, kept for callers that have the
+/// stored strings rather than zones.
+List<ParsedFormula> completedFormulasFromNames(List<String> formula) =>
+    completedFormulasFromZones(borderZonesFromNames(formula));
+
+/// `PeerCastVerifier.certifiedBaseManaCost`'s formula, over the spell's
+/// AUTHORED geometry rather than its proof — the preview's stand-in for the
+/// certified base cost. Same arithmetic and the same rounding, so a spell whose
+/// authored fields match its proof previews the real hash.
+int _authoredBaseManaCost(SpellAsset spell, int completedFormulaCount) {
+  final base = 5 * spell.segmentCount + spell.dotCount;
+  final effectCount = completedFormulaCount - 1 < 0 ? 0 : completedFormulaCount - 1;
+  return (base * pow(1.05, spell.t) * pow(1.5, effectCount)).round();
 }
 
 /// True iff [hex] is a 32-byte Field hex string (with or without `0x`), the
-/// only shape [WildMagic.seedHexFromParts] will accept.
+/// shape [WildMagic.canonicalPubkeyBytes] is happy to decode.
 bool _isFieldHex(String hex) {
   final s = hex.startsWith('0x') ? hex.substring(2) : hex;
   if (s.length != 64) return false;

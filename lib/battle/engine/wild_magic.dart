@@ -1,30 +1,64 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// wild_magic.dart — the wild-magic derivation: seed hash → scan → eligibility
-// → triggers. Pure functions, no BattleState dependency (docs/WILD_MAGIC_PLAN.md
-// §4, §7.2).
+// wild_magic.dart — the wild-magic derivation: semantic hash → scan →
+// eligibility → triggers. Pure functions, no BattleState dependency
+// (docs/WILD_MAGIC_PLAN_VNEXT.md §5, §7, §8).
 //
 // THIS IS CONSENSUS-CRITICAL. Both clients must derive byte-identical results
 // or the per-turn state hash diverges and the match aborts. There must be
 // EXACTLY ONE derivation path in the codebase (§10 invariant 2) — if you find
-// yourself computing a seed hash anywhere else, delete it and call in here.
+// yourself computing the semantic hash anywhere else, delete it and call in
+// here.
 //
 // ── Naming trap ───────────────────────────────────────────────────────────────
 // `SpellAsset.spellHashHex` already exists and is Poseidon2(commitment, T) — a
 // completely different value, used for duplicate detection at save time. Do NOT
-// reuse that name, field, or value. The wild-magic one is `wildMagicSeedHex`.
+// reuse that name, field, or value. The wild-magic one is
+// [WildMagic.semanticHashHex].
 //
-// ── Why the hash is over the PUBLIC INPUTS, not the proof bytes ───────────────
-// Evaluated and rejected on 2026-07-30 (WILD_MAGIC_PLAN.md §2.6, measurements in
-// docs/M4_findings.md). bb's UltraHonk prover is not byte-deterministic (ZK
-// blinding, not disableable through noir_rs's poseidon2 entry point), so hashing
-// proof bytes would let a player re-inscribe one grid ~1,150 times to land any
-// Row-3 effect on an already-perfect spell — undetectably. Hashing the statement
-// welds the wild magic to the GRID: a grinder can find a trigger quickly, but
-// the grid they find is essentially random, and finding a good spell that ALSO
-// carries a trigger means searching the intersection. That coupling is the real
-// defence; the ratified mitigation against grinders is the rotatable community
-// seed word (MatchConfig.communitySeed), not a costlier hash. Keep SHA-256.
+// ── What Wild Magic v2 keys off, and why ──────────────────────────────────────
+//
+// Ratified rule (WILD_MAGIC_PLAN_VNEXT.md §1, §2):
+//
+//     Wild Magic is deterministic for  caster × certified spell behavior × leyline.
+//
+// So the v2 preimage contains exactly four semantic inputs — the caster's
+// canonical authenticated public identity, the certified elemental trajectory,
+// the certified BASE mana cost, and the canonical leyline configuration hash —
+// under an explicit domain tag and version.
+//
+// Four things v1 hashed (or could have hashed) are deliberately GONE:
+//
+//   1. **The grid commitment.** §3: practical hand-drawn runes occupy a small,
+//      structured subset of grid space, so a public deterministic commitment
+//      risks becoming an offline dictionary oracle — generate plausible grids,
+//      hash them, match the commitment, recover the private rune. Wild Magic
+//      must not require publishing such a fingerprint, and once the last
+//      consumer is gone the commitment can leave the public spell identity
+//      entirely.
+//   2. **Proof bytes.** §4: bb's UltraHonk prover is not byte-deterministic
+//      (ZK blinding), and no verifier can prove a peer used prescribed prover
+//      randomness — so a modified client could reroll indefinitely.
+//   3. **T, independently.** Two inscriptions of one grid at different T are
+//      now Wild-Magic-EQUIVALENT whenever their certified trajectory and their
+//      rounded certified base cost agree. This is intended (§5 equivalence
+//      rule): Wild Magic keys off certified behaviour, not off how the rune
+//      was drawn or how long it was simulated. T still influences the hash
+//      *through* `certifiedBaseManaCost` (1.05^T), which is the only channel
+//      §5 allows a lower-level certified value.
+//   4. **Supreme flags / border activations / segment count / dot count**, each
+//      independently. Same rule: they may matter through the certified base
+//      cost, never as their own preimage fields.
+//
+// The equivalence this creates is the point, not a leak: two different secret
+// grids with the same certified trajectory and the same certified base cost
+// are the same *spell behaviour*, and behaviour is what the leyline reacts to.
+//
+// ── Grinding ──────────────────────────────────────────────────────────────────
+// Caster keying (§6) makes rerolling book-wide rather than per-rune: a new
+// identity rerolls every spell and every wizard-keyed relationship at once, so
+// optimizing several spells is a multi-objective search rather than a cheap
+// per-rune knob. The leyline hash is the second, rotatable axis.
 
 import 'dart:convert' show utf8;
 import 'dart:typed_data';
@@ -36,78 +70,222 @@ import 'package:rune_duel/battle/models/effect_kind.dart'
 import 'package:rune_duel/battle/models/wild_magic_effect.dart';
 import 'package:rune_duel/battle/models/wild_magic_effect.dart' as models
     show normalizeCommunitySeed;
+import 'package:rune_duel/engine/border_zone.dart';
 
-import 'proof_intake.dart' show VerifiedSpellOutputs;
 import 'trajectory_parser.dart' show ParsedFormula;
 
 class WildMagic {
-  // ── §4.1 The seed hash ──────────────────────────────────────────────────
+  // ── §5 The canonical semantic key ───────────────────────────────────────
+
+  /// The Wild Magic domain tag. Separate from the leyline's own
+  /// (`Runewright/Leyline/v1/Config`) so the two hashes can never collide, and
+  /// versioned by [kWildMagicVersion] as a field rather than inside the string
+  /// — the tag names the *domain*, the uint16 names the *encoding epoch*.
+  static const String kWildMagicDomain = 'Runewright/WildMagic';
+
+  /// The encoding epoch of [semanticHashHex]'s preimage.
+  ///
+  /// v1 was `commitment ‖ uint8(T) ‖ utf8(seed)`. v2 replaces it wholesale —
+  /// see this file's header. Bumping this rerolls every spell's Wild Magic in
+  /// the world, so it is a consensus change requiring an engine-version bump
+  /// (WILD_MAGIC_PLAN_VNEXT.md §16), never a refactor.
+  static const int kWildMagicVersion = 2;
+
+  /// The canonical `element → uint8` encoding for the certified trajectory.
+  ///
+  /// **Explicitly pinned, deliberately NOT `BorderZone.index`.** These are the
+  /// circuit's own element values (CIRCUIT_IO.md §7 / CLAUDE.md: the dominance
+  /// trajectory encodes `0=neutral, 1=fire, 2=air, 3=water, 4=earth`), so the
+  /// consensus mapping the CA already commits to is the one the hash uses. 0
+  /// stays reserved for neutral and never appears here: a certified element
+  /// sequence contains only real activations.
+  ///
+  /// Writing this out rather than reaching for `.index` is the whole point —
+  /// reordering the `BorderZone` enum for any local reason (alphabetizing it,
+  /// inserting a value) would otherwise silently reroll every spell's Wild
+  /// Magic on one device and not the other. `wild_magic_test.dart` pins these
+  /// four numbers independently of the enum's declaration order.
+  static const Map<BorderZone, int> kElementByte = {
+    BorderZone.fire: 1,
+    BorderZone.air: 2,
+    BorderZone.water: 3,
+    BorderZone.earth: 4,
+  };
+
+  /// [kElementByte] as a total function. Throws rather than defaulting: a
+  /// `BorderZone` with no pinned byte is a consensus hole, and a silent 0
+  /// would collide with the reserved neutral value.
+  static int elementByte(BorderZone zone) {
+    final b = kElementByte[zone];
+    if (b == null) {
+      throw ArgumentError('no canonical Wild Magic byte pinned for $zone');
+    }
+    return b;
+  }
 
   /// Design: *"case-insensitive, stripped of whitespace and punctuation"*.
   ///
   /// Delegates to the models-layer [normalizeCommunitySeed] so `MatchConfig`'s
-  /// handshake agreement check and this hash can never drift apart — see that
-  /// function for the empty-result fallback and why there is only one copy.
+  /// handshake agreement check, `LeylineConfig`'s hash and this class can never
+  /// drift apart. Kept here because callers already import it from here; the
+  /// seed word itself no longer enters the Wild Magic preimage directly — it
+  /// enters through [LeylineConfig.leylineConfigHash].
   static String normalizeCommunitySeed(String raw) =>
       models.normalizeCommunitySeed(raw);
 
-  /// The 64-char lowercase hex seed hash (no `0x` prefix).
+  /// The 64-char lowercase hex semantic hash (no `0x` prefix).
   ///
   /// ```
-  /// preimage = commitment            // 32 bytes big-endian, raw Field bytes
-  ///                                  //   (public-input field index 3)
-  ///          ‖ uint8(T)              // 1 byte, 1..48
-  ///          ‖ utf8(normalizedSeed)  // variable length, LAST so it needs no
-  ///                                  //   length prefix
-  /// wildMagicSeedHex = lowercase hex of SHA-256(preimage)
+  /// preimage = uint8(len(domain))            // 1 byte  = 20
+  ///          ‖ utf8(domain)                  // 20 bytes "Runewright/WildMagic"
+  ///          ‖ uint16be(wildMagicVersion)    // 2 bytes = 2
+  ///          ‖ casterPubkeyBytes             // 32 bytes, canonical BE Field
+  ///          ‖ uint16be(trajectoryLength)    // 2 bytes, element COUNT
+  ///          ‖ trajectoryElementBytes        // trajectoryLength bytes
+  ///          ‖ uint64be(certifiedBaseManaCost) // 8 bytes
+  ///          ‖ leylineConfigHashBytes        // 32 bytes, decoded SHA-256
+  /// semanticHashHex = lowercase hex of SHA-256(preimage)
   /// ```
   ///
-  /// Three encoding decisions you must not quietly change:
+  /// Six encoding decisions you must not quietly change:
   ///
-  ///   1. **`T` is an explicit field**, never inferred from trajectory length
-  ///      or from border activations. This is what guarantees kin-spell
-  ///      disambiguation — two inscriptions of the same grid at different T
-  ///      get independent rolls — even where the CA's border activity has
-  ///      saturated and produces identical output for two T values.
-  ///   2. **The community seed is last**, so it needs no length prefix.
-  ///   3. `border_activations` and `dominance_trajectory` are deliberately NOT
-  ///      hashed (§4.1 `[SIMPLIFIED — 2026-07-30]`). Both are pure,
-  ///      deterministic functions of `(grid, T)` — exactly like `commitment`
-  ///      already is — so they add preimage bytes, not entropy: they cannot
-  ///      distinguish two things `commitment` and `T` don't already
-  ///      distinguish. Dropping them also makes the preimage trivially
-  ///      tier-independent (nothing in it is a function of tierMax), so §10
-  ///      invariant 11 holds by construction rather than by a padding rule.
-  ///      `wild_magic_test.dart`'s preimage-independence test is the guard
-  ///      against a future edit quietly reading them back in.
-  static String seedHex(VerifiedSpellOutputs outputs, String communitySeed) =>
-      seedHexFromParts(
-        commitmentHex: outputs.commitmentHex,
-        t: outputs.t,
-        communitySeed: communitySeed,
-      );
-
-  /// [seedHex]'s body, over the two values it actually reads. Split out so the
-  /// library's display-only preview ([wildMagicPreviewFor]) can hash a stored
-  /// `SpellAsset` without inventing a second SHA-256 preimage — the whole
-  /// point of §10 invariant 2 is that this function is the ONLY place the
-  /// preimage layout is written down. Consensus code calls [seedHex]; nothing
-  /// on the consensus path should be reaching for this overload.
-  static String seedHexFromParts({
-    required String commitmentHex,
-    required int t,
-    required String communitySeed,
+  ///   1. **Every field is fixed-width or length-delimited**, the domain tag
+  ///      and the trajectory included. Nothing here may rely on "it goes last
+  ///      so it needs no prefix" — v1 did, and that trick does not survive a
+  ///      field being appended after it.
+  ///   2. **The caster key is 32 raw big-endian bytes, never its hex text.**
+  ///      Hashing the string would make `0x00ab…` and `00ab…` two wizards.
+  ///      [canonicalPubkeyBytes] is the one decoder.
+  ///   3. **The leyline hash is 32 decoded bytes, not 64 hex characters**, for
+  ///      the same reason.
+  ///   4. **All multibyte integers are big-endian**, matching
+  ///      `LeylineConfig.leylineConfigHash` and the proof wire format.
+  ///   5. **The trajectory is the RAW certified element sequence** —
+  ///      `TrajectoryParser.certifiedElementSequence`, residuals included —
+  ///      encoded through [kElementByte]. Formula decoding and affinity
+  ///      eligibility are a *separate* stage ([eligibleElements]), so a future
+  ///      leyline codebook or a per-affinity trigger roll can change what
+  ///      triggers *fire* without changing what the spell *is*.
+  ///   6. **`certifiedBaseManaCost` is the intrinsic certified base**
+  ///      (`PeerCastVerifier.certifiedBaseManaCost`), never the per-cast
+  ///      chain/recall/Efficiency-adjusted price. The adjusted number changes
+  ///      turn to turn; Wild Magic is a fixed property of the spell.
+  static String semanticHashHex({
+    required String casterPubkeyHex,
+    required List<BorderZone> certifiedTrajectory,
+    required int certifiedBaseManaCost,
+    required String leylineConfigHash,
   }) {
-    final commitment = _hexToBytes(commitmentHex);
-    assert(commitment.length == 32, 'commitment must be a 32-byte Field');
-    final seed = utf8.encode(normalizeCommunitySeed(communitySeed));
+    final domain = utf8.encode(kWildMagicDomain);
+    assert(domain.length <= 0xFF, 'domain tag must fit a uint8 length prefix');
+    final caster = canonicalPubkeyBytes(casterPubkeyHex);
+    final leyline = _decodeHash32(leylineConfigHash, 'leylineConfigHash');
 
-    final preimage = Uint8List(commitment.length + 1 + seed.length)
-      ..setRange(0, commitment.length, commitment)
-      ..[commitment.length] = t & 0xFF;
-    preimage.setRange(commitment.length + 1, preimage.length, seed);
+    if (certifiedTrajectory.length > 0xFFFF) {
+      throw ArgumentError(
+        'certified trajectory of ${certifiedTrajectory.length} elements '
+        'exceeds the uint16 length prefix',
+      );
+    }
+    // Both halves of the uint64 range are checked, and both matter for a
+    // different reason.
+    //
+    // A NEGATIVE cost is a bug upstream, never a spell. `_uint64be` would
+    // happily serialize its two's complement, minting a hash no other
+    // implementation of this spec would reproduce from the same semantic
+    // inputs — a silent consensus fork rather than a crash.
+    //
+    // An OVER-WIDE cost is unreachable on the Dart VM, where `int` is 64-bit
+    // signed and a non-negative value therefore has `bitLength <= 63`. It is
+    // checked anyway because the guard's job is to state the SERIALIZATION's
+    // bound, not the current host's: `_uint64be` truncates silently to its low
+    // 8 bytes, so on any host with wider integers (a web build's BigInt-backed
+    // ints, or a future arbitrary-precision cost type) two distinct costs
+    // would collide into one hash with nothing to signal it. A bound the
+    // encoder relies on belongs next to the encoder.
+    if (certifiedBaseManaCost < 0 || certifiedBaseManaCost.bitLength > 64) {
+      throw ArgumentError(
+        'certifiedBaseManaCost $certifiedBaseManaCost is outside the canonical '
+        'unsigned 64-bit range',
+      );
+    }
 
-    return _toHex(sha256.convert(preimage).bytes);
+    final out = BytesBuilder(copy: false)
+      ..addByte(domain.length)
+      ..add(domain)
+      ..add(_uint16be(kWildMagicVersion))
+      ..add(caster)
+      ..add(_uint16be(certifiedTrajectory.length));
+    for (final zone in certifiedTrajectory) {
+      out.addByte(elementByte(zone));
+    }
+    out
+      ..add(_uint64be(certifiedBaseManaCost))
+      ..add(leyline);
+
+    return _toHex(sha256.convert(out.takeBytes()).bytes);
+  }
+
+  /// The caster's canonical authenticated gameplay identity as 32 big-endian
+  /// bytes — `WizardAvatar.ownerPubkeyHex`, i.e. `Poseidon2(key_hi, key_lo)`,
+  /// the value the handshake's fresh-nonce Ed25519 challenge authenticated.
+  ///
+  /// Accepts an optional `0x` prefix and fewer than 64 hex digits (a Field
+  /// element with leading zeros stripped), left-padding to the full width —
+  /// so one Field value has exactly one byte encoding whatever spelling it
+  /// arrived in. Everything else throws: an empty string, non-hex text, or a
+  /// value too wide for a Field is a caller bug, and the only "safe" fallback
+  /// available (a zero key) would quietly give every unidentified caster one
+  /// shared magical identity.
+  static Uint8List canonicalPubkeyBytes(String pubkeyHex) {
+    final s = pubkeyHex.startsWith('0x') || pubkeyHex.startsWith('0X')
+        ? pubkeyHex.substring(2)
+        : pubkeyHex;
+    if (s.isEmpty) {
+      throw ArgumentError('caster pubkey hex is empty — no identity to key on');
+    }
+    if (s.length > 64) {
+      throw ArgumentError(
+        'caster pubkey hex is ${s.length} digits, wider than a 32-byte Field',
+      );
+    }
+    final padded = s.padLeft(64, '0');
+    final out = Uint8List(32);
+    for (var i = 0; i < 32; i++) {
+      final byte = _hexByte(padded, i * 2);
+      if (byte < 0) {
+        throw ArgumentError('caster pubkey hex is not hexadecimal: $pubkeyHex');
+      }
+      out[i] = byte;
+    }
+    return out;
+  }
+
+  /// A 64-char lowercase SHA-256 hex string as its 32 raw bytes.
+  static Uint8List _decodeHash32(String hex, String what) {
+    final s = hex.startsWith('0x') ? hex.substring(2) : hex;
+    if (s.length != 64) {
+      throw ArgumentError('$what must be 64 hex chars, got ${s.length}');
+    }
+    final out = Uint8List(32);
+    for (var i = 0; i < 32; i++) {
+      final byte = _hexByte(s, i * 2);
+      if (byte < 0) throw ArgumentError('$what is not hexadecimal: $hex');
+      out[i] = byte;
+    }
+    return out;
+  }
+
+  static Uint8List _uint16be(int v) =>
+      Uint8List.fromList([(v >> 8) & 0xFF, v & 0xFF]);
+
+  static Uint8List _uint64be(int v) {
+    final out = Uint8List(8);
+    for (var i = 7; i >= 0; i--) {
+      out[i] = v & 0xFF;
+      v >>= 8;
+    }
+    return out;
   }
 
   // ── §4.2 The scan ───────────────────────────────────────────────────────
@@ -214,54 +392,48 @@ class WildMagic {
     };
   }
 
-  // ── Full derivation ─────────────────────────────────────────────────────
+  // ── §7/§9 Full derivation ───────────────────────────────────────────────
 
-  /// hash → scan → eligibility → triggers, in deterministic row-then-element
-  /// order (row 1 → 2 → 3; within a row `fire, earth, water, air`).
+  /// semantic hash → scan → eligibility → triggers, in deterministic
+  /// row-then-element order (row 1 → 2 → 3; within a row `fire, earth, water,
+  /// air`).
   ///
-  /// An empty list means this spell has no wild magic. A perfectly balanced
-  /// four-element spell whose hash contains `000` returns all four Row-1
-  /// triggers — intended (§2.1).
+  /// An empty list means this spell has no wild magic for this caster under
+  /// this leyline. A perfectly balanced four-element spell whose hash contains
+  /// `000` returns all four Row-1 triggers — today's ratified behaviour
+  /// (WILD_MAGIC_PLAN_VNEXT.md §9 candidate A), preserved exactly.
   ///
-  /// [outputs] must come from **certified** proof public outputs, never from a
-  /// wire `SpellAsset` (§4.6 / §10 invariant 6).
-  static List<WildMagicTrigger> triggersFor(
-    VerifiedSpellOutputs outputs,
-    List<ParsedFormula> certifiedFormulas,
-    String communitySeed,
-  ) =>
-      triggersFromParts(
-        commitmentHex: outputs.commitmentHex,
-        t: outputs.t,
-        formulas: certifiedFormulas,
-        communitySeed: communitySeed,
-      );
-
-  /// [triggersFor]'s body, over the values it actually reads.
+  /// ## Two stages, deliberately separable
   ///
-  /// **This is not a licence to derive wild magic from untrusted data.** §4.6 /
-  /// §10 invariant 6 still stands: anything that can change the battle state
-  /// must go through [triggersFor] with certified proof outputs. This overload
-  /// exists for the library card's *display-only* preview
-  /// ([wildMagicPreviewFor]), which reads a locally-stored `SpellAsset` and
-  /// paints a label — so that the preview and the real thing can never
-  /// disagree about the rules, only about where their inputs came from.
-  static List<WildMagicTrigger> triggersFromParts({
-    required String commitmentHex,
-    required int t,
+  /// [semanticHashHex] answers *what is this spell, for this wizard, here*.
+  /// [scan] + [eligibleElements] answer *what does that make happen*. §9 leaves
+  /// the second question open — candidate B would give each eligible affinity
+  /// its own domain-separated roll off the same hash — so the trigger producer
+  /// below must stay swappable without touching the preimage above. Nothing
+  /// here reads a raw preimage field; it reads the hash and the formulas.
+  ///
+  /// Every argument must come from **certified** proof outputs and the
+  /// authenticated caster identity, never from a wire `SpellAsset`
+  /// (§4.6 / §10 invariant 6). `PeerCastVerifier.semanticsOf` is the only
+  /// consensus caller.
+  static List<WildMagicTrigger> triggersFor({
+    required String casterPubkeyHex,
+    required List<BorderZone> certifiedTrajectory,
+    required int certifiedBaseManaCost,
+    required String leylineConfigHash,
     required List<ParsedFormula> formulas,
-    required String communitySeed,
   }) {
+    // Eligibility first: a spell with no completed formula fires nothing
+    // whatever it hashes to, so there is no reason to hash it.
     final eligible = eligibleElements(formulas);
     if (eligible.isEmpty) return const [];
 
-    final rows = scan(
-      seedHexFromParts(
-        commitmentHex: commitmentHex,
-        t: t,
-        communitySeed: communitySeed,
-      ),
-    );
+    final rows = scan(semanticHashHex(
+      casterPubkeyHex: casterPubkeyHex,
+      certifiedTrajectory: certifiedTrajectory,
+      certifiedBaseManaCost: certifiedBaseManaCost,
+      leylineConfigHash: leylineConfigHash,
+    ));
     if (rows.isEmpty) return const [];
 
     return [
@@ -284,13 +456,21 @@ class WildMagic {
     return codeUnit <= 0x39 ? codeUnit - 0x30 : codeUnit - 0x57;
   }
 
-  static Uint8List _hexToBytes(String hex) {
-    final s = hex.startsWith('0x') ? hex.substring(2) : hex;
-    final out = Uint8List(s.length ~/ 2);
-    for (var i = 0; i < out.length; i++) {
-      out[i] = int.parse(s.substring(i * 2, i * 2 + 2), radix: 16);
-    }
-    return out;
+  /// The byte at [i]..[i]+1 of [hex], or -1 if either character is not a hex
+  /// digit. Case-insensitive, unlike [_hexDigit], because it also reads hex
+  /// that came from outside this class.
+  static int _hexByte(String hex, int i) {
+    final hi = _nibble(hex.codeUnitAt(i));
+    final lo = _nibble(hex.codeUnitAt(i + 1));
+    if (hi < 0 || lo < 0) return -1;
+    return (hi << 4) | lo;
+  }
+
+  static int _nibble(int c) {
+    if (c >= 0x30 && c <= 0x39) return c - 0x30; // '0'..'9'
+    if (c >= 0x61 && c <= 0x66) return c - 0x57; // 'a'..'f'
+    if (c >= 0x41 && c <= 0x46) return c - 0x37; // 'A'..'F'
+    return -1;
   }
 
   static String _toHex(List<int> bytes) {

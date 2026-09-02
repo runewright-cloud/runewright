@@ -1579,7 +1579,10 @@ class TurnLoop
         // parses of the same bytes would give the same answer, but sharing the
         // value makes it structurally impossible for the fizzle test and the
         // deduction to price the cast differently.
-        final certified = certifiedFromProofBytes(committedSpell);
+        final certified = certifiedFromProofBytes(
+          committedSpell,
+          casterPlayerId: localPlayerId,
+        );
 
         // Price it WITHOUT charging first, so a shortfall can fizzle-and-refund
         // rather than silently clamping to zero (VOCAL_RECALL_PLAN.md §4).
@@ -2634,11 +2637,45 @@ class TurnLoop
   /// handed. When verification IS wired, the verified derivation always wins —
   /// see [DeterministicResolution]'s `_certifiedPeerCast`.
   @override
-  CertifiedCast? certifiedFromProofBytes(SpellAsset spell) =>
+  CertifiedCast? certifiedFromProofBytes(
+    SpellAsset spell, {
+    required String casterPlayerId,
+  }) =>
       PeerCastVerifier.certifyOwnProof(
         spell,
-        communitySeed: state.config.communitySeed,
+        casterOwnerPubkeyHex: _casterOwnerPubkeyHex(casterPlayerId),
+        leyline: state.config.leyline,
       );
+
+  /// The authenticated gameplay identity of [playerId] — THE one place a
+  /// caster identity is resolved for Wild Magic v2.
+  ///
+  /// `WizardAvatar.ownerPubkeyHex` is the value a duel's fresh-nonce Ed25519
+  /// challenge-response authenticated at handshake (`duel_battle_setup.dart`),
+  /// so keying Wild Magic on it keys it on *who is casting*. Two identities it
+  /// is deliberately NOT allowed to fall back to:
+  ///
+  ///   * `spell.ownerPubkeyHex` / `outputs.ownerPubkeyHex` — the spell's
+  ///     INSCRIBER. A loaned or traded spell fires the borrower's Wild Magic
+  ///     (WILD_MAGIC_PLAN_VNEXT.md §2), and the proof's own copy is bound but
+  ///     never signature-checked (CLAUDE.md invariant 5).
+  ///   * a zero key. Every unidentified caster would share one magical
+  ///     identity, which is a consensus value invented out of nothing.
+  ///
+  /// So an unknown player is a StateError, not a default. It is unreachable
+  /// from the cast paths — every caller passes an actor already resolved from
+  /// `state.avatars` — and if it ever fires, the honest outcome is a loud
+  /// abort rather than a silently forked hash.
+  String _casterOwnerPubkeyHex(String playerId) {
+    final avatar = _avatarById(playerId);
+    if (avatar == null) {
+      throw StateError(
+        'no avatar for caster $playerId — cannot derive wild magic without an '
+        'authenticated caster identity',
+      );
+    }
+    return avatar.ownerPubkeyHex;
+  }
 
   /// See [DeterministicResolution.applyPhoenixSaves]. The event sink is this
   /// turn's `lastWildMagicEvents`, which the resolver appends to in place.
@@ -2808,6 +2845,11 @@ class TurnLoop
       merkleProof,
       <String, CertifiedCast>{},
       forcedCast: true,
+      // The revealer, not "the peer" generically: in an N-player mesh the
+      // forced reveal names whose hand was opened, and that player's identity
+      // is what their Wild Magic (and everything else certified here) is
+      // derived under.
+      casterPlayerId: playerId,
     );
   }
 
@@ -3449,12 +3491,21 @@ class TurnLoop
     Map<String, CertifiedCast> certifiedPeerCasts, {
     bool forcedCast = false,
     List<_CastSettlement>? settlements,
+    String? casterPlayerId,
   }) async {
+    // The CASTER is the peer, and Wild Magic v2 keys on the caster
+    // (WILD_MAGIC_PLAN_VNEXT.md §5) — so verification derives semantics under
+    // the peer's authenticated identity, exactly as their own device does.
+    // [casterPlayerId] is threaded rather than assumed because a forced reveal
+    // names the player whose hand was opened.
     final verdict = await _peerCastVerifier.certifyPeerCast(
       action,
       merkleProof,
       rulesetVersion: state.config.rulesetVersion,
-      communitySeed: state.config.communitySeed,
+      leyline: state.config.leyline,
+      casterOwnerPubkeyHex: _casterOwnerPubkeyHex(
+        casterPlayerId ?? _peerId() ?? localPlayerId,
+      ),
       peerDrawSchedule: _drawSchedules[_peerId()],
       forcedCast: forcedCast,
     );
@@ -3682,7 +3733,8 @@ class TurnLoop
       // from (M4.22). The quote and the deduction must not be able to disagree,
       // which is the whole reason this method exists rather than a second copy
       // of the formula in the UI.
-      certified: certifiedFromProofBytes(spell),
+      certified:
+          certifiedFromProofBytes(spell, casterPlayerId: localPlayerId),
       enhancements: enhancements,
       isVocalComponents: isVocalComponents,
     ).cost;

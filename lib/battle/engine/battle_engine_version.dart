@@ -279,6 +279,50 @@
 // certified, hashed and agreed in v6 — so `kRulesetVersion` stays 3 and
 // `kBattleProtocolVersion` stays 7. See docs/AETHERIAL_ARMOR.md §11.
 //
+// v8 (2026-09-02, Wild Magic vNext slice 2A) — Wild Magic is rekeyed from the
+// spell's GRID to the spell's certified BEHAVIOUR, and from the community seed
+// STRING to the canonical leyline configuration hash.
+//
+// v1's seed hash was `commitment || uint8(T) || utf8(normalizedSeed)`. v2's is
+// a fully length-delimited preimage over four semantic inputs and nothing else:
+//
+//   uint8(len) || utf8("Runewright/WildMagic") || uint16be(2)
+//     || casterPubkey[32] || uint16be(n) || trajectoryBytes[n]
+//     || uint64be(certifiedBaseManaCost) || leylineConfigHash[32]
+//
+// Three consequences, each of them a deliberate rule change
+// (docs/WILD_MAGIC_PLAN_VNEXT.md §1-§6):
+//
+//   * **Wild Magic is now caster-keyed.** The same spell in two hands has two
+//     different Wild Magics, and a loaned spell fires the BORROWER's. The
+//     caster is the authenticated `WizardAvatar.ownerPubkeyHex`, resolved in
+//     exactly one place (`TurnLoop._casterOwnerPubkeyHex`).
+//   * **The grid commitment and T leave the derivation.** §3 refuses to publish
+//     a grid fingerprint that could seed an offline dictionary attack on a
+//     private rune, and §5 makes two inscriptions Wild-Magic-EQUIVALENT when
+//     their certified trajectory and rounded certified base cost agree. T still
+//     reaches the hash through `certifiedBaseManaCost`'s 1.05^T, which is the
+//     only channel §5 permits.
+//   * **The leyline enters as a struct hash**, not a seed word, so a numbered
+//     leyline and its ordinary namesake are different magical traditions.
+//
+// Trigger scanning (rows 1-3, maximal runs, longest-occurrence brackets) and
+// affinity eligibility (tally completed formulas, every tied affinity stays
+// eligible) are UNCHANGED — §9's independent-per-affinity roll is still an open
+// playtest question, and the hash is deliberately structured so answering it
+// later changes the trigger producer without touching the preimage.
+//
+// The gate has to fire, and on the strongest possible version of the usual
+// test: a v7 device and a v8 device compute different Wild Magic for the same
+// spell from the same proof, so they diverge the first turn any spell carries a
+// trigger — and, because triggers are ~3% of spells, they would often agree for
+// several turns first and then desync mid-match with no visible cause.
+//
+// No proof semantics change and no framing changes — the preimage is built
+// entirely from values both devices already derive from the proof they already
+// exchange, and nothing new crosses the wire — so `kRulesetVersion` stays 3 and
+// `kBattleProtocolVersion` stays 7. See docs/WILD_MAGIC_PLAN_VNEXT.md §16.
+//
 // There is deliberately no v0 build. Nothing has shipped, so pretending an
 // earlier epoch was ever negotiated would be fiction; 0 is reserved as the
 // sentinel for a peer that predates this field entirely and therefore declares
@@ -292,7 +336,7 @@
 /// [DeviceCapabilities.battleEngineVersion] both default to it rather than
 /// restating a literal, exactly as `MatchConfig.rulesetVersion` derives from
 /// `kRulesetVersion`. See this file's header for what forces a bump.
-const int kBattleEngineVersion = 7;
+const int kBattleEngineVersion = 8;
 
 /// What a peer that predates the engine-version gate implicitly declares: it
 /// omits the field, and an omitted field cannot be read as agreement.

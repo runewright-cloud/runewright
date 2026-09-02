@@ -306,33 +306,37 @@ void main() {
     await transportPeer.disconnect();
   });
 
-  // The Aetherial Armor slice-6 epoch. Pinned as a literal pair rather than as
-  // `kBattleEngineVersion - 1` so a future bump has to come back here and say
-  // what it broke, instead of silently re-pointing this at the new neighbour.
+  // The Wild Magic vNext slice-2A epoch. Pinned as a literal pair rather than
+  // as `kBattleEngineVersion - 1` so a future bump has to come back here and
+  // say what it broke, instead of silently re-pointing this at the new
+  // neighbour. (The previous occupant of this group was v6 <-> v7, Aetherial
+  // Armor's Charger and Muddy keywords going live.)
   //
   // This bump is the one the gate exists for and the one no other gate can
-  // see: canonical bytes are IDENTICAL between v6 and v7 (the keyword bitmask
-  // carrying Charger and Muddy shipped in v6), the wire is identical, and the
-  // proofs are identical. Only the meaning of a punch changed. A v6 build and
-  // a v7 build would agree on the opening hash and diverge the moment an
-  // armored wizard swung, so the refusal has to happen at the handshake.
-  group('v6 <-> v7 (Charger and Muddy become live)', () {
-    test('this build declares engine v7', () {
-      expect(kBattleEngineVersion, 7,
-          reason: 'two certified armor keywords now change resolution; '
-              'docs/AETHERIAL_ARMOR.md §11');
+  // see: the wire is identical, the proofs are identical, and canonical bytes
+  // are identical for the same state — v8 simply computes a DIFFERENT wild
+  // magic from the same proof, because the derivation moved from
+  // `commitment || T || seed` to `caster x certified behaviour x leyline`
+  // (docs/WILD_MAGIC_PLAN_VNEXT.md §5). A v7 build and a v8 build agree on the
+  // opening hash and then diverge the first time any spell carries a trigger —
+  // possibly several turns in, with nothing to blame it on. The refusal has to
+  // happen at the handshake.
+  group('v7 <-> v8 (Wild Magic v2 semantic key)', () {
+    test('this build declares engine v8', () {
+      expect(kBattleEngineVersion, 8,
+          reason: 'wild magic is rekeyed on caster x certified behaviour x '
+              'leyline; docs/WILD_MAGIC_PLAN_VNEXT.md §16');
       expect(kBattleProtocolVersion, 7,
-          reason: 'no framing changed — the armorLoadout frame shipped in '
-              'slice 4');
+          reason: 'no framing changed — every v2 preimage field is derived '
+              'from values both devices already exchange');
       expect(kRulesetVersion, 3,
-          reason: 'no proof semantics changed — the keywords were already '
-              'certified and hashed in v6');
+          reason: 'no proof semantics changed — the circuit is untouched');
     });
 
-    test('a v6 peer is refused by the capabilities gate', () async {
+    test('a v7 peer is refused by the capabilities gate', () async {
       final localIdentity = await Identity.ephemeral();
       final chapter = await makeChapter(
-        idSuffix: 'a6',
+        idSuffix: 'a7',
         ownerPubkeyHex: await localIdentity.ownerPubkeyHex(),
       );
 
@@ -344,7 +348,7 @@ void main() {
         localChapter: chapter,
         hostConfig: const MatchConfig(),
       );
-      final forfeitReason = fakePeer(transportPeer, engineVersion: 6);
+      final forfeitReason = fakePeer(transportPeer, engineVersion: 7);
 
       await expectLater(
         local,
@@ -353,8 +357,8 @@ void main() {
           'message',
           allOf(
             contains('battle engine version mismatch'),
-            contains('local=7'),
-            contains('peer=6'),
+            contains('local=8'),
+            contains('peer=7'),
           ),
         )),
       );
@@ -364,13 +368,13 @@ void main() {
       await transportPeer.disconnect();
     });
 
-    test('a host config pinned to v6 is refused as well', () async {
-      // The other half of the gate: a v6 build that hosts pins v6 in the match
-      // config it authors, and a v7 guest must refuse that too rather than
+    test('a host config pinned to v7 is refused as well', () async {
+      // The other half of the gate: a v7 build that hosts pins v7 in the match
+      // config it authors, and a v8 guest must refuse that too rather than
       // play by rules it does not implement.
-      const v6Config = MatchConfig(battleEngineVersion: 6);
-      expect(const MatchConfig().matches(v6Config), isFalse);
-      expect(v6Config.battleEngineVersion, isNot(kBattleEngineVersion));
+      const v7Config = MatchConfig(battleEngineVersion: 7);
+      expect(const MatchConfig().matches(v7Config), isFalse);
+      expect(v7Config.battleEngineVersion, isNot(kBattleEngineVersion));
     });
   });
 

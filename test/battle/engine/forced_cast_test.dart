@@ -106,7 +106,10 @@ class _FakeHost implements ForcedCastHost {
   }
 
   @override
-  CertifiedCast? certifiedFromProofBytes(SpellAsset spell) =>
+  CertifiedCast? certifiedFromProofBytes(
+    SpellAsset spell, {
+    required String casterPlayerId,
+  }) =>
       ownProofSemantics[spell.id];
 
   @override

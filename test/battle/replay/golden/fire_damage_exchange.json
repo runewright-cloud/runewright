@@ -14,7 +14,7 @@
         "minionMoves": 0,
         "minionAttacks": 0,
         "meleeAttacks": 0,
-        "wildMagic": 1,
+        "wildMagic": 0,
         "conveyorChains": 0
       },
       "summary": {

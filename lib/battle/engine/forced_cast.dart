@@ -171,7 +171,16 @@ abstract class ForcedCastHost {
   /// device's own pick resolves exactly as the receiving device resolves it —
   /// which is what keeps the state hashes agreed. Null when there are no
   /// usable proof bytes.
-  CertifiedCast? certifiedFromProofBytes(SpellAsset spell);
+  ///
+  /// [casterPlayerId] is the player whose hand the spell was pulled from — the
+  /// caster, whose authenticated identity keys Wild Magic v2 (see
+  /// `ActionResolutionHost.certifiedFromProofBytes`). A forced cast fires no
+  /// Wild Magic itself (A8), but it is still priced and resolved from these
+  /// semantics, so it must be derived under the same identity both devices use.
+  CertifiedCast? certifiedFromProofBytes(
+    SpellAsset spell, {
+    required String casterPlayerId,
+  });
 
   /// Resolves one forced cast: zero mana, no chain update, not consumed from
   /// hand, and exempt from every on-cast global hook (see A8).
@@ -257,7 +266,8 @@ class ForcedCast {
           // than on some shared map matters: certified data is keyed by
           // commitment and the commitment is grid-only, so a peer revealing the
           // same grid this turn must not be able to supply OUR semantics.
-          certified: host.certifiedFromProofBytes(spell),
+          certified:
+              host.certifiedFromProofBytes(spell, casterPlayerId: localId),
         ),
       );
     }
@@ -316,7 +326,9 @@ class ForcedCast {
             // unverified is then still strictly better than the authored
             // formula, and is what the revealing device itself resolved from —
             // same fallback shape as a delayed fire's.
-            certified: certified ?? host.certifiedFromProofBytes(got.spell),
+            certified: certified ??
+                host.certifiedFromProofBytes(got.spell,
+                    casterPlayerId: playerId),
           ),
         );
       }

@@ -63,6 +63,7 @@ import 'dart:math' show max, pow;
 import 'dart:typed_data';
 
 import 'package:rune_duel/battle/models/certified_cast.dart';
+import 'package:rune_duel/battle/models/leyline_config.dart' show LeylineConfig;
 import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/protocol/match_session.dart' show ProofVerifier;
 import 'package:rune_duel/spells/basic_spells.dart' show isBasicGridAndT;
@@ -244,22 +245,57 @@ class PeerCastVerifier {
 
   // ── The shared derivation (B-1 / B-8 single source of truth) ───────────────
 
-  /// The full certified semantics of a cast, from its verified public outputs.
+  /// The full certified semantics of a cast, from its verified public outputs
+  /// plus the caster's authenticated identity and the match's leyline.
   ///
   /// The one derivation in the codebase. Both sides of the trust boundary call
   /// it — the peer path after [ProofIntake.verifyAndParse], the owner's own path
   /// after [ProofIntake.parseOwn] — so both devices produce byte-identical
   /// formulas, element sequences and wild-magic triggers for the same proof.
+  ///
+  /// ## Derivation order is load-bearing
+  ///
+  /// Wild Magic v2 keys off `caster x certified spell behavior x leyline`
+  /// (docs/WILD_MAGIC_PLAN_VNEXT.md §5), and "certified spell behavior" is the
+  /// certified trajectory plus the certified BASE mana cost. So the three steps
+  /// run strictly in order:
+  ///
+  ///   1. formulas + the certified element sequence, from the trajectory;
+  ///   2. [certifiedBaseManaCost], which reads those formulas;
+  ///   3. Wild Magic, which reads both of the above.
+  ///
+  /// Reordering them would mean hashing a cost derived from something other
+  /// than the trajectory that was hashed — the exact class of disagreement
+  /// M4.22 cost a duel.
+  ///
+  /// [casterOwnerPubkeyHex] is the CASTER's authenticated gameplay identity
+  /// (`WizardAvatar.ownerPubkeyHex`), never `spell.ownerPubkeyHex` and never
+  /// `outputs.ownerPubkeyHex`. Those name the spell's *inscriber*: a loaned
+  /// spell fires the borrower's Wild Magic, not the lender's (§2), and the
+  /// proof's own field is a value the circuit binds but never authenticates
+  /// (CLAUDE.md invariant 5).
   static CertifiedCast semanticsOf(
-    VerifiedSpellOutputs outputs,
-    String communitySeed,
-  ) {
+    VerifiedSpellOutputs outputs, {
+    required String casterOwnerPubkeyHex,
+    required LeylineConfig leyline,
+  }) {
+    // 1. Certified behaviour.
     final formulas = TrajectoryParser.parse(outputs).formulas;
+    final elementSequence = TrajectoryParser.certifiedElementSequence(outputs);
+    // 2. Certified intrinsic price.
+    final baseManaCost = certifiedBaseManaCost(outputs, formulas);
+    // 3. Wild Magic, over 1 and 2 — and nothing else from `outputs`.
     return CertifiedCast(
       formulas: formulas,
-      elementSequence: TrajectoryParser.certifiedElementSequence(outputs),
-      wildMagic: WildMagic.triggersFor(outputs, formulas, communitySeed),
-      baseManaCost: certifiedBaseManaCost(outputs, formulas),
+      elementSequence: elementSequence,
+      baseManaCost: baseManaCost,
+      wildMagic: WildMagic.triggersFor(
+        casterPubkeyHex: casterOwnerPubkeyHex,
+        certifiedTrajectory: elementSequence,
+        certifiedBaseManaCost: baseManaCost,
+        leylineConfigHash: leyline.leylineConfigHash,
+        formulas: formulas,
+      ),
     );
   }
 
@@ -302,7 +338,8 @@ class PeerCastVerifier {
   //   current-turn peer spell a forfeit rather than a wire-formula fallback.
   static CertifiedCast? certifyOwnProof(
     SpellAsset spell, {
-    required String communitySeed,
+    required String casterOwnerPubkeyHex,
+    required LeylineConfig leyline,
   }) {
     if (spell.proofBytes.isEmpty) return null;
     try {
@@ -315,7 +352,8 @@ class PeerCastVerifier {
       final ownTier = tierForSpell(spell.t) ?? spell.tier;
       return semanticsOf(
         ProofIntake.parseOwn(spell.proofBytes, ownTier),
-        communitySeed,
+        casterOwnerPubkeyHex: casterOwnerPubkeyHex,
+        leyline: leyline,
       );
     } on ProofIntakeException {
       // A malformed local proof is a bug, not an attack; falling back is the
@@ -358,7 +396,8 @@ class PeerCastVerifier {
     TurnAction action,
     MembershipProof? merkleProof, {
     required int rulesetVersion,
-    required String communitySeed,
+    required LeylineConfig leyline,
+    required String casterOwnerPubkeyHex,
     required DrawSchedule? peerDrawSchedule,
     bool forcedCast = false,
   }) async {
@@ -473,7 +512,11 @@ class PeerCastVerifier {
     // never re-derived downstream. Computed before the duplicate-grid check
     // because the Cantrip exemption needs the CERTIFIED element count, not the
     // peer-claimed `spell.formula.length`.
-    final semantics = semanticsOf(outputs, communitySeed);
+    final semantics = semanticsOf(
+      outputs,
+      casterOwnerPubkeyHex: casterOwnerPubkeyHex,
+      leyline: leyline,
+    );
     final List<BorderZone> certElementSequence = semantics.elementSequence;
 
     // 2. Duplicate grid detection — skipped for a shipped Basic spell or a

@@ -19,28 +19,34 @@ import 'package:rune_duel/spells/wild_magic_preview.dart';
 import 'package:rune_duel/ui/foil_sheen.dart';
 import 'package:rune_duel/ui/spell_card_painter.dart';
 
-/// Fires one Row-1 fire effect (Burning Hot) under "universal" at T=7 — see
-/// test/spells/wild_magic_preview_test.dart, which pins the derivation.
-const String _wildCommitment =
-    '0xf9bce34e2b06068661f4537c136070f5b15e9a59ed3f302c3134f6084796d5af';
+/// The OWNER key that fires one Row-1 fire effect (Burning Hot) under
+/// "universal" for this fixture — see test/spells/wild_magic_preview_test.dart,
+/// which pins the derivation and shares these two keys.
+///
+/// The card's wild magic keys on the wizard and the spell's behaviour, not on
+/// the grid: the commitment left the Wild Magic preimage in v2
+/// (docs/WILD_MAGIC_PLAN_VNEXT.md §3).
+const String _wildOwner =
+    '0x419179f21ff142f1d784a5b3978f68b16c8aec4574303697527137e251565623';
 
-/// Fires nothing under "universal" at T=7.
-const String _quietCommitment =
-    '0x5a118d8d2ee3639ad4f4b729acd8eaeb2c08da393de9f3c265fadee25f28e93c';
+/// An owner key that fires nothing for the same fixture.
+const String _quietOwner =
+    '0x940e527f060f6f645e112f2faef63e3e73f948fbd5aea9a23ca845d057cee783';
 
-SpellAsset _spell({required String commitmentHex}) => SpellAsset(
+SpellAsset _spell({required String ownerPubkeyHex}) => SpellAsset(
   id: 'card-fixture',
   createdAt: DateTime.utc(2026, 8, 5),
   tier: 12,
   t: 7,
-  ownerPubkeyHex: '0x00',
+  ownerPubkeyHex: ownerPubkeyHex,
   manaCost: 10,
   segmentCount: 1,
   dotCount: 0,
   initialGrid: List<int>.filled(469, 0)..[234] = 1,
   proofBytes: Uint8List.fromList(const [1, 2, 3]),
   name: 'Fixture',
-  commitmentHex: commitmentHex,
+  commitmentHex:
+      '0xf9bce34e2b06068661f4537c136070f5b15e9a59ed3f302c3134f6084796d5af',
   spellHashHex: '0xfeed',
   // Three fire activations: one complete formula, so the spell is eligible
   // for the fire column of the effects table.
@@ -59,21 +65,21 @@ void main() {
 
   testWidgets('a wild-magic spell gets the foil luster on its thumbnail',
       (tester) async {
-    await tester.pumpWidget(_host(_spell(commitmentHex: _wildCommitment)));
+    await tester.pumpWidget(_host(_spell(ownerPubkeyHex: _wildOwner)));
     await tester.pump();
 
     expect(find.byType(FoilSheen), findsOneWidget);
   });
 
   testWidgets('an ordinary spell gets no foil', (tester) async {
-    await tester.pumpWidget(_host(_spell(commitmentHex: _quietCommitment)));
+    await tester.pumpWidget(_host(_spell(ownerPubkeyHex: _quietOwner)));
     await tester.pumpAndSettle();
 
     expect(find.byType(FoilSheen), findsNothing);
   });
 
   testWidgets('the full card prints the effect it fires', (tester) async {
-    await tester.pumpWidget(_host(_spell(commitmentHex: _wildCommitment)));
+    await tester.pumpWidget(_host(_spell(ownerPubkeyHex: _wildOwner)));
     await tester.pump();
 
     await tester.tap(find.byType(SpellCardWidget));
@@ -98,7 +104,7 @@ void main() {
 
   testWidgets('the full card of an ordinary spell has no wild-magic panel',
       (tester) async {
-    await tester.pumpWidget(_host(_spell(commitmentHex: _quietCommitment)));
+    await tester.pumpWidget(_host(_spell(ownerPubkeyHex: _quietOwner)));
     await tester.pumpAndSettle();
 
     await tester.tap(find.byType(SpellCardWidget));
@@ -109,7 +115,7 @@ void main() {
   });
 
   testWidgets('rotating the leyline seed re-rolls a mounted card', (tester) async {
-    await tester.pumpWidget(_host(_spell(commitmentHex: _wildCommitment)));
+    await tester.pumpWidget(_host(_spell(ownerPubkeyHex: _wildOwner)));
     await tester.pump();
     expect(find.byType(FoilSheen), findsOneWidget);
 

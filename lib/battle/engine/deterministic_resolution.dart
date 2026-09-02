@@ -325,11 +325,23 @@ abstract class ActionResolutionHost implements WildMagicHooks {
   /// Wizard or sorcerer, for [CastingEnhancements].
   GameMode get componentsGameMode;
 
-  /// The full certified semantics of [spell], re-derived from proof bytes this
-  /// device already holds. Null when there are no proof bytes (the
-  /// `kAllowProoflessSpells` dev flag) or they are malformed — both devices see
-  /// the same absence and fall back identically, so it is desync-safe.
-  CertifiedCast? certifiedFromProofBytes(SpellAsset spell);
+  /// The full certified semantics of [spell] as cast by [casterPlayerId],
+  /// re-derived from proof bytes this device already holds. Null when there are
+  /// no proof bytes (the `kAllowProoflessSpells` dev flag) or they are
+  /// malformed — both devices see the same absence and fall back identically,
+  /// so it is desync-safe.
+  ///
+  /// [casterPlayerId] is required because Wild Magic v2 is keyed on
+  /// `caster x certified spell behavior x leyline`
+  /// (docs/WILD_MAGIC_PLAN_VNEXT.md §5): the same spell has different Wild
+  /// Magic in different hands, so "which proof" no longer determines the answer
+  /// on its own. The host resolves it to that player's AUTHENTICATED avatar
+  /// owner pubkey — never `spell.ownerPubkeyHex`, which names the inscriber and
+  /// would give a loaned spell its lender's Wild Magic.
+  CertifiedCast? certifiedFromProofBytes(
+    SpellAsset spell, {
+    required String casterPlayerId,
+  });
 
   /// Seed for a caster's FuelTransmutation wither/reactivate RNG (tag 0x06).
   Uint8List witherSeed(Uint8List entropy, String playerId);
@@ -2508,9 +2520,11 @@ class DeterministicResolution {
           // would otherwise hand the local caster the peer's certified entry.
           final cert = delayedCertified[action] ??
               (ctx.host.isLocalPlayer(actor.playerId)
-                  ? ctx.host.certifiedFromProofBytes(spell)
+                  ? ctx.host.certifiedFromProofBytes(spell,
+                      casterPlayerId: actor.playerId)
                   : certifiedPeerCasts[spell.commitmentHex] ??
-                      ctx.host.certifiedFromProofBytes(spell));
+                      ctx.host.certifiedFromProofBytes(spell,
+                          casterPlayerId: actor.playerId));
           final certFormulas = cert?.formulas;
           final certElementSequence = cert?.elementSequence;
           final certWildMagic = cert?.wildMagic;
@@ -2820,12 +2834,14 @@ class DeterministicResolution {
           // blob is the trust layer's job even when — as here — it only derives
           // and never rejects.
           final certifiedDeclaration = ctx.host.isLocalPlayer(actor.playerId)
-              ? ctx.host.certifiedFromProofBytes(spell)
+              ? ctx.host.certifiedFromProofBytes(spell,
+                  casterPlayerId: actor.playerId)
               : certifiedPeerCasts[spell.commitmentHex] ??
                   // Verification not wired up (solo/dev): parse unverified, the
                   // same way the owner's device does. No weaker than the wire
                   // formula this replaces, and identical on both devices.
-                  ctx.host.certifiedFromProofBytes(spell);
+                  ctx.host.certifiedFromProofBytes(spell,
+                      casterPlayerId: actor.playerId);
           state.pendingDelayedSpells.add(
             PendingDelayedSpell(
               id: PendingDelayedSpell.idFromCommitment(mysteryCommitment),
@@ -3183,8 +3199,13 @@ class DeterministicResolution {
     SpellAsset spell,
     List<WildMagicTrigger>? certified,
   ) async {
+    // [actor] is the caster, and Wild Magic v2 is keyed on the caster — so the
+    // identity this derives under is the authenticated avatar's, never the
+    // spell's inscriber (WILD_MAGIC_PLAN_VNEXT.md §2, §5).
     final triggers = certified ??
-        ctx.host.certifiedFromProofBytes(spell)?.wildMagic ??
+        ctx.host
+            .certifiedFromProofBytes(spell, casterPlayerId: actor.playerId)
+            ?.wildMagic ??
         const [];
     if (triggers.isEmpty) return;
 
