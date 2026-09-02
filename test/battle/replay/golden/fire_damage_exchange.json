@@ -5,7 +5,7 @@
     {
       "turn": 1,
       "note": "player_a opens; player_b passes — one-sided damage",
-      "stateHash": "deef349e0a86a2168a9775cd1d393231913d6fc1e838d4d4c6decf26264bbd80",
+      "stateHash": "9bc6517fcfdd8c124075e8c809f5c6a0133f4684f03f2297fc88ccea8de08392",
       "events": {
         "castEvents": 1,
         "resolvedSpells": 1,
@@ -49,7 +49,7 @@
     {
       "turn": 2,
       "note": "both cast at once — resolution order decides who lands first",
-      "stateHash": "a99e4ee230e9dda7dfba25d2c4c3d72b90494b601f14f444b1350aa9c55b5afb",
+      "stateHash": "42af2d2f4c1dce039ddb2674bf80a041570d67bb022d6a8e2abc14961ad9b3de",
       "events": {
         "castEvents": 2,
         "resolvedSpells": 2,
@@ -93,7 +93,7 @@
     {
       "turn": 3,
       "note": "both idle, so both chains regress",
-      "stateHash": "ad2e4355c501af6971bcfc388f418d5d15c6850e3461af78523f8376c5078b28",
+      "stateHash": "5fc613964420c4d4458c1505ef39874128a732d6b03771b0fed62b00d937bbea",
       "events": {
         "castEvents": 0,
         "resolvedSpells": 0,

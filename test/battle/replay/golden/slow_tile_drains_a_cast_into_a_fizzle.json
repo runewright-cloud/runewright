@@ -5,7 +5,7 @@
     {
       "turn": 1,
       "note": "player_a hastes itself; player_b lays a Slow tile beside it",
-      "stateHash": "94af1c93a87d3f27d125462206ac2601443ba064a0d765e3685e6a44e6834342",
+      "stateHash": "774b9d2a69f26a4ce1b6e9e582764598673227d3899359488c26f6a34ff9e556",
       "events": {
         "castEvents": 2,
         "resolvedSpells": 2,
@@ -49,7 +49,7 @@
     {
       "turn": 2,
       "note": "player_a walks through the mire and casts — the drain fizzles it",
-      "stateHash": "47a973edb8c2e70c66f8ff813348e3b8ffeef3bcc948afc4e98986ca6fca3a87",
+      "stateHash": "402ebcdc53849a659cb927817d9fd55b57d941da80f6fc24d98f59077d54f55c",
       "events": {
         "castEvents": 0,
         "resolvedSpells": 0,
@@ -93,7 +93,7 @@
     {
       "turn": 3,
       "note": "quiet turn — a fizzled cast must leave nothing behind either",
-      "stateHash": "088f349e2265a59235ebc6c1bf4805813124df0771388ac364ba575a34bdf672",
+      "stateHash": "61590d2f220b663adc4faff117d4e28a1abd27880da6f72e8ee0cbf0f91b6967",
       "events": {
         "castEvents": 0,
         "resolvedSpells": 0,

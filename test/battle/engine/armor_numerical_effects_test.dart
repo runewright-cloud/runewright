@@ -550,12 +550,14 @@ void main() {
       expect(av.hp, _kStartHp + 8, reason: 'fixture check: started full');
 
       final state = _state([av]);
-      state.wildMagic.pendingStatuesquePlayerIds.add('w');
+      // Armed on turn 0 so the window covers turns 1-2; the heal now lands at
+      // the START of turn 1 rather than at end of turn (Slice 4).
+      state.wildMagic.armStatuesque('w', triggerTurn: 0);
       av.hp = 3;
 
       await _loop(state, 'w').runTurn(TurnInput(action: PassAction()));
 
-      expect(state.wildMagic.statuesquePlayerIds, {'w'});
+      expect(state.wildMagic.statuesqueActiveFor('w', state.turnNumber), isTrue);
       expect(av.hp, _kStartHp + 8,
           reason: 'restoring to the bare config value would make Statuesque a '
               'silent downgrade for an armored wizard');
@@ -564,7 +566,7 @@ void main() {
     test('Statuesque on an unarmored wizard is unchanged', () async {
       final av = _avatar('w', const HexCoord(0, 0), teamId: 'a');
       final state = _state([av]);
-      state.wildMagic.pendingStatuesquePlayerIds.add('w');
+      state.wildMagic.armStatuesque('w', triggerTurn: 0);
       av.hp = 3;
 
       await _loop(state, 'w').runTurn(TurnInput(action: PassAction()));

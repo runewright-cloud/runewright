@@ -310,7 +310,19 @@ void main() {
         ctx.loop.lastWildMagicEvents.map((e) => e.effect),
         contains(WildMagicEffectKind.phoenix),
       );
-      expect(ctx.state.wildMagic.phoenixPlayerIds, contains('local'));
+      // Armed for the two rounds AFTER this one (Slice 4), so it is scheduled
+      // rather than active on the round that fired it.
+      expect(ctx.state.wildMagic.phoenixWindows, contains('local'));
+      expect(
+        ctx.state.wildMagic
+            .phoenixAvailableFor('local', ctx.state.turnNumber),
+        isFalse,
+      );
+      expect(
+        ctx.state.wildMagic
+            .phoenixAvailableFor('local', ctx.state.turnNumber + 1),
+        isTrue,
+      );
     });
 
     test('the quiet seed fires nothing', () async {
@@ -454,63 +466,89 @@ void main() {
   });
 
   group('Statuesque latch', () {
-    test('promotes at end of turn, then refills HP and mana each turn', () async {
+    test('refills HP and mana at the START of each covered round', () async {
+      // Armed on turn 0 → covers turns 1 and 2. The heal moved from end of
+      // turn to round start in Slice 4, so the refill is already in place
+      // before the round's actions run.
       final ctx = _setup(seed: _seedQuiet);
-      ctx.state.wildMagic.pendingStatuesquePlayerIds.add('local');
+      ctx.state.wildMagic.armStatuesque('local', triggerTurn: 0);
       ctx.local.hp = 5;
       ctx.local.mana = 0;
 
       await ctx.loop.runTurn(TurnInput(action: PassAction()));
-      expect(ctx.state.wildMagic.statuesquePlayerIds, {'local'});
-      expect(ctx.local.hp, 24, reason: 'refilled the turn it latched');
+      expect(
+        ctx.state.wildMagic.statuesqueActiveFor('local', ctx.state.turnNumber),
+        isTrue,
+      );
+      expect(ctx.local.hp, 24, reason: 'refilled at the start of turn 1');
       expect(ctx.local.mana, ctx.local.maxMana);
 
       ctx.local.hp = 3;
       await ctx.loop.runTurn(TurnInput(action: PassAction()));
-      expect(ctx.local.hp, 24);
+      expect(ctx.local.hp, 24, reason: 'and again at the start of turn 2');
+
+      // Turn 3 is past the window: swept at the round boundary, no heal.
+      ctx.local.hp = 3;
+      await ctx.loop.runTurn(TurnInput(action: PassAction()));
+      expect(ctx.local.hp, 3);
+      expect(ctx.state.wildMagic.statuesqueWindows, isEmpty);
     });
 
     test('breaks on a voluntary move', () async {
       final ctx = _setup(seed: _seedQuiet);
-      ctx.state.wildMagic.statuesquePlayerIds.add('local');
+      ctx.state.wildMagic.armStatuesque('local', triggerTurn: 0);
       await ctx.loop.runTurn(TurnInput(
         action: PassAction(),
         movePath: [HexCoord(ctx.local.position.q, ctx.local.position.r - 1)],
       ));
-      expect(ctx.state.wildMagic.statuesquePlayerIds, isEmpty);
+      expect(ctx.state.wildMagic.statuesqueWindows, isEmpty);
     });
 
     test('breaks on a cast', () async {
       final ctx = _setup(seed: _seedQuiet);
-      ctx.state.wildMagic.statuesquePlayerIds.add('local');
+      ctx.state.wildMagic.armStatuesque('local', triggerTurn: 0);
       await ctx.loop.runTurn(TurnInput(
         action: SpellCastAction(
           spell: _fireSpell(),
           targetHex: ctx.local.position,
         ),
       ));
-      expect(ctx.state.wildMagic.statuesquePlayerIds, isEmpty);
+      expect(ctx.state.wildMagic.statuesqueWindows, isEmpty);
     });
 
-    test('a Meditate does NOT break it', () async {
+    test('a Meditate DOES break it (Slice 4 rule change)', () async {
+      // Was the loophole: under the old cast-or-move-only reading a wizard
+      // could meditate to full mana every round from behind an unbreakable
+      // heal. Any voluntary action but Pass now ends it.
       final ctx = _setup(seed: _seedQuiet);
-      ctx.state.wildMagic.statuesquePlayerIds.add('local');
+      ctx.state.wildMagic.armStatuesque('local', triggerTurn: 0);
       await ctx.loop.runTurn(TurnInput(action: MeditateAction()));
-      expect(ctx.state.wildMagic.statuesquePlayerIds, {'local'});
+      expect(ctx.state.wildMagic.statuesqueWindows, isEmpty);
+    });
+
+    test('a Pass leaves it standing', () async {
+      final ctx = _setup(seed: _seedQuiet);
+      ctx.state.wildMagic.armStatuesque('local', triggerTurn: 0);
+      await ctx.loop.runTurn(TurnInput(action: PassAction()));
+      expect(
+        ctx.state.wildMagic.statuesqueActiveFor('local', ctx.state.turnNumber),
+        isTrue,
+      );
     });
   });
 
   group('Phoenix through a real turn', () {
     test('a wizard who would die rises at 1 HP, once', () async {
       final ctx = _setup(seed: _seedQuiet);
-      ctx.state.wildMagic.phoenixPlayerIds.add('local');
+      // Armed on turn 0 → available on turns 1 and 2.
+      ctx.state.wildMagic.armPhoenix('local', triggerTurn: 0);
       ctx.local.hp = 0;
 
       await ctx.loop.runTurn(TurnInput(action: PassAction()));
 
       expect(ctx.local.hp, 1);
-      expect(ctx.state.wildMagic.phoenixPlayerIds, isEmpty,
-          reason: 'one-shot, consumed');
+      expect(ctx.state.wildMagic.phoenixWindows, isEmpty,
+          reason: 'one-shot, consumed immediately');
       expect(
         ctx.loop.lastWildMagicEvents.map((e) => e.effect),
         contains(WildMagicEffectKind.phoenix),
@@ -526,6 +564,9 @@ void main() {
   group('Rippling Reflections', () {
     test('a fizzle or a double happens, and the odds drift by 10', () async {
       final ctx = _setup(seed: _seedQuiet);
+      // Armed on turn 0 so its one-round window covers turn 1, the turn the
+      // cast below runs on.
+      ctx.state.wildMagic.armRippling(triggerTurn: 0);
       ctx.state.wildMagic.ripplingFizzlePct = 50;
       await ctx.loop.runTurn(TurnInput(
         action: SpellCastAction(
@@ -539,16 +580,25 @@ void main() {
     test('the drift clamps to [0, 100]', () async {
       for (final start in [0, 100]) {
         final ctx = _setup(seed: _seedQuiet);
-        ctx.state.wildMagic.ripplingFizzlePct = start;
         for (var i = 0; i < 5; i++) {
+          // Re-armed before each turn: the window is one round long now, so a
+          // five-turn drift walk has to re-arm to stay active. The percentage
+          // is re-pinned after arming because a swept Rippling leaves no
+          // drifted counter behind for the next arming to inherit.
+          ctx.state.wildMagic
+              .armRippling(triggerTurn: ctx.state.turnNumber);
+          ctx.state.wildMagic.ripplingFizzlePct = start;
           await ctx.loop.runTurn(TurnInput(
             action: SpellCastAction(
               spell: _fireSpell(),
               targetHex: ctx.local.position,
             ),
           ));
+          expect(
+            ctx.state.wildMagic.ripplingFizzlePct,
+            inInclusiveRange(0, 100),
+          );
         }
-        expect(ctx.state.wildMagic.ripplingFizzlePct, inInclusiveRange(0, 100));
       }
     });
 
@@ -557,6 +607,7 @@ void main() {
       // 0% fizzle → every cast doubles. If the doubling could reach the
       // wild-magic seam, Burning Hot would arm twice from one cast.
       final ctx = _setup(seed: _seedRow1);
+      ctx.state.wildMagic.armRippling(triggerTurn: 0);
       ctx.state.wildMagic.ripplingFizzlePct = 0;
       await ctx.loop.runTurn(TurnInput(
         action: SpellCastAction(

@@ -108,6 +108,7 @@ import 'dart:convert' show utf8;
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' show sha256;
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:cryptography/cryptography.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/spells/inscribe.dart' show tierForSteps;
@@ -133,6 +134,7 @@ import 'battle_wire_codec.dart';
 import 'book_commitment.dart';
 import 'commit_reveal.dart';
 import 'deterministic_resolution.dart';
+import 'statuesque_break.dart';
 import 'draw_schedule.dart';
 import 'effect_applicator.dart';
 import 'hash_rng.dart';
@@ -163,6 +165,11 @@ export 'deterministic_resolution.dart'
 // importing this file — the same split battle_events.dart made. Re-exported so
 // every existing `import '.../turn_loop.dart'` naming them keeps compiling.
 export 'turn_actions.dart';
+
+// Statuesque's voluntary-action classification — `breaksStatuesque` and the
+// channel inventory. Re-exported because it is the answer to "does this action
+// break the latch", a question the engine's consumers and its tests both ask.
+export 'statuesque_break.dart';
 
 // The battle protocol's serialization boundary moved to battle_wire_codec.dart
 // — every encoder, decoder and framing rule, with no trust decision among
@@ -1710,6 +1717,13 @@ class TurnLoop
   /// [StateError] on protocol failures (withheld reveal, state hash mismatch).
   Future<WinCheckResult?> runTurn(TurnInput input) async {
     state.turnNumber++;
+    // ── Round boundary: wild magic's persistent state ─────────────────────
+    // THE single lifecycle point for the row-3 persistents (Slice 4): expire
+    // what ran out with the previous round, then apply what begins this one
+    // (Statuesque's heal). Runs here, above every commit-reveal, so an expired
+    // effect is gone before a player can declare anything for this round and a
+    // starting heal is in place before they decide what to do with it.
+    _resolution.resolveWildMagicRoundStart();
     lastCastEvents = [];
     lastResolvedSpells = [];
     lastConveyorChainEvents = [];
@@ -2553,6 +2567,11 @@ class TurnLoop
           isVelocity: pending.isVelocity,
           delayedOriginHex: pending.origin,
           delayedRange: pending.declaredRange,
+          // THE site that marks a cast as the engine keeping an earlier
+          // promise rather than the wizard acting now — see the field's doc
+          // comment. The voluntary act was the declaration, back on
+          // `pending.castTurn`.
+          isDelayedRealization: true,
         ),
         pending.certified,
       ));
@@ -2600,10 +2619,60 @@ class TurnLoop
   /// manaMirror link makes one player's gain feed the other's, so the order
   /// the two payouts run in is observable, and "me first" is a different order
   /// on each device.
+  // ── Test seams for the wild-magic lifecycle (Slice 4) ─────────────────────
+  //
+  // Three voluntary channels — melee, artifact activation, the phoenix sweep —
+  // sit behind a commit-reveal round or a phase this class drives, so a test
+  // that wants to prove the channel is wired to Statuesque's breaker would
+  // otherwise have to reconstruct the whole round. These forward to the
+  // deterministic seam and add no behaviour of their own.
+
+  /// Applies a declared melee from [playerId] at [target], as Phase 4b does.
+  @visibleForTesting
+  void applyHaymakerForTesting(String playerId, HexCoord target) {
+    final av = _avatarById(playerId);
+    if (av == null) return;
+    _resolution.applyHaymaker(
+      av,
+      target,
+      const {},
+      HashRng(Uint8List(32)),
+    );
+  }
+
+  /// Declares [kind] as [playerId]'s Phase-0 artifact activation.
+  @visibleForTesting
+  void applyArtifactActivationForTesting(
+    String playerId,
+    AccoutrementKind kind,
+  ) {
+    final av = _avatarById(playerId);
+    if (av == null) return;
+    _resolution.applyArtifactActivation(
+      av,
+      _resolution.validateActivation(av, kind),
+    );
+  }
+
+  /// Runs the Phoenix sweep at the current round, as Phase 6 does.
+  @visibleForTesting
+  void applyPhoenixSavesForTesting() => _applyPhoenixSaves();
+
+  /// The per-channel Statuesque break tally — see
+  /// [DeterministicResolution.debugStatuesqueBreakCounts].
+  @visibleForTesting
+  Map<StatuesqueBreakCause, int> get debugStatuesqueBreakCountsForTesting =>
+      _resolution.debugStatuesqueBreakCounts;
+
   void _applyMoveMeditations(List<String> meditatorIds) {
     for (final id in meditatorIds) {
       final av = _avatarById(id);
-      if (av != null) _applyManaGain(av, kMeditateManaGain);
+      if (av == null) continue;
+      _applyManaGain(av, kMeditateManaGain);
+      // Move-phase Meditate is a declared voluntary action, so it ends
+      // Statuesque — the sixth channel in `statuesque_break.dart`'s inventory,
+      // and the only one that has to reach in from this side of the seam.
+      _resolution.breakStatuesqueForMovePhaseMeditate(id);
     }
   }
 

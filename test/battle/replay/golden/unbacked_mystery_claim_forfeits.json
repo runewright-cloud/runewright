@@ -5,7 +5,7 @@
     {
       "turn": 1,
       "note": "an ordinary backed cast — the match is live and in lockstep",
-      "stateHash": "deef349e0a86a2168a9775cd1d393231913d6fc1e838d4d4c6decf26264bbd80",
+      "stateHash": "9bc6517fcfdd8c124075e8c809f5c6a0133f4684f03f2297fc88ccea8de08392",
       "events": {
         "castEvents": 1,
         "resolvedSpells": 1,
@@ -54,7 +54,7 @@
     "detectedBy": "player_b",
     "offender": "player_a",
     "error": "peer claimed a cast-time enhancement not backed by certified supreme-dominance data — match forfeit (commitmentHex=0x8787878787878787878787878787878787878787878787878787878787878787)",
-    "detectorStateHash": "38bbf28f9ec9bed1a17f2b8c5fbdc5913f6d5d9dc88e4a7a4a6c315bfa282cb3",
+    "detectorStateHash": "1ce9ec1cfc034464b128e65de95943340d4dccc40909ac8137f10539bbe41cbc",
     "detectorStateUnchangedApartFromTurnCounter": true,
     "detectorEvents": {
       "castEvents": 0,

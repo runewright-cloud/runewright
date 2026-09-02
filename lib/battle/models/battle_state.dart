@@ -588,34 +588,45 @@ class BattleState {
     buf.writeInt32(wildMagic.spellDamageBonusAmount);
     buf.writeInt32(wildMagic.spellDamageBonusTurn);
 
-    final sortedPhoenix = wildMagic.phoenixPlayerIds.toList()..sort();
-    buf.writeUint16(sortedPhoenix.length);
-    for (final id in sortedPhoenix) {
-      buf.writeUtf8(id);
+    // Each persistent effect carries its round window (Slice 4), so both
+    // bounds are consensus state: they cross the per-turn state-hash exchange
+    // in the round they are armed, and two devices holding the same players
+    // with different expiries must not agree on a hash.
+    //
+    // Windows are written as their two INCLUSIVE bounds, in map-key order —
+    // never insertion order. `pendingStatuesquePlayerIds` is gone: the window
+    // expresses "not until next round" on its own.
+    void writeWindows(Map<String, WildMagicWindow> windows) {
+      final ids = windows.keys.toList()..sort();
+      buf.writeUint16(ids.length);
+      for (final id in ids) {
+        buf.writeUtf8(id);
+        buf.writeInt32(windows[id]!.activeFromTurn);
+        buf.writeInt32(windows[id]!.expiresAfterTurn);
+      }
     }
 
-    final sortedStatuesque = wildMagic.statuesquePlayerIds.toList()..sort();
-    buf.writeUint16(sortedStatuesque.length);
-    for (final id in sortedStatuesque) {
-      buf.writeUtf8(id);
+    writeWindows(wildMagic.phoenixWindows);
+    writeWindows(wildMagic.statuesqueWindows);
+
+    // Rippling Reflections: one shared window plus its drifting percentage.
+    // The presence byte keeps a 0% counter distinguishable from "inactive".
+    final ripplingWindow = wildMagic.ripplingWindow;
+    buf.writeUint8(ripplingWindow == null ? 0 : 1);
+    if (ripplingWindow != null) {
+      buf.writeInt32(ripplingWindow.activeFromTurn);
+      buf.writeInt32(ripplingWindow.expiresAfterTurn);
+      buf.writeInt32(wildMagic.ripplingFizzlePct ?? 0);
     }
 
-    // Pending (armed this turn, latching at end of turn — A6). Encoded too:
-    // it survives across the state-hash exchange point within the turn it is
-    // set, so leaving it out would let two clients agree on a hash while
-    // holding different pending sets.
-    final sortedPendingStatuesque = wildMagic.pendingStatuesquePlayerIds.toList()
-      ..sort();
-    buf.writeUint16(sortedPendingStatuesque.length);
-    for (final id in sortedPendingStatuesque) {
+    // Scattered Gusts: per wizard, and the armed-from round matters — a Gust
+    // armed this round must not be spendable by this round's casts.
+    final gustIds = wildMagic.scatteredGustsArmedFrom.keys.toList()..sort();
+    buf.writeUint16(gustIds.length);
+    for (final id in gustIds) {
       buf.writeUtf8(id);
+      buf.writeInt32(wildMagic.scatteredGustsArmedFrom[id]!);
     }
-
-    final fizzlePct = wildMagic.ripplingFizzlePct;
-    buf.writeUint8(fizzlePct == null ? 0 : 1);
-    if (fizzlePct != null) buf.writeInt32(fizzlePct);
-
-    buf.writeUint8(wildMagic.scatteredGusts ? 1 : 0);
 
     final sortedExpiring = expiringTiles.entries.toList()
       ..sort((a, b) {

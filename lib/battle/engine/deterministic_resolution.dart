@@ -177,6 +177,7 @@ import 'terrain_ops.dart';
 import 'tile_entry_resolver.dart';
 import 'peer_cast_verifier.dart' show PeerCastVerifier;
 import 'trajectory_parser.dart' show ParsedFormula;
+import 'statuesque_break.dart';
 import 'turn_actions.dart';
 import 'wild_magic_applicator.dart';
 
@@ -516,6 +517,10 @@ class DeterministicResolution {
   /// .beginArtifactEntropy`'s doc comment for why.
   int? applyArtifactActivation(WizardAvatar av, AccoutrementKind? kind) {
     if (kind == null) return null;
+    // Burning an artifact is a declared voluntary action, so it ends
+    // Statuesque. Null was already filtered out above, so this fires only for
+    // a real, validated declaration.
+    _breakStatuesque(av.playerId, StatuesqueBreakCause.artifactActivation);
     av.declaredActivation = kind;
 
     switch (kind) {
@@ -662,7 +667,9 @@ class DeterministicResolution {
       // involuntary displacement (knockback, ice slide, Zephyr) happens
       // elsewhere and deliberately does not break the latch. A conveyor push
       // appended to a voluntary step is already a move they chose to make.
-      if (path.length > 1) _breakStatuesque(av.playerId);
+      if (path.length > 1) {
+        _breakStatuesque(av.playerId, StatuesqueBreakCause.declaredMovement);
+      }
       av.position = path.last;
       state.battlefield.occupancy[av.playerId] = path.last;
       walked[av.playerId] = path;
@@ -878,13 +885,42 @@ class DeterministicResolution {
   };
 
   /// Statuesque (wild magic, row 3 Earth): the latch breaks the moment a
-  /// player *chooses* to move or cast. Involuntary movement (knockback,
-  /// conveyor, ice slide, Zephyr) does NOT break it — "if they move" reads as
-  /// a choice.
-  void _breakStatuesque(String playerId) {
-    state.wildMagic.statuesquePlayerIds.remove(playerId);
-    state.wildMagic.pendingStatuesquePlayerIds.remove(playerId);
+  /// player *chooses* to act at all — any voluntary action but Pass.
+  /// Involuntary movement (knockback, conveyor, ice slide, Zephyr), forced
+  /// casts, and everything else the engine does TO a wizard leave it standing.
+  ///
+  /// [cause] names which of the six voluntary channels fired; the inventory
+  /// and the reasoning live in `statuesque_break.dart`. Every break in the
+  /// engine funnels through here, so the channels are enumerable rather than
+  /// scattered.
+  void _breakStatuesque(String playerId, StatuesqueBreakCause cause) {
+    if (state.wildMagic.statuesqueWindows.containsKey(playerId)) {
+      debugStatuesqueBreakCounts[cause] =
+          (debugStatuesqueBreakCounts[cause] ?? 0) + 1;
+    }
+    state.wildMagic.breakStatuesque(playerId);
   }
+
+  /// Ends [playerId]'s Statuesque for a move-phase Meditate.
+  ///
+  /// The one break channel TurnLoop has to reach in from outside: move-phase
+  /// Meditate is declared inside the MOVEMENT commit-reveal
+  /// (`TurnInput.meditateInMove`), not as a [TurnAction], so it never passes
+  /// through `resolveActions`' classification. See `statuesque_break.dart`'s
+  /// channel inventory.
+  void breakStatuesqueForMovePhaseMeditate(String playerId) =>
+      _breakStatuesque(playerId, StatuesqueBreakCause.moveePhaseMeditate);
+
+  /// How many Statuesque latches each voluntary channel has actually broken
+  /// this match.
+  ///
+  /// NOT consensus state — never serialized, never read by resolution, and
+  /// bounded by the size of [StatuesqueBreakCause] rather than by match
+  /// length. It exists so a test can assert that a given channel really is
+  /// wired to the breaker, which is the half of the "any voluntary action"
+  /// rule that a unit test on [breaksStatuesque] alone cannot reach: the
+  /// predicate says what SHOULD break it, this says what DID.
+  final Map<StatuesqueBreakCause, int> debugStatuesqueBreakCounts = {};
 
   // ── Phase 4: Cloud drift ──────────────────────────────────────────────────
 
@@ -992,6 +1028,10 @@ class DeterministicResolution {
     Map<String, List<HexCoord>> walked,
     HashRng rng,
   ) {
+    // Statuesque breaks on the DECLARATION, above the adjacency test: a wizard
+    // who threw a punch has stopped being a statue whether or not it landed,
+    // and both devices reach this line with the same revealed melee targets.
+    _breakStatuesque(actor.playerId, StatuesqueBreakCause.melee);
     if (!isAdjacent(actor.position, targetTile)) return const [];
 
     final hitAvatars = <WizardAvatar>[];
@@ -1891,7 +1931,7 @@ class DeterministicResolution {
     state.battlefield.occupancy[av.playerId] = walk.path.last;
     // A free-move run is voluntary movement, exactly like a declared move
     // path — see resolveAvatarMovement's matching call.
-    _breakStatuesque(av.playerId);
+    _breakStatuesque(av.playerId, StatuesqueBreakCause.freeMoveRun);
 
     final resource = grant.boostResource;
     if (resource == null) return;
@@ -2101,33 +2141,9 @@ class DeterministicResolution {
       }
     }
 
-    // ── Wild magic, end of turn ─────────────────────────────────────────
-    //
-    // Statuesque (row 3, Earth). A6: the latch begins at the END of the turn
-    // it fires, so the triggering cast cannot break its own effect — promote
-    // the pending set here, then refill everyone still standing. Sorted, since
-    // both sets are Sets and their iteration order is insertion order.
-    if (state.wildMagic.pendingStatuesquePlayerIds.isNotEmpty) {
-      final promoted = state.wildMagic.pendingStatuesquePlayerIds.toList()..sort();
-      state.wildMagic.statuesquePlayerIds.addAll(promoted);
-      state.wildMagic.pendingStatuesquePlayerIds.clear();
-    }
-    for (final id in state.wildMagic.statuesquePlayerIds.toList()..sort()) {
-      final av = avatarById(id);
-      if (av == null || !av.isAlive) continue;
-      // "Full" means the pool this wizard actually started the match with,
-      // armor included — restoring to the bare config value would silently
-      // strip an Earth armor's contribution and make Statuesque a downgrade
-      // for the wearer. Ordinary healing stays uncapped and untouched; this is
-      // the one path that ASSIGNS an HP total rather than adding to one.
-      av.hp = state.config.playerHp + (av.armor?.armorHpBonus ?? 0);
-      applyManaGain(av, av.maxMana - av.mana);
-    }
-    // A dead player can never break the latch by moving or casting, so drop
-    // them rather than leaving a permanent entry in the state hash.
-    state.wildMagic.statuesquePlayerIds.removeWhere(
-      (id) => !(avatarById(id)?.isAlive ?? false),
-    );
+    // Wild magic's persistent state has no end-of-turn work left: expiry and
+    // Statuesque's healing both moved to the ROUND BOUNDARY in Slice 4 — see
+    // [resolveWildMagicRoundStart], which runs at the top of the next turn.
 
     // Expiring terrain (Mountains, Chasm, Glacier). expiringTiles maps a coord
     // to the LAST turn its effect is active, so sweep once that turn ends.
@@ -2237,20 +2253,61 @@ class DeterministicResolution {
   }
 
   /// Phoenix (wild magic, row 3 Fire): a player in the phoenix set who would
+  /// THE wild-magic round boundary: expire what is spent, then apply what
+  /// begins the round (docs/WILD_MAGIC_PLAN.md §7.3, Slice 4).
+  ///
+  /// Called once per round from `TurnLoop.runTurn`, immediately after
+  /// `state.turnNumber++` and before ANY player declaration for the round —
+  /// which is what makes "absent before voluntary actions begin in R+3" exact,
+  /// and what keeps a spent window out of the canonical bytes rather than
+  /// leaving it to be noticed lazily by whoever queries it next.
+  ///
+  /// Order is load-bearing: sweep FIRST, then heal. A Statuesque whose window
+  /// ended with the previous round must not get one last heal on its way out.
+  void resolveWildMagicRoundStart() {
+    state.wildMagic.sweepExpired(
+      state.turnNumber,
+      isAlive: (id) => avatarById(id)?.isAlive ?? false,
+    );
+
+    // Statuesque (row 3, Earth): full HP and mana at the START of each covered
+    // round. Sorted, because the map's iteration order is insertion order and
+    // two devices must refill in one order.
+    final statues = state.wildMagic.statuesqueWindows.keys.toList()..sort();
+    for (final id in statues) {
+      if (!state.wildMagic.statuesqueActiveFor(id, state.turnNumber)) continue;
+      final av = avatarById(id);
+      if (av == null || !av.isAlive) continue;
+      // "Full" means the pool this wizard actually started the match with,
+      // armor included — restoring to the bare config value would silently
+      // strip an Earth armor's contribution and make Statuesque a downgrade
+      // for the wearer. Ordinary healing stays uncapped and untouched; this is
+      // the one path that ASSIGNS an HP total rather than adding to one.
+      av.hp = state.config.playerHp + (av.armor?.armorHpBonus ?? 0);
+      applyManaGain(av, av.maxMana - av.mana);
+    }
+  }
+
   /// die instead respawns at 1 HP, consuming their one-shot save.
   ///
   /// Called everywhere avatar HP can reach zero — beside every [_reapDead]
   /// (which only reaps minions) and immediately before the win check, so a
   /// save can never be missed by the match ending first.
   void applyPhoenixSaves(List<WildMagicEvent> wildMagicEvents) {
-    if (state.wildMagic.phoenixPlayerIds.isEmpty) return;
-    // Sorted so the (rare) case of two simultaneous saves consumes the set in
+    if (state.wildMagic.phoenixWindows.isEmpty) return;
+    // Sorted so the (rare) case of two simultaneous saves consumes the map in
     // one order on both devices.
     final saved = <String>[];
     for (final av in List<WizardAvatar>.from(state.avatars)
       ..sort((a, b) => a.playerId.compareTo(b.playerId))) {
       if (av.isAlive) continue;
-      if (!state.wildMagic.phoenixPlayerIds.remove(av.playerId)) continue;
+      // Window-checked, not merely present: a Phoenix armed during THIS round
+      // covers the next two and must not rescue a wizard from a death still
+      // resolving in the round that granted it.
+      if (!state.wildMagic
+          .consumePhoenixSave(av.playerId, state.turnNumber)) {
+        continue;
+      }
       av.hp = 1;
       saved.add(av.playerId);
     }
@@ -2453,6 +2510,14 @@ class DeterministicResolution {
 
     for (final (actor, action) in sorted) {
       if (!actor.isAlive) continue;
+      // Statuesque (wild magic, row 3 Earth) breaks on ANY voluntary action
+      // but Pass — see statuesque_break.dart for the classification and why it
+      // is an exhaustive switch rather than an allowlist. Broken here, above
+      // the resolution switch, so it covers a cast that fizzles, is countered,
+      // or is a Mystery merely being stashed: the wizard still chose to act.
+      if (breaksStatuesque(action)) {
+        _breakStatuesque(actor.playerId, StatuesqueBreakCause.declaredAction);
+      }
       switch (action) {
         case PassAction():
           _regressChain(actor);
@@ -2475,12 +2540,8 @@ class DeterministicResolution {
           :final isVelocity,
           :final isEfficiency,
           :final conveyorDirection,
+          :final isDelayedRealization,
         ):
-          // Statuesque (wild magic, row 3 Earth) breaks on a cast — a choice,
-          // unlike Pass / Dash / Meditate / melee, which leave it standing.
-          // Broken here, before resolution, so it covers a fizzled or
-          // countered cast too: the wizard still chose to cast.
-          _breakStatuesque(actor.playerId);
           // The proof-attested semantics of THIS cast, resolved once for every
           // consumer below (counter-charm matching, applySpell, mana, chain
           // state) so they can never disagree about what the proof said.
@@ -2722,10 +2783,19 @@ class DeterministicResolution {
                 rodRequested: actor.declaredActivation ==
                     AccoutrementKind.rodOfSpreading,
               );
-              // Scattered Gusts (wild magic, row 3 Air): once active, every
-              // cast blows the caster's bookmarks loose and they find a new
-              // set. Free casts are exempt (A8) — they never reach here.
-              if (state.wildMagic.scatteredGusts) {
+              // Scattered Gusts (wild magic, row 3 Air): a wizard carrying a
+              // pending Gust has their bookmarks blown loose by their next
+              // VOLUNTARY cast, and finds a new set — exactly once. Consuming
+              // it clears that wizard's Gust and nobody else's.
+              //
+              // This site is inside the SpellCastAction branch, which is what
+              // makes the three exemptions structural rather than checked:
+              // forced free casts (A8) re-enter at applySpell and never reach
+              // here, non-spell actions never reach here, and a Gust armed
+              // this round is not yet consumable by its own round's casts.
+              if (!isDelayedRealization &&
+                  state.wildMagic
+                      .consumeScatteredGust(actor.playerId, state.turnNumber)) {
                 ctx.host.redrawHand(actor.playerId, ctx.entropy);
               }
               // A cloud born this turn would otherwise sit dead-still until
@@ -2856,6 +2926,17 @@ class DeterministicResolution {
               isVelocity: isVelocity,
             ),
           );
+          // Scattered Gusts (row 3, Air) is spent by the wizard's next
+          // VOLUNTARY spell cast, and declaring a delayed Mystery is that
+          // cast — the spell has already left their hand at commit time, and
+          // the fire this promises will arrive as an involuntary realization
+          // that deliberately consumes nothing. Redealing here rather than
+          // there is what keeps "one redeal per voluntary cast" true for a
+          // wizard who casts nothing but Mysteries.
+          if (state.wildMagic
+              .consumeScatteredGust(actor.playerId, state.turnNumber)) {
+            ctx.host.redrawHand(actor.playerId, ctx.entropy);
+          }
       }
     }
 
@@ -2921,21 +3002,27 @@ class DeterministicResolution {
     // Once active there is no third outcome: every spell either fizzles or
     // resolves twice. Rolled after wild magic, before the formula loop.
     var repeatWholeSpell = 1;
-    if (subjectToRippling && state.wildMagic.ripplingFizzlePct != null) {
-      final pct = state.wildMagic.ripplingFizzlePct!;
+    // Bounded to its window since Slice 4: `ripplingFizzlePctOn` returns null
+    // on any round the effect does not cover, including the round that armed
+    // it. Do NOT test `ripplingFizzlePct` directly — that field cannot tell
+    // "active now" from "scheduled for next round".
+    final ripplingPct = subjectToRippling
+        ? state.wildMagic.ripplingFizzlePctOn(state.turnNumber)
+        : null;
+    if (ripplingPct != null) {
       final coin =
           HashRng(ctx.host.ripplingSeed(ctx.entropy, actor.playerId))
               .nextInt(100);
-      if (coin < pct) {
+      if (coin < ripplingPct) {
         // Fizzle: no formula effects at all, drift 10% toward doubling.
         // Treated as a fizzle for chain purposes, matching the existing
         // enhancements.fizzle branch in [resolveActions].
-        state.wildMagic.ripplingFizzlePct = (pct - 10).clamp(0, 100);
+        state.wildMagic.driftRippling(state.turnNumber, -10);
         _regressChain(actor);
         return null;
       }
       // Double: apply the formula effects twice, drift 10% toward fizzling.
-      state.wildMagic.ripplingFizzlePct = (pct + 10).clamp(0, 100);
+      state.wildMagic.driftRippling(state.turnNumber, 10);
       repeatWholeSpell = 2;
     }
 

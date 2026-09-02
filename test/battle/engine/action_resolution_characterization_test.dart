@@ -372,7 +372,12 @@ void main() {
       ctx.loop
         ..localChapterSpells = cards
         ..localChapterCommitments = [for (final c in cards) c.commitmentHex];
-      ctx.state.wildMagic.scatteredGusts = gusts;
+      // Armed on turn 0 so the Gust is pending from turn 1 — the turn the
+      // cast below runs on. A Gust armed on the CURRENT turn is deliberately
+      // not consumable by that turn's casts (Slice 4).
+      if (gusts) {
+        ctx.state.wildMagic.armScatteredGusts('local', triggerTurn: 0);
+      }
       // A cast of something NOT in the chapter, so the ordinary refill path
       // (`_advanceDrawState`) never runs and the only thing that can move the
       // hand is the Gusts redraw.
@@ -491,8 +496,8 @@ void main() {
     test('the flag is what moves the hand — with the entropy pinned, the '
         'redeal is observable rather than inferred', () async {
       // This is the one assertion that shows the Gusts branch actually EXECUTED
-      // (`deterministic_resolution.dart`'s `if (state.wildMagic.scatteredGusts)`
-      // → `host.redrawHand`) rather than the flag being read and ignored.
+      // (`deterministic_resolution.dart`'s `consumeScatteredGust` →
+      // `host.redrawHand`) rather than the pending Gust being read and ignored.
       //
       // It is NOT the old, unsound "a redeal must change the hand" claim. Both
       // runs below share one pinned joint entropy, so each hand is a fixed
@@ -549,8 +554,13 @@ void main() {
     test('it is exempt from Rippling Reflections (subjectToRippling: false)',
         () async {
       final ctx = _setup();
-      // 100% fizzle. A cast subject to rippling could not possibly resolve, and
-      // the coin would drift the counter to 90.
+      // 100% fizzle, ACTIVE on the current round: armed on turnNumber - 1, so
+      // its one-round window covers turnNumber itself. (resolveForcedCast is
+      // called directly here, without runTurn, so the clock does not advance —
+      // arming it "now" would leave it merely scheduled and the exemption
+      // below would pass vacuously.)
+      ctx.state.wildMagic
+          .armRippling(triggerTurn: ctx.state.turnNumber - 1);
       ctx.state.wildMagic.ripplingFizzlePct = 100;
 
       await ctx.loop.resolveForcedCast(
@@ -564,7 +574,8 @@ void main() {
 
       expect(ctx.state.minions.length, 1,
           reason: 'a free cast must ignore the rippling coin entirely');
-      expect(ctx.state.wildMagic.ripplingFizzlePct, 100,
+      expect(
+          ctx.state.wildMagic.ripplingFizzlePctOn(ctx.state.turnNumber), 100,
           reason: 'the coin must not have been rolled, so it must not drift');
     });
 

@@ -321,22 +321,27 @@ void main() {
   // opening hash and then diverge the first time any spell carries a trigger —
   // possibly several turns in, with nothing to blame it on. The refusal has to
   // happen at the handshake.
-  group('v7 <-> v8 (Wild Magic v2 semantic key)', () {
-    test('this build declares engine v8', () {
-      expect(kBattleEngineVersion, 8,
-          reason: 'wild magic is rekeyed on caster x certified behaviour x '
-              'leyline; docs/WILD_MAGIC_PLAN_VNEXT.md §16');
+  group('v8 <-> v9 (bounded persistent Wild Magic state)', () {
+    test('this build declares engine v9', () {
+      expect(kBattleEngineVersion, 9,
+          reason: 'Phoenix, Statuesque, Rippling Reflections and Scattered '
+              'Gusts became bounded, next-round-armed effects, and '
+              'WildMagicState\'s canonical shape changed with them — '
+              'docs/WILD_MAGIC_PLAN.md §7.3, Slice 4');
       expect(kBattleProtocolVersion, 7,
-          reason: 'no framing changed — every v2 preimage field is derived '
-              'from values both devices already exchange');
+          reason: 'no framing changed — the new state is derived on both '
+              'devices from values they already exchange');
       expect(kRulesetVersion, 3,
           reason: 'no proof semantics changed — the circuit is untouched');
     });
 
-    test('a v7 peer is refused by the capabilities gate', () async {
+    test('a v8 peer is refused by the capabilities gate', () async {
+      // The previous epoch is now the incompatible one: a v8 build resolves
+      // an unbounded, match-permanent Phoenix and a global Scattered Gusts,
+      // so it would diverge on the first row-3 firing.
       final localIdentity = await Identity.ephemeral();
       final chapter = await makeChapter(
-        idSuffix: 'a7',
+        idSuffix: 'a8',
         ownerPubkeyHex: await localIdentity.ownerPubkeyHex(),
       );
 
@@ -348,7 +353,7 @@ void main() {
         localChapter: chapter,
         hostConfig: const MatchConfig(),
       );
-      final forfeitReason = fakePeer(transportPeer, engineVersion: 7);
+      final forfeitReason = fakePeer(transportPeer, engineVersion: 8);
 
       await expectLater(
         local,
@@ -357,24 +362,22 @@ void main() {
           'message',
           allOf(
             contains('battle engine version mismatch'),
-            contains('local=8'),
-            contains('peer=7'),
+            contains('local=9'),
+            contains('peer=8'),
           ),
         )),
       );
+
       expect(await forfeitReason, 'battle_engine_mismatch');
 
       await transportLocal.disconnect();
       await transportPeer.disconnect();
     });
 
-    test('a host config pinned to v7 is refused as well', () async {
-      // The other half of the gate: a v7 build that hosts pins v7 in the match
-      // config it authors, and a v8 guest must refuse that too rather than
-      // play by rules it does not implement.
-      const v7Config = MatchConfig(battleEngineVersion: 7);
-      expect(const MatchConfig().matches(v7Config), isFalse);
-      expect(v7Config.battleEngineVersion, isNot(kBattleEngineVersion));
+    test('a host config pinned to v8 is refused as well', () async {
+      const v8Config = MatchConfig(battleEngineVersion: 8);
+      expect(const MatchConfig().matches(v8Config), isFalse);
+      expect(v8Config.battleEngineVersion, isNot(kBattleEngineVersion));
     });
   });
 

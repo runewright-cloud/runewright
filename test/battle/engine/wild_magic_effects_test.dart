@@ -516,18 +516,34 @@ void main() {
       final dead = _avatar('c', const HexCoord(-2, 0), teamId: 'c', hp: 0);
       final state = _state(avatars: [me, foe, dead]);
       _fire(state, me, WildMagicRow.ascendingRun, SpellAffinity.fire);
-      expect(state.wildMagic.phoenixPlayerIds, {'a', 'b'});
+      expect(state.wildMagic.phoenixWindows.keys.toSet(), {'a', 'b'});
+      // Armed for the two rounds after this one — not this one.
+      expect(state.wildMagic.phoenixAvailableFor('a', state.turnNumber), isFalse);
+      expect(
+          state.wildMagic.phoenixAvailableFor('a', state.turnNumber + 1), isTrue);
+      expect(
+          state.wildMagic.phoenixAvailableFor('a', state.turnNumber + 2), isTrue);
+      expect(state.wildMagic.phoenixAvailableFor('a', state.turnNumber + 3),
+          isFalse);
     });
   });
 
   group('Statuesque', () {
-    test('marks PENDING, not active — the triggering turn cannot break it', () {
+    test('arms for next round, not this one — the triggering cast cannot '
+        'break it', () {
       final me = _avatar('a', const HexCoord(0, 0));
       final foe = _avatar('b', const HexCoord(2, 0), teamId: 'b');
       final state = _state(avatars: [me, foe]);
       _fire(state, me, WildMagicRow.ascendingRun, SpellAffinity.earth);
-      expect(state.wildMagic.pendingStatuesquePlayerIds, {'a', 'b'});
-      expect(state.wildMagic.statuesquePlayerIds, isEmpty);
+      expect(state.wildMagic.statuesqueWindows.keys.toSet(), {'a', 'b'});
+      expect(
+          state.wildMagic.statuesqueActiveFor('a', state.turnNumber), isFalse);
+      expect(state.wildMagic.statuesqueActiveFor('a', state.turnNumber + 1),
+          isTrue);
+      expect(state.wildMagic.statuesqueActiveFor('a', state.turnNumber + 2),
+          isTrue);
+      expect(state.wildMagic.statuesqueActiveFor('a', state.turnNumber + 3),
+          isFalse);
     });
   });
 
@@ -537,6 +553,10 @@ void main() {
       final state = _state(avatars: [me]);
       _fire(state, me, WildMagicRow.ascendingRun, SpellAffinity.water);
       expect(state.wildMagic.ripplingFizzlePct, 50);
+      // One round, starting next round.
+      expect(state.wildMagic.ripplingFizzlePctOn(state.turnNumber), isNull);
+      expect(state.wildMagic.ripplingFizzlePctOn(state.turnNumber + 1), 50);
+      expect(state.wildMagic.ripplingFizzlePctOn(state.turnNumber + 2), isNull);
     });
 
     test('a second firing does NOT reset a drifted counter', () {
@@ -550,12 +570,19 @@ void main() {
   });
 
   group('Scattered Gusts', () {
-    test('latches on for the match', () {
+    test('arms every living wizard for next round, individually', () {
       final me = _avatar('a', const HexCoord(0, 0));
-      final state = _state(avatars: [me]);
-      expect(state.wildMagic.scatteredGusts, isFalse);
+      final foe = _avatar('b', const HexCoord(2, 0), teamId: 'b');
+      final dead = _avatar('c', const HexCoord(-2, 0), teamId: 'c', hp: 0);
+      final state = _state(avatars: [me, foe, dead]);
+      expect(state.wildMagic.scatteredGustsArmedFrom, isEmpty);
       _fire(state, me, WildMagicRow.ascendingRun, SpellAffinity.air);
-      expect(state.wildMagic.scatteredGusts, isTrue);
+      expect(state.wildMagic.scatteredGustsArmedFrom.keys.toSet(), {'a', 'b'});
+      // Not consumable by a cast still inside the round that armed it.
+      expect(state.wildMagic.scatteredGustPendingFor('a', state.turnNumber),
+          isFalse);
+      expect(state.wildMagic.scatteredGustPendingFor('a', state.turnNumber + 1),
+          isTrue);
     });
   });
 
@@ -577,33 +604,80 @@ void main() {
     }
 
     expectMutationVisible('Burning Hot', (s) => s.wildMagic.armSpellDamageBonus(4, 2));
-    expectMutationVisible('Phoenix', (s) => s.wildMagic.phoenixPlayerIds.add('a'));
     expectMutationVisible(
-        'Statuesque', (s) => s.wildMagic.statuesquePlayerIds.add('a'));
-    expectMutationVisible('pending Statuesque',
-        (s) => s.wildMagic.pendingStatuesquePlayerIds.add('a'));
+        'Phoenix', (s) => s.wildMagic.armPhoenix('a', triggerTurn: 3));
+    expectMutationVisible('Phoenix expiry (same player, later window)', (s) {
+      s.wildMagic.armPhoenix('a', triggerTurn: 3);
+      final before = s.toCanonicalBytes();
+      s.wildMagic.armPhoenix('a', triggerTurn: 9);
+      expect(s.toCanonicalBytes(), isNot(before));
+    });
     expectMutationVisible(
-        'Rippling Reflections', (s) => s.wildMagic.ripplingFizzlePct = 50);
+        'Statuesque', (s) => s.wildMagic.armStatuesque('a', triggerTurn: 3));
+    expectMutationVisible('Statuesque expiry (same player, later window)', (s) {
+      s.wildMagic.armStatuesque('a', triggerTurn: 3);
+      final before = s.toCanonicalBytes();
+      s.wildMagic.armStatuesque('a', triggerTurn: 9);
+      expect(s.toCanonicalBytes(), isNot(before));
+    });
     expectMutationVisible(
-        'Scattered Gusts', (s) => s.wildMagic.scatteredGusts = true);
+        'Rippling Reflections', (s) => s.wildMagic.armRippling(triggerTurn: 3));
+    expectMutationVisible('Rippling drift', (s) {
+      s.wildMagic.armRippling(triggerTurn: 3);
+      final before = s.toCanonicalBytes();
+      s.wildMagic.driftRippling(4, 10);
+      expect(s.toCanonicalBytes(), isNot(before));
+    });
+    expectMutationVisible('Rippling window (same pct, later window)', (s) {
+      s.wildMagic.armRippling(triggerTurn: 3);
+      final before = s.toCanonicalBytes();
+      s.wildMagic.armRippling(triggerTurn: 9);
+      expect(s.toCanonicalBytes(), isNot(before));
+    });
+    expectMutationVisible('Scattered Gusts',
+        (s) => s.wildMagic.armScatteredGusts('a', triggerTurn: 3));
+    expectMutationVisible('Scattered Gusts armed-from turn', (s) {
+      s.wildMagic.armScatteredGusts('a', triggerTurn: 9);
+      final before = s.toCanonicalBytes();
+      s.wildMagic.armScatteredGusts('a', triggerTurn: 3);
+      expect(s.toCanonicalBytes(), isNot(before));
+    });
+    expectMutationVisible('Scattered Gusts for a second player', (s) {
+      s.wildMagic.armScatteredGusts('a', triggerTurn: 3);
+      final before = s.toCanonicalBytes();
+      s.wildMagic.armScatteredGusts('b', triggerTurn: 3);
+      expect(s.toCanonicalBytes(), isNot(before));
+    });
     expectMutationVisible('an expiring tile', (s) {
       s.tileEffects[const HexCoord(1, 1)] = const IceTile();
       s.expiringTiles[const HexCoord(1, 1)] = 5;
     });
 
     test('a fizzle percentage of 0 is distinguishable from inactive', () {
-      final a = fresh()..wildMagic.ripplingFizzlePct = 0;
+      final a = fresh()
+        ..wildMagic.armRippling(triggerTurn: 3)
+        ..wildMagic.ripplingFizzlePct = 0;
       final b = fresh();
       expect(a.toCanonicalBytes(), isNot(b.toCanonicalBytes()));
     });
 
-    test('set INSERTION ORDER does not change the bytes', () {
+    test('map INSERTION ORDER does not change the bytes', () {
       final a = fresh();
-      a.wildMagic.phoenixPlayerIds.addAll(['a', 'b']);
-      a.wildMagic.statuesquePlayerIds.addAll(['b', 'a']);
+      a.wildMagic.armPhoenix('a', triggerTurn: 3);
+      a.wildMagic.armPhoenix('b', triggerTurn: 3);
+      a.wildMagic.armStatuesque('b', triggerTurn: 3);
+      a.wildMagic.armStatuesque('a', triggerTurn: 3);
+      a.wildMagic.armScatteredGusts('b', triggerTurn: 3);
+      a.wildMagic.armScatteredGusts('a', triggerTurn: 3);
+
       final b = fresh();
-      b.wildMagic.phoenixPlayerIds.addAll(['b', 'a']);
-      b.wildMagic.statuesquePlayerIds.addAll(['a', 'b']);
+      b.wildMagic.armPhoenix('b', triggerTurn: 3);
+      b.wildMagic.armPhoenix('a', triggerTurn: 3);
+      b.wildMagic.armStatuesque('a', triggerTurn: 3);
+      b.wildMagic.armStatuesque('b', triggerTurn: 3);
+      b.wildMagic.armScatteredGusts('a', triggerTurn: 3);
+      b.wildMagic.armScatteredGusts('b', triggerTurn: 3);
+
       expect(a.toCanonicalBytes(), b.toCanonicalBytes());
     });
 

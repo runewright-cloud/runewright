@@ -5,7 +5,7 @@
     {
       "turn": 1,
       "note": "player_a declares a Mystery (delay 1) it cannot afford — the turn is spent, the chain regresses, and NO pending spell is written",
-      "stateHash": "6655e622c857b8b042e2708f81ae7e8ca2837843ce29cb43e1f4a01c2142bb9e",
+      "stateHash": "adf056b57de0c65cf1745ef6c2619eb7d2d4dd80ee8b8429c6b095a7937dd36c",
       "events": {
         "castEvents": 0,
         "resolvedSpells": 0,
@@ -49,7 +49,7 @@
     {
       "turn": 2,
       "note": "the turn the delay would have elapsed on. Nothing to reveal, because nothing was queued — if player_b's HP moves here, the declaration-side repair has regressed",
-      "stateHash": "293e048421f8f6e3daeafc8e44fa3c9a4a31cd44c2c7aefd59e1f69ab4659aec",
+      "stateHash": "93256d82ce72f7d54f9ce75507a6bff4119e4fe4d62b22e0c6337bc31b506e7b",
       "events": {
         "castEvents": 0,
         "resolvedSpells": 0,
@@ -93,7 +93,7 @@
     {
       "turn": 3,
       "note": "player_a fires an immediate Mystery (delay 0) it still cannot afford — the conversion carries the fizzle flag, so no damage",
-      "stateHash": "3d013ccdc1b3b0bd4cdcef65d1b29371f8b0661a0f4eb3ee73d07dd4edaed2ad",
+      "stateHash": "15d423a75c172ec6927af3478645741dc96c6f4679769bde692ed96ec4513ae1",
       "events": {
         "castEvents": 0,
         "resolvedSpells": 0,
@@ -137,7 +137,7 @@
     {
       "turn": 4,
       "note": "quiet turn — a fizzled cast must leave nothing behind, on either device",
-      "stateHash": "016507365abf9c2b7f99773748e3858bc8142f86c37e0ca0a71c0ca501fde21f",
+      "stateHash": "4bed6238ec0a0db7d35405ca10cc93aad8708666a02982277745f7b66037a8d3",
       "events": {
         "castEvents": 0,
         "resolvedSpells": 0,

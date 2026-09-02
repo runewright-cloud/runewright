@@ -38,6 +38,7 @@ class SpellCastAction extends TurnAction {
     this.delayedOriginHex,
     this.delayedRange,
     this.handIndex,
+    this.isDelayedRealization = false,
   });
 
   final SpellAsset spell;
@@ -97,6 +98,36 @@ class SpellCastAction extends TurnAction {
   /// their own copy of `state.pendingDelayedSpells`, so it never crosses the
   /// wire.
   final int? delayedRange;
+
+  /// True when this action is the ENGINE firing a previously declared delayed
+  /// Mystery, rather than a player declaring a cast this turn.
+  ///
+  /// Set at exactly one site — `TurnLoop._verifyAndCollectDelayedFires`, the
+  /// only place a [PendingDelayedSpell] becomes a [SpellCastAction] — and left
+  /// false everywhere else, including the immediate-Mystery rewrite
+  /// (`_verifyMysteryAction`), which really is a fresh declaration.
+  ///
+  /// This is the VOLUNTARY/INVOLUNTARY boundary for everything that keys off
+  /// player intent, and it exists because the two are otherwise indistinguishable
+  /// by the time they reach resolution: a delayed fire arrives wearing the same
+  /// type as a fresh cast. Today two effects read it — Statuesque
+  /// (`breaksStatuesque`) and Scattered Gusts — and both take the same view:
+  ///
+  ///     The wizard's voluntary act was the DECLARATION, on some earlier turn.
+  ///     The automatic realization is the engine keeping that promise, not the
+  ///     wizard choosing again.
+  ///
+  /// So a delayed spell declared before an effect armed must not trip it on the
+  /// way out, and the declaration itself — a [MysterySpellCastAction] — is what
+  /// trips it instead. Do NOT reconstruct this from turn numbers, and do not
+  /// infer it from [delayedOriginHex] being non-null: that field exists to place
+  /// a cast animation, and something that happens to correlate today is not the
+  /// same as something that means this.
+  ///
+  /// Local-only, like [delayedOriginHex] and [delayedRange] — both devices
+  /// rebuild the action from their own `state.pendingDelayedSpells`, so it never
+  /// crosses the wire and cannot be claimed by a peer.
+  final bool isDelayedRealization;
 }
 
 /// Main-phase Dash: doubles the caster's movement budget for this turn's

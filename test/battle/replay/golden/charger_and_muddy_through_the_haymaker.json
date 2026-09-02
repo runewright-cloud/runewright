@@ -5,7 +5,7 @@
     {
       "turn": 1,
       "note": "a walks 2 and punches: 1 base + 1 Fire + 1 Charger, plus Muddy",
-      "stateHash": "9dd7745e24f0fbb8ea3c605b4004e19c01208e29b1b6f162db3e38671a9e84c1",
+      "stateHash": "08a28e0a0b59fb33284149f663867b16cb3e73a4eaf046161473e783781a8819",
       "events": {
         "castEvents": 0,
         "resolvedSpells": 0,
@@ -49,7 +49,7 @@
     {
       "turn": 2,
       "note": "b is slowed: two tiles declared, one walked",
-      "stateHash": "18de49833ad325ebabf6a5401e24bd8f17d8debc92d2f7d63b5fabd657188c58",
+      "stateHash": "e2799950566bb8526039ea2aad7b3991cd7c3fcc834413b930e6502470e7fb29",
       "events": {
         "castEvents": 0,
         "resolvedSpells": 0,

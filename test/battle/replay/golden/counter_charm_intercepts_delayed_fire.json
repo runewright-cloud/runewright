@@ -5,7 +5,7 @@
     {
       "turn": 1,
       "note": "player_a declares Mystery I (delay 1); no charm can fire yet — nothing has been cast to match against",
-      "stateHash": "910f9440dacaedfc3e61e6a9020629e979c72f2076af11ec7169f9c6a66e3335",
+      "stateHash": "3c55b7e2361e07190ae568d6d7e062dd3ac9e6c20b67df6799c64bb88469c3eb",
       "events": {
         "castEvents": 0,
         "resolvedSpells": 0,
@@ -49,7 +49,7 @@
     {
       "turn": 2,
       "note": "Mystery I fires and the TWO-formula charm swallows it whole: no damage, no cloud, chain regresses as if player_a had passed",
-      "stateHash": "81801f7223d4467a431ee8fb2a5283ff99e62e31132fc18e2434641a0cb02783",
+      "stateHash": "3dc2d7eea4c41f69dd16c6b903fa649b4e9e0492775469254455428733a33bee",
       "events": {
         "castEvents": 1,
         "resolvedSpells": 1,
@@ -103,7 +103,7 @@
     {
       "turn": 3,
       "note": "player_a declares Mystery II — same trajectory, different grid",
-      "stateHash": "ba4e6a146bfde35ea42b88b7ea757b70ede13810834367d0f60c80111c38420e",
+      "stateHash": "0fd4a4ac7917841d2e14504b7c3178ca9c84baeb263b7e1bb6cf383fbd963224",
       "events": {
         "castEvents": 0,
         "resolvedSpells": 0,
@@ -147,7 +147,7 @@
     {
       "turn": 4,
       "note": "Mystery II fires. The long charm is spent, so the ONE-formula charm takes it: the damage is cancelled but the cloud lands — the partial counter, visibly different from turn 2",
-      "stateHash": "54dda2fc2223fa95ec6fad91a9cbc2d2d85f18690a722ce913206646a7000b58",
+      "stateHash": "0e8d01be612a93eb75def0415516cc1e4354daa71b3091e10e4099021c4a5a06",
       "events": {
         "castEvents": 1,
         "resolvedSpells": 1,

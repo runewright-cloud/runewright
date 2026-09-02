@@ -417,10 +417,13 @@ class WildMagicApplicator {
 
   static void _phoenix(WildMagicApplyContext ctx) {
     // One-shot per player, consumed by the death it saves — see
-    // TurnLoop._reapDeadAvatars.
+    // DeterministicResolution.applyPhoenixSaves. Bounded since Slice 4: the
+    // save covers the two rounds AFTER this one, so it cannot rescue a wizard
+    // from a death still resolving in the round that granted it, and it does
+    // not sit on the board for the rest of the match waiting to be spent.
     final touched = <String>[];
     for (final av in ctx.livingAvatars) {
-      ctx.wild.phoenixPlayerIds.add(av.playerId);
+      ctx.wild.armPhoenix(av.playerId, triggerTurn: ctx.state.turnNumber);
       touched.add(av.playerId);
     }
     ctx.emit(WildMagicEffectKind.phoenix, players: touched);
@@ -431,13 +434,14 @@ class WildMagicApplicator {
   //  if they move or cast a spell."
 
   static void _statuesque(WildMagicApplyContext ctx) {
-    // A6: the latch begins at the END of the turn it fires, so the cast that
-    // triggered it does not immediately break it — the literal reading would
-    // have the wild-magic caster break their own effect in the same instant.
-    // TurnLoop promotes pending → active in Phase 6.
+    // A6's "the latch begins after the turn it fires" is now expressed by the
+    // window itself: it covers the two rounds AFTER this one, so the cast that
+    // triggered it cannot immediately break its own effect and there is no
+    // pending set to promote. Healing happens at the START of each covered
+    // round (resolveWildMagicRoundStart), not at end of turn.
     final touched = <String>[];
     for (final av in ctx.livingAvatars) {
-      ctx.wild.pendingStatuesquePlayerIds.add(av.playerId);
+      ctx.wild.armStatuesque(av.playerId, triggerTurn: ctx.state.turnNumber);
       touched.add(av.playerId);
     }
     ctx.emit(WildMagicEffectKind.statuesque, players: touched);
@@ -449,10 +453,12 @@ class WildMagicApplicator {
   //  odds shift 10% towards doubling, and vice versa."
 
   static void _ripplingReflections(WildMagicApplyContext ctx) {
-    // Idempotent: a second Rippling Reflections must NOT reset a drifted
-    // counter back to 50, or the effect would be repeatedly re-armed by a
-    // player who keeps casting the spell that carries it.
-    ctx.wild.ripplingFizzlePct ??= 50;
+    // Bounded since Slice 4 to the single round after this one — "going
+    // forward" turned out to mean "for the rest of the match", which no other
+    // row-3 effect does. The percentage is still idempotent across re-arms: a
+    // second Rippling must NOT reset a drifted counter back to 50, or a player
+    // who keeps casting the spell that carries it re-arms it forever.
+    ctx.wild.armRippling(triggerTurn: ctx.state.turnNumber);
     ctx.emit(
       WildMagicEffectKind.ripplingReflections,
       note: 'fizzle chance ${ctx.wild.ripplingFizzlePct}%',
@@ -464,11 +470,22 @@ class WildMagicApplicator {
   //  blown out of place and they randomly find a new set of spells to mark."
 
   static void _scatteredGusts(WildMagicApplyContext ctx) {
-    // Once true, stays true for the match. TurnLoop re-deals the caster's hand
-    // after each cast resolves; free casts are exempt (A8) or Spontaneous
-    // Combustion becomes a hand-shredder.
-    ctx.wild.scatteredGusts = true;
-    ctx.emit(WildMagicEffectKind.scatteredGusts);
+    // Per wizard since Slice 4, and one redeal each: the old global bool blew
+    // every player's bookmarks loose after every cast for the rest of the
+    // match. Each affected wizard now carries their own pending Gust from next
+    // round until their own next voluntary cast spends it; free casts are
+    // exempt (A8) or Spontaneous Combustion becomes a hand-shredder.
+    //
+    // Armed for the living, matching every other row-3 effect's symmetry —
+    // see this file's header. The old bool had no target list at all, so
+    // "everyone, forever, including whoever arrives later" was implicit.
+    final touched = <String>[];
+    for (final av in ctx.livingAvatars) {
+      ctx.wild
+          .armScatteredGusts(av.playerId, triggerTurn: ctx.state.turnNumber);
+      touched.add(av.playerId);
+    }
+    ctx.emit(WildMagicEffectKind.scatteredGusts, players: touched);
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
