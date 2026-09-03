@@ -16,6 +16,11 @@
 // **Nothing in production reads it.** Formula segmentation still passes
 // `kIncantationFormulaLength`, `effectKindFromPair` is untouched, certification
 // is untouched, and no battle, preview, or persisted spell consults a codebook.
+// Slice C did not change that: it moved the meaning TYPES out to
+// `incantation_meaning.dart` (re-exported below) precisely so that ordinary
+// code can name a meaning without importing this file and thereby coming
+// within reach of [IncantationCodebook.derive]. No production file imports
+// this one; a test asserts it.
 // This slice exists to pin the consensus bytes *before* they can affect a duel,
 // exactly as `LeylineConfig` Slice 1 pinned the config hash before Wild Magic
 // v2 consumed it. Wiring it in is the audit's Slice D and requires a
@@ -83,8 +88,16 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart' show sha256;
 
 import 'package:rune_duel/battle/models/effect_kind.dart';
+import 'package:rune_duel/battle/models/incantation_meaning.dart';
 import 'package:rune_duel/battle/models/leyline_config.dart';
 import 'package:rune_duel/engine/border_zone.dart';
+
+export 'package:rune_duel/battle/models/incantation_meaning.dart'
+    show
+        IncantationEffect,
+        IncantationMeaning,
+        IncantationNoise,
+        kIncantationNoise;
 
 // ── Domain tags (LEYLINE_SEED_PLAN.md §4, §8, §9) ─────────────────────────────
 
@@ -197,72 +210,15 @@ int incantationEffectCode(EffectKind kind) {
 }
 
 // ── What a key means ──────────────────────────────────────────────────────────
-
-/// What one formula key decodes to under a leyline: an effect, or noise.
-///
-/// A sealed hierarchy rather than a nullable [EffectKind], a sentinel enum
-/// member, or a seventeenth `EffectKind.noise`. All three alternatives were
-/// rejected deliberately:
-///
-///   * **`EffectKind?`** makes "no effect" indistinguishable from "not looked
-///     up yet" / "unrecognised element" / "residual chunk" at every call site,
-///     and Slice C has to teach four separate consumers to filter it. A `null`
-///     that means something specific is a comment, not a type.
-///   * **A sentinel member of `EffectKind`** would put a non-effect into the
-///     vocabulary that `kEffectKindLabel`, `kEffectDescription`,
-///     `effectKindFromPair` and the wire codec all treat as total — sixteen
-///     effects is a load-bearing number (§5's per-effect counts, the 4×16
-///     table, `kIncantationEffectCode`).
-///   * **A separate `bool isNoise` beside a kind** is two fields that can
-///     disagree.
-///
-/// Sealed gives exhaustive `switch` instead, so Slice C's consumers cannot
-/// forget the noise case — the analyzer refuses to compile a switch that does.
-sealed class IncantationMeaning {
-  const IncantationMeaning();
-}
-
-/// A key that decodes to one of the sixteen base effects.
-final class IncantationEffect extends IncantationMeaning {
-  const IncantationEffect(this.kind);
-
-  final EffectKind kind;
-
-  @override
-  bool operator ==(Object other) =>
-      other is IncantationEffect && kind == other.kind;
-
-  @override
-  int get hashCode => kind.hashCode;
-
-  @override
-  String toString() => 'IncantationEffect(${kind.name})';
-}
-
-/// A key that is syntactically complete but semantically inert
-/// (LEYLINE_SEED_PLAN.md §6).
-///
-/// Ratified semantics, for whoever wires this in: the chunk is consumed
-/// structurally and still counts toward intrinsic certified base mana cost
-/// exactly as a meaningful chunk does; it produces no effect, contributes no
-/// affinity, grants no Wild Magic eligibility, and never falls back to another
-/// formula. **Leylines change interpretation, not intrinsic certified cost.**
-final class IncantationNoise extends IncantationMeaning {
-  const IncantationNoise();
-
-  @override
-  bool operator ==(Object other) => other is IncantationNoise;
-
-  @override
-  int get hashCode => 0x4e4f4953; // 'NOIS'
-
-  @override
-  String toString() => 'IncantationNoise()';
-}
-
-/// The canonical noise value. A `const` singleton so equality and identity
-/// agree and nothing allocates per key.
-const IncantationNoise kIncantationNoise = IncantationNoise();
+//
+// [IncantationMeaning], [IncantationEffect] and [IncantationNoise] now live in
+// `incantation_meaning.dart` and are re-exported here, so every existing
+// importer of this file — and these vectors — see exactly the types they
+// always did. The move is a dependency boundary, not a semantic one: ordinary
+// production code needs to *name* a meaning long before anything may derive a
+// codebook, and it must not reach [IncantationCodebook.derive] to do so. The
+// rationale for the sealed hierarchy (over `EffectKind?`, a seventeenth enum
+// member, or a `bool isNoise`) travelled with the types; see that file.
 
 // ── The scoring primitive (R-1, R-4) ──────────────────────────────────────────
 
