@@ -747,7 +747,167 @@ recorded here rather than changed.
    equivalence test asserting all five paths agree on a shared fixture.
 8. **Gate:** full suite + replay, zero deltas.
 
-### Slice B — `LeylineCodebook` derivation, unused
+### Slice B — `LeylineCodebook` derivation, unused ✅ **DONE + RATIFIED 2026-09-03**
+
+Implemented as `lib/battle/models/leyline_codebook.dart` +
+`test/battle/models/leyline_codebook_test.dart` (33 vectors) +
+`scripts/gen_leyline_codebook_vectors.py` (the independent second spelling).
+Full suite 2413/2413 green, replay corpus zero deltas, analyzer clean, engine 12
+/ protocol 7 / ruleset 3 / VK untouched. **Nothing in `lib/` imports it** — the
+only importer is its own test.
+
+**R-1 … R-4 are RATIFIED as implemented (Soren, 2026-09-03).** The vectors in
+`leyline_codebook_test.dart` are now the permanent record: changing any pinned
+literal is a breaking consensus change requiring a `lexiconVersion` bump, not a
+test update.
+
+Ratified alongside them:
+
+* the R-2 rounding rule stands exactly as written;
+* **no `meaningfulCount >= 16` floor** — not now, not implicitly later;
+* the 999‰ / zero-meaningful vector **stays**. An all-noise codebook is a valid
+  result of the construction primitive. Whether a *live* Mutable Leyline may
+  use a config that derives zero meaningful keys is a later
+  configuration-validity / gameplay ruling, deliberately **not** part of Slice
+  B's arithmetic — do not resolve it by editing this rounding rule;
+* `IncantationCodebook.derive` rejecting ordinary configs;
+* effect-order hashing **and** its deterministic tiebreak use the pinned
+  `kIncantationEffectCode`, never `EffectKind.index` or declaration order (see
+  below).
+
+#### R-1 — permutation: sort-by-hash (audit §5.2 candidate B) ✅ ruled
+
+`score(entry) = SHA-256(preimage)`, entries sorted ascending by
+`(score, canonicalPayloadBytes)`. Preimage:
+
+```
+uint8(len(domainTag)) ‖ ascii(domainTag)
+uint8(lexiconVersion)
+leylineConfigHash[32]        // RAW bytes, not the 64-char hex text
+uint8(streamTag)             // 0x01 key order, 0x02 effect order
+uint8(len(payload)) ‖ payload
+```
+
+Chosen over a `HashRng` Fisher-Yates because `List.shuffle`'s algorithm is a
+Dart SDK detail, not a specification — a Python/Rust/Noir re-implementation
+would have to reproduce its draw order and rejection sampling exactly. A
+per-entry score has no such coupling, is order-independent by construction, and
+each entry's rank is independently verifiable (pinned by a test that recomputes
+every rank from scratch as "how many entries sort before me").
+
+Keyed on `leylineConfigHash` rather than a re-serialisation of the config
+fields: that value is already vectored, already binds all five fields including
+the normalized seed, and is already what Wild Magic v2 consumes — so a codebook
+and the Wild Magic under it can never disagree about which leyline they are in.
+`lexiconVersion` is emitted redundantly, mirroring `LeylineConfig`'s layout.
+
+#### R-2 — permille → count: round-half-up on the NOISE count ✅ ruled
+
+```
+noiseCount      = (totalKeyCount * noiseDensityPermille + 500) ~/ 1000
+meaningfulCount = totalKeyCount - noiseCount
+```
+
+Noise is the quantity rounded because noise density is the tunable ruleset
+parameter (§5); meaningful is the remainder so it cannot drift from it.
+Round-half-up rather than floor/ceil because it reproduces §5's ratified table
+exactly at every supported length (64/32, 256/128, 1024/512) and because floor
+and ceil each bias systematically. Integer arithmetic throughout, never
+`(x / 1000).round()` — a double's rounding at an exact `.5` is a platform
+property, and `.5` is what 500‰ produces at every odd total. Largest
+intermediate is `1024 × 999 = 1_022_976`, exact on every platform including
+web doubles.
+
+**OPEN SUB-QUESTION, flagged not invented:** 999‰ at L=4 rounds to 64 noise / 0
+meaningful — an all-noise leyline. `LeylineConfig` rejects 1000‰ for exactly
+that reason, and rounding reaches the same place from 999‰ at the smallest key
+space. A floor (e.g. `meaningfulCount >= 16`) would be a **new consensus rule
+that no plan states**, so it was NOT added. The degenerate case is pinned by
+vector and handled without crashing. If a floor is wanted, it is one line plus
+a vector change.
+
+#### R-3 — allocation: round-robin over the derived effect order ✅ ruled
+
+Meaningful entry at derived rank `i` → `effectOrder[i % 16]`. Chosen over
+contiguous blocks because it is self-balancing at *every* count (per-effect
+counts differ by at most one by construction, with no remainder special case),
+because it degrades correctly below 16 meaningful keys where blocked allocation
+divides by zero, and because the adjacency it creates is adjacency in the
+*permuted* key order — which is already pseudorandom, so it exposes no
+structure a player can observe.
+
+#### R-4 — remainder bias, and the domain tags ✅ ruled
+
+The sixteen effects are themselves hash-sorted, by the same primitive under
+`streamTag = 0x02`. The `meaningfulCount % 16` effects that receive an extra key
+are therefore a prefix of a *per-leyline* order, not of the fixed effect codes.
+Without this, Blast and Barrier would own an extra key under **every** leyline
+at **every** non-divisible density — a permanent, discoverable,
+leyline-independent bias in a system whose premise is that nothing carries over
+between leylines. Hash-sorted rather than rotated by a derived offset: a
+rotation preserves the fixed cyclic adjacency, so learning where one leyline's
+order starts reveals the whole order.
+
+Domain tags are §4/§8/§9's literal strings, uint8-length-prefixed like every
+other tag in the codebase:
+
+* `Runewright/Leyline/v1/Incantation`
+* `Runewright/Leyline/v1/Summon` — **pinned, unused**
+* `Runewright/Leyline/v1/Armor` — **pinned, unused**
+
+#### Also settled in passing
+
+* **Key alphabet:** the four elements in the circuit's rule-index order
+  (1 Fire, 2 Air, 3 Water, 4 Earth), **neutral excluded**. Justification is not
+  aesthetic: `FormulaTracker.step` guards all three of its commit rules with
+  `zone != null`, so a neutral or tied generation commits nothing and a neutral
+  can never appear in a trajectory chunk. §3's `4^(L-1)` tail space is therefore
+  correct as written. Enumeration is base-4, most significant element first.
+* **Effect codes:** `kIncantationEffectCode`, explicit 0..15 matching today's
+  declaration order — pinned rather than `EffectKind.index` for the same reason
+  `kWildMagicEffectCode` is, since these bytes enter a hash preimage and a
+  cosmetic enum reorder must not reroll every dictionary.
+
+  **Ratified requirement, both halves:** the pinned code is the effect's
+  identity in the scoring **payload** *and* in the sort's **tiebreak**.
+  `EffectKind.values` appears in `deriveEffectOrder` only as the enumeration
+  source, and cannot reach the result — the tiebreak is total over sixteen
+  distinct codes, so position depends solely on an entry's own score and own
+  pinned code. `List.sort`'s instability is therefore harmless, and feeding the
+  sixteen effects in any order yields the same permutation (pinned by a test
+  that rebuilds the order from a reversed input).
+
+  **This guard is currently invisible, which is why it is written down twice.**
+  Today `incantationEffectCode(kind) == kind.index` for all sixteen, so a
+  regression to `.index` would move no byte and fail no vector. A dedicated
+  test asserts that coincidence explicitly so that reordering `EffectKind` —
+  a legitimate cosmetic edit — fails there first and sends the reader to
+  `deriveEffectOrder`'s header. Fixing that failure means deleting the
+  assertion, never touching `kIncantationEffectCode` and never moving the
+  vectors.
+* **Noise representation:** a sealed `IncantationMeaning` with
+  `IncantationEffect(kind)` and `IncantationNoise()`. Rejected: `EffectKind?`
+  (a null that means something specific is a comment, not a type, and Slice C
+  has four consumers to teach); a seventeenth `EffectKind` member (sixteen is
+  load-bearing — §5's counts, the 4×16 table, the wire codec's totality); a
+  `bool isNoise` beside a kind (two fields that can disagree). Sealed gives
+  Slice C's consumers an exhaustive `switch` the analyzer enforces.
+* **`derive` throws on an ordinary config.** Ordinary play's sixteen tails are
+  the fixed `effectKindFromPair` table; a derivation would produce a
+  *permutation* of it, so a caller that forgot to check `mutableMagic` would
+  silently rekey every existing spellbook. There is no flag to force one.
+
+#### Independent verification
+
+`scripts/gen_leyline_codebook_vectors.py` is a from-scratch implementation
+written against the documented byte layout, not transcribed from the Dart. It
+recomputes `leylineConfigHash` from scratch too — and **reproduces
+`leyline_config_test.dart`'s five pinned hashes exactly**, which is a free
+second attestation of the Slice 1 layout. Every literal in the Dart test is that
+script's output. It is a dev tool: nothing at runtime or in `flutter test`
+shells out to Python.
+
+#### Original plan
 
 1. **Goal:** deterministic, domain-separated codebook derivation for the
    Incantation domain, plus the canonical vector corpus. Nothing reads it.
@@ -828,12 +988,15 @@ Also the right place to fix the pre-existing preview-vs-certification divergence
 Per the audit's own stop rules, **implementation must not begin** until the
 following are ruled. Each maps to a listed stop condition.
 
+**Update 2026-09-03:** R-1 … R-4 are **RATIFIED** and pinned by vectors
+(§13, Slice B). R-5 … R-9 remain open and block Slices C-E.
+
 | # | Ruling | Stop condition |
 |---|---|---|
-| R-1 | The codebook permutation algorithm (candidates in §5.2) | deterministic dictionary/noise generation |
-| R-2 | The meaningful-tail → effect allocation rule (round-robin vs. blocked) | same |
-| R-3 | The remainder rule when `M` is not divisible by 16, and the permille→`M` rounding | same |
-| R-4 | Exact domain-tag bytes and length-prefixing | same |
+| R-1 | The codebook permutation algorithm (candidates in §5.2) | ✅ **RATIFIED 2026-09-03** — sort-by-hash |
+| R-2 | The meaningful-tail → effect allocation rule (round-robin vs. blocked) | ✅ **RATIFIED** — round-robin (numbering here follows §13's Slice B, which splits rounding from allocation) |
+| R-3 | The remainder rule when `M` is not divisible by 16, and the permille→`M` rounding | ✅ **RATIFIED** — round-half-up on noise, no floor; remainder to a prefix of the derived effect order |
+| R-4 | Exact domain-tag bytes and length-prefixing | ✅ **RATIFIED** — §4/§8/§9 literals, uint8 length prefix |
 | R-5 | Does `effectCount` (and therefore certified base mana cost, and therefore Wild Magic's preimage, and therefore `behaviouralKinKey`) count noise formulas? | proof/certified semantics |
 | R-6 | What happens to persisted `SpellAsset.manaCost` and kin keys under a mutable leyline | proof/certified semantics |
 | R-7 | Is the Wild Magic 3×4 → effect table itself rekeyed, or is the config hash sufficient? (§8) | affinity semantics |
