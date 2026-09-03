@@ -56,6 +56,7 @@ import '../battle/models/status_effect_ids.dart';
 import '../battle/models/wizard_avatar.dart';
 import '../battle/networking/battle_session.dart';
 import '../battle/networking/solo_battle_session.dart';
+import '../engine/formula_segmentation.dart';
 import '../engine/hex_grid.dart';
 import '../ffi/prover.dart' as prover;
 import '../ffi/srs_cache.dart';
@@ -1308,8 +1309,10 @@ class _BattleScreenState extends State<BattleScreen>
   /// triplets, matching PracticeFormula.fromSpellFormula and the engine's
   /// expected recital. Residual activations resolve to no effect, so they are
   /// neither drilled nor recited nor priced.
-  int _expectedElementCount(SpellAsset spell) =>
-      (spell.formula.length ~/ 3) * 3;
+  int _expectedElementCount(SpellAsset spell) => completeFormulaElementCount(
+        spell.formula.length,
+        formulaLength: kIncantationFormulaLength,
+      );
 
   /// Opens the mic and the IMU when the caster presses and holds CAST.
   ///

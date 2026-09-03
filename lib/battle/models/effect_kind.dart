@@ -11,6 +11,7 @@
 // structure is a load-bearing systemic asset (design doc §mirror-pairs).
 
 import 'package:rune_duel/engine/border_zone.dart';
+import 'package:rune_duel/engine/formula_segmentation.dart';
 
 // ── Effect display labels ──────────────────────────────────────────────────────
 
@@ -241,10 +242,15 @@ List<FormulaEffect> formulaEffects(List<String> formula) {
           })
       .whereType<BorderZone>()
       .toList();
+  // Unrecognised names are dropped BEFORE segmenting, matching
+  // `DeterministicResolution.parsedFormulas` — see formula_segmentation.dart.
   final effects = <FormulaEffect>[];
-  for (var i = 0; i + 2 < zones.length; i += 3) {
-    final affinity = spellAffinityFromZone(zones[i]);
-    final kind     = effectKindFromPair(zones[i + 1], zones[i + 2]);
+  for (final chunk in segmentFormulas(
+    zones,
+    formulaLength: kIncantationFormulaLength,
+  )) {
+    final affinity = spellAffinityFromZone(chunk[0]);
+    final kind     = effectKindFromPair(chunk[1], chunk[2]);
     effects.add(FormulaEffect(
       affinity: affinity,
       kind: kind,

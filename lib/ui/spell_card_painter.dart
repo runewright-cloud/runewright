@@ -51,6 +51,7 @@ import '../battle/models/creature_spec.dart';
 import '../battle/models/effect_kind.dart';
 import '../battle/models/wild_magic_effect.dart';
 import '../engine/border_zone.dart';
+import '../engine/formula_segmentation.dart';
 import '../spells/spell_art_resolver.dart';
 import '../spells/spell_identity.dart';
 import '../spells/spell_asset.dart';
@@ -104,13 +105,24 @@ const Map<SpellAffinity, String> _kSpellAffinityName = {
 };
 
 /// Effect-affinity counts for [formula]: the first entry of each complete
-/// triplet, falling back to raw activation counts when there's no complete
-/// triplet (legacy/very short castings so the result isn't empty). Shared by
+/// formula, falling back to raw activation counts when there's no complete
+/// formula (legacy/very short castings so the result isn't empty). Shared by
 /// [elementSymbolsFor] and the frame color helpers below.
+///
+/// Segments the RAW stored list, deliberately — unlike
+/// `DeterministicResolution.parsedFormulas` and `formulaEffects`, which drop
+/// unrecognised names first. Here an unrecognised entry still occupies a slot
+/// and can therefore shift a chunk boundary; it is simply not counted as an
+/// affinity. That difference predates the shared primitive and is preserved by
+/// it (see formula_segmentation.dart's header) — this is a card's decorative
+/// histogram, not a resolution path.
 Map<String, int> _formulaAffinityCounts(List<String> formula) {
   final counts = <String, int>{};
-  for (var i = 0; i + 3 <= formula.length; i += 3) {
-    final a = formula[i].toLowerCase();
+  for (final chunk in segmentFormulas(
+    formula,
+    formulaLength: kIncantationFormulaLength,
+  )) {
+    final a = chunk[0].toLowerCase();
     if (_elementOrder.contains(a)) counts[a] = (counts[a] ?? 0) + 1;
   }
   if (counts.isEmpty) {

@@ -134,6 +134,7 @@ import 'dart:math' show max, min, pow;
 import 'dart:typed_data';
 
 import 'package:rune_duel/engine/border_zone.dart';
+import 'package:rune_duel/engine/formula_segmentation.dart';
 import 'package:rune_duel/sorcerer/incantation_recall.dart';
 import 'package:rune_duel/sorcerer/vocal_slot.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
@@ -4161,7 +4162,10 @@ class DeterministicResolution {
   /// mana against a recital the drill never taught.
   static List<VocalSlot> expectedRecitalSlots(
       List<BorderZone> elementSequence) {
-    final complete = (elementSequence.length ~/ 3) * 3;
+    final complete = completeFormulaElementCount(
+      elementSequence.length,
+      formulaLength: kIncantationFormulaLength,
+    );
     return [
       for (var i = 0; i < complete; i++)
         if (VocalSlot.fromAffinityZone(elementSequence[i].name)
@@ -4328,21 +4332,26 @@ class DeterministicResolution {
   // helpers below are its only callers anywhere, so it is private.
 
   static List<ParsedFormula> parsedFormulas(SpellAsset spell) {
+    // Unrecognised names are dropped BEFORE segmenting, so they do not occupy
+    // a slot and cannot shift a chunk boundary. That is this call site's own
+    // long-standing behaviour and it is preserved deliberately — the card
+    // painter's affinity histogram segments the raw stored list instead, and
+    // the two are allowed to differ. See formula_segmentation.dart's header.
     final zones = spell.formula
         .map(_zoneFromName)
         .whereType<BorderZone>()
         .toList();
-    final formulas = <ParsedFormula>[];
-    for (var i = 0; i + 2 < zones.length; i += 3) {
-      formulas.add(
+    return [
+      for (final chunk in segmentFormulas(
+        zones,
+        formulaLength: kIncantationFormulaLength,
+      ))
         ParsedFormula(
-          affinity: zones[i],
-          effectType1: zones[i + 1],
-          effectType2: zones[i + 2],
+          affinity: chunk[0],
+          effectType1: chunk[1],
+          effectType2: chunk[2],
         ),
-      );
-    }
-    return formulas;
+    ];
   }
 
   /// The single affinity shared by every formula in [formulas], for chain

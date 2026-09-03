@@ -32,9 +32,14 @@ Consequences:
   would be pure ceremony — an engine-version bump and a consensus-visible RNG change
   buying exactly zero behavioural coalescing.
 * The brief's §2 premise *"If Fire and Earth both produce the same effect kind"* is
-  **not reachable under today's fixed table.** It becomes reachable under **Mutable
-  Leylines**, which is the slice that can remap (row, element) → effect. That is the
-  slice this machinery actually exists to serve.
+  **not reachable under today's fixed table.**
+  *(Corrected 2026-09-03: this bullet went on to say it becomes reachable under
+  Mutable Leylines, "the slice that can remap (row, element) → effect". It is
+  now ratified that **Mutable Leylines does NOT rekey `wildMagicEffectFor`** —
+  a mutable leyline rekeys Wild Magic solely through `leylineConfigHash`, which
+  already ships. Same-cast duplicates are therefore permanently unreachable, and
+  the machinery this slice built exists for cross-cast simultaneous duplicates
+  and N-player semantics — which is what it is actually used for.)*
 * Every duplicate that is reachable **today** is a *cross-cast* duplicate: two
   different casts in the same Phase 5 whose hashes hit the same row and whose eligible
   elements overlap. e.g. both players cast `000`/air spells → **two Zephyrs, one after
@@ -159,8 +164,9 @@ already build theirs internally. No new whole-`BattleState` snapshot is needed.
 Plan §11 ratifies "canonical row → element order". Today each effect kind *is* exactly
 one (row, element) cell, so that order coincides with `WildMagicEffectKind`'s
 declaration order. Per brief §4, do **not** rely on `.index`: propose an explicit
-pinned code, so neither an enum reorder nor a Mutable-Leyline remap can silently move
-consensus ordering.
+pinned code, so an enum reorder cannot silently move consensus ordering. (The
+review also cited a Mutable-Leyline remap here; that is now ruled out — see §1 —
+but pinning the code rather than using `.index` remains correct on its own.)
 
 ```dart
 /// Canonical Wild Magic effect codes. PINNED CONSENSUS ENCODING — these numbers
@@ -174,7 +180,8 @@ const Map<WildMagicEffectKind, int> kWildMagicEffectCode = {
 ```
 
 Resolution order = ascending `effectCode`. This preserves row→element semantics
-exactly while surviving the table becoming mutable.
+exactly while surviving an enum reorder. (Written when the table was expected to
+become mutable; it will not — see §1. The pinned codes stand regardless.)
 
 ---
 
@@ -302,9 +309,12 @@ Player-facing counts then equal resolved world events, per brief §9.
 ## 10. Architecture discovered, worth recording
 
 1. **The 12-distinct-cells property** (§1) is load-bearing and undocumented. It is why
-   coalescing has been invisible so far, and it stops being true the moment Mutable
-   Leylines can remap the table. Whoever builds that slice must know that remapping two
-   affinities onto one effect kind makes this pipeline mandatory, not optional.
+   coalescing has been invisible so far.
+   *(Corrected 2026-09-03: this item said the property "stops being true the moment
+   Mutable Leylines can remap the table". Ratified: **no leyline remaps the table.**
+   The property is permanent. Should any FUTURE design ever remap two affinities onto
+   one effect kind, this pipeline becomes mandatory rather than optional — but Mutable
+   Leylines is not that design.)*
 2. **`_consumeWildMagicNonce` is an order-dependence generator.** Any future change to
    which triggers fire, or in what order, reseeds every later trigger in the turn.
    Boundary B removes the applicator's dependence on it entirely.
@@ -428,8 +438,10 @@ not a Pass/Dash/Meditate issue.
 ### Still open
 
 * **§16b's generalized forced relocation** — untouched, as before.
-* **Same-cast duplicate effect identities** are still structurally impossible
-  (12 distinct cells). The layer exists for Mutable Leylines; whoever builds that
-  slice inherits a pipeline that is already mandatory rather than optional.
+* **Same-cast duplicate effect identities** are structurally impossible
+  (12 distinct cells), and — ratified 2026-09-03 — **permanently so**: Mutable
+  Leylines does not rekey `wildMagicEffectFor`. The coalescing layer's customer
+  is cross-cast simultaneous duplicates and N-player semantics, which is what it
+  already serves.
 * **§9's balanced-affinity policy** is still open and still plugs into the
   trigger producer, not into coalescing.

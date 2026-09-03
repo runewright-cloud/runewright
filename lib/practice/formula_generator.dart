@@ -7,6 +7,7 @@
 
 import 'dart:math';
 
+import '../engine/formula_segmentation.dart';
 import '../sorcerer/vocal_slot.dart';
 
 /// One incantation as a sequence of slots to speak.
@@ -56,7 +57,10 @@ class PracticeFormula {
     List<String> spellFormula, {
     bool isSummon = false,
   }) {
-    final complete = (spellFormula.length ~/ 3) * 3;
+    final complete = completeFormulaElementCount(
+      spellFormula.length,
+      formulaLength: kIncantationFormulaLength,
+    );
     if (complete == 0) return null;
     final words = <VocalSlot>[VocalSlot.openerFor(isSummon: isSummon)];
     for (int i = 0; i < complete; i++) {

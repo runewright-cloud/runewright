@@ -1,5 +1,6 @@
 import 'border_zone.dart';
 import 'ca_rules.dart';
+import 'formula_segmentation.dart';
 
 // Turns the per-generation dominance signal into a spell formula -- an
 // ordered list of elements -- via a three-rule precedence cascade. Fed
@@ -27,9 +28,10 @@ import 'ca_rules.dart';
 // not twice -- the branches can never disagree on which element to add,
 // since they all add the same generation's `zone`.
 //
-// Activations are grouped into formulas of exactly 3. Any remainder (1 or
-// 2) is held as residuals until enough activations arrive to complete the
-// next group.
+// Activations are grouped into formulas by formula_segmentation.dart's one
+// segmentation primitive -- ordinarily groups of exactly 3. Any incomplete
+// trailing remainder is held as residuals until enough activations arrive to
+// complete the next group.
 class FormulaTracker {
   // Matches InkRules' default cadence (lib/engine/ink_step.dart) -- the
   // same pulse generations (4, 8, 12, ...) Rule E fires on. Hardcoded
@@ -53,20 +55,25 @@ class FormulaTracker {
   // All finalized activations.
   List<BorderZone> get committed => List.unmodifiable(_committed);
 
-  // Complete formula groups of 3 activations each.
-  List<List<BorderZone>> get formulas {
-    final result = <List<BorderZone>>[];
-    for (int i = 0; i + 3 <= _committed.length; i += 3) {
-      result.add(List.unmodifiable(_committed.sublist(i, i + 3)));
-    }
-    return result;
-  }
+  // Complete formula groups, cut by the one segmentation primitive
+  // (formula_segmentation.dart). This is the CANONICAL formula stream: the
+  // certified replay drives the same tracker, so what this getter returns is
+  // what a duel resolves. The length is still the ordinary 3 everywhere --
+  // nothing reads a leyline yet.
+  List<List<BorderZone>> get formulas => segmentFormulas(
+        _committed,
+        formulaLength: kIncantationFormulaLength,
+      );
 
-  // Activations that haven't yet filled a group of 3 (length 0–2).
-  List<BorderZone> get residuals {
-    final start = (_committed.length ~/ 3) * 3;
-    return List.unmodifiable(_committed.sublist(start));
-  }
+  // Activations that haven't yet filled a complete formula (length 0..L-1).
+  List<BorderZone> get residuals => List.unmodifiable(
+        _committed.sublist(
+          completeFormulaElementCount(
+            _committed.length,
+            formulaLength: kIncantationFormulaLength,
+          ),
+        ),
+      );
 
   // The current generation's dominant zone, shown as a faint preview, when
   // it did NOT itself get added to the formula this step (e.g. it's

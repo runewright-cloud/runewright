@@ -46,17 +46,28 @@
 // again inside [leylineConfigHash] itself, so no build mode and no code path
 // can mint one.
 //
-// ## Scope (Slice 1)
+// ## Scope (Slice 1 + Slice A)
 //
 // This file introduces the representation and its hash. It does NOT implement
 // mutable-leyline behaviour: no codebook derivation, no rekeyed formula
 // chunking, no noise semantics. A [LeylineConfig.mutable] may be *represented*
-// and *hashed*, but nothing reads it yet — see LEYLINE_SEED_PLAN.md §4-§9.
+// and *hashed*, but **nothing reads [formulaLength] for behaviour** — see
+// LEYLINE_SEED_PLAN.md §4-§9 and
+// docs/MUTABLE_LEYLINES_IMPLEMENTATION_AUDIT.md.
+//
+// Slice A consolidated every incantation-segmentation site behind
+// `engine/formula_segmentation.dart` and made [kOrdinaryFormulaLength] an alias
+// of its constant, so the seam that will one day read [formulaLength] is a
+// single argument. Passing it there is a consensus change requiring an
+// engine-version bump (audit Slice D), never a refactor.
 
 import 'dart:convert' show utf8;
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' show sha256;
+
+import 'package:rune_duel/engine/formula_segmentation.dart'
+    show kIncantationFormulaLength;
 
 // ── Community seed ────────────────────────────────────────────────────────────
 
@@ -171,7 +182,12 @@ class LeylineConfig {
   /// The ordinary grammar's formula length: `Affinity | EffectKey1 | EffectKey2`
   /// (§3). 4² = 16 tails map perfectly onto the sixteen base effects, which is
   /// why ordinary play has no noise.
-  static const int kOrdinaryFormulaLength = 3;
+  ///
+  /// An ALIAS of the engine's [kIncantationFormulaLength], never a second
+  /// spelling of 3: the config layer's canonicality rule and the segmentation
+  /// it describes must not be able to disagree about what the ordinary grammar
+  /// is. Everything that already referenced this name is unaffected.
+  static const int kOrdinaryFormulaLength = kIncantationFormulaLength;
 
   /// Mutable leylines initially support lengths 4-6 only (§16). Larger lengths
   /// sharply reduce how many complete formulas an ordinary trajectory yields

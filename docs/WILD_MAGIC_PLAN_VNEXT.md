@@ -382,13 +382,23 @@ arm, exactly as they did before Slice 7. A *stale* arming from a previous round
 is still replaced, not combined — Slice 7 did not revisit that.
 
 **Coalescing is architecture, not a special case.** The fixed 3x4 table has 12
-distinct cells, so two triggers of ONE cast can never share an effect kind and
-every duplicate reachable today is cross-cast within a batch. That property is
-load-bearing and stops being true under **Mutable Leylines**, which can remap
-(row, element) to effect. Trigger *production* is therefore kept strictly
-separate from event *coalescing* (`wild_magic_phase.dart`), so Mutable Leylines
-and the unresolved balanced-affinity policy (SS9) plug into the producer without
-touching the coalescing layer.
+distinct cells, so two triggers of ONE cast can never share an effect kind, and
+every duplicate is cross-cast within a batch.
+
+*(Corrected 2026-09-03.)* This paragraph previously said that property "stops
+being true under Mutable Leylines, which can remap (row, element) to effect".
+**It does not. `wildMagicEffectFor` is NOT rekeyed by any leyline** — ratified
+with the Mutable Leylines audit. A mutable leyline rekeys Wild Magic exactly the
+way LEYLINE_SEED_PLAN.md SS10 describes, through `leylineConfigHash` in the v2
+semantic hash, which is already implemented. So the 12-distinct-cells property
+is **permanent**, and same-cast duplicate effect kinds remain structurally
+impossible.
+
+Coalescing is still required, and for the reason it was built: **cross-cast
+simultaneous duplicates and N-player world-event semantics**. Trigger
+*production* stays separate from event *coalescing* (`wild_magic_phase.dart`)
+on its own merits — that is where the unresolved balanced-affinity policy (SS9)
+plugs in.
 
 ### The coalesced-event RNG
 

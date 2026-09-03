@@ -55,6 +55,7 @@ import '../battle/models/leyline_config.dart'
     show LeylineConfig, LeylineConfigException, kDefaultCommunitySeed;
 import '../battle/models/wild_magic_effect.dart';
 import '../engine/border_zone.dart';
+import '../engine/formula_segmentation.dart';
 import '../identity/identity.dart';
 import 'spell_asset.dart';
 import 'spell_identity.dart' show uniqueSpellId;
@@ -353,14 +354,18 @@ List<BorderZone> borderZonesFromNames(List<String> formula) {
   return zones;
 }
 
-/// Chunks a flat zone sequence by 3, dropping the 0–2 element residual — the
-/// complete-triplets-only view `TrajectoryParser.parse` produces.
+/// Chunks a flat zone sequence into formulas, dropping the incomplete trailing
+/// residual — the complete-triplets-only view `TrajectoryParser.parse`
+/// produces, through the same segmentation primitive that produces it.
 List<ParsedFormula> completedFormulasFromZones(List<BorderZone> zones) => [
-      for (var i = 0; i + 3 <= zones.length; i += 3)
+      for (final chunk in segmentFormulas(
+        zones,
+        formulaLength: kIncantationFormulaLength,
+      ))
         ParsedFormula(
-          affinity: zones[i],
-          effectType1: zones[i + 1],
-          effectType2: zones[i + 2],
+          affinity: chunk[0],
+          effectType1: chunk[1],
+          effectType2: chunk[2],
         ),
     ];
 

@@ -33,13 +33,20 @@
 // be pure ceremony. Every duplicate reachable today is CROSS-CAST inside one
 // batch.
 //
-// That property is load-bearing and undocumented elsewhere; it stops being true
-// the moment Mutable Leylines can remap (row, element) → effect. Which is why
-// trigger PRODUCTION ([WildMagicTriggerRecord], built by the caller from
-// certified semantics) is kept strictly separate from event COALESCING (here):
-// a remap that lands two affinities of one cast on one effect kind then needs
-// no new architecture, and the unresolved balanced-affinity policy (§9) plugs
-// into the producer without touching this layer.
+// That property is load-bearing, undocumented elsewhere, and — ratified with
+// the Mutable Leylines audit, 2026-09-03 — **permanent**. An earlier draft of
+// this header said it "stops being true the moment Mutable Leylines can remap
+// (row, element) → effect". It does not: `wildMagicEffectFor` is NOT rekeyed by
+// any leyline. A mutable leyline rekeys Wild Magic solely through
+// `leylineConfigHash` in the v2 semantic hash, which already ships.
+//
+// So this file's customer is, and remains, CROSS-CAST simultaneous duplicates
+// and N-player world-event semantics. Trigger PRODUCTION
+// ([WildMagicTriggerRecord], built by the caller from certified semantics) is
+// still kept strictly separate from event COALESCING (here) on its own merits:
+// the unresolved balanced-affinity policy (§9) plugs into the producer without
+// touching this layer, and should any future design ever land two affinities of
+// one cast on one effect kind, coalescing already handles it unchanged.
 
 import 'dart:typed_data';
 
