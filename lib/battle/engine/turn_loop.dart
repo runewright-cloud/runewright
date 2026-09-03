@@ -144,6 +144,7 @@ import 'spell_draw.dart';
 import 'tile_entry_resolver.dart';
 import 'turn_actions.dart';
 import 'wild_magic_applicator.dart';
+import 'wild_magic_phase.dart' as wild_magic_phase;
 import 'forced_cast.dart';
 import '../../sorcerer/incantation_recall.dart';
 
@@ -2446,14 +2447,19 @@ class TurnLoop
       );
 
   @override
-  Uint8List wildMagicSeed(Uint8List entropy, String playerId) =>
-      _playerPhaseSeed(
-        entropy,
-        matchId,
-        state.turnNumber,
-        0x09,
-        playerId,
-        _consumeWildMagicNonce(),
+  Uint8List wildMagicEventSeed(
+    Uint8List entropy, {
+    required int batchCode,
+    required int effectCode,
+    required int effectiveBracketSteps,
+  }) =>
+      wild_magic_phase.wildMagicEventSeed(
+        entropy: entropy,
+        matchId: matchId,
+        turnNumber: state.turnNumber,
+        batchCode: batchCode,
+        effectCode: effectCode,
+        effectiveBracketSteps: effectiveBracketSteps,
       );
 
   @override
@@ -2928,9 +2934,9 @@ class TurnLoop
     if (actor == null || !actor.isAlive) return;
     final target = _randomTileInRange(actor, rng);
     final entropy = _turnEntropy ?? Uint8List(32);
-    // A8, the load-bearing recursion guard: a free cast fires NO wild magic,
-    // is not subject to Rippling Reflections, does not trigger Scattered
-    // Gusts, does not build or break the chain, and is not consumed from hand.
+    // A8: a free cast fires NO wild magic, is not subject to Rippling
+    // Reflections, does not trigger Scattered Gusts, does not build or break
+    // the chain, and is not consumed from hand.
     //
     // The certified triple is what the cast MEANS (M4.20). Passing it here is
     // the same thing `resolveActions` does for an ordinary cast: with it,
@@ -2939,9 +2945,10 @@ class TurnLoop
     // wire formula, which nothing binds. A null [pick.certified] means there
     // was no proof to derive from at all, and both devices see that identically.
     //
-    // certWildMagic is inert under `fireWildMagic: false` (A8 — a free cast
-    // fires none), and is passed anyway so the certified triple travels as one
-    // value rather than as two-thirds of one.
+    // The certified triple's wild-magic third is deliberately NOT passed: since
+    // slice 7 `applySpell` has no wild-magic hook at all, so A8 is structural —
+    // a free cast re-enters resolution downstream of the batch's wild-magic
+    // phase and there is no path from here back into the applicator.
     await _resolution.applySpell(
       _castContext(entropy),
       actor,
@@ -2951,8 +2958,6 @@ class TurnLoop
       rng,
       certFormulas: pick.certified?.formulas,
       certElementSequence: pick.certified?.elementSequence,
-      certWildMagic: pick.certified?.wildMagic,
-      fireWildMagic: false,
       subjectToRippling: false,
       skipChainUpdate: true,
     );

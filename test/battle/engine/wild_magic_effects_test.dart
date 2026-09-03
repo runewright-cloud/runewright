@@ -15,6 +15,7 @@ import 'package:test/test.dart';
 import 'package:rune_duel/battle/engine/effect_applicator.dart';
 import 'package:rune_duel/battle/engine/hash_rng.dart';
 import 'package:rune_duel/battle/engine/wild_magic_applicator.dart';
+import 'package:rune_duel/battle/engine/wild_magic_phase.dart';
 import 'package:rune_duel/battle/models/battle_state.dart';
 import 'package:rune_duel/battle/models/effect_descriptor.dart';
 import 'package:rune_duel/battle/models/effect_kind.dart'
@@ -102,6 +103,9 @@ const _ring1 = <HexCoord>[
 
 /// A context for calling an applicator helper (e.g. `planChasmEvacuation`)
 /// directly, without going through a whole firing.
+///
+/// [caster] is now only attribution on the emitted event — the applicator
+/// resolves a COALESCED world event and cannot read a caster (slice 7).
 WildMagicApplyContext _ctx(
   BattleState state,
   WizardAvatar caster, {
@@ -110,12 +114,11 @@ WildMagicApplyContext _ctx(
 }) =>
     WildMagicApplyContext(
       state: state,
-      caster: caster,
       rng: rng ?? _rng(),
-      trigger: WildMagicTrigger(
-        row: WildMagicRow.repeatOne,
-        element: SpellAffinity.earth,
-        bracketSteps: bracketSteps,
+      event: CoalescedWildMagicEvent(
+        effect: WildMagicEffectKind.chasm,
+        effectiveBracketSteps: bracketSteps,
+        contributingCasterIds: [caster.playerId],
       ),
       events: <WildMagicEvent>[],
     );
@@ -139,6 +142,11 @@ Set<HexCoord> _axisCells(String note, int radius) {
 }
 
 /// Fires one wild-magic effect and returns the events it emitted.
+///
+/// Still expressed as `(row, element)` because that is how the twelve effects
+/// are named in the design; it is resolved to an effect kind here and handed to
+/// the applicator as a single-contributor coalesced event, which is what the
+/// applicator takes since slice 7.
 List<WildMagicEvent> _fire(
   BattleState state,
   WizardAvatar caster,
@@ -152,12 +160,11 @@ List<WildMagicEvent> _fire(
   WildMagicApplicator.apply(
     WildMagicApplyContext(
       state: state,
-      caster: caster,
       rng: rng ?? _rng(),
-      trigger: WildMagicTrigger(
-        row: row,
-        element: element,
-        bracketSteps: bracketSteps,
+      event: CoalescedWildMagicEvent(
+        effect: wildMagicEffectFor(row, element),
+        effectiveBracketSteps: bracketSteps,
+        contributingCasterIds: [caster.playerId],
       ),
       events: events,
       hooks: hooks,
@@ -196,7 +203,17 @@ void main() {
       expect(state.wildMagic.spellDamageBonusFor(4), 3);
     });
 
-    test('two Burning Hots targeting the same turn SUM', () {
+    // Two SEPARATE firings of the applicator — i.e. two separate world events,
+    // which is what a Quick Burning Hot and a Normal one on the same turn are.
+    // Those still sum, exactly as before slice 7.
+    //
+    // Slice 7's "they do not add together" is a rule about ONE simultaneous
+    // batch, and it is enforced a layer up by `coalesceWildMagicTriggers`,
+    // which collapses a batch's triggers into a SINGLE firing at the strongest
+    // bracket. This method cannot reach that layer, so the case it pins is the
+    // cross-batch one. See wild_magic_phase_test.dart for both halves through
+    // the engine.
+    test('two SEPARATE Burning Hot events targeting the same turn SUM', () {
       final me = _avatar('a', const HexCoord(0, 0));
       final state = _state(avatars: [me], turnNumber: 3);
       _fire(state, me, WildMagicRow.repeatZero, SpellAffinity.fire);
@@ -265,12 +282,11 @@ void main() {
         WildMagicApplicator.selectMountainTiles(
           WildMagicApplyContext(
             state: state,
-            caster: caster,
             rng: rng ?? _rng(),
-            trigger: WildMagicTrigger(
-              row: WildMagicRow.repeatZero,
-              element: SpellAffinity.earth,
-              bracketSteps: bracketSteps,
+            event: CoalescedWildMagicEvent(
+              effect: WildMagicEffectKind.mountains,
+              effectiveBracketSteps: bracketSteps,
+              contributingCasterIds: [caster.playerId],
             ),
             events: [],
           ),

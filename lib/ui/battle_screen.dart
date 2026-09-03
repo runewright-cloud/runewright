@@ -3021,9 +3021,21 @@ class _BattleScreenState extends State<BattleScreen>
   /// returns. Serialised by the caller so two effects from a balanced spell
   /// read one at a time rather than stacking.
   Future<void> _showWildMagicBanner(WildMagicEvent event) async {
-    final casterLabel = event.casterId == widget.localPlayerId
-        ? 'your own rune'
-        : "your opponent's rune";
+    // Since slice 7 a wild-magic event can have MORE THAN ONE author: two
+    // casters who roll the same effect in one simultaneous batch produce a
+    // single world event between them. The banner names whose runes were in
+    // it, which is all the attribution the player needs — the effect hit
+    // everyone either way (see wild_magic_applicator.dart's symmetry rule).
+    final ids = event.contributingCasterIds;
+    final mine = ids.contains(widget.localPlayerId);
+    final theirs = ids.any((id) => id != widget.localPlayerId);
+    final casterLabel = mine && theirs
+        ? 'runes on both sides'
+        : mine
+            ? 'your own rune'
+            : theirs
+                ? "your opponent's rune"
+                : 'the leyline itself';
     final navigator = Navigator.of(context);
     final entry = OverlayEntry(
       builder: (_) => _WildMagicBanner(event: event, casterLabel: casterLabel),

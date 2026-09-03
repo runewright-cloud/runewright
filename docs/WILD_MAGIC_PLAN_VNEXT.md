@@ -334,6 +334,106 @@ Two simultaneous Zephyrs do not teleport everyone twice.
 
 Different effects all resolve in canonical row → element order unless later playtesting establishes a better universal ordering.
 
+### Ratified and implemented (Slice 7, engine v12)
+
+**The collection boundary is ONE simultaneous resolution batch** — a Quick,
+Normal or Sluggish group — not a whole turn (R1). Existing temporally distinct
+groups stay distinct: they merely share a turn number, and merging them would
+let a Sluggish caster's Chasm open before a Quick caster's fireball landed.
+
+**Within one batch the order is now:**
+
+```
+all admission  →  all coalesced wild magic  →  all ordinary formula effects
+```
+
+This is the **wider phase reading (R3)**, and it **supersedes design v4.0
+§1250's per-spell interleaving** ("within a single player's spell: wild magic
+first, then formula effects"). That reading cannot survive N-player play — it
+makes the outcome a function of which caster resolution happened to reach
+first. Caster B's Zephyr now moves people before caster A's fireball lands.
+Formula effects keep their existing canonical order after the wild-magic phase.
+
+**Liveness is decided at admission (R2).** Once a cast has passed admission, its
+caster being killed later in the same batch cancels neither its wild magic nor
+its ordinary spell resolution — the spell was cast, and whether the caster lived
+to see it land is the one question whose answer would depend on resolution
+order. A cast REJECTED during admission (mana fizzle, cloud violation,
+out-of-range target, full counter) contributes neither. A caster killed by an
+*earlier batch* is never admitted at all.
+
+**Chasm is not an exception (R4).** Multiple Chasm triggers in one batch
+coalesce into one Chasm event at `max(contributing brackets)`, which rolls
+exactly ONE axis from the coalesced event's RNG and resolves once. Chasms in
+separate batches remain separate events.
+
+**Burning Hot coalesces by maximum, WITHIN A BATCH (R5).** Two Burning Hot
+triggers in one simultaneous batch produce one event at the strongest bracket;
+they do not add. Bracket scaling is the one power axis, so two casters who both
+roll it have not between them rolled a longer run than the stronger of them did.
+
+This is enforced entirely by `coalesceWildMagicTriggers`, which hands the
+applicator one event and therefore arms the state exactly once.
+`WildMagicState.armSpellDamageBonus` is deliberately left **additive**: it is a
+persistent-state primitive and must not be the thing that decides which events
+were simultaneous. A Quick Burning Hot and a Normal one on the same turn are two
+genuinely separate world events under R1, so they stack on the round they both
+arm, exactly as they did before Slice 7. A *stale* arming from a previous round
+is still replaced, not combined — Slice 7 did not revisit that.
+
+**Coalescing is architecture, not a special case.** The fixed 3x4 table has 12
+distinct cells, so two triggers of ONE cast can never share an effect kind and
+every duplicate reachable today is cross-cast within a batch. That property is
+load-bearing and stops being true under **Mutable Leylines**, which can remap
+(row, element) to effect. Trigger *production* is therefore kept strictly
+separate from event *coalescing* (`wild_magic_phase.dart`), so Mutable Leylines
+and the unresolved balanced-affinity policy (SS9) plug into the producer without
+touching the coalescing layer.
+
+### The coalesced-event RNG
+
+A coalesced event cannot be keyed on a caster (it may have several contributors,
+or after a Phoenix save none) nor on the per-turn wild-magic nonce, which is
+incremented in **encounter order** — either would let the order triggers were
+met in change what the world does. The pinned preimage is:
+
+```
+seed = SHA-256( entropy[32]
+              ‖ matchId[N]?
+              ‖ uint32be(turnNumber)
+              ‖ uint8(canonicalResolutionBatchCode)
+              ‖ uint8(0x0C)                       // wild-magic EVENT domain
+              ‖ uint8(canonicalEffectCode)
+              ‖ uint8(effectiveBracketSteps) )
+```
+
+- `canonicalResolutionBatchCode` is `kResolutionBatchCode`
+  (quick 0, normal 1, sluggish 2) — a **pinned map, never `ResolutionGroup.index`**.
+- `canonicalEffectCode` is `kWildMagicEffectCode` (0..11, row-major) — likewise
+  pinned, and it is also the phase's **resolution order**.
+- `effectiveBracketSteps` is range-checked against `uint8`, never masked.
+- No playerId, no nonce, no contributor list or hash, no proof bytes, no private
+  data. Tag `0x09` survives as the per-player wild-magic tag used by the
+  forced-cast drain and the bookmark burn.
+
+Properties: the same semantic event in the same batch always gives the same RNG;
+contributor encounter order cannot matter; an equal duplicate trigger does not
+reroll the event; different batches of one turn never share a stream; and a
+change in the strongest bracket *does* change the stream, because a stronger
+event is a different event.
+
+### Phase-scope bounds fixed as a consequence
+
+Two bounds were ratified "per living wizard" and enforced only per *firing*.
+Both are fixed by the boundary rather than by a special case:
+
+- **Spontaneous Combustion** — `queueForcedCast` appends one request per call,
+  so two triggers queued two forced casts per living wizard. One coalesced
+  event queues one request; the drain runs once per batch, after every event.
+- **Mountains** — `selectMountainTiles` re-ran the whole capped selection per
+  firing, so two triggers could raise six walls around a wizard. It now runs
+  once per batch.
+
 ---
 
 ## 12. Persistent effects begin next round
@@ -603,6 +703,11 @@ Any change to:
 - leyline configuration encoding;
 
 requires a Wild Magic version change and, where appropriate, an engine/protocol compatibility change.
+
+Slice 7 changed none of those — it changed *when* triggers are resolved and
+*how* the applicator is seeded, not what a spell hashes to. So the Wild Magic
+version stays **2**, `kRulesetVersion` stays **3** and `kBattleProtocolVersion`
+stays **7**; only `kBattleEngineVersion` moves, **11 -> 12**.
 
 Player-discovered Wild Magic combinations may become culturally significant. Accidental rerolling through serialization drift is unacceptable.
 

@@ -133,9 +133,12 @@ class WildMagicState {
   /// +N damage added to every spell damage effect, on one specific turn.
   /// Active iff `state.turnNumber == spellDamageBonusTurn`.
   ///
-  /// Stacks by SUMMING amount when two Burning Hots target the same turn, and
-  /// applies to EVERY player's spells (symmetry) once per damage effect — so a
+  /// Applies to EVERY player's spells (symmetry) once per damage effect — so a
   /// three-formula spell gets it three times.
+  ///
+  /// Stacks by SUMMING when two SEPARATE Burning Hot world events target the
+  /// same turn. Two triggers of one simultaneous batch are not two events —
+  /// they coalesce upstream and arm once. See [armSpellDamageBonus].
   int spellDamageBonusAmount = 0;
 
   /// The turn [spellDamageBonusAmount] applies on. -1 = never.
@@ -148,6 +151,26 @@ class WildMagicState {
 
   /// Arms Burning Hot for [turn] with [amount] bonus damage, stacking onto an
   /// existing arming for the same turn and replacing a stale one.
+  ///
+  /// ── Why this still SUMS after slice 7 ─────────────────────────────────────
+  /// Slice 7's R5 ruling — "multiple Burning Hot triggers within one
+  /// simultaneous batch produce one event at the strongest bracket, they do not
+  /// add together" — is enforced ONE LAYER UP, by
+  /// `coalesceWildMagicTriggers`. A batch collapses its Burning Hot triggers
+  /// into a single world event at `max(contributing brackets)` and calls this
+  /// method exactly ONCE, so within a batch there is nothing left to sum.
+  ///
+  /// **This primitive must not decide which events were simultaneous**, and
+  /// that is the whole reason it was left additive. Quick, Normal and Sluggish
+  /// are separate simultaneous-resolution boundaries (slice 7 R1), so a Quick
+  /// Burning Hot and a Normal one on the same turn are two genuinely separate
+  /// world events that happen to arm the same future round — and two separate
+  /// events stack, exactly as they did before slice 7. A `max` here would have
+  /// silently merged them, which is a rule about batching expressed in a class
+  /// that cannot see a batch.
+  ///
+  /// A stale arming (a DIFFERENT [turn]) is replaced, not combined: Burning Hot
+  /// from a previous round has expired. Slice 7 did not revisit that.
   void armSpellDamageBonus(int turn, int amount) {
     if (spellDamageBonusTurn == turn) {
       spellDamageBonusAmount += amount;

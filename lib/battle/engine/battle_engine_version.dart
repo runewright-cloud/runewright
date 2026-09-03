@@ -346,13 +346,68 @@
 // did not before and the circuit is untouched, so `kBattleProtocolVersion`
 // stays 7 and `kRulesetVersion` stays 3.
 //
+// v12 (2026-09-03, Wild Magic vNext slice 7) — Wild Magic becomes a PHASE of a
+// simultaneous resolution batch instead of a per-cast interleave, and multiple
+// triggers of one effect kind in one batch COALESCE into a single world event.
+//
+// Three rule changes, all consensus-visible:
+//
+//   * **Phase ordering (R3).** Within one resolution batch (Quick / Normal /
+//     Sluggish are separate batches, R1) the order is now
+//     `all admission → all coalesced wild magic → all formula effects`, not
+//     "each cast's wild magic, then that cast's effects, then the next cast".
+//     So caster B's Zephyr now moves people before caster A's fireball lands.
+//     This supersedes design v4.0 §1250's per-spell reading, which cannot
+//     survive N-player play.
+//   * **Liveness at admission (R2).** A caster killed by an earlier cast in the
+//     SAME batch used to be skipped entirely. Their cast is now admitted before
+//     any effect resolves, so both its wild magic and its ordinary spell
+//     resolve. (A caster killed by an earlier BATCH still never acts.)
+//   * **Coalescing.** One effect kind fires at most ONCE per batch, at
+//     `max(contributing brackets)`. Two Zephyrs are one gale, two Chasms are
+//     one axis, two Mountains select ≤3 walls per wizard between them, two
+//     Spontaneous Combustions queue one forced cast per living wizard, and two
+//     Burning Hots in one batch take the hotter rather than their sum (R4/R5).
+//     The Mountains and Spontaneous Combustion cases were bounds the applicator
+//     stated per LIVING WIZARD and enforced only per firing — pre-existing bugs
+//     at phase scope, fixed as a consequence of the boundary rather than by a
+//     special case.
+//
+// Coalescing is strictly BATCH-scoped, and `WildMagicState` is unchanged: two
+// Burning Hots in separate batches of one turn are two world events and still
+// stack additively on the round they both arm, exactly as before. The
+// persistent-state primitives must not be the thing that decides which events
+// were simultaneous — only `coalesceWildMagicTriggers` knows what a batch is.
+//
+// The RNG derivation moves with it. A coalesced event cannot be keyed on a
+// caster or on `_consumeWildMagicNonce`'s encounter-order counter — either
+// would let the order triggers were met in change what the world does — so the
+// applicator's stream is now
+//
+//   SHA-256(entropy ‖ matchId? ‖ uint32be(turn) ‖ uint8(batchCode)
+//           ‖ uint8(0x0C) ‖ uint8(effectCode) ‖ uint8(effectiveBracketSteps))
+//
+// under a NEW domain tag 0x0C, with `batchCode` and `effectCode` explicitly
+// pinned maps rather than Dart enum `.index` (see `kResolutionBatchCode` and
+// `kWildMagicEffectCode`). Tag 0x09 survives as the per-player wild-magic tag
+// used by the forced-cast drain and the bookmark burn; nothing in the
+// applicator reads it any more.
+//
+// The gate has to fire: a v11 and a v12 device resolve the same two casts in a
+// different order, roll different axes for the same Chasm, and disagree about
+// whether a dead caster's spell happened at all — so they diverge the first
+// turn any spell carries a trigger. Nothing crosses the wire that did not
+// before and the circuit is untouched, so `kBattleProtocolVersion` stays 7 and
+// `kRulesetVersion` stays 3. See docs/WILD_MAGIC_PLAN_VNEXT.md slice 7 and
+// docs/WILD_MAGIC_SLICE7_REVIEW.md.
+//
 /// The deterministic battle-engine consensus epoch this build implements.
 ///
 /// The single canonical definition — [MatchConfig.battleEngineVersion] and
 /// [DeviceCapabilities.battleEngineVersion] both default to it rather than
 /// restating a literal, exactly as `MatchConfig.rulesetVersion` derives from
 /// `kRulesetVersion`. See this file's header for what forces a bump.
-const int kBattleEngineVersion = 11;
+const int kBattleEngineVersion = 12;
 
 /// What a peer that predates the engine-version gate implicitly declares: it
 /// omits the field, and an omitted field cannot be read as agreement.

@@ -792,7 +792,7 @@ void main() {
     });
   });
 
-  group('Burning Hot is unchanged', () {
+  group('Burning Hot stacking', () {
     test('still arms for exactly the next round', () {
       final wild = WildMagicState()..armSpellDamageBonus(5, 2);
       expect(wild.spellDamageBonusFor(4), 0);
@@ -800,11 +800,30 @@ void main() {
       expect(wild.spellDamageBonusFor(6), 0);
     });
 
+    // UNCHANGED BY SLICE 7, deliberately. R5's "they do not add together" is a
+    // rule about ONE SIMULTANEOUS BATCH, and it is enforced upstream by
+    // `coalesceWildMagicTriggers`: a batch arms Burning Hot exactly once, at
+    // the strongest contributing bracket. This primitive stays additive because
+    // it cannot see a batch — two armings reaching it really are two separate
+    // world events (a Quick one and a Normal one), and those stack as they
+    // always did. See wild_magic_phase_test.dart for both halves driven through
+    // the engine.
     test('still sums two armings for the same round', () {
       final wild = WildMagicState()
         ..armSpellDamageBonus(5, 2)
         ..armSpellDamageBonus(5, 3);
       expect(wild.spellDamageBonusFor(5), 5);
+    });
+
+    test('a stale arming is REPLACED, not combined', () {
+      // A previous round's Burning Hot has expired; it must not leak its
+      // amount forward into the new round. Slice 7 deliberately did not
+      // revisit this.
+      final wild = WildMagicState()
+        ..armSpellDamageBonus(5, 9)
+        ..armSpellDamageBonus(6, 1);
+      expect(wild.spellDamageBonusFor(5), 0);
+      expect(wild.spellDamageBonusFor(6), 1);
     });
   });
 }

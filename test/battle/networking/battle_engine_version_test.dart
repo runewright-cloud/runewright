@@ -321,12 +321,14 @@ void main() {
   // opening hash and then diverge the first time any spell carries a trigger —
   // possibly several turns in, with nothing to blame it on. The refusal has to
   // happen at the handshake.
-  group('v10 <-> v11 (Chasm occupied-tile displacement)', () {
-    test('this build declares engine v11', () {
-      expect(kBattleEngineVersion, 11,
-          reason: 'a Chasm opening under a living body now displaces it to the '
-              'nearest legal solid position instead of leaving it standing in '
-              'the hole — docs/WILD_MAGIC_PLAN_VNEXT.md, Slice 6');
+  group('v11 <-> v12 (the wild-magic phase)', () {
+    test('this build declares engine v12', () {
+      expect(kBattleEngineVersion, 12,
+          reason: 'wild magic is now a PHASE of a simultaneous resolution '
+              'batch — all admission, then all coalesced wild magic, then all '
+              'formula effects — with duplicate triggers of one effect kind '
+              'coalescing into a single world event under a new event RNG '
+              '(domain 0x0C). docs/WILD_MAGIC_PLAN_VNEXT.md, Slice 7');
       expect(kBattleProtocolVersion, 7,
           reason: 'no framing changed — the new state is derived on both '
               'devices from values they already exchange');
@@ -334,14 +336,16 @@ void main() {
           reason: 'no proof semantics changed — the circuit is untouched');
     });
 
-    test('a v10 peer is refused by the capabilities gate', () async {
-      // The previous epoch is now the incompatible one: a v10 build leaves a
-      // wizard standing in the chasm that just opened under them, and draws
-      // nothing from the trigger stream to place them, so it would diverge on
-      // the first Chasm that opens under a body.
+    test('a v11 peer is refused by the capabilities gate', () async {
+      // The previous epoch is now the incompatible one: a v11 build resolves
+      // each cast's wild magic inline, keyed on the caster and on an
+      // encounter-order nonce, so against a v12 build it rolls a different
+      // Chasm axis, fires a dead caster's wild magic differently, and orders
+      // wild magic against formula effects differently. Two casts in one batch
+      // is enough to diverge.
       final localIdentity = await Identity.ephemeral();
       final chapter = await makeChapter(
-        idSuffix: 'a10',
+        idSuffix: 'a11',
         ownerPubkeyHex: await localIdentity.ownerPubkeyHex(),
       );
 
@@ -353,7 +357,7 @@ void main() {
         localChapter: chapter,
         hostConfig: const MatchConfig(),
       );
-      final forfeitReason = fakePeer(transportPeer, engineVersion: 10);
+      final forfeitReason = fakePeer(transportPeer, engineVersion: 11);
 
       await expectLater(
         local,
@@ -362,8 +366,8 @@ void main() {
           'message',
           allOf(
             contains('battle engine version mismatch'),
-            contains('local=11'),
-            contains('peer=10'),
+            contains('local=12'),
+            contains('peer=11'),
           ),
         )),
       );
@@ -374,10 +378,10 @@ void main() {
       await transportPeer.disconnect();
     });
 
-    test('a host config pinned to v10 is refused as well', () async {
-      const v10Config = MatchConfig(battleEngineVersion: 10);
-      expect(const MatchConfig().matches(v10Config), isFalse);
-      expect(v10Config.battleEngineVersion, isNot(kBattleEngineVersion));
+    test('a host config pinned to v11 is refused as well', () async {
+      const v11Config = MatchConfig(battleEngineVersion: 11);
+      expect(const MatchConfig().matches(v11Config), isFalse);
+      expect(v11Config.battleEngineVersion, isNot(kBattleEngineVersion));
     });
   });
 

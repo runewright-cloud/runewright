@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// wild_magic_applicator.dart — applies a fired WildMagicTrigger to the battle
-// state (docs/WILD_MAGIC_PLAN.md §7.7).
+// wild_magic_applicator.dart — applies one COALESCED wild-magic world event to
+// the battle state (docs/WILD_MAGIC_PLAN.md §7.7, as amended by slice 7's
+// collect → coalesce → order → resolve phase; see wild_magic_phase.dart).
 //
 // Shaped like EffectApplicator.apply: one switch over the effect kind, driven
 // by a context object. Deliberately NOT inside turn_loop.dart, which is already
@@ -18,7 +19,11 @@
 // no Random/Random.secure/DateTime/hashCode, and never iterate a Set or Map
 // for anything order-sensitive — sort first (avatars by playerId, minions by
 // id, tiles by (q, r)). ctx.rng is a HashRng seeded from joint per-turn
-// entropy under domain tag 0x09.
+// entropy under domain tag 0x0C — the COALESCED EVENT's stream (see
+// [wildMagicEventSeed]), which is a function of the event and nothing else.
+// It is deliberately not keyed on a caster or an encounter-order nonce: this
+// file resolves world events, and a world event that rolled differently
+// depending on whose cast reached it first would not be one.
 
 import 'dart:math' show Random;
 
@@ -35,6 +40,8 @@ import 'package:rune_duel/battle/models/wild_magic_effect.dart';
 import 'package:rune_duel/battle/models/wild_magic_state.dart';
 import 'package:rune_duel/battle/models/wizard_avatar.dart';
 
+import 'wild_magic_phase.dart';
+
 // ── Event ─────────────────────────────────────────────────────────────────────
 
 /// One wild-magic effect that fired this turn, for the UI's resolution reveal.
@@ -45,7 +52,7 @@ import 'package:rune_duel/battle/models/wizard_avatar.dart';
 class WildMagicEvent {
   const WildMagicEvent({
     required this.effect,
-    required this.casterId,
+    required this.contributingCasterIds,
     required this.bracketSteps,
     this.affectedTiles = const [],
     this.affectedPlayerIds = const [],
@@ -54,10 +61,19 @@ class WildMagicEvent {
 
   final WildMagicEffectKind effect;
 
-  /// Whose spell carried the trigger. The effect still hits everyone — this is
-  /// attribution for the reveal card, not a targeting field.
-  final String casterId;
+  /// Every caster whose admitted cast contributed a trigger to this event,
+  /// deduplicated and sorted by playerId. The effect still hits everyone —
+  /// this is attribution for the reveal card, not a targeting field.
+  ///
+  /// A LIST since slice 7, because an event can now have more than one author:
+  /// two casters who both roll Zephyr in one batch produce one gale between
+  /// them. It can also be a single id that is not a caster at all — a Phoenix
+  /// SAVE names the wizard who rose (see
+  /// `DeterministicResolution.applyPhoenixSaves`), which is what the reveal
+  /// card wants to say there.
+  final List<String> contributingCasterIds;
 
+  /// `max` of the contributing triggers' bracket steps — never their sum.
   final int bracketSteps;
 
   /// Tiles the effect touched (terrain placed, teleport destinations), for the
@@ -97,23 +113,26 @@ abstract class WildMagicHooks {
 class WildMagicApplyContext {
   WildMagicApplyContext({
     required this.state,
-    required this.caster,
+    required this.event,
     required this.rng,
-    required this.trigger,
     required this.events,
     this.hooks,
   });
 
   final BattleState state;
 
-  /// Whose spell carried the trigger. Used for event attribution and nothing
-  /// else — see the symmetry rule in this file's header.
-  final WizardAvatar caster;
+  /// The coalesced world event being resolved: WHAT happens, HOW STRONGLY, and
+  /// (attribution only) who contributed a trigger to it.
+  ///
+  /// Replaced a `caster` + `trigger` pair in slice 7. That pair could not name
+  /// an event two casters had both caused, and carrying one arbitrary caster
+  /// of several would have handed the applicator a field it must never read —
+  /// see the symmetry rule in this file's header.
+  final CoalescedWildMagicEvent event;
 
-  /// HashRng seeded from joint per-turn entropy, domain tag 0x09.
+  /// HashRng seeded from the COALESCED EVENT (domain tag 0x0C). See
+  /// [wildMagicEventSeed] for what may and may not enter it.
   final Random rng;
-
-  final WildMagicTrigger trigger;
 
   /// Sink for [WildMagicEvent]s, owned by TurnLoop and cleared per turn.
   final List<WildMagicEvent> events;
@@ -122,7 +141,9 @@ class WildMagicApplyContext {
   /// Combustion; those two then no-op rather than crash.
   final WildMagicHooks? hooks;
 
-  int get bracketSteps => trigger.bracketSteps;
+  WildMagicEffectKind get effect => event.effect;
+
+  int get bracketSteps => event.effectiveBracketSteps;
 
   WildMagicState get wild => state.wildMagic;
 
@@ -162,7 +183,7 @@ class WildMagicApplyContext {
     events.add(
       WildMagicEvent(
         effect: effect,
-        casterId: caster.playerId,
+        contributingCasterIds: event.contributingCasterIds,
         bracketSteps: bracketSteps,
         affectedTiles: tiles,
         affectedPlayerIds: players,
@@ -234,11 +255,20 @@ class ChasmEvacuation {
 // ── Applicator ────────────────────────────────────────────────────────────────
 
 class WildMagicApplicator {
-  /// Resolve one trigger. Callers fire triggers in row-then-element order (see
-  /// WildMagic.triggersFor), which is what makes a four-way-balanced spell's
-  /// four simultaneous effects deterministic.
+  /// Resolve one COALESCED world event.
+  ///
+  /// Callers resolve a batch's events in ascending [kWildMagicEffectCode]
+  /// order (see `coalesceWildMagicTriggers`), which is today's row-then-element
+  /// order expressed so a mutable effect table cannot silently move it. That is
+  /// what makes a four-way-balanced spell's four simultaneous effects — and two
+  /// casters' overlapping ones — deterministic.
+  ///
+  /// **Exactly once per effect kind per batch.** Every bound in this file that
+  /// is stated "per living wizard" (Mountains' three walls, Spontaneous
+  /// Combustion's one forced cast) is enforced by that and nothing else: before
+  /// slice 7 a second firing simply re-ran the whole capped selection.
   static void apply(WildMagicApplyContext ctx) {
-    switch (ctx.trigger.effect) {
+    switch (ctx.effect) {
       // ── Row 1 (`000`) ─────────────────────────────────────────────────
       case WildMagicEffectKind.burningHot:
         _burningHot(ctx);
@@ -367,13 +397,17 @@ class WildMagicApplicator {
   ///     snapshotted anyway so the guarantee is structural rather than an
   ///     argument about what `placeTerrain` happens not to touch today.
   ///
-  /// Draws come from [WildMagicApplyContext.rng]: the per-trigger `HashRng`
-  /// seeded from this turn's joint entropy under wild magic's own domain tag
-  /// (0x09), the caster's id and a per-trigger nonce. That stream is private
-  /// to this trigger and no other effect reads it, so it already IS the
-  /// Mountains selection subdomain — both devices build identical candidate
-  /// lists and draw identically from it. Nothing here reads private data,
-  /// UI state, or object identity.
+  /// Draws come from [WildMagicApplyContext.rng]: the coalesced event's
+  /// `HashRng`, seeded from this turn's joint entropy under the wild-magic
+  /// EVENT domain tag (0x0C), the resolution batch, the effect code and the
+  /// effective bracket. That stream is private to this event and no other
+  /// effect reads it, so it already IS the Mountains selection subdomain —
+  /// both devices build identical candidate lists and draw identically from
+  /// it. Nothing here reads private data, UI state, or object identity.
+  ///
+  /// Since slice 7 this runs ONCE per batch however many casters rolled
+  /// Mountains, which is what finally makes [kMountainsWallsPerWizard] a bound
+  /// on the PHASE rather than on a single firing.
   @visibleForTesting
   static Map<String, List<HexCoord>> selectMountainTiles(
     WildMagicApplyContext ctx,
