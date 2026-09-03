@@ -61,9 +61,17 @@ class _FakeHost implements ForcedCastHost {
   final List<(String, int)> verified = [];
   final List<String> forfeits = [];
 
+  /// Every host callback the sequencer makes, in order. The N-player rule this
+  /// has to keep room for is "all selections and reveals are fixed before any
+  /// forced cast resolves", and that is a statement about ORDER — nothing the
+  /// per-callback assertions elsewhere in this file can see.
+  final List<String> calls = [];
+
   @override
-  List<int> publicHandPositions(String playerId) =>
-      List<int>.from(hands[playerId] ?? const <int>[]);
+  List<int> publicHandPositions(String playerId) {
+    calls.add('select:$playerId');
+    return List<int>.from(hands[playerId] ?? const <int>[]);
+  }
 
   @override
   Uint8List forcedCastSeed(String playerId, String reasonTag) =>
@@ -82,6 +90,7 @@ class _FakeHost implements ForcedCastHost {
 
   @override
   Future<Uint8List?> exchangeForcedReveal(Uint8List ours) async {
+    calls.add('exchange');
     sentPayload = ours;
     return peerReply;
   }
@@ -101,6 +110,7 @@ class _FakeHost implements ForcedCastHost {
     SpellAsset spell,
     MembershipProof? merkleProof,
   ) async {
+    calls.add('verify:$playerId:$position');
     verified.add((playerId, position));
     return certifies;
   }
@@ -114,6 +124,7 @@ class _FakeHost implements ForcedCastHost {
 
   @override
   Future<void> resolveForcedCast(ForcedCastPick pick, HashRng rng) async {
+    calls.add('resolve:${pick.playerId}:${pick.position}');
     resolved.add(pick);
   }
 
@@ -407,6 +418,37 @@ void main() {
         throwsA(isA<StateError>()),
       );
       expect(host.forfeits.single, startsWith('malformed_forced_reveal'));
+    });
+
+    test('every selection and reveal is fixed before anything resolves',
+        () async {
+      // select-all -> exchange -> verify-all -> resolve-all. The 2-player flow
+      // already has this shape; pinning it keeps the N-player slice from
+      // having to re-derive it, and would catch an "optimisation" that
+      // resolved each pick as it was verified.
+      final host = _FakeHost();
+      host.peerReply = ForcedCast.encodeReveal([
+        (position: await _peerSelectedSlot(), spell: _spell('d'), proof: null),
+      ]);
+      await ForcedCast.run(_request, host, _rngFor);
+
+      final phaseOf = <String, int>{
+        'select': 0,
+        'exchange': 1,
+        'verify': 2,
+        'resolve': 3,
+      };
+      final phases = [
+        for (final c in host.calls) phaseOf[c.split(':').first]!,
+      ];
+      expect(phases, isNotEmpty);
+      for (var i = 1; i < phases.length; i++) {
+        expect(phases[i], greaterThanOrEqualTo(phases[i - 1]),
+            reason: 'phases ran out of order: ${host.calls}');
+      }
+      // And both halves really happened, so the ordering is not vacuous.
+      expect(host.calls.where((c) => c.startsWith('resolve')), hasLength(2));
+      expect(host.calls.where((c) => c.startsWith('verify')), hasLength(1));
     });
 
     test('resolution order is (playerId, position) sorted', () async {

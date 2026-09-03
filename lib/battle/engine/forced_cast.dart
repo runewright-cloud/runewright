@@ -56,7 +56,11 @@ class ForcedCastRequest {
   final Set<String> affectedPlayerIds;
 
   /// How many hand slots each affected player must reveal and cast.
-  /// `1 + bracketSteps` for Spontaneous Combustion.
+  ///
+  /// Exactly 1 for Spontaneous Combustion since Slice 5 — bracket strength no
+  /// longer multiplies the count. The field stays general: the sequencer draws
+  /// without replacement and the reveal payload is length-prefixed, so a
+  /// future effect asking for more than one still works unchanged.
   final int countPerPlayer;
 
   /// Names the cause, for the UI and the event log (e.g.

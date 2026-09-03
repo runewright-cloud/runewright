@@ -321,13 +321,13 @@ void main() {
   // opening hash and then diverge the first time any spell carries a trigger —
   // possibly several turns in, with nothing to blame it on. The refusal has to
   // happen at the handshake.
-  group('v8 <-> v9 (bounded persistent Wild Magic state)', () {
-    test('this build declares engine v9', () {
-      expect(kBattleEngineVersion, 9,
-          reason: 'Phoenix, Statuesque, Rippling Reflections and Scattered '
-              'Gusts became bounded, next-round-armed effects, and '
-              'WildMagicState\'s canonical shape changed with them — '
-              'docs/WILD_MAGIC_PLAN.md §7.3, Slice 4');
+  group('v9 <-> v10 (bounded instantaneous Wild Magic effects)', () {
+    test('this build declares engine v10', () {
+      expect(kBattleEngineVersion, 10,
+          reason: 'Mountains raises at most 3 walls per living wizard from a '
+              'common pre-placement snapshot, and Spontaneous Combustion '
+              'forces exactly one cast per living wizard regardless of '
+              'bracket — docs/WILD_MAGIC_PLAN.md, Slice 5');
       expect(kBattleProtocolVersion, 7,
           reason: 'no framing changed — the new state is derived on both '
               'devices from values they already exchange');
@@ -335,13 +335,13 @@ void main() {
           reason: 'no proof semantics changed — the circuit is untouched');
     });
 
-    test('a v8 peer is refused by the capabilities gate', () async {
-      // The previous epoch is now the incompatible one: a v8 build resolves
-      // an unbounded, match-permanent Phoenix and a global Scattered Gusts,
-      // so it would diverge on the first row-3 firing.
+    test('a v9 peer is refused by the capabilities gate', () async {
+      // The previous epoch is now the incompatible one: a v9 build walls every
+      // eligible neighbour and forces `1 + bracketSteps` casts, so it would
+      // diverge on the first Mountains or Spontaneous Combustion firing.
       final localIdentity = await Identity.ephemeral();
       final chapter = await makeChapter(
-        idSuffix: 'a8',
+        idSuffix: 'a9',
         ownerPubkeyHex: await localIdentity.ownerPubkeyHex(),
       );
 
@@ -353,7 +353,7 @@ void main() {
         localChapter: chapter,
         hostConfig: const MatchConfig(),
       );
-      final forfeitReason = fakePeer(transportPeer, engineVersion: 8);
+      final forfeitReason = fakePeer(transportPeer, engineVersion: 9);
 
       await expectLater(
         local,
@@ -362,8 +362,8 @@ void main() {
           'message',
           allOf(
             contains('battle engine version mismatch'),
-            contains('local=9'),
-            contains('peer=8'),
+            contains('local=10'),
+            contains('peer=9'),
           ),
         )),
       );
@@ -374,10 +374,10 @@ void main() {
       await transportPeer.disconnect();
     });
 
-    test('a host config pinned to v8 is refused as well', () async {
-      const v8Config = MatchConfig(battleEngineVersion: 8);
-      expect(const MatchConfig().matches(v8Config), isFalse);
-      expect(v8Config.battleEngineVersion, isNot(kBattleEngineVersion));
+    test('a host config pinned to v9 is refused as well', () async {
+      const v9Config = MatchConfig(battleEngineVersion: 9);
+      expect(const MatchConfig().matches(v9Config), isFalse);
+      expect(v9Config.battleEngineVersion, isNot(kBattleEngineVersion));
     });
   });
 

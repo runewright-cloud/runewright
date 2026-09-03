@@ -22,6 +22,8 @@
 
 import 'dart:math' show Random;
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import 'package:rune_duel/engine/hex_grid.dart';
 
 import 'package:rune_duel/battle/models/battle_state.dart';
@@ -228,32 +230,147 @@ class WildMagicApplicator {
   // ── Row 1, Earth — Mountains ──────────────────────────────────────────────
   // "All adjacent cells become earth walls 2 turns [+1 turn]."
 
+  /// The most walls Mountains may raise around any one living wizard.
+  ///
+  /// "All adjacent cells" is up to six, and six walls around every wizard at
+  /// once seals the board — the effect stopped being terrain and became a
+  /// win condition. Capped at three (Slice 5), which still reshapes the
+  /// neighbourhood without enclosing anyone.
+  ///
+  /// The cap is per LIVING WIZARD, not per firing: two wizards select three
+  /// each, and if they pick the same tile it is raised once (see [_mountains]).
+  static const int kMountainsWallsPerWizard = 3;
+
   static void _mountains(WildMagicApplyContext ctx) {
     // A5: "all adjacent cells" has no antecedent in the design doc. Walling
     // the tiles adjacent to every living WIZARD AVATAR (not minions) is the
-    // symmetric, board-wide reading. Tiles that already carry terrain are
-    // skipped so this can't become a hidden destroy-terrain effect, and
-    // occupied tiles are skipped so nobody gets buried where they stand.
+    // symmetric, board-wide reading.
+    //
+    // ── Eligibility (unchanged by Slice 5) ────────────────────────────────
+    // A neighbour tile may become a Mountain when it is:
+    //   * in bounds — `battlefield.isInBounds`;
+    //   * carrying NO tile effect at all, so this can never become a hidden
+    //     destroy-terrain effect (that covers existing walls, chasms, ice,
+    //     lava, conveyors, slow tiles and illusion terrain alike);
+    //   * unoccupied by any living avatar or any tile of a living minion's
+    //     footprint, so nobody is buried where they stand.
+    // Clouds are deliberately NOT consulted: a cloud is not a tile effect and
+    // sits above the ground, so a tile under one is eligible. That is the
+    // behaviour this slice inherited and preserves.
+    //
+    // ── One snapshot for everybody (Slice 5) ──────────────────────────────
+    // Eligibility is read from a snapshot taken BEFORE any wall goes up, so a
+    // wall raised for the first wizard cannot shrink the second wizard's
+    // candidate set. Under the old uncapped rule this was invisible — walling
+    // every eligible tile gives the same union whatever order you walk it in —
+    // but with a cap of three it decides which three each wizard gets, and a
+    // result that depended on player order would be a rules artefact of the
+    // alphabet.
+    final selection = selectMountainTiles(ctx);
+
+    // ── Application ───────────────────────────────────────────────────────
+    // The union of every wizard's picks, applied once, in canonical tile
+    // order. A tile two wizards both chose is raised once and buys neither of
+    // them a replacement fourth pick.
     final expiry = ctx.state.turnNumber + 1 + ctx.bracketSteps;
-    final placed = <HexCoord>[];
-    for (final av in ctx.livingAvatars) {
-      for (final n in _neighbors(av.position)) {
-        if (!ctx.state.battlefield.isInBounds(n)) continue;
-        if (ctx.state.tileEffects.containsKey(n)) continue;
-        if (_isOccupied(ctx.state, n)) continue;
-        // A Mountains wall is an ImpassableTile like any other: it blocks
-        // line of sight and carries the Earth-flavor HP pool, so it can be
-        // broken early even though it would also expire on its own.
-        ctx.state.placeTerrain(n, const ImpassableTile());
-        ctx.state.expiringTiles[n] = expiry;
-        placed.add(n);
-      }
+    final placed = <HexCoord>{for (final tiles in selection.values) ...tiles}
+        .toList()
+      ..sort(_byQThenR);
+    for (final tile in placed) {
+      // A Mountains wall is an ImpassableTile like any other: it blocks
+      // line of sight and carries the Earth-flavor HP pool, so it can be
+      // broken early even though it would also expire on its own.
+      ctx.state.placeTerrain(tile, const ImpassableTile());
+      ctx.state.expiringTiles[tile] = expiry;
     }
     ctx.emit(
       WildMagicEffectKind.mountains,
       tiles: placed,
       players: [for (final a in ctx.livingAvatars) a.playerId],
     );
+  }
+
+  /// Each living wizard's chosen Mountains tiles, keyed by playerId, in
+  /// canonical player order — the whole of the selection decision, separated
+  /// from applying it so both halves can be reasoned about (and tested)
+  /// independently.
+  ///
+  /// **Consumes [ctx].rng.** Call once per firing; [_mountains] does.
+  ///
+  /// Every wizard's candidate set is derived from ONE snapshot taken before
+  /// this method returns anything, so no wizard's picks can narrow another's.
+  /// The two mutable inputs are snapshotted explicitly rather than read live:
+  ///
+  ///   * the tiles already carrying a tile effect — the one thing wall
+  ///     placement changes, and the reason a snapshot is needed at all;
+  ///   * the tiles a living body stands on — which placement cannot change,
+  ///     snapshotted anyway so the guarantee is structural rather than an
+  ///     argument about what `placeTerrain` happens not to touch today.
+  ///
+  /// Draws come from [WildMagicApplyContext.rng]: the per-trigger `HashRng`
+  /// seeded from this turn's joint entropy under wild magic's own domain tag
+  /// (0x09), the caster's id and a per-trigger nonce. That stream is private
+  /// to this trigger and no other effect reads it, so it already IS the
+  /// Mountains selection subdomain — both devices build identical candidate
+  /// lists and draw identically from it. Nothing here reads private data,
+  /// UI state, or object identity.
+  @visibleForTesting
+  static Map<String, List<HexCoord>> selectMountainTiles(
+    WildMagicApplyContext ctx,
+  ) {
+    final blockedBefore = ctx.state.tileEffects.keys.toSet();
+    final occupiedBefore = _occupiedTiles(ctx.state);
+
+    final out = <String, List<HexCoord>>{};
+    for (final av in ctx.livingAvatars) {
+      // Sorted canonically BEFORE any draw, so the choice cannot inherit
+      // `_neighbors`' declaration order or any Dart collection's insertion
+      // order. Drawn without replacement, exactly as `ForcedCast` picks hand
+      // slots.
+      final candidates = mountainsCandidates(
+        ctx.state,
+        av.position,
+        blocked: blockedBefore,
+        occupied: occupiedBefore,
+      );
+      final chosen = <HexCoord>[];
+      for (var i = 0;
+          i < kMountainsWallsPerWizard && candidates.isNotEmpty;
+          i++) {
+        chosen.add(candidates.removeAt(ctx.rng.nextInt(candidates.length)));
+      }
+      out[av.playerId] = chosen..sort(_byQThenR);
+    }
+    return out;
+  }
+
+  /// The tiles adjacent to [center] that may become Mountains, canonically
+  /// sorted. [blocked] and [occupied] are the snapshot; see
+  /// [selectMountainTiles].
+  ///
+  /// The eligibility rules themselves are unchanged by the cap — see
+  /// [_mountains]'s comment for what each one is for.
+  @visibleForTesting
+  static List<HexCoord> mountainsCandidates(
+    BattleState state,
+    HexCoord center, {
+    required Set<HexCoord> blocked,
+    required Set<HexCoord> occupied,
+  }) =>
+      <HexCoord>[
+        for (final n in _neighbors(center))
+          if (state.battlefield.isInBounds(n) &&
+              !blocked.contains(n) &&
+              !occupied.contains(n))
+            n,
+      ]..sort(_byQThenR);
+
+  /// Canonical hex order: q ascending, then r. The one tie-break for anything
+  /// whose result must not depend on how a Dart collection happened to be
+  /// built.
+  static int _byQThenR(HexCoord a, HexCoord b) {
+    final qc = a.q.compareTo(b.q);
+    return qc != 0 ? qc : a.r.compareTo(b.r);
   }
 
   // ── Row 1, Water — Mana Flood ─────────────────────────────────────────────
@@ -336,10 +453,22 @@ class WildMagicApplicator {
     // desyncing. Queued here and drained by TurnLoop through ForcedCast, which
     // does the public slot selection, the reveal round trip, and the
     // verification. See WILD_MAGIC_PLAN.md §3.1/§9.5.
+    //
+    // EXACTLY ONE cast per living wizard, whatever the bracket (Slice 5).
+    // `1 + bracketSteps` turned a bracket-2 firing into three forced casts
+    // each, which shredded both hands and cascaded far past what the effect
+    // describes. Bracket still says the trigger fired at strength N — it is
+    // still carried on the trigger and reported in the event — it just no
+    // longer multiplies how many spells leave your hand.
+    //
+    // "Living" is read at the instant the trigger fires, from the same
+    // `livingAvatars` every other wild-magic effect uses. A wizard who is dead
+    // now does not get a forced cast because a Phoenix might raise them later:
+    // this effect resolves immediately and stores no targeting state.
     final affected = {for (final a in ctx.livingAvatars) a.playerId};
     ctx.hooks?.queueForcedCast(
       affected,
-      1 + ctx.bracketSteps,
+      1,
       'spontaneousCombustion',
     );
     ctx.emit(
@@ -500,8 +629,17 @@ class WildMagicApplicator {
         HexCoord(c.q, c.r + 1),
       ];
 
-  static bool _isOccupied(BattleState state, HexCoord t) =>
-      state.avatars.any((a) => a.isAlive && a.position == t) ||
-      state.minions.any((m) => m.isAlive && m.occupiedTiles.contains(t));
+  /// Every tile a living body stands on: each living avatar's tile and each
+  /// living minion's whole footprint.
+  ///
+  /// The set form of what used to be a per-tile `_isOccupied` predicate.
+  /// Mountains needs it snapshotted rather than queried, and one definition of
+  /// "occupied" beats a predicate and a set that could drift apart.
+  static Set<HexCoord> _occupiedTiles(BattleState state) => {
+        for (final a in state.avatars)
+          if (a.isAlive) a.position,
+        for (final m in state.minions)
+          if (m.isAlive) ...m.occupiedTiles,
+      };
 }
 

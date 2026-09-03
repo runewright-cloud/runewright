@@ -72,6 +72,17 @@ BattleState _state({
   );
 }
 
+Minion _minionAt(String id, HexCoord pos, {String teamId = 'b'}) => Minion(
+      id: id,
+      ownerId: teamId,
+      teamId: teamId,
+      position: pos,
+      affinity: SpellAffinity.fire,
+      stats: const MinionStats(maxHp: 3, damage: 1, moveSpeed: 1, attackRange: 1),
+      elementSequence: const [],
+      abilities: const {},
+    );
+
 HashRng _rng([int salt = 0]) =>
     HashRng(Uint8List.fromList(List.generate(32, (i) => (i + salt) & 0xFF)));
 
@@ -194,28 +205,250 @@ void main() {
   // ── Row 1, Earth — Mountains ──────────────────────────────────────────────
 
   group('Mountains', () {
-    test('walls every tile adjacent to every wizard, on an expiry clock', () {
+    /// Every wizard's selection, without applying anything — the decision half
+    /// of the effect, so a test can see WHO chose WHAT rather than only the
+    /// union that lands on the board.
+    Map<String, List<HexCoord>> select(BattleState state, WizardAvatar caster,
+            {int bracketSteps = 0, HashRng? rng}) =>
+        WildMagicApplicator.selectMountainTiles(
+          WildMagicApplyContext(
+            state: state,
+            caster: caster,
+            rng: rng ?? _rng(),
+            trigger: WildMagicTrigger(
+              row: WildMagicRow.repeatZero,
+              element: SpellAffinity.earth,
+              bracketSteps: bracketSteps,
+            ),
+            events: [],
+          ),
+        );
+
+    Set<HexCoord> wallsIn(BattleState state) => {
+          for (final e in state.tileEffects.entries)
+            if (e.value is ImpassableTile) e.key,
+        };
+
+    test('a wizard with six eligible neighbours gets exactly three walls', () {
       final me = _avatar('a', const HexCoord(0, 0));
-      final foe = _avatar('b', const HexCoord(3, 0), teamId: 'b');
-      final state = _state(avatars: [me, foe], turnNumber: 5);
+      final state = _state(avatars: [me], turnNumber: 5);
+      // Fixture check: the cap is what limits this, not the geometry.
+      expect(
+        WildMagicApplicator.mountainsCandidates(state, me.position,
+            blocked: const {}, occupied: {me.position}),
+        hasLength(6),
+      );
+
       _fire(state, me, WildMagicRow.repeatZero, SpellAffinity.earth);
 
-      for (final around in [me.position, foe.position]) {
-        for (final n in hexNeighborsOf(around)) {
-          if (!state.battlefield.isInBounds(n)) continue;
-          if (n == me.position || n == foe.position) continue;
-          expect(state.tileEffects[n], isA<ImpassableTile>(), reason: '$n');
-          expect(state.expiringTiles[n], 6, reason: 'turnNumber + 1 + 0');
-        }
+      expect(wallsIn(state), hasLength(3));
+      for (final wall in wallsIn(state)) {
+        expect(hexNeighborsOf(me.position), contains(wall));
+        expect(state.expiringTiles[wall], 6, reason: 'turnNumber + 1 + 0');
       }
     });
 
-    test('bracket steps extend the expiry', () {
+    test('fewer than three eligible cells walls all of them and no more', () {
+      // A board vertex has exactly three in-bounds neighbours, so one of them
+      // is pre-blocked to get the pool below the cap: two eligible, two walls.
+      final me = _avatar('a', const HexCoord(4, 0));
+      final bare = _state(avatars: [me], radius: 4);
+      final inBounds = WildMagicApplicator.mountainsCandidates(
+          bare, me.position,
+          blocked: const {}, occupied: {me.position});
+      expect(inBounds, hasLength(3), reason: 'fixture check: a vertex');
+
+      final state = _state(
+        avatars: [me],
+        radius: 4,
+        tileEffects: {inBounds.first: const FloorIsLava()},
+      );
+      final eligible = WildMagicApplicator.mountainsCandidates(
+          state, me.position,
+          blocked: {inBounds.first}, occupied: {me.position});
+      expect(eligible, hasLength(2), reason: 'fixture check');
+
+      _fire(state, me, WildMagicRow.repeatZero, SpellAffinity.earth);
+      expect(wallsIn(state), eligible.toSet());
+    });
+
+    test('no bracket raises the wall count above three', () {
+      for (final bracket in [0, 1, 2, 5, 17]) {
+        final me = _avatar('a', const HexCoord(0, 0));
+        final state = _state(avatars: [me], turnNumber: 5);
+        _fire(state, me, WildMagicRow.repeatZero, SpellAffinity.earth,
+            bracketSteps: bracket);
+        expect(wallsIn(state), hasLength(3),
+            reason: 'bracket $bracket must not widen the placement');
+      }
+    });
+
+    test('bracket steps still extend the expiry — the strength axis it kept',
+        () {
+      // Slice 5 caps the COUNT. Bracket never controlled count; it controls
+      // duration, and it still does.
       final me = _avatar('a', const HexCoord(0, 0));
       final state = _state(avatars: [me], turnNumber: 5);
       _fire(state, me, WildMagicRow.repeatZero, SpellAffinity.earth,
           bracketSteps: 2);
-      expect(state.expiringTiles.values.first, 8);
+      expect(state.expiringTiles.values.toSet(), {8});
+      expect(wallsIn(state), hasLength(3));
+    });
+
+    test('the same state and trigger select the same tiles every time', () {
+      Set<HexCoord> run() {
+        final me = _avatar('a', const HexCoord(0, 0));
+        final foe = _avatar('b', const HexCoord(1, 1), teamId: 'b');
+        final state = _state(avatars: [me, foe]);
+        _fire(state, me, WildMagicRow.repeatZero, SpellAffinity.earth,
+            rng: _rng(7));
+        return wallsIn(state);
+      }
+
+      expect(run(), run());
+      expect(run(), isNotEmpty);
+    });
+
+    test('avatar and tileEffects insertion order do not move a single wall',
+        () {
+      // Same board, built two different ways: avatars listed in the opposite
+      // order and the pre-existing terrain inserted in the opposite order.
+      // livingAvatars sorts by playerId and candidates sort by (q, r), so
+      // neither can reach the outcome.
+      const lavaA = HexCoord(1, 0);
+      const lavaB = HexCoord(0, 1);
+
+      Set<HexCoord> run({required bool reversed}) {
+        final me = _avatar('a', const HexCoord(0, 0));
+        final foe = _avatar('b', const HexCoord(1, 1), teamId: 'b');
+        final state = _state(
+          avatars: reversed ? [foe, me] : [me, foe],
+          tileEffects: reversed
+              ? {lavaB: const FloorIsLava(), lavaA: const FloorIsLava()}
+              : {lavaA: const FloorIsLava(), lavaB: const FloorIsLava()},
+        );
+        _fire(state, me, WildMagicRow.repeatZero, SpellAffinity.earth,
+            rng: _rng(3));
+        return wallsIn(state);
+      }
+
+      expect(run(reversed: false), run(reversed: true));
+    });
+
+    test('canonical bytes agree across those two build orders', () {
+      BattleState build({required bool reversed}) {
+        final me = _avatar('a', const HexCoord(0, 0));
+        final foe = _avatar('b', const HexCoord(1, 1), teamId: 'b');
+        final state = _state(avatars: reversed ? [foe, me] : [me, foe]);
+        _fire(state, me, WildMagicRow.repeatZero, SpellAffinity.earth,
+            rng: _rng(3));
+        return state;
+      }
+
+      // Avatars are serialized sorted by playerId, so the whole canonical
+      // encoding — walls included — must be byte-identical.
+      expect(build(reversed: false).toCanonicalBytes(),
+          build(reversed: true).toCanonicalBytes());
+    });
+
+    test('every living wizard gets its own selection of up to three', () {
+      final me = _avatar('a', const HexCoord(0, 0));
+      final foe = _avatar('b', const HexCoord(-3, 1), teamId: 'b');
+      final state = _state(avatars: [me, foe]);
+      final picks = select(state, me);
+
+      expect(picks.keys.toSet(), {'a', 'b'});
+      for (final entry in picks.entries) {
+        expect(entry.value, hasLength(3), reason: entry.key);
+      }
+    });
+
+    test('a dead wizard contributes no candidate set', () {
+      final me = _avatar('a', const HexCoord(0, 0));
+      final dead = _avatar('c', const HexCoord(-3, 1), teamId: 'c', hp: 0);
+      final state = _state(avatars: [me, dead]);
+      expect(select(state, me).keys, ['a']);
+    });
+
+    test('both wizards choose from the SAME pre-placement snapshot', () {
+      // The two are two tiles apart, sharing neighbours — the case where a
+      // sequentially-applied Mountains would have narrowed the second
+      // wizard's pool with the first wizard's walls.
+      final me = _avatar('a', const HexCoord(0, 0));
+      final foe = _avatar('b', const HexCoord(1, 1), teamId: 'b');
+      final state = _state(avatars: [me, foe]);
+      final snapshotOccupied = {me.position, foe.position};
+
+      final picks = select(state, me);
+      for (final entry in picks.entries) {
+        final centre = entry.key == 'a' ? me.position : foe.position;
+        final fullCandidates = WildMagicApplicator.mountainsCandidates(
+          state,
+          centre,
+          blocked: const {},
+          occupied: snapshotOccupied,
+        ).toSet();
+        expect(entry.value.toSet(), everyElement(isIn(fullCandidates)),
+            reason: '${entry.key} chose outside its snapshot candidates');
+        expect(entry.value, hasLength(3),
+            reason: '${entry.key} got a full three from the snapshot, not a '
+                'pool the other wizard had already eaten into');
+      }
+    });
+
+    test('a wall raised for one wizard does not shrink the other\'s pool', () {
+      // The discriminating fixture: 'a' selects first in canonical order, and
+      // its three walls may include tiles adjacent to 'b'. Under the old
+      // sequential rule 'b' would then have had fewer candidates. Here 'b'
+      // still draws three, and the union is whatever those two independent
+      // top-threes come to.
+      final me = _avatar('a', const HexCoord(0, 0));
+      final foe = _avatar('b', const HexCoord(1, 1), teamId: 'b');
+      final state = _state(avatars: [me, foe]);
+
+      final picks = select(state, me);
+      expect(picks['a'], hasLength(3));
+      expect(picks['b'], hasLength(3));
+
+      final shared = hexNeighborsOf(me.position)
+          .toSet()
+          .intersection(hexNeighborsOf(foe.position).toSet());
+      expect(shared, isNotEmpty,
+          reason: 'fixture check: the two neighbourhoods must overlap for '
+              'this test to be about anything');
+    });
+
+    test('a tile both wizards select is raised once', () {
+      // Boxed in so both wizards have exactly one eligible tile, and it is the
+      // same tile: the union must be a single wall, and neither wizard gets a
+      // replacement pick for the collision.
+      final me = _avatar('a', const HexCoord(0, 0));
+      final foe = _avatar('b', const HexCoord(2, 0), teamId: 'b');
+      final shared = hexNeighborsOf(me.position)
+          .toSet()
+          .intersection(hexNeighborsOf(foe.position).toSet());
+      expect(shared, hasLength(1), reason: 'fixture check');
+      final onlyTile = shared.single;
+
+      // Everything except the shared tile already carries terrain.
+      final blockers = <HexCoord, TileEffect>{
+        for (final n in {
+          ...hexNeighborsOf(me.position),
+          ...hexNeighborsOf(foe.position),
+        })
+          if (n != onlyTile && n != me.position && n != foe.position)
+            n: const FloorIsLava(),
+      };
+      final state = _state(avatars: [me, foe], tileEffects: blockers);
+
+      final picks = select(state, me);
+      expect(picks['a'], [onlyTile]);
+      expect(picks['b'], [onlyTile]);
+
+      final state2 = _state(avatars: [me, foe], tileEffects: blockers);
+      _fire(state2, me, WildMagicRow.repeatZero, SpellAffinity.earth);
+      expect(wallsIn(state2), {onlyTile},
+          reason: 'one wall, not two, and no fourth-pick compensation');
     });
 
     test('does not overwrite existing terrain — no hidden destroy effect', () {
@@ -239,13 +472,48 @@ void main() {
       expect(state.tileEffects.containsKey(me.position), isFalse);
     });
 
-    test('SYMMETRY: the caster is walled in too', () {
+    test('eligibility still refuses out-of-bounds, blocked and occupied tiles',
+        () {
+      // The three rules, asserted directly on the candidate helper so a
+      // future change to any of them is visible here rather than inferred
+      // from a wall count.
+      final me = _avatar('a', const HexCoord(4, 0));
+      final state = _state(avatars: [me], radius: 4);
+      final all = hexNeighborsOf(me.position);
+      final inBounds =
+          all.where(state.battlefield.isInBounds).toSet();
+      expect(inBounds.length, lessThan(all.length), reason: 'fixture check');
+
+      expect(
+        WildMagicApplicator.mountainsCandidates(state, me.position,
+            blocked: const {}, occupied: const {}).toSet(),
+        inBounds,
+        reason: 'out of bounds is refused',
+      );
+      expect(
+        WildMagicApplicator.mountainsCandidates(state, me.position,
+            blocked: {inBounds.first}, occupied: const {}).toSet(),
+        inBounds.difference({inBounds.first}),
+        reason: 'a tile already carrying an effect is refused',
+      );
+      expect(
+        WildMagicApplicator.mountainsCandidates(state, me.position,
+            blocked: const {}, occupied: {inBounds.last}).toSet(),
+        inBounds.difference({inBounds.last}),
+        reason: 'an occupied tile is refused',
+      );
+    });
+
+    test('a living minion\'s footprint blocks placement; a dead one does not',
+        () {
       final me = _avatar('a', const HexCoord(0, 0));
-      final foe = _avatar('b', const HexCoord(3, 0), teamId: 'b');
-      final state = _state(avatars: [me, foe]);
-      final events = _fire(state, me, WildMagicRow.repeatZero, SpellAffinity.earth);
-      expect(events.single.affectedPlayerIds, containsAll(['a', 'b']));
-      expect(state.tileEffects.containsKey(const HexCoord(1, 0)), isTrue);
+      const under = HexCoord(1, 0);
+      final state = _state(
+        avatars: [me],
+        minions: [_minionAt('m', under, teamId: 'b')],
+      );
+      _fire(state, me, WildMagicRow.repeatZero, SpellAffinity.earth);
+      expect(state.tileEffects.containsKey(under), isFalse);
     });
   });
 
@@ -345,13 +613,47 @@ void main() {
       expect(hooks.forced.single.$3, 'spontaneousCombustion');
     });
 
-    test('bracket steps raise the count per player', () {
+    test('no bracket raises the count per player above one', () {
+      // Was `1 + bracketSteps`, which made a bracket-2 firing shred three
+      // spells out of every hand at once (Slice 5).
+      for (final bracket in [0, 1, 2, 5, 17]) {
+        final me = _avatar('a', const HexCoord(0, 0));
+        final state = _state(avatars: [me]);
+        final hooks = _RecordingHooks();
+        _fire(state, me, WildMagicRow.repeatOne, SpellAffinity.fire,
+            bracketSteps: bracket, hooks: hooks);
+        expect(hooks.forced.single.$2, 1, reason: 'bracket $bracket');
+      }
+    });
+
+    test('the trigger still carries its bracket, it just no longer multiplies',
+        () {
+      // "Effect fired at bracket 2" and "effect casts three spells" are
+      // different facts, and only the second one changed. The bracket has to
+      // survive on the trigger for the row-scaling design to stay open.
       final me = _avatar('a', const HexCoord(0, 0));
       final state = _state(avatars: [me]);
       final hooks = _RecordingHooks();
-      _fire(state, me, WildMagicRow.repeatOne, SpellAffinity.fire,
+      final events = _fire(state, me, WildMagicRow.repeatOne, SpellAffinity.fire,
           bracketSteps: 2, hooks: hooks);
-      expect(hooks.forced.single.$2, 3);
+      expect(events.single.bracketSteps, 2);
+      expect(hooks.forced.single.$2, 1);
+    });
+
+    test('two living wizards get one selection each; a dead one gets none', () {
+      final me = _avatar('a', const HexCoord(0, 0));
+      final foe = _avatar('b', const HexCoord(2, 0), teamId: 'b');
+      final dead = _avatar('c', const HexCoord(-2, 0), teamId: 'c', hp: 0);
+      final state = _state(avatars: [me, foe, dead]);
+      final hooks = _RecordingHooks();
+
+      _fire(state, me, WildMagicRow.repeatOne, SpellAffinity.fire,
+          bracketSteps: 3, hooks: hooks);
+
+      expect(hooks.forced.single.$1, {'a', 'b'},
+          reason: 'living at the instant the trigger fired — a Phoenix that '
+              'may raise "c" later does not retroactively enlist them');
+      expect(hooks.forced.single.$2, 1);
     });
 
     test('no hooks (unit context) is a safe no-op, not a crash', () {
