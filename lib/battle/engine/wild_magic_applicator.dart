@@ -27,6 +27,7 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:rune_duel/engine/hex_grid.dart';
 
 import 'package:rune_duel/battle/models/battle_state.dart';
+import 'package:rune_duel/battle/models/hex_battlefield.dart' show hexDistance;
 import 'package:rune_duel/battle/models/minion.dart';
 import 'package:rune_duel/battle/models/status_effect_ids.dart';
 import 'package:rune_duel/battle/models/terrain.dart';
@@ -169,6 +170,65 @@ class WildMagicApplyContext {
       ),
     );
   }
+}
+
+// ── Chasm evacuation (Slice 6) ────────────────────────────────────────────────
+
+/// Where every body a Chasm firing invalidated must end up.
+///
+/// Anchors, not footprints: [minionDestinations] holds each creature's new
+/// [Minion.position], from which its footprint follows. Computed by
+/// [WildMagicApplicator.planChasmEvacuation] from the pre-effect board and
+/// applied by [WildMagicApplicator.applyChasmEvacuation]; the split is what
+/// lets the plan be read from a snapshot that placing the terrain would
+/// otherwise have destroyed.
+class ChasmEvacuation {
+  const ChasmEvacuation({
+    required this.avatarDestinations,
+    required this.minionDestinations,
+    required this.stranded,
+  });
+
+  /// playerId → the tile the wizard was displaced to.
+  final Map<String, HexCoord> avatarDestinations;
+
+  /// Minion id → the creature's new anchor position.
+  final Map<String, HexCoord> minionDestinations;
+
+  /// Bodies the chasm invalidated for which the board offered no legal
+  /// destination at all, in the same canonical order they were processed in.
+  ///
+  /// ── This is an EXCEPTIONAL FALLBACK, not Chasm's intended behaviour ──────
+  /// Ordinary Chasm behaviour is that every invalidated body is displaced.
+  /// This list is what happens when the board makes that impossible, and it
+  /// should be read as a degenerate case being handled deterministically —
+  /// never as a second, legitimate outcome of the effect.
+  ///
+  /// The fallback is exactly three things, chosen because all three are the
+  /// PRE-SLICE status quo rather than new game semantics:
+  ///
+  ///   * the displacement fails;
+  ///   * the body stays at its original position (which is now chasm);
+  ///   * its id is recorded here, so the condition is observable instead of
+  ///     silent.
+  ///
+  /// Deliberately NOT done: killing the body, deleting or shrinking the
+  /// chasm, leaving it at an illegal position it did not already hold, or
+  /// teleporting it off-board. Picking any of those would be inventing a rule.
+  ///
+  /// Expected to stay empty in every reachable position. Opening one axis of a
+  /// radius-r board leaves 3r(r+1) + 1 - (2r + 1) tiles standing — 52 at the
+  /// default radius 4, 14 at the UI's minimum radius 2 — and EVERY one of them
+  /// would have to be a wall, a pre-existing chasm, or a body that is not
+  /// itself leaving, before this list gains a single entry. It is constructible
+  /// (see the Slice 6 test) but not reachable by ordinary play, which is why
+  /// the fallback is a documented degenerate case rather than a designed rule.
+  /// What SHOULD happen there is an open question for a future generalized
+  /// forced-relocation pass — see docs/WILD_MAGIC_PLAN_VNEXT.md.
+  final List<String> stranded;
+
+  bool get isEmpty =>
+      avatarDestinations.isEmpty && minionDestinations.isEmpty;
 }
 
 // ── Applicator ────────────────────────────────────────────────────────────────
@@ -481,33 +541,312 @@ class WildMagicApplicator {
   // "A randomly drawn line bisects the battlefield. It is impassible (without
   //  flying), and indestructible for 2[+1] turns, but has no bearing on
   //  targeting."
+  //
+  // ── Occupied-tile behaviour (Slice 6) ─────────────────────────────────────
+  // Ratified: the chasm opens REGARDLESS of who is standing there, and any
+  // living body whose position (or, for a creature, whose footprint) the new
+  // chasm INVALIDATES is immediately and involuntarily displaced to the
+  // nearest legal solid position. Ties among equally-near destinations are
+  // broken with this trigger's own RNG.
+  //
+  // "Invalidates" is the load-bearing word, and it is what preserves A11: a
+  // chasm is ignored by flying, so it does not invalidate a flyer's position
+  // and a flying wizard or creature is simply not displaced. See
+  // [planChasmEvacuation]'s Flying note.
+  //
+  // Before this slice the chasm simply opened under people and left them
+  // standing in it — a wizard on a chasm tile could still be shot at (chasm
+  // does not block targeting) but could be walled in by their own hole. This
+  // is emergency displacement caused by terrain collapse, NOT movement: it
+  // ignores pathfinding, movement allowance, line of sight, intervening
+  // terrain and route connectivity entirely. We choose a safe final position;
+  // we do not walk anybody there.
+  //
+  // ── Why the plan is computed before the terrain is placed ─────────────────
+  // Every evacuation is resolved against ONE snapshot of the pre-effect board,
+  // so no evacuee's destination can depend on where another evacuee has
+  // already physically moved. Destinations are nevertheless RESERVED as they
+  // are assigned, so two displaced bodies can never be handed overlapping
+  // ground. See [planChasmEvacuation].
 
   static void _chasm(WildMagicApplyContext ctx) {
     // A10: "bisects" means through the centre, so the only free choice left is
     // WHICH of the three hex axes. Uniform over the three, from joint entropy.
+    // This is the FIRST draw of the trigger's stream; every evacuation draw
+    // below follows it.
     final axis = ctx.rng.nextInt(3);
     bool onAxis(HexCoord h) => switch (axis) {
           0 => h.q == 0,
           1 => h.r == 0,
           _ => h.q + h.r == 0,
         };
+
+    // 1. Every terrain cell this firing will open, in canonical (q, r) order.
+    final placed = [
+      for (final t in ctx.sortedTiles)
+        if (onAxis(t)) t,
+    ];
+    final opening = placed.toSet();
+
+    // 2. Who the opening invalidates, and where each of them goes — decided
+    //    entirely from the pre-effect board, before a single tile changes.
+    final evacuation = planChasmEvacuation(ctx, opening);
+
+    // 3. Open the chasm.
     final expiry = ctx.state.turnNumber + 1 + ctx.bracketSteps;
-    final placed = <HexCoord>[];
-    for (final t in ctx.sortedTiles) {
-      if (!onAxis(t)) continue;
+    for (final t in placed) {
       // Overwrites whatever terrain was there. A chasm opening in the ground
       // destroying a wall is the reading that matches "the ground splits";
       // the indestructibility clause protects the chasm FROM later effects
       // (see _blockedForTerrainPlacement), not the terrain from the chasm.
       ctx.state.placeTerrain(t, const ChasmTile());
       ctx.state.expiringTiles[t] = expiry;
-      placed.add(t);
     }
+
+    // 4. Drop everybody the hole displaced onto the ground it left them.
+    applyChasmEvacuation(ctx, evacuation);
+
     ctx.emit(
       WildMagicEffectKind.chasm,
       tiles: placed,
+      // Displaced wizards only — `affectedPlayerIds` is the reveal card's
+      // "who did this touch", and a chasm that opened under nobody touches
+      // nobody. Creatures have no player-id channel on the event; their
+      // relocation shows up in the animation via the board state.
+      players: evacuation.avatarDestinations.keys.toList()..sort(),
+      // UNCHANGED FORMAT. The axis note is asserted verbatim by existing
+      // tests and read by the reveal card; displacement detail does not
+      // belong in it.
       note: switch (axis) { 0 => 'q = 0', 1 => 'r = 0', _ => 'q + r = 0' },
     );
+  }
+
+  /// Plans every Chasm evacuation from ONE pre-effect snapshot of the board.
+  ///
+  /// Pure with respect to [BattleState] — it mutates nothing, which is what
+  /// lets `_chasm` call it before placing any terrain and still describe the
+  /// post-placement world. **Consumes [WildMagicApplyContext.rng]:** exactly
+  /// one draw per evacuee that finds a destination (see "RNG" below).
+  ///
+  /// [opening] is the complete set of cells this firing will turn into chasm.
+  ///
+  /// ── The snapshot ──────────────────────────────────────────────────────────
+  /// Two things are read once, up front, and never re-read:
+  ///
+  ///   * `state.tileEffects` — the terrain that decides which tiles a body may
+  ///     stand on. Snapshotted because `_chasm` places terrain afterwards and
+  ///     a live read would then answer differently depending on when it ran.
+  ///   * every living body's tiles (`_occupiedTiles`) — each living avatar's
+  ///     tile and each living creature's whole footprint. Snapshotted so that
+  ///     one evacuee physically moving cannot widen or narrow the next
+  ///     evacuee's candidate set.
+  ///
+  /// ── Evacuees ─────────────────────────────────────────────────────────────
+  /// A living avatar standing on a cell in [opening]; a living creature ANY of
+  /// whose footprint tiles is in [opening] — the whole creature moves, never
+  /// just the struck tile. Dead bodies are neither evacuated nor counted as
+  /// occupancy, which is exactly the existing rule (`_occupiedTiles`,
+  /// `tileOccupied`): this slice does not invent corpse physics.
+  ///
+  /// ── Flying ───────────────────────────────────────────────────────────────
+  /// A FLYING body is never an evacuee. `WILD_MAGIC_PLAN.md` A11 and
+  /// `WILD_MAGIC_PLAN_VNEXT.md` both say a chasm is ignored by flying, and the
+  /// ratified evacuation rule displaces a body only when the chasm actually
+  /// INVALIDATES its position — which, for something that is not standing on
+  /// the ground, it does not. So a flying wizard (`WizardAvatar.isFlying`,
+  /// i.e. Updraft) and a flying creature (`SummonAbility.flying`) both stay
+  /// exactly where they are when the ground opens under them.
+  ///
+  /// The exemption lives at evacuee COLLECTION, not inside the legality
+  /// predicate: `free` below stays a single flying-agnostic definition of
+  /// solid ground, so there is never a second, per-entity notion of where a
+  /// body may stand. Flying entities simply never enter this planner on
+  /// Chasm's account.
+  ///
+  /// This changes nothing about Zephyr, which deliberately excludes blocked
+  /// tiles for everyone (a gale can deposit a flyer anywhere it likes), nor
+  /// about flying movement anywhere else.
+  ///
+  /// ── Legal destination ────────────────────────────────────────────────────
+  /// A candidate anchor is legal when EVERY tile of the body that would sit
+  /// there is:
+  ///
+  ///   * in bounds (`battlefield.isInBounds`);
+  ///   * not a cell in [opening] — you cannot be evacuated into the hole that
+  ///     is evacuating you;
+  ///   * not blocked terrain in the snapshot — `tileBlocksMovement`, the
+  ///     engine's one authoritative "a body may not be here" terrain
+  ///     predicate (walls and PRE-EXISTING chasms). Nothing else is excluded:
+  ///     ice, lava, conveyors, slow ground and clouds are all places a body
+  ///     may legally stand, and inventing new exclusions for them here would
+  ///     be a second, contradictory definition of solid ground;
+  ///   * not held by a living body that is STAYING (see below);
+  ///   * not already reserved for an earlier evacuee.
+  ///
+  /// Reachability is deliberately not consulted. This is not a walk.
+  ///
+  /// ── Who blocks whom ──────────────────────────────────────────────────────
+  /// The snapshot's occupancy is split in two. Bodies that are NOT evacuating
+  /// hold their ground and block destinations. Bodies that ARE evacuating are
+  /// leaving, so the tiles they are about to vacate do not block anyone —
+  /// which matters for a creature only partly over the hole, whose surviving
+  /// footprint tiles are perfectly good ground once it has stepped off them.
+  /// New reservations then re-block ground as it is claimed.
+  ///
+  /// ── Order and RNG ────────────────────────────────────────────────────────
+  /// Evacuees are processed in one total canonical order: every avatar by
+  /// `playerId`, then every creature by `id`. For each, the search widens by
+  /// hex distance from the body's own anchor — distance 1, then 2, and so on
+  /// (distance 0 is excluded: that is the ground being taken away). The first
+  /// distance holding at least one legal candidate is the one used; candidates
+  /// within it are collected in canonical (q, r) order and ONE draw of
+  /// `ctx.rng` picks among them. So a body may be displaced further than a
+  /// body ahead of it in the order whose reservations took all the near
+  /// ground — intentional, and the alternative (assign, then untangle
+  /// collisions) is exactly the order-dependence this design exists to avoid.
+  ///
+  /// `HashRng.nextInt(1)` returns without consuming a byte, so a body with
+  /// only one legal destination costs nothing from the stream: the draw count
+  /// is "one per AMBIGUOUS evacuation", and calling it unconditionally is
+  /// simply the shorter way to write that.
+  @visibleForTesting
+  static ChasmEvacuation planChasmEvacuation(
+    WildMagicApplyContext ctx,
+    Set<HexCoord> opening,
+  ) {
+    final state = ctx.state;
+
+    // ── The one snapshot ──────────────────────────────────────────────────
+    final terrainBefore = Map<HexCoord, TileEffect>.of(state.tileEffects);
+    final occupiedBefore = _occupiedTiles(state);
+    final board = ctx.sortedTiles; // in-bounds, canonical (q, r) order
+
+    // ── Evacuees, in the one total canonical order ────────────────────────
+    // Flying bodies are filtered out HERE, at collection, and never reach the
+    // search below. A11 says a chasm is ignored by flying, so a chasm opening
+    // under a flyer does not invalidate its position and there is nothing to
+    // evacuate it from — see this method's "Flying" note. Doing it here rather
+    // than by threading an exemption through `free` keeps ONE definition of
+    // legal ground: `free` answers "may a body stand here", and that answer
+    // does not change depending on who is asking.
+    //
+    // A flyer that stays put is still a body: it remains in `staying` below
+    // and keeps blocking the ground it is on, exactly like any other body the
+    // chasm did not move.
+    final avatars = [
+      for (final a in ctx.livingAvatars)
+        if (!a.isFlying && opening.contains(a.position)) a,
+    ];
+    final minions = [
+      for (final m in ctx.livingMinions)
+        if (!m.abilities.contains(SummonAbility.flying) &&
+            m.occupiedTiles.any(opening.contains))
+          m,
+    ];
+
+    // Ground that is being given up by the bodies standing on it. Removing it
+    // from the static occupancy is what stops a half-swallowed creature's own
+    // surviving footprint from blocking its neighbour's escape.
+    final vacating = <HexCoord>{
+      for (final a in avatars) a.position,
+      for (final m in minions) ...m.occupiedTiles,
+    };
+    final staying = occupiedBefore.difference(vacating);
+
+    final reserved = <HexCoord>{};
+    bool free(HexCoord t) =>
+        state.battlefield.isInBounds(t) &&
+        !opening.contains(t) &&
+        !tileBlocksMovement(terrainBefore[t]) &&
+        !staying.contains(t) &&
+        !reserved.contains(t);
+
+    /// Nearest legal anchor for a body whose tiles at anchor `c` are
+    /// `shape(c)`, or null if the board has nowhere to put it.
+    HexCoord? nearest(HexCoord origin, List<HexCoord> Function(HexCoord) shape) {
+      // 2 * radius is the board's diameter — the furthest two in-bounds tiles
+      // can be from each other, so the search is exhaustive by construction.
+      final maxDistance = 2 * state.config.gridRadius;
+      for (var d = 1; d <= maxDistance; d++) {
+        final tier = [
+          for (final c in board)
+            if (hexDistance(origin, c) == d && shape(c).every(free)) c,
+        ];
+        if (tier.isEmpty) continue;
+        return tier[ctx.rng.nextInt(tier.length)];
+      }
+      return null;
+    }
+
+    final avatarDestinations = <String, HexCoord>{};
+    final minionDestinations = <String, HexCoord>{};
+    final stranded = <String>[];
+
+    for (final a in avatars) {
+      final dest = nearest(a.position, (c) => [c]);
+      if (dest == null) {
+        // EXCEPTIONAL FALLBACK, not ordinary Chasm behaviour: the board
+        // offered nowhere legal at any distance. Displacement fails, the body
+        // stays exactly where it is — the pre-slice status quo, not a new rule
+        // — and it keeps holding its ground so nobody else is handed it. See
+        // [ChasmEvacuation.stranded] for why this is the only choice here that
+        // invents nothing.
+        stranded.add(a.playerId);
+        reserved.add(a.position);
+        continue;
+      }
+      avatarDestinations[a.playerId] = dest;
+      reserved.add(dest);
+    }
+
+    for (final m in minions) {
+      List<HexCoord> shape(HexCoord c) =>
+          footprintFor(c, m.abilities, m.sizeBonus);
+      final dest = nearest(m.position, shape);
+      if (dest == null) {
+        stranded.add(m.id);
+        reserved.addAll(m.occupiedTiles);
+        continue;
+      }
+      minionDestinations[m.id] = dest;
+      reserved.addAll(shape(dest));
+    }
+
+    return ChasmEvacuation(
+      avatarDestinations: avatarDestinations,
+      minionDestinations: minionDestinations,
+      stranded: stranded,
+    );
+  }
+
+  /// Moves the bodies [planChasmEvacuation] assigned destinations to.
+  ///
+  /// INVOLUNTARY by construction: it writes position and occupancy and does
+  /// nothing else. It does not break Statuesque (`statuesque_break.dart`'s
+  /// inventory lists the five voluntary channels; terrain is not one of them),
+  /// does not spend a Scattered Gust (spent only by a chosen cast), does not
+  /// touch movement budget, and does not run `resolveTileEntry` — following
+  /// Zephyr, whose comment explains why a mass relocation must not cascade
+  /// conveyor pushes in entity order. Ice, lava and conveyors under an
+  /// evacuee are collected by the end-of-turn sweep like anyone else's.
+  @visibleForTesting
+  static void applyChasmEvacuation(
+    WildMagicApplyContext ctx,
+    ChasmEvacuation evacuation,
+  ) {
+    for (final av in ctx.livingAvatars) {
+      final dest = evacuation.avatarDestinations[av.playerId];
+      if (dest == null) continue;
+      // position and occupancy are two mirrors of the same fact — update them
+      // together or they drift apart into a long-lived desync.
+      av.position = dest;
+      ctx.state.battlefield.occupancy[av.playerId] = dest;
+    }
+    for (final m in ctx.livingMinions) {
+      final dest = evacuation.minionDestinations[m.id];
+      if (dest == null) continue;
+      m.position = dest;
+    }
   }
 
   // ── Row 2, Water — Glacier ────────────────────────────────────────────────

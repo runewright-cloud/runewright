@@ -330,13 +330,29 @@
 // `MatchConfig.fromJson`). A peer that declares 0 is refused for the honest
 // reason: it cannot tell us what rules it runs.
 
+// v11 (2026-09-03, Wild Magic vNext slice 6) — Chasm now has occupied-tile
+// behaviour. The chasm opens regardless of who is standing on it (unchanged),
+// but every living body the new cells invalidate is now involuntarily
+// displaced to the nearest legal solid position, ties broken from the
+// trigger's own RNG stream. Before v11 the ground simply vanished and left
+// people standing in it.
+//
+// This is a pure resolution-semantics change: a v10 device leaves a wizard in
+// the hole while a v11 device moves them, so the two boards — and therefore
+// the per-turn canonical state hash — diverge the first time any chasm opens
+// under a body. It also consumes additional draws from the trigger's RNG
+// stream, so a *later* effect in the same firing would draw differently even
+// where the displacement itself is invisible. Nothing crosses the wire that
+// did not before and the circuit is untouched, so `kBattleProtocolVersion`
+// stays 7 and `kRulesetVersion` stays 3.
+//
 /// The deterministic battle-engine consensus epoch this build implements.
 ///
 /// The single canonical definition — [MatchConfig.battleEngineVersion] and
 /// [DeviceCapabilities.battleEngineVersion] both default to it rather than
 /// restating a literal, exactly as `MatchConfig.rulesetVersion` derives from
 /// `kRulesetVersion`. See this file's header for what forces a bump.
-const int kBattleEngineVersion = 10;
+const int kBattleEngineVersion = 11;
 
 /// What a peer that predates the engine-version gate implicitly declares: it
 /// omits the field, and an omitted field cannot be read as agreement.

@@ -321,13 +321,12 @@ void main() {
   // opening hash and then diverge the first time any spell carries a trigger —
   // possibly several turns in, with nothing to blame it on. The refusal has to
   // happen at the handshake.
-  group('v9 <-> v10 (bounded instantaneous Wild Magic effects)', () {
-    test('this build declares engine v10', () {
-      expect(kBattleEngineVersion, 10,
-          reason: 'Mountains raises at most 3 walls per living wizard from a '
-              'common pre-placement snapshot, and Spontaneous Combustion '
-              'forces exactly one cast per living wizard regardless of '
-              'bracket — docs/WILD_MAGIC_PLAN.md, Slice 5');
+  group('v10 <-> v11 (Chasm occupied-tile displacement)', () {
+    test('this build declares engine v11', () {
+      expect(kBattleEngineVersion, 11,
+          reason: 'a Chasm opening under a living body now displaces it to the '
+              'nearest legal solid position instead of leaving it standing in '
+              'the hole — docs/WILD_MAGIC_PLAN_VNEXT.md, Slice 6');
       expect(kBattleProtocolVersion, 7,
           reason: 'no framing changed — the new state is derived on both '
               'devices from values they already exchange');
@@ -335,13 +334,14 @@ void main() {
           reason: 'no proof semantics changed — the circuit is untouched');
     });
 
-    test('a v9 peer is refused by the capabilities gate', () async {
-      // The previous epoch is now the incompatible one: a v9 build walls every
-      // eligible neighbour and forces `1 + bracketSteps` casts, so it would
-      // diverge on the first Mountains or Spontaneous Combustion firing.
+    test('a v10 peer is refused by the capabilities gate', () async {
+      // The previous epoch is now the incompatible one: a v10 build leaves a
+      // wizard standing in the chasm that just opened under them, and draws
+      // nothing from the trigger stream to place them, so it would diverge on
+      // the first Chasm that opens under a body.
       final localIdentity = await Identity.ephemeral();
       final chapter = await makeChapter(
-        idSuffix: 'a9',
+        idSuffix: 'a10',
         ownerPubkeyHex: await localIdentity.ownerPubkeyHex(),
       );
 
@@ -353,7 +353,7 @@ void main() {
         localChapter: chapter,
         hostConfig: const MatchConfig(),
       );
-      final forfeitReason = fakePeer(transportPeer, engineVersion: 9);
+      final forfeitReason = fakePeer(transportPeer, engineVersion: 10);
 
       await expectLater(
         local,
@@ -362,8 +362,8 @@ void main() {
           'message',
           allOf(
             contains('battle engine version mismatch'),
-            contains('local=10'),
-            contains('peer=9'),
+            contains('local=11'),
+            contains('peer=10'),
           ),
         )),
       );
@@ -374,10 +374,10 @@ void main() {
       await transportPeer.disconnect();
     });
 
-    test('a host config pinned to v9 is refused as well', () async {
-      const v9Config = MatchConfig(battleEngineVersion: 9);
-      expect(const MatchConfig().matches(v9Config), isFalse);
-      expect(v9Config.battleEngineVersion, isNot(kBattleEngineVersion));
+    test('a host config pinned to v10 is refused as well', () async {
+      const v10Config = MatchConfig(battleEngineVersion: 10);
+      expect(const MatchConfig().matches(v10Config), isFalse);
+      expect(v10Config.battleEngineVersion, isNot(kBattleEngineVersion));
     });
   });
 

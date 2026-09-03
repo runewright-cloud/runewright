@@ -444,7 +444,27 @@ Chasm:
 - is ignored by flying;
 - is otherwise indestructible for its duration.
 
-Occupied-tile behavior must be explicitly specified before N-player release.
+**Occupied-tile behavior — ratified and implemented (Slice 6, engine v11).**
+
+The chasm is created regardless of who is standing there. Any living entity whose
+position the new chasm *invalidates* is immediately and involuntarily displaced to
+the nearest legal solid position; ties among equally-near destinations are broken
+from the trigger's own RNG. This is emergency displacement caused by terrain
+collapse, not voluntary movement: it ignores pathfinding, movement allowance, LOS
+and route connectivity, does not break Statuesque, does not consume Scattered
+Gusts, and does not spend movement.
+
+*Invalidates* is load-bearing, and it is what preserves "is ignored by flying"
+above: a chasm does not invalidate a flyer's position, so a flying wizard
+(Updraft) or a flying creature is not displaced at all. Grounded bodies only.
+
+A struck creature relocates as a **whole footprint**, never a single tile. All
+evacuations are planned from one common pre-effect snapshot, and destinations are
+reserved as they are assigned, so a later evacuee may legitimately be pushed to a
+farther distance tier. Canonical processing order is avatars by `playerId`, then
+creatures by id.
+
+See `WildMagicApplicator.planChasmEvacuation`.
 
 #### Water — Glacier
 
@@ -585,6 +605,40 @@ Any change to:
 requires a Wild Magic version change and, where appropriate, an engine/protocol compatibility change.
 
 Player-discovered Wild Magic combinations may become culturally significant. Accidental rerolling through serialization drift is unacceptable.
+
+---
+
+## 16b. Follow-up debt — generalized forced relocation / position validity
+
+Two related gaps were surfaced by Slice 6 and deliberately **not** fixed there.
+Both belong to one future pass — a general "is this body's position still legal,
+and what do we do when it isn't" mechanism — rather than to any single effect.
+
+**(a) Flying expiry can leave a body on terrain it may not stand on.**
+Flying (Updraft, and `SummonAbility.flying`) lets a body come to rest on an
+`ImpassableTile` or a `ChasmTile`. When the status later expires, nothing
+re-examines the position: the body is simply standing somewhere a grounded body
+could never have reached. This **predates Slice 6** — it is reachable today via
+ordinary Updraft movement onto a wall — and Slice 6 neither introduces nor widens
+it, since a flyer over a chasm was already legal and stays put by design.
+
+The shape of the fix is not "special-case Updraft expiry". It is a position-validity
+check that runs whenever the *reason* a position was legal goes away, with one
+shared forced-relocation primitive behind it. Chasm evacuation is the first real
+instance of that primitive; a second instance is what would justify extracting it.
+
+**(b) Chasm evacuation with no legal destination.**
+`ChasmEvacuation.stranded` records bodies for which the board offered nowhere legal
+at any distance. The current fallback is deliberately the pre-slice status quo —
+displacement fails, the body stays where it is, the id is recorded — because every
+alternative (killing it, deleting the chasm, an off-board or illegal destination)
+would be inventing a rule. It is constructible but not reachable in ordinary play:
+every one of the 3r(r+1)+1-(2r+1) tiles left standing would have to be a wall, a
+pre-existing chasm, or a body that is not itself leaving.
+
+This is an **exceptional fallback, not intended Chasm behavior**, and choosing real
+semantics for it is part of the same generalized pass — the answer should be the
+same one (a) gets, not a Chasm-specific rule.
 
 ---
 

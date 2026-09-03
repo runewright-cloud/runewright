@@ -72,7 +72,14 @@ BattleState _state({
   );
 }
 
-Minion _minionAt(String id, HexCoord pos, {String teamId = 'b'}) => Minion(
+Minion _minionAt(
+  String id,
+  HexCoord pos, {
+  String teamId = 'b',
+  Set<SummonAbility> abilities = const {},
+  int hp = 3,
+}) =>
+    Minion(
       id: id,
       ownerId: teamId,
       teamId: teamId,
@@ -80,11 +87,56 @@ Minion _minionAt(String id, HexCoord pos, {String teamId = 'b'}) => Minion(
       affinity: SpellAffinity.fire,
       stats: const MinionStats(maxHp: 3, damage: 1, moveSpeed: 1, attackRange: 1),
       elementSequence: const [],
-      abilities: const {},
+      abilities: abilities,
+      hp: hp,
     );
 
 HashRng _rng([int salt = 0]) =>
     HashRng(Uint8List.fromList(List.generate(32, (i) => (i + salt) & 0xFF)));
+
+/// The origin's six neighbours, in canonical (q, r) order.
+const _ring1 = <HexCoord>[
+  HexCoord(-1, 0), HexCoord(-1, 1), HexCoord(0, -1),
+  HexCoord(0, 1), HexCoord(1, -1), HexCoord(1, 0),
+];
+
+/// A context for calling an applicator helper (e.g. `planChasmEvacuation`)
+/// directly, without going through a whole firing.
+WildMagicApplyContext _ctx(
+  BattleState state,
+  WizardAvatar caster, {
+  HashRng? rng,
+  int bracketSteps = 0,
+}) =>
+    WildMagicApplyContext(
+      state: state,
+      caster: caster,
+      rng: rng ?? _rng(),
+      trigger: WildMagicTrigger(
+        row: WildMagicRow.repeatOne,
+        element: SpellAffinity.earth,
+        bracketSteps: bracketSteps,
+      ),
+      events: <WildMagicEvent>[],
+    );
+
+/// The cells a Chasm firing opened, recovered from the axis note the event
+/// carries — so a test can assert against the real axis rather than guess
+/// which one the RNG drew.
+Set<HexCoord> _axisCells(String note, int radius) {
+  bool onAxis(HexCoord h) => switch (note) {
+        'q = 0' => h.q == 0,
+        'r = 0' => h.r == 0,
+        _ => h.q + h.r == 0,
+      };
+  return {
+    for (var q = -radius; q <= radius; q++)
+      for (var r = -radius; r <= radius; r++)
+        if (hexDistance(const HexCoord(0, 0), HexCoord(q, r)) <= radius &&
+            onAxis(HexCoord(q, r)))
+          HexCoord(q, r),
+  };
+}
 
 /// Fires one wild-magic effect and returns the events it emitted.
 List<WildMagicEvent> _fire(
@@ -738,6 +790,670 @@ void main() {
         ),
       );
       expect(state.tileEffects[target], isA<ChasmTile>());
+    });
+
+    // ── Occupied-tile behaviour (Slice 6) ─────────────────────────────────
+    //
+    // Ratified: the chasm opens anyway, and every living body it invalidates
+    // is involuntarily displaced to the nearest legal solid position, ties
+    // broken from this trigger's own RNG.
+    //
+    // Most of these drive `planChasmEvacuation` directly with an explicit
+    // `opening` set. That is not a shortcut around the real effect — it is
+    // how the fixtures get pinned exactly: the axis is the FIRST draw of the
+    // trigger's stream, so choosing a board by choosing a salt would make
+    // every assertion below a comment about SHA-256. The end-to-end tests
+    // that do go through `_fire` put the wizard on the origin, which is on
+    // all three axes and so is swallowed whichever one is drawn.
+
+    group('occupied tiles', () {
+      // (1) The headline rule.
+      test('a chasm under a wizard is still created, and evacuates them', () {
+        final me = _avatar('a', const HexCoord(0, 0));
+        final state = _state(avatars: [me], turnNumber: 2);
+
+        final events = _fire(state, me, WildMagicRow.repeatOne, SpellAffinity.earth);
+        final opened = _axisCells(events.single.note!, 4);
+
+        expect(state.tileEffects[const HexCoord(0, 0)], isA<ChasmTile>(),
+            reason: 'the hole opens regardless of who was standing in it');
+        expect(opened.contains(me.position), isFalse,
+            reason: 'and the wizard is not left standing in it');
+        expect(me.position, isNot(const HexCoord(0, 0)));
+        expect(hexDistance(const HexCoord(0, 0), me.position), 1,
+            reason: 'nearest legal position — the neighbours are all free');
+        expect(state.battlefield.occupancy['a'], me.position,
+            reason: 'position and occupancy are two mirrors of one fact');
+        expect(events.single.affectedPlayerIds, ['a']);
+      });
+
+      // (2) One destination, no ambiguity.
+      test('a single nearest legal destination is taken without ambiguity', () {
+        // Origin's six neighbours: two of them will be chasm (whichever axis),
+        // and we wall three of the remaining four by hand. Whatever the axis,
+        // (1, 0) / (-1, 0) / (0, 1) / (0, -1) / (1, -1) / (-1, 1) minus the
+        // axis pair minus the walls leaves exactly one — so we wall every
+        // neighbour except one and let the chasm take care of the rest.
+        for (final axis in ['q = 0', 'r = 0', 'q + r = 0']) {
+          final opening = _axisCells(axis, 4);
+          final me = _avatar('a', const HexCoord(0, 0));
+          // The one survivor: a neighbour that is on no axis at all does not
+          // exist (every neighbour of the origin is on exactly one axis), so
+          // pick per-axis the neighbour we leave standing.
+          final survivor = switch (axis) {
+            'q = 0' => const HexCoord(1, 0),
+            'r = 0' => const HexCoord(0, 1),
+            _ => const HexCoord(1, 0),
+          };
+          final walls = <HexCoord, TileEffect>{
+            for (final n in _ring1)
+              if (n != survivor && !opening.contains(n)) n: const ImpassableTile(),
+          };
+          final state = _state(avatars: [me], tileEffects: walls);
+
+          final plan = WildMagicApplicator.planChasmEvacuation(
+              _ctx(state, me), opening);
+
+          expect(plan.avatarDestinations, {'a': survivor},
+              reason: 'axis $axis: exactly one legal neighbour is left');
+          expect(plan.stranded, isEmpty);
+        }
+      });
+
+      // (3) Ties are broken by the Wild Magic RNG, with exact fixtures.
+      test('equally-near destinations are picked by the trigger RNG', () {
+        // Origin, axis q = 0. Free neighbours: (1,0) (1,-1) (-1,0) (-1,1) —
+        // four candidates at distance 1, canonically ordered
+        //   (-1, 0), (-1, 1), (1, -1), (1, 0)
+        // and one draw of nextInt(4) picks the index.
+        final opening = {
+          const HexCoord(0, -4), HexCoord(0, -3), HexCoord(0, -2), HexCoord(0, -1),
+          HexCoord(0, 0),
+          HexCoord(0, 1), HexCoord(0, 2), HexCoord(0, 3), HexCoord(0, 4),
+        };
+        HexCoord landing(int salt) {
+          final me = _avatar('a', const HexCoord(0, 0));
+          final state = _state(avatars: [me]);
+          return WildMagicApplicator.planChasmEvacuation(
+            _ctx(state, me, rng: _rng(salt)),
+            opening,
+          ).avatarDestinations['a']!;
+        }
+
+        // Exact fixtures, not "one of these four": each salt names an index
+        // into that canonical list, and all four indices are reachable.
+        expect(landing(3), const HexCoord(-1, 0)); // draw 0
+        expect(landing(0), const HexCoord(-1, 1)); // draw 1
+        expect(landing(8), const HexCoord(1, -1)); // draw 2
+        expect(landing(6), const HexCoord(1, 0)); // draw 3
+
+        // Repeatable: the same seed lands in the same place every time.
+        expect(landing(0), const HexCoord(-1, 1));
+      });
+
+      // (4) Candidate collection order cannot reach the result.
+      test('the result does not depend on how the board was built', () {
+        final opening = {
+          const HexCoord(0, -4), HexCoord(0, -3), HexCoord(0, -2), HexCoord(0, -1),
+          HexCoord(0, 0),
+          HexCoord(0, 1), HexCoord(0, 2), HexCoord(0, 3), HexCoord(0, 4),
+        };
+        // Same board, three different insertion orders for terrain, avatars
+        // and minions. A candidate list built from a Map or Set iteration
+        // would answer differently for at least one of them.
+        final orders = <List<HexCoord>>[
+          [const HexCoord(2, 0), const HexCoord(-2, 1), const HexCoord(3, -1)],
+          [const HexCoord(3, -1), const HexCoord(2, 0), const HexCoord(-2, 1)],
+          [const HexCoord(-2, 1), const HexCoord(3, -1), const HexCoord(2, 0)],
+        ];
+        final landings = <HexCoord>{};
+        for (final order in orders) {
+          final me = _avatar('a', const HexCoord(0, 0));
+          final state = _state(
+            avatars: [me],
+            tileEffects: {for (final t in order) t: const ImpassableTile()},
+          );
+          landings.add(WildMagicApplicator.planChasmEvacuation(
+            _ctx(state, me, rng: _rng(3)),
+            opening,
+          ).avatarDestinations['a']!);
+        }
+        expect(landings, hasLength(1),
+            reason: 'insertion order is not an input to the decision');
+      });
+
+      // (5) Pre-existing chasms are not destinations.
+      test('an existing chasm cell is not a destination', () {
+        // Everything at distance 1 is either the new chasm or an old one, so
+        // the wizard has to go to distance 2.
+        final opening = {const HexCoord(0, -1), const HexCoord(0, 0), const HexCoord(0, 1)};
+        final me = _avatar('a', const HexCoord(0, 0));
+        final state = _state(avatars: [me], tileEffects: {
+          for (final n in _ring1)
+            if (!opening.contains(n)) n: const ChasmTile(),
+        });
+
+        final plan = WildMagicApplicator.planChasmEvacuation(
+            _ctx(state, me), opening);
+        expect(hexDistance(const HexCoord(0, 0), plan.avatarDestinations['a']!), 2);
+      });
+
+      // (6) The cells this very firing is about to open are not destinations.
+      test('a cell this firing will open is not a destination', () {
+        // The whole distance-1 ring is part of the opening, so distance 1 is
+        // unusable even though none of it is chasm YET when the plan is made.
+        final opening = {const HexCoord(0, 0), ..._ring1};
+        final me = _avatar('a', const HexCoord(0, 0));
+        final state = _state(avatars: [me]);
+
+        final plan = WildMagicApplicator.planChasmEvacuation(
+            _ctx(state, me), opening);
+        final dest = plan.avatarDestinations['a']!;
+        expect(opening.contains(dest), isFalse);
+        expect(hexDistance(const HexCoord(0, 0), dest), 2);
+      });
+
+      // (7) Off-board is excluded.
+      test('off-board positions are excluded', () {
+        // Radius 2, wizard on the rim. Half of its "neighbours" are off the
+        // board and must never be considered.
+        const origin = HexCoord(2, 0);
+        final opening = {const HexCoord(2, -2), const HexCoord(2, -1), origin};
+        final me = _avatar('a', origin);
+        final state = _state(avatars: [me], radius: 2);
+
+        final plan = WildMagicApplicator.planChasmEvacuation(
+            _ctx(state, me), opening);
+        final dest = plan.avatarDestinations['a']!;
+        expect(state.battlefield.isInBounds(dest), isTrue);
+        expect(hexDistance(origin, dest), 1);
+      });
+
+      // (8) A living bystander holds their ground.
+      test('an unaffected living wizard blocks a destination', () {
+        final opening = {const HexCoord(0, -1), const HexCoord(0, 0), const HexCoord(0, 1)};
+        // Wall three of the four free neighbours; a living foe stands on the
+        // fourth. Nothing is left at distance 1.
+        final me = _avatar('a', const HexCoord(0, 0));
+        final foe = _avatar('b', const HexCoord(1, 0), teamId: 'b');
+        final state = _state(avatars: [me, foe], tileEffects: {
+          const HexCoord(1, -1): const ImpassableTile(),
+          const HexCoord(-1, 0): const ImpassableTile(),
+          const HexCoord(-1, 1): const ImpassableTile(),
+        });
+
+        final plan = WildMagicApplicator.planChasmEvacuation(
+            _ctx(state, me), opening);
+        expect(plan.avatarDestinations['b'], isNull,
+            reason: 'the bystander is not on the opening, so it does not move');
+        expect(plan.avatarDestinations['a'], isNot(const HexCoord(1, 0)));
+        expect(hexDistance(const HexCoord(0, 0), plan.avatarDestinations['a']!), 2);
+      });
+
+      // (9) A living creature's whole footprint blocks.
+      test('a living minion footprint blocks destinations', () {
+        final opening = {const HexCoord(0, -1), const HexCoord(0, 0), const HexCoord(0, 1)};
+        // A Big creature anchored at (2, -1) occupies (2,-1), (3,-1), (3,-2) —
+        // none of them adjacent to the origin — so instead anchor it so its
+        // footprint covers the free neighbours: at (1, 0) a Big creature holds
+        // (1,0), (2,0), (2,-1). Wall the other two free neighbours.
+        final me = _avatar('a', const HexCoord(0, 0));
+        final beast = _minionAt('m1', const HexCoord(1, 0),
+            abilities: const {SummonAbility.big});
+        final state = _state(
+          avatars: [me],
+          minions: [beast],
+          tileEffects: {
+            const HexCoord(-1, 0): const ImpassableTile(),
+            const HexCoord(-1, 1): const ImpassableTile(),
+          },
+        );
+        expect(beast.occupiedTiles, contains(const HexCoord(1, 0)));
+
+        final plan = WildMagicApplicator.planChasmEvacuation(
+            _ctx(state, me), opening);
+        final dest = plan.avatarDestinations['a']!;
+        expect(beast.occupiedTiles.contains(dest), isFalse);
+        // (1, -1) is the last free neighbour and is NOT in the footprint.
+        expect(dest, const HexCoord(1, -1));
+        expect(plan.minionDestinations, isEmpty,
+            reason: 'the creature is nowhere near the opening');
+      });
+
+      // (10) + (11) A creature struck on one footprint tile moves whole.
+      test('a minion struck on one footprint tile relocates entire', () {
+        // Big creature anchored at (0, 1): footprint (0,1), (1,1), (1,0).
+        // Axis q = 0 swallows (0, 1) only.
+        final opening = {
+          const HexCoord(0, -4), HexCoord(0, -3), HexCoord(0, -2), HexCoord(0, -1),
+          HexCoord(0, 0),
+          HexCoord(0, 1), HexCoord(0, 2), HexCoord(0, 3), HexCoord(0, 4),
+        };
+        final me = _avatar('a', const HexCoord(-3, 0));
+        final beast = _minionAt('m1', const HexCoord(0, 1),
+            abilities: const {SummonAbility.big});
+        final state = _state(avatars: [me], minions: [beast]);
+        expect(beast.occupiedTiles,
+            [const HexCoord(0, 1), const HexCoord(1, 1), const HexCoord(1, 0)]);
+
+        final ctx = _ctx(state, me);
+        final plan = WildMagicApplicator.planChasmEvacuation(ctx, opening);
+        for (final t in opening) {
+          state.placeTerrain(t, const ChasmTile());
+        }
+        WildMagicApplicator.applyChasmEvacuation(ctx, plan);
+
+        final anchor = plan.minionDestinations['m1']!;
+        expect(beast.position, anchor);
+        expect(hexDistance(const HexCoord(0, 1), anchor), 1,
+            reason: 'nearest legal anchor, not "shuffle the struck tile"');
+        // (11) The WHOLE relocated footprint is legal and non-chasm.
+        expect(beast.occupiedTiles, hasLength(3));
+        for (final t in beast.occupiedTiles) {
+          expect(state.battlefield.isInBounds(t), isTrue);
+          expect(state.tileEffects[t], isNot(isA<ChasmTile>()));
+          expect(opening.contains(t), isFalse);
+        }
+      });
+
+      // (12) + (13) Reservation: no overlap, and it can push someone farther.
+      test('two evacuees cannot overlap, and reservation costs the later one',
+          () {
+        // Radius 2, axis q = 0 → opening is (0,-2)..(0,2). Two wizards on it,
+        // at (0, -1) and (0, 0). Everything off-axis is free.
+        final opening = {
+          const HexCoord(0, -2), const HexCoord(0, -1), const HexCoord(0, 0),
+          const HexCoord(0, 1), const HexCoord(0, 2),
+        };
+        // Squeeze the board so the two contend: wall every free tile except
+        // (1, -1) and (2, -2). (1, -1) is at distance 1 from BOTH wizards;
+        // (2, -2) is at distance 2 from 'a' at (0, 0) — so whoever loses the
+        // near tile is pushed a tier out.
+        final keep = {const HexCoord(1, -1), const HexCoord(2, -2)};
+        final me = _avatar('a', const HexCoord(0, 0));
+        final foe = _avatar('b', const HexCoord(0, -1), teamId: 'b');
+        final state = _state(avatars: [me, foe], radius: 2, tileEffects: {
+          for (var q = -2; q <= 2; q++)
+            for (var r = -2; r <= 2; r++)
+              if (hexDistance(const HexCoord(0, 0), HexCoord(q, r)) <= 2 &&
+                  !opening.contains(HexCoord(q, r)) &&
+                  !keep.contains(HexCoord(q, r)))
+                HexCoord(q, r): const ImpassableTile(),
+        });
+
+        final plan = WildMagicApplicator.planChasmEvacuation(
+            _ctx(state, me), opening);
+
+        // Canonical order is avatars by playerId: 'a' goes first and takes
+        // the near tile; 'b' is pushed to the farther one.
+        expect(plan.avatarDestinations['a'], const HexCoord(1, -1));
+        expect(plan.avatarDestinations['b'], const HexCoord(2, -2));
+        expect(plan.avatarDestinations['a'],
+            isNot(plan.avatarDestinations['b']));
+        expect(hexDistance(const HexCoord(0, -1), plan.avatarDestinations['b']!),
+            greaterThan(1),
+            reason: 'b had a distance-1 legal tile, but a had reserved it');
+        expect(plan.stranded, isEmpty);
+      });
+
+      // (21) Avatars and minions together pin one total processing order.
+      test('avatars are processed before minions, each in id order', () {
+        // Radius 2, axis q = 0. Free ground is reduced to a single distance-1
+        // tile that the wizard and the creature both want; the wizard is
+        // canonically first, so the creature is pushed out.
+        final opening = {
+          const HexCoord(0, -2), const HexCoord(0, -1), const HexCoord(0, 0),
+          const HexCoord(0, 1), const HexCoord(0, 2),
+        };
+        final keep = {const HexCoord(1, -1), const HexCoord(1, 1)};
+        final me = _avatar('a', const HexCoord(0, 0));
+        final beast = _minionAt('m1', const HexCoord(0, -1));
+        final state = _state(avatars: [me], minions: [beast], radius: 2,
+            tileEffects: {
+              for (var q = -2; q <= 2; q++)
+                for (var r = -2; r <= 2; r++)
+                  if (hexDistance(const HexCoord(0, 0), HexCoord(q, r)) <= 2 &&
+                      !opening.contains(HexCoord(q, r)) &&
+                      !keep.contains(HexCoord(q, r)))
+                    HexCoord(q, r): const ImpassableTile(),
+            });
+
+        final plan = WildMagicApplicator.planChasmEvacuation(
+            _ctx(state, me), opening);
+
+        // (1, -1) is the ONLY free tile adjacent to either body, and both of
+        // them want it: it is distance 1 from the wizard at (0, 0) and
+        // distance 1 from the creature at (0, -1). The avatar is canonically
+        // first, so it takes it; the creature, finding its whole distance-1
+        // and distance-2 rings taken or walled, is pushed out to the only
+        // other standing tile on the board.
+        final wiz = plan.avatarDestinations['a']!;
+        final crt = plan.minionDestinations['m1']!;
+        expect(wiz, const HexCoord(1, -1),
+            reason: 'avatars are processed before minions');
+        expect(crt, const HexCoord(1, 1));
+        expect(hexDistance(const HexCoord(0, -1), crt), 3,
+            reason: 'the creature paid three tiers for going second');
+        expect(wiz, isNot(crt),
+            reason: 'the wizard reserved its tile before the creature looked');
+        expect(plan.stranded, isEmpty);
+      });
+
+      // (18) Dead bodies: unchanged semantics.
+      test('a dead wizard is neither evacuated nor an obstacle', () {
+        final opening = {const HexCoord(0, -1), const HexCoord(0, 0), const HexCoord(0, 1)};
+        // A corpse lies on (1, 0); three other free neighbours are walled.
+        // If corpses blocked, the survivor would be pushed to distance 2.
+        final me = _avatar('a', const HexCoord(0, 0));
+        final corpse = _avatar('b', const HexCoord(1, 0), teamId: 'b', hp: 0);
+        final state = _state(avatars: [me, corpse], tileEffects: {
+          const HexCoord(1, -1): const ImpassableTile(),
+          const HexCoord(-1, 0): const ImpassableTile(),
+          const HexCoord(-1, 1): const ImpassableTile(),
+        });
+
+        final plan = WildMagicApplicator.planChasmEvacuation(
+            _ctx(state, me), opening);
+        expect(plan.avatarDestinations, {'a': const HexCoord(1, 0)},
+            reason: 'existing occupancy semantics: only the LIVING occupy '
+                'ground (`_occupiedTiles` / `tileOccupied`)');
+        expect(plan.avatarDestinations.containsKey('b'), isFalse);
+      });
+
+      test('a dead minion on the opening is not evacuated', () {
+        final opening = {const HexCoord(0, -1), const HexCoord(0, 0), const HexCoord(0, 1)};
+        final me = _avatar('a', const HexCoord(-3, 0));
+        final carcass = _minionAt('m1', const HexCoord(0, 1), hp: 0);
+        final state = _state(avatars: [me], minions: [carcass]);
+
+        final plan = WildMagicApplicator.planChasmEvacuation(
+            _ctx(state, me), opening);
+        expect(plan.minionDestinations, isEmpty);
+        expect(carcass.position, const HexCoord(0, 1));
+      });
+
+      // (7 cont.) A half-swallowed creature's surviving footprint is not a
+      // permanent blocker — it is ground the creature is about to give up.
+      test("an evacuee's own vacated tiles do not block another evacuee", () {
+        // Axis q = 0. The wizard sits at (0, 0); a Big creature anchored at
+        // (0, 1) holds (0,1) [swallowed], (1,1) and (1,0). BOTH evacuate.
+        //
+        // Every neighbour of the origin is walled except (1, 0) — a tile the
+        // creature is standing on right now and is about to give up. If a
+        // leaving body's ground counted as occupied, the wizard would be
+        // pushed out to distance 2; it must not be.
+        final opening = {
+          const HexCoord(0, -4), const HexCoord(0, -3), const HexCoord(0, -2),
+          const HexCoord(0, -1), const HexCoord(0, 0),
+          const HexCoord(0, 1), const HexCoord(0, 2), const HexCoord(0, 3),
+          const HexCoord(0, 4),
+        };
+        final me = _avatar('a', const HexCoord(0, 0));
+        final beast = _minionAt('m1', const HexCoord(0, 1),
+            abilities: const {SummonAbility.big});
+        final state = _state(avatars: [me], minions: [beast], tileEffects: {
+          const HexCoord(1, -1): const ImpassableTile(),
+          const HexCoord(-1, 0): const ImpassableTile(),
+          const HexCoord(-1, 1): const ImpassableTile(),
+        });
+        expect(beast.occupiedTiles, contains(const HexCoord(1, 0)));
+
+        final plan = WildMagicApplicator.planChasmEvacuation(
+            _ctx(state, me), opening);
+
+        expect(plan.stranded, isEmpty);
+        expect(plan.avatarDestinations['a'], const HexCoord(1, 0),
+            reason: "the creature's own tile is ground it is vacating, not an "
+                'obstacle — the wizard stays at distance 1');
+        // And the creature, canonically second, is then kept off it: (1, 1) is
+        // the only anchor left whose whole footprint is legal and unreserved.
+        expect(plan.minionDestinations['m1'], const HexCoord(1, 1));
+        final footprint =
+            footprintFor(plan.minionDestinations['m1']!, beast.abilities);
+        expect(footprint.contains(plan.avatarDestinations['a']), isFalse);
+      });
+
+      // ── Flying (A11) ─────────────────────────────────────────────────
+      // A chasm is ignored by flying, so it does not INVALIDATE a flyer's
+      // position and there is nothing to evacuate. The pairs below differ in
+      // exactly one thing — whether the body flies — so the assertions pin
+      // the exemption itself rather than some accident of the board.
+
+      test('a flying wizard is not displaced by a chasm beneath it', () {
+        final flyer = _avatar('a', const HexCoord(0, 0));
+        StatusEffect.applyTo(
+            flyer.activeStatusEffects, StatusEffectId.flying, const {}, 2);
+        expect(flyer.isFlying, isTrue);
+        final state = _state(avatars: [flyer], turnNumber: 2);
+
+        final events =
+            _fire(state, flyer, WildMagicRow.repeatOne, SpellAffinity.earth);
+        final opened = _axisCells(events.single.note!, 4);
+
+        expect(opened.contains(const HexCoord(0, 0)), isTrue,
+            reason: 'the origin is on every axis, so the hole really did open '
+                'underneath the flyer');
+        expect(state.tileEffects[const HexCoord(0, 0)], isA<ChasmTile>());
+        expect(flyer.position, const HexCoord(0, 0),
+            reason: 'A11: a chasm is ignored by flying, so it invalidates '
+                'nothing and there is nothing to evacuate');
+        expect(state.battlefield.occupancy['a'], const HexCoord(0, 0));
+        expect(events.single.affectedPlayerIds, isEmpty);
+      });
+
+      test('the same wizard, not flying, IS displaced', () {
+        // Byte-for-byte the previous test minus the Updraft status.
+        final walker = _avatar('a', const HexCoord(0, 0));
+        expect(walker.isFlying, isFalse);
+        final state = _state(avatars: [walker], turnNumber: 2);
+
+        final events =
+            _fire(state, walker, WildMagicRow.repeatOne, SpellAffinity.earth);
+
+        expect(state.tileEffects[const HexCoord(0, 0)], isA<ChasmTile>());
+        expect(walker.position, isNot(const HexCoord(0, 0)));
+        expect(events.single.affectedPlayerIds, ['a']);
+      });
+
+      test('a flying minion is not displaced when a chasm takes its footprint',
+          () {
+        final opening = {
+          const HexCoord(0, -4), const HexCoord(0, -3), const HexCoord(0, -2),
+          const HexCoord(0, -1), const HexCoord(0, 0),
+          const HexCoord(0, 1), const HexCoord(0, 2), const HexCoord(0, 3),
+          const HexCoord(0, 4),
+        };
+        final me = _avatar('a', const HexCoord(1, 1));
+        // Big AND flying: footprint (0,1), (1,1)... — (0,1) is swallowed.
+        final flyer = _minionAt('m1', const HexCoord(0, 1), abilities: const {
+          SummonAbility.big,
+          SummonAbility.flying,
+        });
+        final state = _state(avatars: [me], minions: [flyer]);
+        expect(flyer.occupiedTiles.any(opening.contains), isTrue);
+
+        final ctx = _ctx(state, me);
+        final plan = WildMagicApplicator.planChasmEvacuation(ctx, opening);
+        WildMagicApplicator.applyChasmEvacuation(ctx, plan);
+
+        expect(plan.minionDestinations, isEmpty);
+        expect(plan.stranded, isEmpty,
+            reason: 'not stranded — never an evacuee in the first place');
+        expect(flyer.position, const HexCoord(0, 1));
+      });
+
+      test('the same minion, not flying, IS relocated whole', () {
+        // The previous test minus SummonAbility.flying.
+        final opening = {
+          const HexCoord(0, -4), const HexCoord(0, -3), const HexCoord(0, -2),
+          const HexCoord(0, -1), const HexCoord(0, 0),
+          const HexCoord(0, 1), const HexCoord(0, 2), const HexCoord(0, 3),
+          const HexCoord(0, 4),
+        };
+        final me = _avatar('a', const HexCoord(1, 1));
+        final walker = _minionAt('m1', const HexCoord(0, 1),
+            abilities: const {SummonAbility.big});
+        final state = _state(avatars: [me], minions: [walker]);
+
+        final ctx = _ctx(state, me);
+        final plan = WildMagicApplicator.planChasmEvacuation(ctx, opening);
+        WildMagicApplicator.applyChasmEvacuation(ctx, plan);
+
+        expect(plan.minionDestinations['m1'], isNotNull);
+        expect(walker.position, isNot(const HexCoord(0, 1)));
+        for (final t in walker.occupiedTiles) {
+          expect(opening.contains(t), isFalse);
+        }
+      });
+
+      test('a flying body still blocks a grounded evacuee\'s destination', () {
+        // The flyer is not an evacuee, so it stays — and a body that stays is
+        // a body: it holds its ground against everyone else's escape.
+        final opening = {
+          const HexCoord(0, -1), const HexCoord(0, 0), const HexCoord(0, 1),
+        };
+        final walker = _avatar('a', const HexCoord(0, 0));
+        final flyer = _avatar('b', const HexCoord(1, 0), teamId: 'b');
+        StatusEffect.applyTo(
+            flyer.activeStatusEffects, StatusEffectId.flying, const {}, 2);
+        final state = _state(avatars: [walker, flyer], tileEffects: {
+          const HexCoord(1, -1): const ImpassableTile(),
+          const HexCoord(-1, 0): const ImpassableTile(),
+          const HexCoord(-1, 1): const ImpassableTile(),
+        });
+
+        final plan = WildMagicApplicator.planChasmEvacuation(
+            _ctx(state, walker), opening);
+
+        expect(plan.avatarDestinations.containsKey('b'), isFalse,
+            reason: 'the flyer is not an evacuee');
+        expect(plan.avatarDestinations['a'], isNot(const HexCoord(1, 0)));
+        expect(hexDistance(const HexCoord(0, 0), plan.avatarDestinations['a']!), 2,
+            reason: 'the flyer held the last free neighbour');
+      });
+
+      // (§8) No legal destination. Not reachable by any ordinary board — see
+      // ChasmEvacuation.stranded — but constructible, so the behaviour is
+      // pinned rather than left to chance.
+      test('a body with nowhere to go is left where it is, and reported', () {
+        // Radius 2, axis q = 0 opens (0,-2)..(0,2). Every remaining tile is a
+        // wall, so the wizard on the origin has no legal solid position at
+        // any distance.
+        final opening = {
+          const HexCoord(0, -2), const HexCoord(0, -1), const HexCoord(0, 0),
+          const HexCoord(0, 1), const HexCoord(0, 2),
+        };
+        final me = _avatar('a', const HexCoord(0, 0));
+        final state = _state(avatars: [me], radius: 2, tileEffects: {
+          for (var q = -2; q <= 2; q++)
+            for (var r = -2; r <= 2; r++)
+              if (hexDistance(const HexCoord(0, 0), HexCoord(q, r)) <= 2 &&
+                  !opening.contains(HexCoord(q, r)))
+                HexCoord(q, r): const ImpassableTile(),
+        });
+
+        final ctx = _ctx(state, me);
+        final plan = WildMagicApplicator.planChasmEvacuation(ctx, opening);
+        WildMagicApplicator.applyChasmEvacuation(ctx, plan);
+
+        expect(plan.avatarDestinations, isEmpty);
+        expect(plan.stranded, ['a']);
+        expect(me.position, const HexCoord(0, 0),
+            reason: 'nothing invented: the body stays exactly where it was, '
+                'which is what happened before this slice. What SHOULD happen '
+                'here is an open ruling, not a rule this slice picked.');
+        expect(state.battlefield.occupancy['a'], const HexCoord(0, 0));
+      });
+
+      // (15) Statuesque survives.
+      test('Chasm displacement does not break Statuesque', () {
+        final me = _avatar('a', const HexCoord(0, 0));
+        final state = _state(avatars: [me], turnNumber: 5);
+        state.wildMagic.armStatuesque('a', triggerTurn: 3);
+        expect(state.wildMagic.statuesqueWindows.containsKey('a'), isTrue);
+
+        _fire(state, me, WildMagicRow.repeatOne, SpellAffinity.earth);
+
+        expect(me.position, isNot(const HexCoord(0, 0)),
+            reason: 'the wizard really was displaced');
+        expect(state.wildMagic.statuesqueWindows.containsKey('a'), isTrue,
+            reason: 'nothing the engine does TO a wizard breaks Statuesque — '
+                'statuesque_break.dart lists the five voluntary channels and '
+                'terrain collapse is not one of them');
+      });
+
+      // (16) Scattered Gusts survives.
+      test('Chasm displacement does not consume Scattered Gusts', () {
+        final me = _avatar('a', const HexCoord(0, 0));
+        final state = _state(avatars: [me], turnNumber: 5);
+        state.wildMagic.armScatteredGusts('a', triggerTurn: 3);
+        final before = Map.of(state.wildMagic.scatteredGustsArmedFrom);
+        expect(before, isNotEmpty);
+
+        _fire(state, me, WildMagicRow.repeatOne, SpellAffinity.earth);
+
+        expect(me.position, isNot(const HexCoord(0, 0)));
+        expect(state.wildMagic.scatteredGustsArmedFrom, before,
+            reason: 'a Gust is spent by a CHOSEN cast, and displacement is '
+                'neither chosen nor a cast');
+      });
+
+      // (17) Not a voluntary move: no budget spent, no action recorded.
+      test('Chasm displacement is not a voluntary move', () {
+        final me = _avatar('a', const HexCoord(0, 0));
+        final state = _state(avatars: [me], turnNumber: 5);
+        state.wildMagic.armStatuesque('a', triggerTurn: 3);
+        final manaBefore = me.mana;
+        final hpBefore = me.hp;
+
+        _fire(state, me, WildMagicRow.repeatOne, SpellAffinity.earth);
+
+        expect(me.position, isNot(const HexCoord(0, 0)));
+        expect(me.mana, manaBefore, reason: 'no movement was paid for');
+        expect(me.hp, hpBefore,
+            reason: 'no tile-entry effect ran — displacement is a placement, '
+                'not a walk (same call Zephyr makes)');
+        expect(state.wildMagic.statuesqueWindows.containsKey('a'), isTrue);
+      });
+
+      // (19) Unoccupied Chasm is untouched by this slice.
+      test('an unoccupied chasm behaves exactly as before', () {
+        // (1, 1) and (3, -1) are on NO axis: q != 0, r != 0, q + r != 0. So
+        // neither wizard is touched whichever of the three is drawn.
+        final me = _avatar('a', const HexCoord(1, 1));
+        final foe = _avatar('b', const HexCoord(3, -1), teamId: 'b');
+        final state = _state(avatars: [me, foe], turnNumber: 2);
+
+        final events = _fire(state, me, WildMagicRow.repeatOne, SpellAffinity.earth);
+        final opened = _axisCells(events.single.note!, 4);
+        expect(opened.contains(const HexCoord(1, 1)), isFalse);
+        expect(opened.contains(const HexCoord(3, -1)), isFalse);
+
+        expect(me.position, const HexCoord(1, 1));
+        expect(foe.position, const HexCoord(3, -1));
+        expect(events.single.affectedPlayerIds, isEmpty);
+        expect(events.single.affectedTiles.toSet(), opened);
+        for (final c in opened) {
+          expect(state.tileEffects[c], isA<ChasmTile>());
+          expect(state.expiringTiles[c], 3);
+        }
+      });
+
+      // (20) Bracket behaviour is whatever it was.
+      test('bracket still only lengthens the chasm, not its reach', () {
+        for (final steps in [0, 1, 2]) {
+          final me = _avatar('a', const HexCoord(1, 1));
+          final state = _state(avatars: [me], turnNumber: 2);
+          final events = _fire(state, me, WildMagicRow.repeatOne,
+              SpellAffinity.earth, bracketSteps: steps);
+          final opened = _axisCells(events.single.note!, 4);
+          expect(events.single.affectedTiles.toSet(), opened,
+              reason: 'bracket does not widen the opening');
+          for (final c in opened) {
+            expect(state.expiringTiles[c], 3 + steps);
+          }
+        }
+      });
     });
   });
 
