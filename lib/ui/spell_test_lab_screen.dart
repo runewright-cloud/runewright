@@ -20,6 +20,9 @@ import 'package:flutter/material.dart';
 import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
 
+import '../battle/engine/armor_certification.dart'
+    show ArmorCertificationException, certifyEquippedChapterArmor;
+import '../battle/models/certified_armor.dart' show ArmorLexicon, CertifiedArmor;
 import '../battle/models/effect_kind.dart';
 import '../battle/models/match_config.dart';
 import '../battle/models/solo_battle_setup.dart';
@@ -285,10 +288,37 @@ class _SpellTestLabScreenState extends State<SpellTestLabScreen> {
       gridRadius: _gridRadius,
       maxPlayers: 2,
     );
+    // Same certification the Solo Practice screen runs, through the same
+    // shared `certifyEquippedChapterArmor` — the lab is the other solo entry
+    // point and must not be able to seat a different wizard than practice
+    // does. Fails closed for the same reason; there is no peer to forfeit to.
+    final CertifiedArmor? armor;
+    try {
+      armor = await certifyEquippedChapterArmor(
+        chapter: chapter,
+        wearerOwnerPubkeyHex: localOwnerPubkeyHex,
+        lexicon: ArmorLexicon.of(config.leyline),
+      );
+    } on ArmorCertificationException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Armor could not be certified: ${e.reason}')),
+      );
+      return;
+    } on StateError catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Armor could not be equipped: ${e.message}')),
+      );
+      return;
+    }
+    if (!mounted) return;
+
     final setup = buildSoloBattleState(
       chapter,
       config,
       localOwnerPubkeyHex: localOwnerPubkeyHex,
+      armor: armor,
       localId: localId,
     );
     final dummyPos = setup.dummyPosition;

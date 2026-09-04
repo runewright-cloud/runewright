@@ -195,6 +195,14 @@ void main() {
         'battle/engine/armor_certification.dart',
         // Passes the agreed leyline in.
         'battle/networking/duel_setup.dart',
+        // The two SOLO setup callers, which pass the match's leyline into the
+        // same certification boundary for exactly the reason duel_setup.dart
+        // does (engine v16, docs/AETHERIAL_ARMOR.md §14). They hold a lexicon
+        // only to hand it to `certifyEquippedChapterArmor`; neither derives a
+        // keyword, and what they seat on the wizard is a CertifiedArmor that
+        // boundary already produced.
+        'ui/solo_practice_settings_screen.dart',
+        'ui/spell_test_lab_screen.dart',
         // The local read-back of a persisted armor.
         'spells/armor_summary.dart',
         // The one widget that shows keywords.

@@ -1613,3 +1613,204 @@ Open follow-ups, deliberately not acted on here:
 * Earth/Water on hardware is now partly covered (a non-zero `armorHpBonus` was
   observed at 26 = 24 + 2 in §12); a Water-extended cast range remains
   offline-only coverage.
+
+---
+
+## 14. Solo/practice armor seating (2026-09-04)
+
+*Engine epoch* **v15 → v16**. Protocol stays **7**, ruleset stays **3**,
+circuits and VKs untouched.
+
+### The bug
+
+Reported from a solo practice playtest: an Armor that should have increased
+melee damage still dealt only the base 1.
+
+`buildSoloBattleState` never received an armor. It read `chapter.artifacts` and
+stopped — `chapter.armorSpellId` was not consulted anywhere on the
+single-player path — so the local `WizardAvatar` was constructed with `armor` at
+its default null. Every armor term is written against that field, so **all four
+ladders and both live keywords were absent from practice**, not just melee:
+
+| element / keyword | site | solo before |
+|---|---|---|
+| Fire → `meleeBonus` | `DeterministicResolution.applyHaymaker` | flat 1 (the reported symptom) |
+| Earth → `armorHpBonus` | starting HP | bare `config.playerHp`; the `+` term existed only in `buildDuelBattleState` |
+| Air → `moveSpeedBonus` | `WizardAvatar.effectiveMoveSpeed` | getter correct, reading a null armor |
+| Water → `spellRangeBonus` | `WizardAvatar.effectiveSpellRange` | as above |
+| Charger / Muddy | `hasHaymakerDistanceBonus` / `hasHaymakerSlow` | ungrantable off a null armor |
+
+It was an integration gap, never arithmetic. `1 + (actor.armor?.meleeBonus ?? 0)`
+was right the whole time and is untouched, as is every ladder, threshold and
+keyword rule.
+
+**Where it came from.** §9 introduced `WizardAvatar.armor` as "an optional named
+parameter defaulting to null, so every solo/practice call site is unchanged and
+no `armor: null` arguments were added." That was a call-site-compatibility note;
+it quietly became the behaviour. Nothing in the design ever ruled that practice
+should be armourless, and §13's freeze list names the four numerical bonuses as
+playtest content — which practice is exactly where a player would exercise.
+
+**Why no test caught it.** Every armor behaviour test either constructs
+`WizardAvatar(armor: ...)` directly or drives the duel path. Nineteen test uses
+of `buildSoloBattleState` existed and not one touched armor, so nothing was
+positioned to notice.
+
+### The fix
+
+Three narrow changes, mirroring the already-correct local half of duel setup.
+
+**One binding resolver.** `duel_setup.dart`'s private `_resolveEquippedArmor`
+moved to `lib/spells/chapter_armor.dart` as `resolveEquippedArmor` — the file
+already documented as "the seam where a ChapterAsset's armor binding meets the
+SpellAsset it points at". Duel and solo now call the same seven lines, including
+the same hard error on a dangling binding. Nothing about the lookup changed.
+
+**One solo certification entry point.** `certifyEquippedChapterArmor` in
+`armor_certification.dart`, alongside `certifyOwnArmor` and `certifyPeerArmor`:
+
+```dart
+certifyOwnArmor(
+  armor: await resolveEquippedArmor(chapter),
+  wearerOwnerPubkeyHex: ...,
+  ordinaryArtifactCount: chapter.ordinaryArtifactCount,
+  lexicon: ArmorLexicon.of(config.leyline),
+)
+```
+
+Solo runs **the LOCAL row of that file's table and nothing else** — resolve,
+`ProofIntake.parseOwn`, the shared `_validateAndDerive`,
+`CertifiedArmor.fromOutputs`. No solo-only derivation, no relaxed check, and
+emphatically not `previewFromElementSequence`: authored `SpellAsset` fields stay
+untrusted (M4.22). The lexicon is required, not defaulted, for the reason
+`certifyOwnArmor` states.
+
+Duel setup deliberately does *not* call this wrapper — it needs the resolved
+`SpellAsset` itself to build the wire `ArmorEnvelope` — so it keeps the two
+steps apart while sharing the resolver and the certification.
+
+**One constructor parameter.** `buildSoloBattleState` gains
+`CertifiedArmor? armor`, seats it on the local wizard, and opens HP at
+`config.playerHp + (armor?.armorHpBonus ?? 0)` — the identical term
+`buildDuelBattleState` has had since §9. The file stays pure and synchronous:
+resolution and certification are async and live with the callers, which can show
+an error. `WizardAvatar.armor` is final, so this had to be a constructor
+argument; there is no post-hoc patch path and should not be.
+
+The practice **dummy stays unarmored** — it has no chapter to equip from.
+
+### Fail closed
+
+Both callers (`solo_practice_settings_screen.dart`,
+`spell_test_lab_screen.dart`) catch `ArmorCertificationException` and
+`StateError`, show a snackbar, and **return without constructing a
+BattleState**. No peer, so no forfeit to send. A chapter wearing nothing
+certifies to null and starts normally, which is the ordinary case.
+
+This is a real new failure mode: a chapter with a dangling or uncertifiable
+armor binding now blocks a practice session that previously started fine. That
+is the correct direction — duel setup already treats it as fatal, and a silent
+"no armor" is precisely the surprise being fixed.
+
+### The engine bump, and why
+
+Unusually for this gate, **nothing a duel computes moves**:
+`buildDuelBattleState`, the armor envelope, peer verification and the
+pubkey-ordered seating are untouched, so a v15 and a v16 build would in fact
+agree on every networked match. Multiplayer was never affected — §12's two-device
+gate logged `damage=3 base=1 armorMelee=+1` and it still does.
+
+It is still an engine bump, because this file gates the rules that turn match
+inputs into a canonical `BattleState`, not merely the ones two devices compare.
+Handed the same chapter and config, v15 and v16 compute different practice
+states — different opening HP, and armor is itself hashed per avatar (v6) — so
+they are different engines whether or not a peer is watching, and a solo replay
+golden must be able to say which one produced it.
+
+A chapter with no equipped armor is bit-identical across the bump: the seat is
+null on both sides. Every existing golden is a duel transcript and none moved.
+
+### Tests
+
+`test/battle/models/solo_armor_seating_test.dart` — 29 tests, grown out of the
+characterization file the investigation left behind, with each `TODAY:`
+assertion inverted rather than deleted:
+
+* **ladder controls** (kept unchanged) — 4 fires → +1, 3 fires → 0, the §12
+  `Charger Plate` fixture → +1, and the same +1 off a persisted asset through
+  `localCertifiedArmor`. These ruled out a threshold misunderstanding before the
+  seat was blamed, and are what make the melee regression a claim about seating;
+* **duel controls** (unchanged) — the armor lands, the punch is 2;
+* **solo regressions** — the armor reaches the wizard; the punch is 1 + 1 = 2
+  through the real `TurnLoop` with the actor stationary, so no Charger distance
+  bonus can be confused for it; HP opens at 24 + 2; Air and Water move the live
+  getters; Muddy's punch lands exactly one `speedDown` and drops the victim's
+  speed; Charger grants the distance bonus;
+* **no-armor invariance** — armourless wizard, base-1 punch, and
+  `toCanonicalBytes()` byte-identical whether `armor:` is omitted or passed null;
+* **derivation** — `certifyEquippedChapterArmor` agrees with `certifyOwnArmor`
+  over the same resolved asset and with `CertifiedArmor.fromOutputs` over the
+  same proof, while *disagreeing* with the fixture's deliberately contradictory
+  authored `supremeTags` (Earth authored, zero earths certified);
+* **fail closed** — dangling binding, not-an-armor, another wizard's Runekey,
+  and an over-budget loadout refused on the CERTIFIED slot cost;
+* **both entry points** — a source-level guard that Solo Practice and the Spell
+  Test Lab each call the shared certification, pass the leyline, hand the result
+  to `buildSoloBattleState`, catch the exception, and never reach for preview
+  semantics. Narrow, but it makes an independent regression in either caller
+  fail loudly instead of silently restoring an armourless practice run.
+
+`battle_engine_version_test.dart`'s epoch group re-points from v14↔v15 to
+v15↔v16.
+
+### Hardware verification — DEFERRED, not failed
+
+A narrow Pixel smoke test was proposed and then **deliberately deferred**. It was
+never run, and nothing about it failed.
+
+**Why deferred.** Running it requires installing a new build, and `flutter install`
+has wiped this device's app data before — that is how the §12 `Charger Plate`
+fixture and the Pixel's Runekey were lost, and restoring the key needs Soren's
+passphrase. The device currently holds a live library and identity. An additional
+confidence check does not justify risking them, so the pass waits until the Pixel
+can be updated behind an adequate backup/recovery path.
+
+**This is not a pre-commit gate for this change.** The fix is committed on its
+offline evidence: 29 targeted tests, a 2686/0 full suite, an analyzer run
+byte-identical to baseline, unmoved goldens, and the authoritative
+`certifyOwnArmor` derivation shared with duel setup. Multiplayer armor
+application already has direct hardware evidence in §12 and is untouched here.
+The general "anything device-facing needs a real-device pass" rule in CLAUDE.md
+is about FFI, networking and proving performance; this change adds none of those
+— it is `BattleState` construction, which the corpus covers directly.
+
+**A correction worth keeping, for whoever does run it.** The first draft of the
+gate asked for *26 opening HP and 2 melee damage from Charger Plate*. Those
+numbers cannot coexist on one armor, and the mistake is an easy one to repeat:
+
+| fixture | F/A/W/E | melee | armor HP | opening HP | stationary punch |
+|---|---|---|---|---|---|
+| `Charger Plate` `FFFAFA` | 4/2/0/0 | **+1** | +0 | **24** | **2** |
+| `Muddy Plate` `WEWE` | 0/0/2/2 | +0 | **+2** | **26** | 1 |
+
+The Fire ladder's first rung is `count: 4`; Earth's is `count: 2`. Charger Plate
+has zero earths and so grants no HP; Muddy Plate has zero fires and so grants no
+melee. `solo_armor_seating_test.dart` uses the two fixtures separately for
+exactly this reason. An armor that shows both at once needs >=4 fires AND >=2
+earths and would have to be forged.
+
+**What the Pixel could show today, unchanged.** Its library currently holds one
+armor, `Alpha Strike Armor`, already equipped on the active chapter. Read off its
+own proof: `T 20, slots 5, F11 A4 W0 E1, melee +2, move +1, range +0, armor HP
++0, keywords: cleave, charger`. Seven ordinary artifacts plus five armor slots is
+exactly the 12-slot budget, so certification passes rather than failing closed. A
+run would therefore expect **24 opening HP** (E1 is below Earth's first rung) and
+a **stationary punch of 3** (1 + 2). It would cover seating, melee application
+and the absence of a certification error; it would NOT cover the Earth HP path,
+which no armor now on the device can reach.
+
+### Follow-up, deliberately not fixed
+
+`buildSoloBattleState` hardcodes `baseSpellRange: 3` where the duel seat uses
+`config.baseRange`. Found during this investigation, out of scope for the armor
+fix, and pinned by a test in the new file so it is not lost.

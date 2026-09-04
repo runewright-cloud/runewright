@@ -9,6 +9,12 @@
 // repository, the two are joined here — the narrowest place that already has
 // both — and the chapter keeps a flat, ID-only persisted shape.
 //
+// For the same reason this file also owns [resolveEquippedArmor], the one
+// place that turns [ChapterAsset.armorSpellId] back into the [SpellAsset] it
+// names. It lived privately in `duel_setup.dart` until solo/practice needed
+// the identical lookup; a second copy is exactly how the two surfaces would
+// drift into disagreeing about what "equipped" means, so there is one.
+//
 // ## Trust
 //
 // Everything in this file reads [SpellAsset.t], a LOCAL persisted field that
@@ -99,4 +105,33 @@ ChapterAsset? addArtifactWithinBudget(
 }) {
   if (chapterSlotsRemaining(chapter, armor) <= 0) return null;
   return chapter.withArtifact(artifact);
+}
+
+// ── Resolving the binding ─────────────────────────────────────────────────────
+
+/// The [SpellAsset] this chapter equips as armor, or null if it equips none.
+///
+/// Resolves exactly [ChapterAsset.armorSpellId] — the local binding — and
+/// nothing else. A binding that no longer resolves is a hard error rather than
+/// a silent "no armor": the player believes they are wearing something, and
+/// starting a battle without it would be a surprise mid-match, not a
+/// convenience. (Deleting an armor clears the binding from every chapter, so
+/// this should be unreachable outside hand-edited data.)
+///
+/// THE shared implementation. Duel setup (step 7b) and solo/practice setup
+/// both call this one function, so "which spell am I wearing?" cannot be
+/// answered two ways. It resolves the binding and stops: nothing here reads
+/// [SpellAsset.isArmor] or any other authored field as gameplay truth —
+/// `certifyOwnArmor` is what decides what the armor MEANS, from its proof.
+Future<SpellAsset?> resolveEquippedArmor(ChapterAsset chapter) async {
+  final id = chapter.armorSpellId;
+  if (id == null) return null;
+  final all = await SpellAsset.loadAll();
+  for (final s in all) {
+    if (s.id == id) return s;
+  }
+  throw StateError(
+    'chapter "${chapter.name}" equips armor $id, which is no longer in the '
+    'library — match aborted',
+  );
 }

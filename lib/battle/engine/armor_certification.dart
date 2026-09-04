@@ -9,6 +9,12 @@
 //   peer   : ArmorEnvelope         -> ProofIntake.verifyAndParse -> outputs
 //   both   : outputs -> validate -> CertifiedArmor.fromOutputs(agreed lexicon)
 //
+// Solo/practice is the LOCAL row and nothing else — see
+// [certifyEquippedChapterArmor] at the foot of this file. There is no peer to
+// disagree with, but that is a reason to skip the *verification*, never the
+// derivation: an armor must mean the same thing in the practice yard as in a
+// duel or practice teaches a spellbook the player does not have.
+//
 // The two paths differ only in whether the bytes are cryptographically
 // verified first — ours are ours, and re-verifying a proof this device
 // authored buys nothing but seconds. Everything after that point is one code
@@ -44,6 +50,8 @@
 import 'dart:typed_data';
 
 import 'package:rune_duel/protocol/match_session.dart' show ProofVerifier;
+import 'package:rune_duel/spells/chapter_armor.dart'
+    show resolveEquippedArmor;
 import 'package:rune_duel/spells/chapter_asset.dart' show ChapterAsset;
 import 'package:rune_duel/spells/inscribe.dart' show kInscribeTiers, kRulesetVersion;
 import 'package:rune_duel/spells/spell_asset.dart' show SpellAsset;
@@ -180,6 +188,42 @@ Future<CertifiedArmor?> certifyPeerArmor({
     side: 'peer',
   );
 }
+
+/// Certifies the armor [chapter] equips, for a surface that has no peer:
+/// Solo Practice and the Spell Test Lab. Returns null when the chapter wears
+/// none, which is the ordinary case and starts a normal armourless session.
+///
+/// Exactly the LOCAL row of this file's table, with the chapter binding
+/// resolved first — [resolveEquippedArmor] (shared with duel setup step 7b)
+/// then [certifyOwnArmor], unchanged. There is deliberately no solo-only
+/// derivation, no relaxed check and no `previewFromElementSequence`: practice
+/// is where a player learns what their equipment does, so it has to be the
+/// same equipment the duel will certify, down to the ladder.
+///
+/// Duel setup does NOT call this, and the split is not an oversight: it needs
+/// the resolved [SpellAsset] itself to build the wire [ArmorEnvelope]
+/// (`armorProofTier` + `proofBytes`), so it holds the two steps apart. Both
+/// paths still share the one resolver and the one certification.
+///
+/// [lexicon] is required for the reason [certifyOwnArmor] states — a
+/// certification boundary must not be able to fall back to the ordinary
+/// tradition by omission. Callers pass `ArmorLexicon.of(config.leyline)`.
+///
+/// Throws [ArmorCertificationException] (uncertifiable armor) or [StateError]
+/// (a binding that no longer resolves). Callers must fail closed on both and
+/// build no [BattleState] — an armourless session started silently is the bug
+/// this function exists to end.
+Future<CertifiedArmor?> certifyEquippedChapterArmor({
+  required ChapterAsset chapter,
+  required String wearerOwnerPubkeyHex,
+  required ArmorLexicon lexicon,
+}) async =>
+    certifyOwnArmor(
+      armor: await resolveEquippedArmor(chapter),
+      wearerOwnerPubkeyHex: wearerOwnerPubkeyHex,
+      ordinaryArtifactCount: chapter.ordinaryArtifactCount,
+      lexicon: lexicon,
+    );
 
 /// The shared half: everything after "we have trustworthy public outputs".
 /// Both sides run this identical function, which is what makes the local and

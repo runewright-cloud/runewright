@@ -9,6 +9,9 @@ import 'dart:async' show unawaited;
 import 'package:flutter/material.dart';
 import 'package:rune_duel/engine/hex_grid.dart';
 
+import '../battle/engine/armor_certification.dart'
+    show ArmorCertificationException, certifyEquippedChapterArmor;
+import '../battle/models/certified_armor.dart' show ArmorLexicon, CertifiedArmor;
 import '../battle/models/match_config.dart';
 import '../battle/models/solo_battle_setup.dart';
 import '../battle/models/leyline_config.dart'
@@ -248,11 +251,44 @@ class _SoloPracticeSettingsScreenState
       return;
     }
 
+    // The chapter's equipped Aetherial Armor, certified from its own proof
+    // before any BattleState exists — the same local intake duel setup runs at
+    // step 7b, through the same `certifyOwnArmor`. Practice must teach the
+    // equipment the player actually has, so this is not optional and not
+    // approximated.
+    //
+    // Fails CLOSED: an unreadable proof, an asset that is not an armor, an
+    // over-budget loadout or a binding that no longer resolves all abort the
+    // session. There is no peer and so no forfeit to send — the player just
+    // does not get an armourless practice run they did not ask for.
+    final CertifiedArmor? armor;
+    try {
+      armor = await certifyEquippedChapterArmor(
+        chapter: chapter,
+        wearerOwnerPubkeyHex: localOwnerPubkeyHex,
+        lexicon: ArmorLexicon.of(_config.leyline),
+      );
+    } on ArmorCertificationException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Armor could not be certified: ${e.reason}')),
+      );
+      return;
+    } on StateError catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Armor could not be equipped: ${e.message}')),
+      );
+      return;
+    }
+    if (!mounted) return;
+
     const localId = 'local';
     final setup = buildSoloBattleState(
       chapter,
       _config,
       localOwnerPubkeyHex: localOwnerPubkeyHex,
+      armor: armor,
       localId: localId,
     );
     final dummyPos = setup.dummyPosition;

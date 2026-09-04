@@ -6,12 +6,19 @@
 // converts a chapter's artifact loadout into WizardAvatar accoutrements.
 // Extracted from SoloPracticeSettingsScreen so the Spell Test Lab can reuse
 // it exactly.
+//
+// Pure and synchronous, deliberately: it takes an ALREADY-CERTIFIED
+// [CertifiedArmor] the same way `buildDuelBattleState` does, and resolving the
+// chapter binding + certifying the proof stays with the callers (via
+// `certifyEquippedChapterArmor`), which are async and can show an error. This
+// file must never parse a proof or read an authored `SpellAsset` field.
 
 import 'package:rune_duel/engine/hex_grid.dart';
 
 import '../../spells/chapter_asset.dart';
 import 'accoutrement_loadout.dart';
 import 'battle_state.dart';
+import 'certified_armor.dart';
 import 'hex_battlefield.dart';
 import 'match_config.dart';
 import 'wizard_avatar.dart';
@@ -63,10 +70,22 @@ class SoloBattleSetup {
 /// cast as — Wild Magic keys on the caster, and a placeholder here would teach
 /// them a different spellbook than the one they own. It is required rather
 /// than defaulted for exactly that reason: there is no honest stand-in.
+///
+/// [armor] is the chapter's equipped Aetherial Armor, already certified by
+/// `certifyEquippedChapterArmor` — equipment here and nothing more, exactly as
+/// in `buildDuelBattleState`: **this function performs no proof parsing,
+/// verification or interpretation.** Null means the chapter wears none, which
+/// is the ordinary case.
+///
+/// It is seated on the LOCAL wizard only. The practice dummy stays unarmored
+/// by design — it is a target, not an opponent with a spellbook — and the same
+/// reasoning that gives it a synthetic identity applies: there is no chapter
+/// behind it to equip anything from.
 SoloBattleSetup buildSoloBattleState(
   ChapterAsset chapter,
   MatchConfig config, {
   required String localOwnerPubkeyHex,
+  CertifiedArmor? armor,
   String localId = 'local',
   String dummyId = 'dummy',
 }) {
@@ -90,13 +109,18 @@ SoloBattleSetup buildSoloBattleState(
   final avatar = WizardAvatar(
     playerId: localId,
     ownerPubkeyHex: localOwnerPubkeyHex,
-    hp: config.playerHp,
+    // Earth armor raises the pool the wizard starts with — the SAME term
+    // `buildDuelBattleState` applies, so a practice wizard opens on the HP a
+    // duelling one would. There is no separate armor-HP bar and no max-HP cap;
+    // provenance stays readable through `avatar.armor!.armorHpBonus`.
+    hp: config.playerHp + (armor?.armorHpBonus ?? 0),
     mana: maxMana ~/ 2,
     maxMana: maxMana,
     position: spawnPos,
     teamId: 'solo',
     baseSpellRange: 3,
     accoutrements: accoutrements,
+    armor: armor,
   );
 
   // Dummy opponent: one mana gem on top of its innate pool, stands still

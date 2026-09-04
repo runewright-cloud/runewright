@@ -218,3 +218,36 @@ to revert. It is free to do inside any future protocol bump.
 
 Recommended direction: move `forcedReveal` to the index form, and state the
 append-only rule for `SummonPersonality` in one place.
+
+---
+
+## 9. Solo-armor hardware smoke test, deferred behind the Pixel's data risk
+
+**Opened 2026-09-04** alongside the engine-v16 solo/practice armor fix
+(`AETHERIAL_ARMOR.md` §14).
+
+The fix is verified offline — 29 targeted tests, 2686/0 suite, analyzer at
+baseline, goldens unmoved — and shares the authoritative `certifyOwnArmor`
+derivation with duel setup, whose armor application already passed a two-device
+hardware gate (§12). What has NOT been done is a single-device confirmation that
+an equipped armor moves HP and melee in a real practice session.
+
+**Why it is open rather than done:** running it means installing a build on the
+Pixel, and `flutter install` has previously wiped that device's app data —
+destroying the §12 `Charger Plate` fixture and the Runekey, which needs Soren's
+passphrase to restore. The device holds a live library and identity today. The
+check is worth having; it is not worth that.
+
+**Unblocked by:** a safe backup/recovery path for the Pixel (restore the Runekey
+from its encrypted backup first, or confirm an install that preserves app data).
+
+**When run,** see §14 for the corrected per-fixture expectations — `Charger
+Plate` is 24 HP / punch 2 and `Muddy Plate` is 26 HP / punch 1; no single armor
+gives both, and conflating them is what stalled the first attempt. The device's
+current `Alpha Strike Armor` would show 24 HP / punch 3 and leaves the Earth HP
+path uncovered.
+
+**Also noted there, separately:** `buildSoloBattleState` hardcodes
+`baseSpellRange: 3` where the duel seat uses `config.baseRange`. Deliberately not
+fixed with the armor change; pinned by a test in
+`solo_armor_seating_test.dart`.

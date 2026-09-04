@@ -306,51 +306,52 @@ void main() {
     await transportPeer.disconnect();
   });
 
-  // The Mutable Leylines Summon-and-Armor-rekeying epoch. Pinned as a literal
-  // pair rather than as `kBattleEngineVersion - 1` so a future bump has to come
-  // back here and say what it broke, instead of silently re-pointing this at
-  // the new neighbour. (The previous occupants of this group were v13 <-> v14,
-  // the partial-formula affinity correction, and v12 <-> v13, a Mutable Leyline
-  // reinterpreting incantation formulas at all.)
+  // The solo/practice armor-seating epoch. Pinned as a literal pair rather
+  // than as `kBattleEngineVersion - 1` so a future bump has to come back here
+  // and say what it broke, instead of silently re-pointing this at the new
+  // neighbour. (The previous occupants of this group were v14 <-> v15, the
+  // Mutable Leylines Summon-and-Armor rekeying, and v13 <-> v14, the
+  // partial-formula affinity correction.)
   //
-  // This bump is a good illustration of why the gate is separate from the other
-  // two: the wire is identical, and the proofs and the VK are untouched. What
-  // changes is what a build DOES with a mutable config. A v14 build reads a
-  // creature's abilities and an armor's keywords off the FIXED four-element
-  // pattern tables; a v15 build reads them off dictionaries derived from the
-  // leyline's tradition (audit R-8). One summon whose certified sequence
-  // contains a keyed window is enough to diverge — the minion ability mask and
-  // the avatar's armor are both hashed into the canonical state.
+  // This bump is an unusual one for the gate, and the reasoning is worth
+  // keeping. Nothing a DUEL computes moves at all: `buildDuelBattleState`, the
+  // armor envelope and peer verification are untouched, so a v15 and a v16
+  // build would in fact agree on every networked match. What moved is
+  // `buildSoloBattleState`, which never received the chapter's certified armor
+  // and so built its wizard with `armor` null — no melee bonus, no Earth HP, no
+  // move or range term, no Charger or Muddy. A v16 build seats it.
   //
-  // Ordinary play is bit-identical across the bump — an ordinary lexicon
-  // derives nothing and reads the same fixed tables — which is exactly why the
-  // refusal cannot be conditional on the leyline: the handshake settles the
-  // config, and by the time a mutable one is agreed there is no safe way to
-  // discover the peer reads its patterns differently.
-  group('v14 <-> v15 (Summon and Armor rekeying)', () {
-    test('this build declares engine v15', () {
-      expect(kBattleEngineVersion, 15,
-          reason: 'a Mutable Leyline now rekeys which four-element pattern '
-              'names which SummonAbility and which four-element run names '
-              'which ArmorKeyword, so two builds handed one mutable config '
-              'summon different creatures from one certified trajectory. '
-              'docs/MUTABLE_LEYLINES_IMPLEMENTATION_AUDIT.md §13 Slice E '
-              '(Summon and Armor rekeying), R-8');
+  // It is still an engine bump, because this file gates the rules that turn
+  // match inputs into a canonical `BattleState`, not merely the ones two
+  // devices compare. Handed the same chapter and config, v15 and v16 compute
+  // different practice states — different opening HP, and armor is itself
+  // hashed per avatar (v6) — so they are different engines whether or not a
+  // peer is watching, and a solo replay golden must be able to say which one
+  // produced it.
+  //
+  // A chapter with no equipped armor is bit-identical across the bump: the
+  // seat is null on both sides of it. See docs/AETHERIAL_ARMOR.md §14.
+  group('v15 <-> v16 (solo/practice armor seating)', () {
+    test('this build declares engine v16', () {
+      expect(kBattleEngineVersion, 16,
+          reason: 'solo/practice construction now seats and applies the '
+              'chapter\'s certified Aetherial Armor, so a v15 and a v16 build '
+              'compute different practice states — opening HP and the hashed '
+              'armor record — from one chapter. docs/AETHERIAL_ARMOR.md §14');
       expect(kBattleProtocolVersion, 7,
-          reason: 'no framing changed — the new state is derived on both '
-              'devices from values they already exchange');
+          reason: 'no framing changed — there is no peer on this path at all');
       expect(kRulesetVersion, 3,
           reason: 'no proof semantics changed — the circuit is untouched');
     });
 
-    test('a v14 peer is refused by the capabilities gate', () async {
-      // The previous epoch is now the incompatible one: a v14 build reads the
-      // fixed summon/armor pattern tables, so handed a mutable config it grants
-      // a creature different abilities and an armor different keywords from the
-      // same certified bytes.
+    test('a v15 peer is refused by the capabilities gate', () async {
+      // The previous epoch is now the incompatible one. A v15 build agrees
+      // with v16 about every duel, but the gate is a build-identity check, not
+      // a per-match diff: it refuses on the declared epoch rather than trying
+      // to prove which subset of the engine a given match would exercise.
       final localIdentity = await Identity.ephemeral();
       final chapter = await makeChapter(
-        idSuffix: 'a14',
+        idSuffix: 'a15',
         ownerPubkeyHex: await localIdentity.ownerPubkeyHex(),
       );
 
@@ -362,7 +363,7 @@ void main() {
         localChapter: chapter,
         hostConfig: const MatchConfig(),
       );
-      final forfeitReason = fakePeer(transportPeer, engineVersion: 14);
+      final forfeitReason = fakePeer(transportPeer, engineVersion: 15);
 
       await expectLater(
         local,
@@ -371,8 +372,8 @@ void main() {
           'message',
           allOf(
             contains('battle engine version mismatch'),
-            contains('local=15'),
-            contains('peer=14'),
+            contains('local=16'),
+            contains('peer=15'),
           ),
         )),
       );
@@ -383,10 +384,10 @@ void main() {
       await transportPeer.disconnect();
     });
 
-    test('a host config pinned to v14 is refused as well', () async {
-      const v14Config = MatchConfig(battleEngineVersion: 14);
-      expect(const MatchConfig().matches(v14Config), isFalse);
-      expect(v14Config.battleEngineVersion, isNot(kBattleEngineVersion));
+    test('a host config pinned to v15 is refused as well', () async {
+      const v15Config = MatchConfig(battleEngineVersion: 15);
+      expect(const MatchConfig().matches(v15Config), isFalse);
+      expect(v15Config.battleEngineVersion, isNot(kBattleEngineVersion));
     });
   });
 

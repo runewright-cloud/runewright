@@ -70,6 +70,7 @@ import 'package:crypto/crypto.dart' show sha256;
 
 import '../../identity/identity.dart';
 import '../../protocol/transport.dart';
+import '../../spells/chapter_armor.dart' show resolveEquippedArmor;
 import '../../spells/chapter_asset.dart' show ChapterAsset;
 import '../../spells/spell_asset.dart' show SpellAsset;
 import '../../spells/spell_identity.dart'
@@ -407,7 +408,7 @@ Future<DuelSetupResult> _runSetupSteps({
   // ask the peer to trust anything.
   final SpellAsset? localArmorAsset;
   try {
-    localArmorAsset = await _resolveEquippedArmor(localChapter);
+    localArmorAsset = await resolveEquippedArmor(localChapter);
   } on StateError {
     // A binding whose asset is gone is still a refusal, and the peer is
     // blocked on our armor frame — forfeit before rethrowing or they wait for
@@ -516,27 +517,6 @@ Future<DuelSetupResult> _runSetupSteps({
     peerAvatarId: peerAvatarId,
     localArmor: localArmor,
     peerArmor: peerArmor,
-  );
-}
-
-/// The [SpellAsset] this chapter equips as armor, or null if it equips none.
-///
-/// Resolves exactly [ChapterAsset.armorSpellId] — the local binding — and
-/// nothing else. A binding that no longer resolves is a hard error rather than
-/// a silent "no armor": the player believes they are wearing something, and
-/// starting the duel without it would be a surprise mid-match, not a
-/// convenience. (Deleting an armor clears the binding from every chapter, so
-/// this should be unreachable outside hand-edited data.)
-Future<SpellAsset?> _resolveEquippedArmor(ChapterAsset chapter) async {
-  final id = chapter.armorSpellId;
-  if (id == null) return null;
-  final all = await SpellAsset.loadAll();
-  for (final s in all) {
-    if (s.id == id) return s;
-  }
-  throw StateError(
-    'chapter "${chapter.name}" equips armor $id, which is no longer in the '
-    'library — match aborted',
   );
 }
 

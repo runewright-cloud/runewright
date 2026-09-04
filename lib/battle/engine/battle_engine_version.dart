@@ -583,13 +583,81 @@
 // `kBattleProtocolVersion` stays 7 and `kRulesetVersion` stays 3. See
 // docs/MUTABLE_LEYLINES_IMPLEMENTATION_AUDIT.md §13, partial-formula affinity.
 //
+// v16 (2026-09-04, solo/practice armor seating) — solo/practice battle
+// construction now seats and applies the chapter's certified Aetherial Armor.
+//
+// `buildSoloBattleState` never received one. It read `chapter.artifacts` and
+// stopped, so `chapter.armorSpellId` was not consulted anywhere on the
+// single-player path and the local `WizardAvatar` was built with `armor` at its
+// default null. Every armor term is written against that field, so all four
+// ladders and both live keywords were silently absent in practice: Fire's
+// `meleeBonus` (the reported symptom — a certified +1 armor punched for the
+// base 1), Earth's `armorHpBonus` (opening HP was the bare `config.playerHp`,
+// where `buildDuelBattleState` had always added the bonus), Air's
+// `moveSpeedBonus` and Water's `spellRangeBonus` (the getters were correct and
+// live; they were reading a null armor), and Charger/Muddy, which cannot be
+// granted off a null armor at all.
+//
+// It was an integration gap, never arithmetic. `applyHaymaker`'s
+// `1 + (actor.armor?.meleeBonus ?? 0)` was right the whole time and is
+// untouched; so is every ladder, threshold and keyword rule. Slice 5 introduced
+// `WizardAvatar.armor` as "an optional named parameter defaulting to null, so
+// every solo/practice call site is unchanged" (docs/AETHERIAL_ARMOR.md §9) — a
+// call-site-compatibility note that quietly became the behaviour. Nothing in
+// the design ever ruled that practice should be armourless, and §13's freeze
+// list names the four numerical bonuses as playtest content, which practice is
+// where a player would exercise.
+//
+// The gate fires on the usual test, restricted to the surface that moved. The
+// SAME match inputs — same chapter, same config, same seed — now yield a
+// different canonical `BattleState` for any solo session whose chapter equips an
+// armor: opening HP differs on turn 1 (Earth), and armor is itself hashed per
+// avatar by `BattleState.toCanonicalBytes` (engine v6), so the very first state
+// hash of an armored practice session diverges from a v15 build's. A chapter
+// with no armor is bit-identical across the bump — the seat is null on both
+// sides of it — which is why every existing solo fixture is unchanged.
+//
+// Solo state is never lockstep-hashed against a peer, so no duel can desync
+// over this. The bump is nonetheless correct and deliberate: this file gates
+// **deterministic engine consensus**, the rules that turn match inputs into a
+// canonical state, and a build that computes a different practice state from
+// the same chapter is a different engine whether or not a second device is
+// watching. Recording it is also what keeps a solo replay golden honest.
+//
+// What did NOT move, and must not:
+//
+//   * **every armor formula.** The ladders (`armorElementLadder`,
+//     `armorEarthLadder`), `armorSlotCostForT`, the Fire melee threshold and
+//     the keyword patterns are untouched. This bump adds no bonus and changes
+//     no number — it delivers ones already defined to a wizard that was not
+//     being handed them;
+//   * **the derivation.** Solo runs the LOCAL row of armor_certification.dart's
+//     table — `resolveEquippedArmor` then `certifyOwnArmor` then the shared
+//     `_validateAndDerive` then `CertifiedArmor.fromOutputs` — the identical
+//     path duel setup's own side runs. No solo-only reading, no relaxed check,
+//     and emphatically not `previewFromElementSequence`: authored
+//     `SpellAsset` fields stay untrusted (M4.22);
+//   * **the duel path.** `buildDuelBattleState`, the armor envelope, peer
+//     verification and the pubkey-ordered seating are unchanged. Duel setup now
+//     calls the shared `resolveEquippedArmor` instead of a private copy of the
+//     same seven lines — same lookup, same hard error on a dangling binding;
+//   * **the dummy.** The practice opponent stays unarmored; it has no chapter
+//     to equip from;
+//   * **the wire.** No new field, no message shape, no envelope change; there
+//     is no peer here at all. `kBattleProtocolVersion` stays 7;
+//   * **proofs, circuits and VKs.** Nothing is proven or verified — solo
+//     certification is `ProofIntake.parseOwn`, pure Dart over bytes this device
+//     authored. `kRulesetVersion` stays 3.
+//
+// See docs/AETHERIAL_ARMOR.md §14.
+//
 /// The deterministic battle-engine consensus epoch this build implements.
 ///
 /// The single canonical definition — [MatchConfig.battleEngineVersion] and
 /// [DeviceCapabilities.battleEngineVersion] both default to it rather than
 /// restating a literal, exactly as `MatchConfig.rulesetVersion` derives from
 /// `kRulesetVersion`. See this file's header for what forces a bump.
-const int kBattleEngineVersion = 15;
+const int kBattleEngineVersion = 16;
 
 /// What a peer that predates the engine-version gate implicitly declares: it
 /// omits the field, and an omitted field cannot be read as agreement.
