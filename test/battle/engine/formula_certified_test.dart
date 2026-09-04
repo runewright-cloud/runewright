@@ -129,7 +129,7 @@ void main() {
     });
 
     test('1 formula → effectCount = 0 (first formula is free)', () {
-      const f = ParsedFormula(
+      final f = ParsedFormula(
         affinity: BorderZone.fire,
         effectType1: BorderZone.fire,
         effectType2: BorderZone.fire,
@@ -138,7 +138,7 @@ void main() {
     });
 
     test('2 formulas → effectCount = 1 (one extra, 1.5x applied once)', () {
-      const f = ParsedFormula(
+      final f = ParsedFormula(
         affinity: BorderZone.fire,
         effectType1: BorderZone.air,
         effectType2: BorderZone.water,
@@ -147,7 +147,7 @@ void main() {
     });
 
     test('3 formulas → effectCount = 2', () {
-      const f = ParsedFormula(
+      final f = ParsedFormula(
         affinity: BorderZone.water,
         effectType1: BorderZone.earth,
         effectType2: BorderZone.fire,
@@ -169,7 +169,7 @@ void main() {
 
       // Certified: if 4 activations → 1 formula + 1 residual, certFormulas.length=1
       // → effectCount = max(0, 1-1) = 0. Tighter; cannot be inflated.
-      const f = ParsedFormula(
+      final f = ParsedFormula(
         affinity: BorderZone.fire,
         effectType1: BorderZone.fire,
         effectType2: BorderZone.fire,

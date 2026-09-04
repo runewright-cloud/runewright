@@ -19,6 +19,7 @@ import 'package:rune_duel/engine/hex_grid.dart';
 import 'package:rune_duel/battle/models/casting_enhancements.dart';
 import 'package:rune_duel/battle/models/effect_descriptor.dart';
 import 'package:rune_duel/battle/models/effect_kind.dart';
+import 'package:rune_duel/battle/models/incantation_meaning.dart';
 import 'package:rune_duel/battle/models/spell_effect.dart';
 import 'package:rune_duel/battle/models/terrain.dart';
 
@@ -26,22 +27,47 @@ import 'proof_intake.dart' show VerifiedSpellOutputs;
 import 'trajectory_parser.dart' show ParsedFormula;
 
 class EffectResolver {
-  /// Resolve a [ParsedFormula] into a fully-typed [EffectDescriptor].
+  /// Resolve an ORDINARY [ParsedFormula] into a fully-typed
+  /// [EffectDescriptor].
   ///
   /// [enhancements.isPotent] selects bracketed values from the effect table.
-  /// Call once per formula triplet in a spell's trajectory.
+  ///
+  /// The interpretation step is visibly `effectKindFromPair`, reached through
+  /// [ordinaryIncantationMeaning] so there is one spelling of "what an ordinary
+  /// tail means" in the codebase. A mutable-length formula cannot reach here:
+  /// `ParsedFormula.effectType1/2` throw on a non-ordinary tail, and the live
+  /// battle path goes through [resolveKind] with a lexicon-derived kind
+  /// instead.
   static EffectDescriptor resolve(
     ParsedFormula formula, [
     CastingEnhancements enhancements = const CastingEnhancements(),
-  ]) {
-    final affinity = spellAffinityFromZone(formula.affinity);
-    final effectKind = effectKindFromPair(formula.effectType1, formula.effectType2);
-    return EffectDescriptor(
-      affinity: affinity,
-      effectKind: effectKind,
-      spellEffect: _build(affinity, effectKind, enhancements.isPotent),
-    );
-  }
+  ]) =>
+      resolveKind(
+        spellAffinityFromZone(formula.affinity),
+        ordinaryIncantationMeaning(formula.effectType1, formula.effectType2)
+            .kind,
+        enhancements,
+      );
+
+  /// Resolve an already-interpreted (affinity, [EffectKind]) pair.
+  ///
+  /// The entry point the live battle path uses, because under a Mutable Leyline
+  /// the kind comes from the leyline's codebook rather than from the formula's
+  /// own tail. There is deliberately no noise case here: a noise formula never
+  /// reaches an effect resolver at all — it is filtered before the call, not
+  /// resolved into a no-op — so this function stays total over the sixteen real
+  /// effects and cannot grow a "nothing happens" descriptor for someone to
+  /// apply by accident.
+  static EffectDescriptor resolveKind(
+    SpellAffinity affinity,
+    EffectKind effectKind, [
+    CastingEnhancements enhancements = const CastingEnhancements(),
+  ]) =>
+      EffectDescriptor(
+        affinity: affinity,
+        effectKind: effectKind,
+        spellEffect: _build(affinity, effectKind, enhancements.isPotent),
+      );
 
   // ignore: long-method
   static SpellEffect _build(SpellAffinity affinity, EffectKind kind, bool p) {

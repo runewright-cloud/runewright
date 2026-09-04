@@ -63,7 +63,8 @@ import 'dart:math' show max, pow;
 import 'dart:typed_data';
 
 import 'package:rune_duel/battle/models/certified_cast.dart';
-import 'package:rune_duel/battle/models/leyline_config.dart' show LeylineConfig;
+import 'package:rune_duel/battle/engine/incantation_lexicon.dart'
+    show IncantationLexicon;
 import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/protocol/match_session.dart' show ProofVerifier;
 import 'package:rune_duel/spells/basic_spells.dart' show isBasicGridAndT;
@@ -277,14 +278,30 @@ class PeerCastVerifier {
   static CertifiedCast semanticsOf(
     VerifiedSpellOutputs outputs, {
     required String casterOwnerPubkeyHex,
-    required LeylineConfig leyline,
+    required IncantationLexicon lexicon,
   }) {
-    // 1. Certified behaviour.
-    final formulas = TrajectoryParser.parse(outputs).formulas;
+    // 1. Certified behaviour. STRUCTURAL: the lexicon supplies only the grammar
+    //    length here, never a meaning. `elementSequence` is the flat committed
+    //    sequence and is leyline-invariant by construction — FormulaTracker's
+    //    commit rules do not know what a formula length is.
+    final formulas = TrajectoryParser.parse(
+      outputs,
+      formulaLength: lexicon.formulaLength,
+    ).formulas;
     final elementSequence = TrajectoryParser.certifiedElementSequence(outputs);
-    // 2. Certified intrinsic price.
+    // 2. Certified intrinsic price, over EVERY complete structural chunk —
+    //    noise included, and not yet interpreted. §7.4: a noise formula
+    //    consumes its chunk and is priced exactly like a meaningful one.
+    //    Interpreting before this line is the single mistake this slice most
+    //    has to avoid, which is why the interpretation is below it.
     final baseManaCost = certifiedBaseManaCost(outputs, formulas);
     // 3. Wild Magic, over 1 and 2 — and nothing else from `outputs`.
+    //    Eligibility reads the MEANINGFUL formulas (§7.2): a noise chunk
+    //    contributes no affinity to the tally, exactly as if the spell had one
+    //    fewer formula. Nothing about the hash changes — its trajectory field
+    //    is the flat sequence above and its cost field is the structural price,
+    //    both leyline-invariant given the config, and `leylineConfigHash` was
+    //    already field 7.
     return CertifiedCast(
       formulas: formulas,
       elementSequence: elementSequence,
@@ -293,8 +310,8 @@ class PeerCastVerifier {
         casterPubkeyHex: casterOwnerPubkeyHex,
         certifiedTrajectory: elementSequence,
         certifiedBaseManaCost: baseManaCost,
-        leylineConfigHash: leyline.leylineConfigHash,
-        formulas: formulas,
+        leylineConfigHash: lexicon.leyline.leylineConfigHash,
+        formulas: lexicon.meaningfulOf(formulas),
       ),
     );
   }
@@ -339,7 +356,7 @@ class PeerCastVerifier {
   static CertifiedCast? certifyOwnProof(
     SpellAsset spell, {
     required String casterOwnerPubkeyHex,
-    required LeylineConfig leyline,
+    required IncantationLexicon lexicon,
   }) {
     if (spell.proofBytes.isEmpty) return null;
     try {
@@ -353,7 +370,7 @@ class PeerCastVerifier {
       return semanticsOf(
         ProofIntake.parseOwn(spell.proofBytes, ownTier),
         casterOwnerPubkeyHex: casterOwnerPubkeyHex,
-        leyline: leyline,
+        lexicon: lexicon,
       );
     } on ProofIntakeException {
       // A malformed local proof is a bug, not an attack; falling back is the
@@ -396,7 +413,7 @@ class PeerCastVerifier {
     TurnAction action,
     MembershipProof? merkleProof, {
     required int rulesetVersion,
-    required LeylineConfig leyline,
+    required IncantationLexicon lexicon,
     required String casterOwnerPubkeyHex,
     required DrawSchedule? peerDrawSchedule,
     bool forcedCast = false,
@@ -515,7 +532,7 @@ class PeerCastVerifier {
     final semantics = semanticsOf(
       outputs,
       casterOwnerPubkeyHex: casterOwnerPubkeyHex,
-      leyline: leyline,
+      lexicon: lexicon,
     );
     final List<BorderZone> certElementSequence = semantics.elementSequence;
 

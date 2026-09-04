@@ -377,14 +377,21 @@ void main() {
     });
   });
 
-  // ── Slice C posture, asserted against the source tree ─────────────────────
+  // ── Interpretation-boundary posture, asserted against the source tree ────
   //
-  // Three properties that no unit test of a pure function can express, and
-  // that Slice C's whole architectural claim rests on. They are cheap, they
-  // fail loudly, and they are the only thing standing between "mutable is not
-  // wired up" and someone wiring it up by accident.
+  // Slice C's version of this group asserted an absolute prohibition: nothing
+  // in production imported the codebook, derived one, or read `mutableMagic`.
+  // Slice D makes all three legitimate — but only in one place. So the guards
+  // do not go away, they narrow: the question changes from "does anything do
+  // this" to "does anything OUTSIDE the seam do this", which is the property
+  // that actually has to hold from here on.
+  //
+  // The allowlists below are the architecture, written down. Adding a file to
+  // one is a real decision — it means a second place in the codebase now knows
+  // what a leyline does to a formula — and it should be made deliberately, in
+  // review, not by editing a list to make a test pass.
 
-  group('Slice C posture', () {
+  group('interpretation-boundary posture', () {
     final lib = _libDir();
 
     test('the source scan is not vacuous', () {
@@ -414,53 +421,136 @@ void main() {
       );
     });
 
-    test('no production file imports leyline_codebook.dart', () {
-      final importers = [
+    test('only the lexicon imports the codebook', () {
+      // The dependency boundary Slice C bought and Slice D spends exactly once.
+      // Ordinary effect utilities, UI leaves and certification identity code
+      // must not be able to SEE `IncantationCodebook`, let alone derive one.
+      const allowed = {'battle/engine/incantation_lexicon.dart'};
+      final importers = {
         for (final file in _dartFiles(lib))
           if (!file.path.endsWith('leyline_codebook.dart') &&
               _kCodebookImport.hasMatch(file.readAsStringSync()))
             _rel(file),
-      ];
-      expect(importers, isEmpty,
-          reason: 'the codebook is Slice B: pinned, and unread by production. '
-              'Ordinary code names a meaning through '
-              'incantation_meaning.dart, which cannot reach '
-              'IncantationCodebook.derive.');
+      };
+      expect(importers, allowed);
     });
 
-    test('no production caller invokes IncantationCodebook.derive', () {
-      final callers = [
-        // The declaring file is excluded — it is where the factory and its
-        // ordinary-config refusal live.
+    test('only the lexicon derives a codebook', () {
+      // Derivation is a match/config-boundary operation. Spreading it is how a
+      // codebook ends up derived per formula lookup, per card repaint, or —
+      // worst — twice from two different configs in one match.
+      const allowed = {'battle/engine/incantation_lexicon.dart'};
+      final callers = {
         for (final file in _dartFiles(lib))
           if (!file.path.endsWith('leyline_codebook.dart') &&
-              file.readAsStringSync().contains('IncantationCodebook.derive('))
+              _codeOf(file).contains('IncantationCodebook.derive('))
             _rel(file),
-      ];
-      expect(callers, isEmpty,
-          reason: 'deriving a codebook in live gameplay is Slice D and needs a '
-              'kBattleEngineVersion bump');
+      };
+      expect(callers, allowed);
     });
 
-    test('no production caller branches on LeylineConfig.mutableMagic', () {
+    test('only the lexicon branches on LeylineConfig.mutableMagic', () {
       // leyline_config.dart owns the field — its canonicality check, its
       // canonical byte layout, its display name and its JSON codec all read it
-      // legitimately. leyline_codebook.dart reads it only to REFUSE an
-      // ordinary config. Anything else reading it would be mutable behaviour
-      // becoming reachable, which is exactly what this slice must not do.
+      // legitimately. leyline_codebook.dart reads it only to REFUSE an ordinary
+      // config. The one BEHAVIOURAL reader is the lexicon's factory; every
+      // other consumer asks the lexicon a question instead of asking the config
+      // a boolean, which is what keeps "what does a leyline change" answerable
+      // by reading one file.
       const owners = {'leyline_config.dart', 'leyline_codebook.dart'};
-      final readers = [
+      const allowed = {'battle/engine/incantation_lexicon.dart'};
+      final readers = {
         for (final file in _dartFiles(lib))
           if (!owners.contains(file.uri.pathSegments.last) &&
-              file.readAsStringSync().contains('mutableMagic'))
+              _codeOf(file).contains('mutableMagic'))
             _rel(file),
+      };
+      expect(readers, allowed);
+    });
+
+    test('summon and armor code never touches the incantation lexicon', () {
+      // Neither domain chunks; both do overlapping substring search over fixed
+      // 4-element patterns, and their mapping is an unruled design problem
+      // (audit §14 R-8). Slice E, and not before a ruling.
+      const summonAndArmor = [
+        'battle/models/creature_spec.dart',
+        'battle/models/certified_armor.dart',
+        'battle/models/armor_envelope.dart',
       ];
-      expect(readers, isEmpty,
-          reason: 'mutable Incantation behaviour must stay unreachable from '
-              'gameplay until Slice D');
+      for (final rel in summonAndArmor) {
+        final file = File('${lib.path}/$rel');
+        expect(file.existsSync(), isTrue, reason: '$rel moved or was renamed — '
+            'this guard is now scanning nothing');
+        final src = _codeOf(file);
+        for (final forbidden in const [
+          'IncantationLexicon',
+          'IncantationCodebook',
+          'mutableMagic',
+        ]) {
+          expect(src.contains(forbidden), isFalse,
+              reason: '$rel must not know about $forbidden');
+        }
+      }
+    });
+
+    test('every in-match trajectory parse passes a formula length', () {
+      // `TrajectoryParser.parse` defaults to the ordinary length so the whole
+      // existing corpus keeps saying what it means by saying nothing. That
+      // default is a hazard for exactly one kind of caller: one that runs
+      // inside a match and forgets. There are only two production callers, and
+      // this pins which is which.
+      const inMatch = 'battle/engine/peer_cast_verifier.dart';
+      const outOfMatch = 'spells/spell_asset_integrity.dart';
+
+      final callers = {
+        for (final file in _dartFiles(lib))
+          if (file.readAsStringSync().contains('TrajectoryParser.parse('))
+            _rel(file),
+      };
+      expect(callers, {inMatch, outOfMatch},
+          reason: 'a new TrajectoryParser.parse caller must decide, in review, '
+              'whether it is in-match (pass lexicon.formulaLength) or is '
+              'about persisted ordinary metadata (take the default)');
+
+      // The in-match one passes a length…
+      expect(
+        File('${lib.path}/$inMatch')
+            .readAsStringSync()
+            .contains('formulaLength: lexicon.formulaLength'),
+        isTrue,
+        reason: 'certification must chunk at the ACTIVE leyline\'s grammar',
+      );
+      // …and the asset-integrity one deliberately does not: it recomputes the
+      // metadata persisted at inscribe time, which is ordinary by definition
+      // and must stay leyline-independent (§7.4).
+      expect(
+        File('${lib.path}/$outOfMatch')
+            .readAsStringSync()
+            .contains('formulaLength:'),
+        isFalse,
+        reason: 'persisted spell metadata is leyline-independent — giving this '
+            'a leyline would make SpellAsset.manaCost, and through it '
+            'behaviouralKinKey and heraldry, depend on where it was cast',
+      );
     });
   });
 }
+
+/// [file]'s source with `//` comments stripped.
+///
+/// The scans below look for identifiers, and prose about an identifier is not a
+/// use of it — `battle_engine_version.dart`'s history entry names `mutableMagic`
+/// in a sentence, and a guard that counted that would push every writer toward
+/// documenting the architecture less. Crude on purpose: a `//` inside a string
+/// literal is truncated too, which costs nothing here and keeps the helper
+/// something you can verify by reading it.
+String _codeOf(File file) => file
+    .readAsLinesSync()
+    .map((line) {
+      final i = line.indexOf('//');
+      return i < 0 ? line : line.substring(0, i);
+    })
+    .join('\n');
 
 /// An `import` of the Slice B codebook, in either quote style and by any
 /// path. Deliberately not an `export`: `leyline_codebook.dart` re-exports the

@@ -16,6 +16,7 @@ import 'dart:typed_data';
 import 'package:test/test.dart';
 
 import 'package:rune_duel/battle/engine/peer_cast_verifier.dart';
+import 'package:rune_duel/battle/engine/incantation_lexicon.dart';
 import 'package:rune_duel/battle/engine/proof_intake.dart';
 import 'package:rune_duel/battle/engine/trajectory_parser.dart';
 import 'package:rune_duel/battle/engine/wild_magic.dart';
@@ -47,12 +48,16 @@ const String _wildCaster =
 const String _quietCaster =
     '0x7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a00000000';
 
-/// Fires nothing under ORDINARY "rivendell" but does fire under MUTABLE
-/// "rivendell 4" — the two configs share a seed word and differ only in their
-/// `leylineConfigHash`, which is exactly the collision `LeylineConfig`'s
-/// canonicality rules exist to prevent.
+/// Fires exactly one trigger for this fixture under ORDINARY "rivendell", and
+/// nothing under MUTABLE "rivendell 4" — the pair that keeps the two structured
+/// configs visibly distinct.
+///
+/// Since Slice D the two differ for a second, larger reason than their
+/// `leylineConfigHash`: under a four-element grammar this three-element spell
+/// has no complete formula at all, so it is eligible for nothing whatever it
+/// hashes to. See the test.
 const String _mutableSensitiveCaster =
-    '0x7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a00000002';
+    '0x7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a00000004';
 
 WildMagicPreviewContext _ctx(String? caster, [LeylineConfig? leyline]) =>
     WildMagicPreviewContext(
@@ -82,7 +87,8 @@ void main() {
       final engine = PeerCastVerifier.certifyOwnProof(
         spell,
         casterOwnerPubkeyHex: _wildCaster,
-        leyline: LeylineConfig.ordinary(kDefaultCommunitySeed),
+        lexicon: IncantationLexicon.of(
+            LeylineConfig.ordinary(kDefaultCommunitySeed)),
       )!;
 
       expect(_preview(spell, _ctx(_wildCaster)), engine.wildMagic);
@@ -177,8 +183,8 @@ void main() {
     test('one seed word, two structured configs, two previews', () {
       // "rivendell" and "rivendell 4" are distinct magical environments
       // (LEYLINE_SEED_PLAN.md §10). A preview that rebuilt an ordinary config
-      // from the seed word alone — which is what this slice replaced — would
-      // show them as one.
+      // from the seed word alone — which is what an earlier slice replaced —
+      // would show them as one.
       final spell = fixtureSpell();
       final ordinary = LeylineConfig.ordinary('rivendell');
       final mutable =
@@ -187,12 +193,41 @@ void main() {
 
       expect(
         _preview(spell, _ctx(_mutableSensitiveCaster, ordinary)),
-        isEmpty,
+        hasLength(1),
       );
       expect(
         _preview(spell, _ctx(_mutableSensitiveCaster, mutable)),
-        hasLength(1),
+        isEmpty,
       );
+    });
+
+    test('a mutable grammar can make a spell structurally void', () {
+      // Slice D, and a consequence worth stating out loud because it is not
+      // about hashing at all. `fixtureSpell()`'s certified trajectory is three
+      // elements; under "rivendell 4" a formula is FOUR elements, so the spell
+      // has no complete formula, is eligible for nothing, and fires no wild
+      // magic — for EVERY caster, not just an unlucky one.
+      //
+      // This is the duel's behaviour too, which is the whole reason the preview
+      // now goes through the same `IncantationLexicon` the engine does. A
+      // preview still chunking by three here would promise a trigger the cast
+      // cannot fire.
+      final spell = fixtureSpell();
+      for (final length in const [4, 5, 6]) {
+        final mutable = LeylineConfig.mutable(
+          communitySeed: 'rivendell',
+          formulaLength: length,
+        );
+        for (final caster in const [
+          _wildCaster,
+          _quietCaster,
+          _mutableSensitiveCaster,
+        ]) {
+          expect(_preview(spell, _ctx(caster, mutable)), isEmpty,
+              reason: 'a 3-element spell has no complete formula at length '
+                  '$length');
+        }
+      }
     });
   });
 

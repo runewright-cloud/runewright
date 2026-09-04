@@ -57,6 +57,7 @@ import '../battle/models/wild_magic_effect.dart';
 import '../engine/border_zone.dart';
 import '../engine/formula_segmentation.dart';
 import '../identity/identity.dart';
+import '../battle/engine/incantation_lexicon.dart' show IncantationLexicon;
 import 'spell_asset.dart';
 import 'spell_identity.dart' show uniqueSpellId;
 
@@ -239,10 +240,18 @@ List<WildMagicTrigger> wildMagicPreviewFor(
 
   final List<WildMagicTrigger> triggers;
   try {
+    // The preview must answer the same question the duel does, so it goes
+    // through the same lexicon: under a mutable leyline a noise formula
+    // contributes no wild-magic eligibility, and a preview that ignored that
+    // would promise triggers the cast never fires. Derived here rather than
+    // held on the context because [WildMagicPreviewContext] is const — and it
+    // is affordable because it happens only on a cache MISS (the lookup above
+    // is keyed on the leyline hash, so a leyline change invalidates it
+    // wholesale).
     triggers = PeerCastVerifier.certifyOwnProof(
           spell,
           casterOwnerPubkeyHex: caster,
-          leyline: context.leyline,
+          lexicon: IncantationLexicon.of(context.leyline),
         )?.wildMagic ??
         const [];
   } on ArgumentError {

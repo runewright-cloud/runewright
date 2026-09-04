@@ -149,6 +149,7 @@ import '../models/creature_spec.dart'
 import '../models/effect_descriptor.dart'; // exports SpellAffinity
 import '../models/hex_battlefield.dart'
     show MovementContest, hexDistance, hexNeighbors;
+import '../models/incantation_meaning.dart' show IncantationEffect;
 import '../models/minion.dart';
 import '../models/pending_delayed_spell.dart';
 import '../models/reflection_link.dart';
@@ -177,6 +178,7 @@ import 'line_of_sight.dart';
 import 'terrain_ops.dart';
 import 'tile_entry_resolver.dart';
 import 'peer_cast_verifier.dart' show PeerCastVerifier;
+import 'incantation_lexicon.dart' show IncantationLexicon;
 import 'trajectory_parser.dart' show ParsedFormula;
 import 'statuesque_break.dart';
 import 'turn_actions.dart';
@@ -546,6 +548,19 @@ class _AiTarget {
 /// not deterministic resolution and belongs on the caller's side of the seam.
 class DeterministicResolution {
   DeterministicResolution(this.state);
+
+  /// What formulas mean in THIS match (audit Slice D).
+  ///
+  /// Derived once, lazily, for the life of the resolution object — which is the
+  /// life of the `TurnLoop`, i.e. of the match — from the config both devices
+  /// agreed at the handshake. Under an ordinary leyline this derives nothing at
+  /// all; under a mutable one it derives the Slice B codebook exactly once.
+  ///
+  /// Every leyline-dependent question in this file goes through it: the
+  /// structural grammar length, and what a complete formula means. Nothing here
+  /// reads `leyline.mutableMagic` directly.
+  late final IncantationLexicon lexicon =
+      IncantationLexicon.of(state.config.leyline);
 
   final BattleState state;
 
@@ -3451,36 +3466,61 @@ class DeterministicResolution {
     // relying on a flag to stop it.
     for (var pass = 0; pass < repeatWholeSpell; pass++) {
     for (final formula in formulas) {
-      final descriptor = EffectResolver.resolve(formula, enhancements);
-
-      // A pending Air-Fire multiplierCycle (Bellows) on this formula's
-      // affinity re-resolves the formula's effect into extra copies inserted
-      // immediately after the original in the resolution order -- 2 total
-      // applications normally, 3 under potency. Consuming (removing) the
-      // entry here means only the first formula of a matching affinity in
-      // this spell is amplified, matching the design doc's singular "next
-      // effect of [element]" wording.
-      final formulaAffinity = spellAffinityFromZone(formula.affinity);
-      final repeatCount =
-          actor.pendingEffectMultipliers.remove(formulaAffinity)?.multiplier ?? 1;
-
-      for (var i = 0; i < repeatCount; i++) {
-        EffectApplicator.apply(
-          ApplyContext(
-            descriptor: descriptor,
-            targetTile: resolveHex,
-            caster: actor,
-            state: state,
-            rng: rng,
-            rodConsumedFor: rodConsumedFor,
-            movePaths: traversedPaths,
-            chosenConveyorDirection: conveyorDirection,
-            conveyorChainEvents: conveyorEvents,
-            drawSchedules: ctx.drawSchedules,
-            witherRng: witherRng,
-            effectiveRadiusBonus: radiusBonus,
-          ),
+      // THE interpretation seam for a live cast. Ordinarily this is
+      // `effectKindFromPair` and every formula is meaningful, so the loop below
+      // runs exactly as it always has; under a Mutable Leyline the kind comes
+      // from the leyline's codebook and a formula may mean nothing at all.
+      //
+      // Noise `continue`s. It does NOT resolve a substitute kind, fall back to
+      // the ordinary table, or apply a no-op descriptor — §6: a noise formula
+      // produces no effect and never falls back. Skipping here (rather than
+      // filtering `formulas` above) is deliberate: the loop keeps its
+      // one-iteration-per-STRUCTURAL-formula shape, so a partial counter-charm's
+      // `suppressedFormulas` skip count, the Bellows multiplier's
+      // "first formula of a matching affinity", and every meaningful effect's
+      // position relative to the others all stay defined in structural terms.
+      final meaning = lexicon.meaningOf(formula);
+      if (meaning case IncantationEffect(kind: final kind)) {
+        final descriptor = EffectResolver.resolveKind(
+          spellAffinityFromZone(formula.affinity),
+          kind,
+          enhancements,
         );
+
+        // A pending Air-Fire multiplierCycle (Bellows) on this formula's
+        // affinity re-resolves the formula's effect into extra copies inserted
+        // immediately after the original in the resolution order -- 2 total
+        // applications normally, 3 under potency. Consuming (removing) the
+        // entry here means only the first formula of a matching affinity in
+        // this spell is amplified, matching the design doc's singular "next
+        // effect of [element]" wording.
+        //
+        // Reading it inside the meaningful branch is the point: a NOISE formula
+        // of a matching affinity does not consume the multiplier, because there
+        // is no effect for it to amplify. "Next effect of [element]" means the
+        // next effect, not the next chunk.
+        final formulaAffinity = spellAffinityFromZone(formula.affinity);
+        final repeatCount =
+            actor.pendingEffectMultipliers.remove(formulaAffinity)?.multiplier ?? 1;
+
+        for (var i = 0; i < repeatCount; i++) {
+          EffectApplicator.apply(
+            ApplyContext(
+              descriptor: descriptor,
+              targetTile: resolveHex,
+              caster: actor,
+              state: state,
+              rng: rng,
+              rodConsumedFor: rodConsumedFor,
+              movePaths: traversedPaths,
+              chosenConveyorDirection: conveyorDirection,
+              conveyorChainEvents: conveyorEvents,
+              drawSchedules: ctx.drawSchedules,
+              witherRng: witherRng,
+              effectiveRadiusBonus: radiusBonus,
+            ),
+          );
+        }
       }
     }
     }
@@ -3751,7 +3791,9 @@ class DeterministicResolution {
         ? CreatureSpec.fromElements(
             certElementSequence ?? elementSequence(spell),
           )?.affinity
-        : pureAffinityOf(certFormulas ?? parsedFormulas(spell));
+        : pureAffinityOf(
+            lexicon.meaningfulOf(certFormulas ?? parsedFormulas(spell)),
+          );
 
     if (castAffinity == null) {
       // Hybrid spell (2+ distinct formula affinities), or the degenerate
@@ -3889,7 +3931,7 @@ class DeterministicResolution {
           ? CreatureSpec.fromElements(
               certElementSequence ?? const [],
             )?.affinity
-          : pureAffinityOf(certFormulas);
+          : pureAffinityOf(lexicon.meaningfulOf(certFormulas));
       cost = (cost * caster.chainCostMultiplier(pureAffinity)).ceil();
     }
 
@@ -4085,7 +4127,9 @@ class DeterministicResolution {
       final pureAffinity = spell.isSummon
           ? CreatureSpec.fromElements(certElements ?? elementSequence(spell))
               ?.affinity
-          : pureAffinityOf(certFormulas ?? parsedFormulas(spell));
+          : pureAffinityOf(
+            lexicon.meaningfulOf(certFormulas ?? parsedFormulas(spell)),
+          );
       cost = (cost * caster.chainCostMultiplier(pureAffinity)).ceil();
     }
 
@@ -4155,16 +4199,22 @@ class DeterministicResolution {
 
   /// The element slots a caster is expected to recite for [elementSequence].
   ///
-  /// Truncated to COMPLETE TRIPLETS, matching PracticeFormula.fromSpellFormula:
-  /// a spell's activation list carries 1–2 residuals that never filled a group
-  /// of three, and those resolve to no effect (FormulaTracker.formulas drops
-  /// them). Asking a caster to recite words their cast never uses would price
-  /// mana against a recital the drill never taught.
-  static List<VocalSlot> expectedRecitalSlots(
-      List<BorderZone> elementSequence) {
+  /// Truncated to COMPLETE FORMULAS at the active leyline's length, matching
+  /// PracticeFormula.fromSpellFormula: a spell's activation list carries
+  /// residuals that never filled a group, and those resolve to no effect
+  /// (segmentation drops them). Asking a caster to recite words their cast never
+  /// uses would price mana against a recital the drill never taught — which is
+  /// exactly why this reads [lexicon] and became an instance method in Slice D.
+  /// Under a mutable leyline the residual is a different length, so a
+  /// length-blind truncation here would have asked for words the cast discards.
+  ///
+  /// It is the STRUCTURAL prefix, deliberately: a noise formula is still recited.
+  /// The caster speaks the spell's words, and §6 is explicit that a noise chunk
+  /// is consumed exactly like a meaningful one — only its *effect* is absent.
+  List<VocalSlot> expectedRecitalSlots(List<BorderZone> elementSequence) {
     final complete = completeFormulaElementCount(
       elementSequence.length,
-      formulaLength: kIncantationFormulaLength,
+      formulaLength: lexicon.formulaLength,
     );
     return [
       for (var i = 0; i < complete; i++)
@@ -4331,12 +4381,21 @@ class DeterministicResolution {
   // the two cannot drift (B-1/B-8). [_zoneFromName] is the exception: the two
   // helpers below are its only callers anywhere, so it is private.
 
-  static List<ParsedFormula> parsedFormulas(SpellAsset spell) {
-    // Unrecognised names are dropped BEFORE segmenting, so they do not occupy
-    // a slot and cannot shift a chunk boundary. That is this call site's own
-    // long-standing behaviour and it is preserved deliberately — the card
-    // painter's affinity histogram segments the raw stored list instead, and
-    // the two are allowed to differ. See formula_segmentation.dart's header.
+  /// The authored (wire) fallback's structural formulas, cut at the ACTIVE
+  /// leyline's grammar.
+  ///
+  /// An instance method since Slice D, and that is the whole point: it reads
+  /// [lexicon] rather than a hardcoded length, so the authored fallback and the
+  /// certified path (`TrajectoryParser.parse` under the same lexicon) can never
+  /// cut the same element sequence differently. A static helper here would have
+  /// been a second, length-blind opinion about what a complete formula is.
+  ///
+  /// Unrecognised names are dropped BEFORE segmenting, so they do not occupy
+  /// a slot and cannot shift a chunk boundary. That is this call site's own
+  /// long-standing behaviour and it is preserved deliberately — the card
+  /// painter's affinity histogram segments the raw stored list instead, and
+  /// the two are allowed to differ. See formula_segmentation.dart's header.
+  List<ParsedFormula> parsedFormulas(SpellAsset spell) {
     final zones = spell.formula
         .map(_zoneFromName)
         .whereType<BorderZone>()
@@ -4344,13 +4403,9 @@ class DeterministicResolution {
     return [
       for (final chunk in segmentFormulas(
         zones,
-        formulaLength: kIncantationFormulaLength,
+        formulaLength: lexicon.formulaLength,
       ))
-        ParsedFormula(
-          affinity: chunk[0],
-          effectType1: chunk[1],
-          effectType2: chunk[2],
-        ),
+        ParsedFormula.withTail(affinity: chunk[0], tail: chunk.sublist(1)),
     ];
   }
 
@@ -4360,6 +4415,16 @@ class DeterministicResolution {
   /// ineligible per design doc's Chain Discount System). Used identically
   /// by [_updateChainState] and TurnLoop's `_spellManaCost`/`_certifiedManaCost`
   /// so "pure" can't drift between the advancement and discount paths.
+  ///
+  /// **Callers pass the MEANINGFUL formulas** (`lexicon.meaningfulOf(...)`),
+  /// never the raw structural list — §6: a noise chunk carries an affinity
+  /// element structurally, but that element is not something the spell does, so
+  /// it can neither establish nor break purity. Under an ordinary leyline the
+  /// two lists are identical, which is why this is a no-op today.
+  ///
+  /// Kept static and meaning-blind on purpose: it is a tally over whatever it is
+  /// given, and the decision about WHICH formulas count belongs at the seam that
+  /// knows the leyline, not in here.
   static SpellAffinity? pureAffinityOf(List<ParsedFormula> formulas) {
     if (formulas.isEmpty) return null;
     final first = spellAffinityFromZone(formulas.first.affinity);

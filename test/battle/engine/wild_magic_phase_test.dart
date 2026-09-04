@@ -83,7 +83,7 @@ SpellAsset _spell(String id, {int t = 3}) => SpellAsset(
 /// Fire-Fire-Fire: `DamageEffect(amount: 4, kind: direct)`. The one formula
 /// this file needs, because the only ordinary effect it asserts about is
 /// "did the target take damage / did it die".
-const _damageFormula = ParsedFormula(
+final _damageFormula = ParsedFormula(
   affinity: BorderZone.fire,
   effectType1: BorderZone.fire,
   effectType2: BorderZone.fire,

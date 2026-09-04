@@ -23,6 +23,7 @@ import 'dart:typed_data';
 import 'package:test/test.dart';
 
 import 'package:rune_duel/battle/engine/peer_cast_verifier.dart';
+import 'package:rune_duel/battle/engine/incantation_lexicon.dart';
 import 'package:rune_duel/battle/models/certified_cast.dart';
 import 'package:rune_duel/battle/engine/proof_intake.dart';
 import 'package:rune_duel/battle/engine/trajectory_parser.dart';
@@ -93,7 +94,7 @@ CertifiedCast _semantics(VerifiedSpellOutputs outputs,
     PeerCastVerifier.semanticsOf(
       outputs,
       casterOwnerPubkeyHex: caster ?? _casterA,
-      leyline: leyline ?? LeylineConfig.ordinaryDefault,
+      lexicon: IncantationLexicon.of(leyline ?? LeylineConfig.ordinaryDefault),
     );
 
 ParsedFormula _formula(BorderZone affinity) => ParsedFormula(

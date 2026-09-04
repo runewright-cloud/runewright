@@ -13,6 +13,7 @@
 import 'package:test/test.dart';
 
 import 'package:rune_duel/battle/engine/peer_cast_verifier.dart';
+import 'package:rune_duel/battle/engine/incantation_lexicon.dart';
 import 'package:rune_duel/battle/engine/wild_magic.dart';
 import 'package:rune_duel/battle/models/leyline_config.dart';
 import 'package:rune_duel/battle/models/match_config.dart';
@@ -84,7 +85,7 @@ void main() {
       final inBattle = PeerCastVerifier.certifyOwnProof(
         spell,
         casterOwnerPubkeyHex: local.ownerPubkeyHex,
-        leyline: setup.state.config.leyline,
+        lexicon: IncantationLexicon.of(setup.state.config.leyline),
       )!;
 
       // What the library card shows, primed from the same identity and the
@@ -142,7 +143,7 @@ void main() {
         () => PeerCastVerifier.certifyOwnProof(
           fixtureSpell(),
           casterOwnerPubkeyHex: kPracticeOpponentPubkeyHex,
-          leyline: LeylineConfig.ordinaryDefault,
+          lexicon: IncantationLexicon.ordinary,
         ),
         returnsNormally,
       );
@@ -164,12 +165,12 @@ void main() {
       final mine = PeerCastVerifier.certifyOwnProof(
         spell,
         casterOwnerPubkeyHex: _realLocalPubkeyHex,
-        leyline: leyline,
+        lexicon: IncantationLexicon.of(leyline),
       )!;
       final theirs = PeerCastVerifier.certifyOwnProof(
         spell,
         casterOwnerPubkeyHex: kPracticeOpponentPubkeyHex,
-        leyline: leyline,
+        lexicon: IncantationLexicon.of(leyline),
       )!;
       expect(mine.wildMagic, isNot(theirs.wildMagic));
     });

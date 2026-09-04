@@ -2719,7 +2719,7 @@ class TurnLoop
       PeerCastVerifier.certifyOwnProof(
         spell,
         casterOwnerPubkeyHex: _casterOwnerPubkeyHex(casterPlayerId),
-        leyline: state.config.leyline,
+        lexicon: _resolution.lexicon,
       );
 
   /// The authenticated gameplay identity of [playerId] — THE one place a
@@ -3576,7 +3576,7 @@ class TurnLoop
       action,
       merkleProof,
       rulesetVersion: state.config.rulesetVersion,
-      leyline: state.config.leyline,
+      lexicon: _resolution.lexicon,
       casterOwnerPubkeyHex: _casterOwnerPubkeyHex(
         casterPlayerId ?? _peerId() ?? localPlayerId,
       ),

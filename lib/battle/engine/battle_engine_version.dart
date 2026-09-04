@@ -401,13 +401,47 @@
 // `kRulesetVersion` stays 3. See docs/WILD_MAGIC_PLAN_VNEXT.md slice 7 and
 // docs/WILD_MAGIC_SLICE7_REVIEW.md.
 //
+//
+// v13 (2026-09-03, Mutable Leylines slice D) — a Mutable Leyline reinterprets
+// incantation formulas. Two things become leyline-dependent that were fixed
+// constants before:
+//
+//   * the STRUCTURAL grammar length — 3 ordinarily, 4-6 under a mutable leyline
+//     (LEYLINE_SEED_PLAN.md §16). Everything that cuts a certified trajectory
+//     into formulas now takes it from `IncantationLexicon.formulaLength`;
+//   * what a complete formula MEANS — the fixed `effectKindFromPair` table
+//     ordinarily, the leyline's derived codebook under a mutable one, where a
+//     formula may also mean NOTHING (`IncantationNoise`, audit §6).
+//
+// A v12 and a v13 device handed the same mutable `MatchConfig` cut the same
+// certified trajectory into different chunks and resolve different effects from
+// them, so they diverge on the first cast. That is exactly what this gate is
+// for. Ordinary play is bit-identical across the bump — ordinary interpretation
+// is total, no codebook is derived, and the replay corpus moved by zero bytes —
+// but "the honest inputs are unchanged" is not the test, and a leyline is a
+// match input either build may be handed.
+//
+// What did NOT move, and must not: the certified trajectory itself
+// (`FormulaTracker`'s three commit rules are length-independent, so the flat
+// committed sequence is leyline-invariant), `behaviouralKinKey`, kin stacking,
+// heraldic identity, the Wild Magic v2 preimage layout, and intrinsic base mana
+// cost as a function of MEANING. Base cost still counts every complete
+// structural chunk, noise included (§7.4: *"leylines change interpretation, not
+// intrinsic certified cost"*); it moves with `formulaLength` alone, which is
+// already a different `leylineConfigHash`.
+//
+// Nothing crosses the wire that did not before — `LeylineConfig` has carried
+// `mutableMagic` and `formulaLength` since Slice 1 — and the circuit is
+// untouched, so `kBattleProtocolVersion` stays 7 and `kRulesetVersion` stays 3.
+// See docs/MUTABLE_LEYLINES_IMPLEMENTATION_AUDIT.md §13 Slice D.
+//
 /// The deterministic battle-engine consensus epoch this build implements.
 ///
 /// The single canonical definition — [MatchConfig.battleEngineVersion] and
 /// [DeviceCapabilities.battleEngineVersion] both default to it rather than
 /// restating a literal, exactly as `MatchConfig.rulesetVersion` derives from
 /// `kRulesetVersion`. See this file's header for what forces a bump.
-const int kBattleEngineVersion = 12;
+const int kBattleEngineVersion = 13;
 
 /// What a peer that predates the engine-version gate implicitly declares: it
 /// omits the field, and an omitted field cannot be read as agreement.

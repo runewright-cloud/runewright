@@ -306,29 +306,35 @@ void main() {
     await transportPeer.disconnect();
   });
 
-  // The Wild Magic vNext slice-2A epoch. Pinned as a literal pair rather than
+  // The Mutable Leylines slice-D epoch. Pinned as a literal pair rather than
   // as `kBattleEngineVersion - 1` so a future bump has to come back here and
   // say what it broke, instead of silently re-pointing this at the new
-  // neighbour. (The previous occupant of this group was v6 <-> v7, Aetherial
-  // Armor's Charger and Muddy keywords going live.)
+  // neighbour. (The previous occupant of this group was v11 <-> v12, wild magic
+  // becoming a phase of a simultaneous resolution batch.)
   //
-  // This bump is the one the gate exists for and the one no other gate can
-  // see: the wire is identical, the proofs are identical, and canonical bytes
-  // are identical for the same state — v8 simply computes a DIFFERENT wild
-  // magic from the same proof, because the derivation moved from
-  // `commitment || T || seed` to `caster x certified behaviour x leyline`
-  // (docs/WILD_MAGIC_PLAN_VNEXT.md §5). A v7 build and a v8 build agree on the
-  // opening hash and then diverge the first time any spell carries a trigger —
-  // possibly several turns in, with nothing to blame it on. The refusal has to
-  // happen at the handshake.
-  group('v11 <-> v12 (the wild-magic phase)', () {
-    test('this build declares engine v12', () {
-      expect(kBattleEngineVersion, 12,
-          reason: 'wild magic is now a PHASE of a simultaneous resolution '
-              'batch — all admission, then all coalesced wild magic, then all '
-              'formula effects — with duplicate triggers of one effect kind '
-              'coalescing into a single world event under a new event RNG '
-              '(domain 0x0C). docs/WILD_MAGIC_PLAN_VNEXT.md, Slice 7');
+  // This bump is a good illustration of why the gate is separate from the other
+  // two: the wire is identical — `LeylineConfig` has carried `mutableMagic` and
+  // `formulaLength` since its first slice — and the proofs and the VK are
+  // untouched. What changes is what a build DOES with a mutable config: a v13
+  // build cuts the certified trajectory into 4-6 element formulas and looks
+  // their tails up in the leyline's derived codebook, where a formula may mean
+  // nothing at all; a v12 build cuts the same trajectory into triplets and
+  // reads the fixed table. They resolve different effects, and price the cast
+  // differently, from the first cast onward.
+  //
+  // Ordinary play is bit-identical across the bump, which is exactly why the
+  // refusal cannot be conditional on the leyline: the handshake settles the
+  // config, and by the time a mutable one is agreed there is no safe way to
+  // discover the peer cannot interpret it.
+  group('v12 <-> v13 (mutable leyline interpretation)', () {
+    test('this build declares engine v13', () {
+      expect(kBattleEngineVersion, 13,
+          reason: 'a Mutable Leyline now reinterprets incantation formulas: '
+              'the structural grammar length comes from the active '
+              'LeylineConfig (3 ordinarily, 4-6 mutable) and a complete '
+              "formula's meaning comes from the leyline's derived codebook, "
+              'where it may be noise. '
+              'docs/MUTABLE_LEYLINES_IMPLEMENTATION_AUDIT.md §13 Slice D');
       expect(kBattleProtocolVersion, 7,
           reason: 'no framing changed — the new state is derived on both '
               'devices from values they already exchange');
@@ -336,16 +342,15 @@ void main() {
           reason: 'no proof semantics changed — the circuit is untouched');
     });
 
-    test('a v11 peer is refused by the capabilities gate', () async {
-      // The previous epoch is now the incompatible one: a v11 build resolves
-      // each cast's wild magic inline, keyed on the caster and on an
-      // encounter-order nonce, so against a v12 build it rolls a different
-      // Chasm axis, fires a dead caster's wild magic differently, and orders
-      // wild magic against formula effects differently. Two casts in one batch
-      // is enough to diverge.
+    test('a v12 peer is refused by the capabilities gate', () async {
+      // The previous epoch is now the incompatible one: a v12 build has no
+      // notion of a leyline-supplied formula length or of a derived codebook,
+      // so handed a mutable config it chunks by three and resolves every tail
+      // through the fixed table. One cast is enough to diverge — and its mana
+      // cost diverges with it, because the structural chunk count moved.
       final localIdentity = await Identity.ephemeral();
       final chapter = await makeChapter(
-        idSuffix: 'a11',
+        idSuffix: 'a12',
         ownerPubkeyHex: await localIdentity.ownerPubkeyHex(),
       );
 
@@ -357,7 +362,7 @@ void main() {
         localChapter: chapter,
         hostConfig: const MatchConfig(),
       );
-      final forfeitReason = fakePeer(transportPeer, engineVersion: 11);
+      final forfeitReason = fakePeer(transportPeer, engineVersion: 12);
 
       await expectLater(
         local,
@@ -366,8 +371,8 @@ void main() {
           'message',
           allOf(
             contains('battle engine version mismatch'),
-            contains('local=12'),
-            contains('peer=11'),
+            contains('local=13'),
+            contains('peer=12'),
           ),
         )),
       );
@@ -378,10 +383,10 @@ void main() {
       await transportPeer.disconnect();
     });
 
-    test('a host config pinned to v11 is refused as well', () async {
-      const v11Config = MatchConfig(battleEngineVersion: 11);
-      expect(const MatchConfig().matches(v11Config), isFalse);
-      expect(v11Config.battleEngineVersion, isNot(kBattleEngineVersion));
+    test('a host config pinned to v12 is refused as well', () async {
+      const v12Config = MatchConfig(battleEngineVersion: 12);
+      expect(const MatchConfig().matches(v12Config), isFalse);
+      expect(v12Config.battleEngineVersion, isNot(kBattleEngineVersion));
     });
   });
 

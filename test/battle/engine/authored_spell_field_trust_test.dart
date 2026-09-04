@@ -52,8 +52,8 @@ import 'dart:typed_data';
 import 'package:test/test.dart';
 import 'package:rune_duel/battle/engine/forced_cast.dart'
     show ForcedCast, ForcedCastPick, ForcedCastRequest;
+import 'package:rune_duel/battle/engine/incantation_lexicon.dart';
 import 'package:rune_duel/battle/engine/peer_cast_verifier.dart';
-import 'package:rune_duel/battle/models/leyline_config.dart';
 import 'package:rune_duel/battle/engine/hash_rng.dart';
 import 'package:rune_duel/battle/engine/turn_loop.dart';
 import 'package:rune_duel/battle/models/battle_state.dart' show BattleState;
@@ -200,7 +200,7 @@ void main() {
         action,
         merkleProof,
         rulesetVersion: kRulesetVersion,
-        leyline: LeylineConfig.ordinaryDefault,
+        lexicon: IncantationLexicon.ordinary,
         casterOwnerPubkeyHex: '0x${'22' * 32}',
         peerDrawSchedule: null,
       );

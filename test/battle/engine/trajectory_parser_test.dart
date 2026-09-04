@@ -80,7 +80,7 @@ void main() {
       final result = TrajectoryParser.parse(out);
       expect(result.formulas.length, equals(1));
       expect(result.formulas[0], equals(
-        const ParsedFormula(
+        ParsedFormula(
           affinity: BorderZone.fire,
           effectType1: BorderZone.fire,
           effectType2: BorderZone.fire,
@@ -105,7 +105,7 @@ void main() {
       final result = TrajectoryParser.parse(out);
       expect(result.formulas.length, equals(1));
       expect(result.formulas[0], equals(
-        const ParsedFormula(
+        ParsedFormula(
           affinity: BorderZone.fire,
           effectType1: BorderZone.air,
           effectType2: BorderZone.fire,
@@ -134,7 +134,7 @@ void main() {
       final result = TrajectoryParser.parse(out);
       expect(result.formulas.length, equals(1));
       expect(result.formulas[0], equals(
-        const ParsedFormula(
+        ParsedFormula(
           affinity: BorderZone.fire,
           effectType1: BorderZone.fire,
           effectType2: BorderZone.fire,
@@ -174,7 +174,7 @@ void main() {
       final result = TrajectoryParser.parse(out);
       expect(result.formulas.length, equals(1));
       expect(result.formulas[0], equals(
-        const ParsedFormula(
+        ParsedFormula(
           affinity: BorderZone.fire,
           effectType1: BorderZone.water,
           effectType2: BorderZone.earth,
