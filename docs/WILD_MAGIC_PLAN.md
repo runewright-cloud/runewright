@@ -80,6 +80,11 @@ Not `border_activations`, not generations-dominant. Rationale: §Eligibility say
 across all **formulas**", and this reading reuses the certified `ParsedFormula` list
 `TrajectoryParser.parse` already produces — no new certified surface.
 
+**Amended 2026-09-04** — see §4.3's amendment block. Under a Mutable Leyline the tally is no
+longer taken over the completed-formula list; it is taken over
+`IncantationLexicon.eligibleAffinitiesOf(certified element sequence)`, which adds the
+trailing incomplete group's first element. Ordinary play is unchanged.
+
 ### 2.3 The hash is deterministic per (spell, community seed)
 
 Confirmed as designed. No per-cast randomness gates whether wild magic fires. Per-cast
@@ -342,6 +347,48 @@ Note how §4.3 disposes of void for free: a zero-formula spell yields an empty t
 eligible element, so it fires nothing. That is the design's "void effects entirely removed
 for now", with no special case.
 
+> ### ⚠️ Superseding amendment — 2026-09-04, partial-formula affinity (engine 14)
+>
+> **An incomplete trailing Mutable group has no formula meaning, effect,
+> `effectCount`, or suppression slot, but its first element contributes affinity
+> for Wild Magic eligibility. This exception does not apply to ordinary leylines
+> and does not participate in chain purity.**
+>
+> The statements above remain true as written for *formulas*: an incomplete
+> trailing group still does not form one, is never interpreted, and is never
+> padded or looked up. What changed is that eligibility is no longer read off
+> the completed-formula list alone. A formula's **start** establishes its
+> affinity; only its **completion** establishes its meaning.
+>
+> | group | affinity | meaning | effect | effectCount | suppression slot | chain purity |
+> |---|---|---|---|---|---|---|
+> | complete + meaningful | ✅ | codebook | ✅ | +1 | consumes | ✅ |
+> | complete + **Noise** | ❌ | inert | ❌ | +1 | consumes | ❌ |
+> | **incomplete residual** | ✅ | none | ❌ | +0 | does not consume | ❌ |
+>
+> Scope, ratified with the rule:
+>
+> * **R-10 — chain purity is NOT affected.** `pureAffinityOf`, the chain
+>   discount, certified cost and chain advancement stay on completed
+>   *meaningful* formulas. A residual-only Fire spell may be Wild-Magic-eligible
+>   for Fire without establishing or advancing a Fire chain; `completed Fire +
+>   Water residual` stays **pure Fire** for chain pricing. No certified price
+>   moves.
+> * **R-11 — ordinary leylines are NOT affected.**
+>   `IncantationLexicon.ordinary.residualBearsAffinity` is `false`. Ordinary
+>   1–2-element residuals lend nothing, exactly as before. This is a
+>   Mutable-grammar rule, not a retroactive change to ordinary magic.
+>
+> One consequence for the "disposes of void for free" note just above: under a
+> Mutable Leyline "zero-formula" no longer implies "no eligible element". A
+> trajectory with no complete formula but at least one committed activation
+> tallies its residual and can fire. Only a trajectory that committed *nothing*
+> is inert. Ordinary play still disposes of void exactly as described, because
+> ordinary residuals lend nothing (R-11).
+>
+> Canonical implementation: `IncantationLexicon.eligibleAffinitiesOf`. See
+> `docs/MUTABLE_LEYLINES_IMPLEMENTATION_AUDIT.md` §7.5.
+
 ### 4.4 The effects table
 
 Row order 1 → 2 → 3; within a row, element order `fire, earth, water, air`.
@@ -469,6 +516,9 @@ class WildMagic {
   );
 
   // Exposed for testing against fixed strings, not just fixed proofs:
+  // AMENDED 2026-09-04: the parameter is now the affinity list the lexicon
+  // derives, `List<SpellAffinity>`, not the completed-formula list — see the
+  // amendment block in §4.3.
   static Set<SpellAffinity> eligibleElements(List<ParsedFormula> formulas);
   static List<(WildMagicRow, int)> scan(String seedHex);
 }

@@ -473,40 +473,297 @@ void main() {
     });
 
     test('a noise formula does not enter the wild-magic tally', () {
-      // One Fire meaningful, one Water noise. Unconditionally that is a 1-1
-      // tie and BOTH affinities are eligible (the "wild magic specialist"
-      // reading); meaningfully it is Fire alone.
-      final formulas = [
-        _formula(BorderZone.fire, _kL4MeaningfulKey),
-        _formula(BorderZone.water, _kL4NoiseKey),
+      // One Fire meaningful, one Water noise, no residual. Tallied
+      // unconditionally that is a 1-1 tie and BOTH affinities are eligible
+      // (the "wild magic specialist" reading); through the lexicon it is Fire
+      // alone.
+      final elements = <BorderZone>[
+        BorderZone.fire, ..._kL4MeaningfulKey,
+        BorderZone.water, ..._kL4NoiseKey,
       ];
-      expect(WildMagic.eligibleElements(formulas),
-          {SpellAffinity.fire, SpellAffinity.water},
-          reason: 'sanity: an unconditional tally ties and sees both');
-      expect(WildMagic.eligibleElements(lexicon.meaningfulOf(formulas)),
+      expect(elements.length % 4, 0, reason: 'fixture must have no residual');
+      expect(
+        WildMagic.eligibleElements(
+          [for (final z in [BorderZone.fire, BorderZone.water])
+            spellAffinityFromZone(z)],
+        ),
+        {SpellAffinity.fire, SpellAffinity.water},
+        reason: 'sanity: an unconditional tally ties and sees both',
+      );
+      expect(lexicon.eligibleAffinitiesOf(elements), [SpellAffinity.fire]);
+      expect(WildMagic.eligibleElements(lexicon.eligibleAffinitiesOf(elements)),
           {SpellAffinity.fire});
     });
 
     test('a spell of only noise is eligible for nothing', () {
-      final formulas = [
-        _formula(BorderZone.fire, _kL4NoiseKey),
-        _formula(BorderZone.water, _kL4NoiseKey),
+      final elements = <BorderZone>[
+        BorderZone.fire, ..._kL4NoiseKey,
+        BorderZone.water, ..._kL4NoiseKey,
       ];
-      expect(lexicon.meaningfulOf(formulas), isEmpty);
-      expect(WildMagic.eligibleElements(lexicon.meaningfulOf(formulas)),
+      expect(lexicon.eligibleAffinitiesOf(elements), isEmpty);
+      expect(WildMagic.eligibleElements(lexicon.eligibleAffinitiesOf(elements)),
           isEmpty,
-          reason: 'an all-noise spell reduces to the zero-formula case, which '
-              'already fires no wild magic — with no special case');
+          reason: 'an all-noise spell with no residual reduces to the '
+              'contributes-nothing case, which already fires no wild magic — '
+              'with no special case');
     });
 
     test('an all-meaningful spell tallies exactly as it always did', () {
-      final formulas = [
-        _formula(BorderZone.air, _kL4MeaningfulKey),
-        _formula(BorderZone.air, _kL4MeaningfulKey),
-        _formula(BorderZone.earth, _kL4MeaningfulKey),
+      final elements = <BorderZone>[
+        BorderZone.air, ..._kL4MeaningfulKey,
+        BorderZone.air, ..._kL4MeaningfulKey,
+        BorderZone.earth, ..._kL4MeaningfulKey,
       ];
-      expect(lexicon.meaningfulOf(formulas), formulas);
-      expect(WildMagic.eligibleElements(formulas), {SpellAffinity.air});
+      expect(lexicon.eligibleAffinitiesOf(elements),
+          [SpellAffinity.air, SpellAffinity.air, SpellAffinity.earth]);
+      expect(WildMagic.eligibleElements(lexicon.eligibleAffinitiesOf(elements)),
+          {SpellAffinity.air});
+    });
+  });
+
+  // ── 5b. Structural affinity: the 2026-09-04 partial-formula correction ────
+  //
+  // A formula's START fixes its affinity; only its COMPLETION fixes its
+  // meaning. So the trailing incomplete group speaks for its first element
+  // even though it can never be interpreted — while a completed Noise formula,
+  // which CAN be interpreted, speaks for nothing.
+
+  group('residual affinity', () {
+    final lexicon = IncantationLexicon.of(_rivendell(4));
+
+    test('a trajectory too short for one formula still has an affinity', () {
+      // The headline case. Three elements under length 4: zero complete
+      // formulas, zero meanings, and Fire eligible all the same. Before the
+      // correction this list was empty and the spell was called "void".
+      const elements = [BorderZone.fire, BorderZone.water, BorderZone.earth];
+      expect(
+        TrajectoryParser.parse(_outputsFor(elements), formulaLength: 4).formulas,
+        isEmpty,
+      );
+      expect(lexicon.residualAffinityOf(elements), SpellAffinity.fire);
+      expect(lexicon.eligibleAffinitiesOf(elements), [SpellAffinity.fire]);
+      expect(WildMagic.eligibleElements(lexicon.eligibleAffinitiesOf(elements)),
+          {SpellAffinity.fire});
+    });
+
+    test('at every ratified length, and never by ordinary fallback', () {
+      // Under the ORDINARY grammar these same three elements are one complete
+      // Fire formula with a meaning. Under 4, 5 and 6 they are a residual: an
+      // affinity and nothing else. The residual must never be padded, looked
+      // up, or read through effectKindFromPair.
+      const elements = [BorderZone.fire, BorderZone.water, BorderZone.earth];
+      for (final length in const [4, 5, 6]) {
+        final l = IncantationLexicon.of(_rivendell(length));
+        expect(
+          TrajectoryParser.parse(_outputsFor(elements), formulaLength: length)
+              .formulas,
+          isEmpty,
+          reason: 'no complete formula at L=$length',
+        );
+        expect(l.eligibleAffinitiesOf(elements), [SpellAffinity.fire],
+            reason: 'the residual speaks for its first element at L=$length');
+        expect(
+          PeerCastVerifier.semanticsOf(
+            _outputsFor(elements),
+            casterOwnerPubkeyHex: '0x${'11' * 32}',
+            lexicon: l,
+          ).formulas,
+          isEmpty,
+          reason: 'certified effectCount stays zero at L=$length',
+        );
+      }
+    });
+
+    test('rides alongside complete formulas, meaningful and noise alike', () {
+      // Fire meaningful | Water noise | Air residual, at length 4. The
+      // ratified table, all three rows in one fixture.
+      final elements = <BorderZone>[
+        BorderZone.fire, ..._kL4MeaningfulKey,
+        BorderZone.water, ..._kL4NoiseKey,
+        BorderZone.air, BorderZone.earth,
+      ];
+      expect(lexicon.residualAffinityOf(elements), SpellAffinity.air);
+      expect(lexicon.eligibleAffinitiesOf(elements),
+          [SpellAffinity.fire, SpellAffinity.air],
+          reason: 'meaningful contributes, noise does not, residual does');
+      expect(WildMagic.eligibleElements(lexicon.eligibleAffinitiesOf(elements)),
+          {SpellAffinity.fire, SpellAffinity.air},
+          reason: 'a 1-1 tie makes both eligible');
+    });
+
+    test('an exactly-divisible trajectory has no residual', () {
+      final elements = <BorderZone>[
+        BorderZone.fire, ..._kL4MeaningfulKey,
+      ];
+      expect(lexicon.residualAffinityOf(elements), isNull);
+      expect(lexicon.eligibleAffinitiesOf(elements), [SpellAffinity.fire]);
+    });
+
+    test('an empty trajectory has no residual and no affinity', () {
+      expect(lexicon.residualAffinityOf(const []), isNull);
+      expect(lexicon.eligibleAffinitiesOf(const []), isEmpty);
+    });
+
+    test('the complete-group prefix agrees with TrajectoryParser', () {
+      // The canonicality claim: eligibleAffinitiesOf re-segments the flat
+      // sequence itself, and must cut it into exactly the formulas the parser
+      // does. Two segmentations of one trajectory is the drift this whole
+      // correction exists to prevent.
+      final elements = _alternating(11); // 2 complete at L=4, 3 residual
+      final formulas =
+          TrajectoryParser.parse(_outputsFor(elements), formulaLength: 4)
+              .formulas;
+      expect(formulas.length, 2);
+
+      // Rebuilt the long way round: the parser's complete formulas, filtered
+      // by meaning, then the residual appended.
+      final expected = <SpellAffinity>[
+        for (final f in lexicon.meaningfulOf(formulas))
+          spellAffinityFromZone(f.affinity),
+        ?lexicon.residualAffinityOf(elements),
+      ];
+      expect(lexicon.eligibleAffinitiesOf(elements), expected);
+      expect(expected.last, spellAffinityFromZone(elements[8]),
+          reason: 'the residual begins at index 8 — 2 complete groups of 4');
+    });
+
+    test('ORDINARY residuals stay inert (R-11)', () {
+      // RATIFIED 2026-09-04: residual affinity is a Mutable-grammar rule, not a
+      // retroactive change to ordinary magic. Ordinary residuals are 1-2
+      // elements and pervasive; granting them affinity would retally wild magic
+      // for a large share of every existing spell. This getter is a decision,
+      // not a placeholder — do not flip it.
+      const elements = [
+        BorderZone.fire, BorderZone.water, BorderZone.earth, BorderZone.air,
+      ];
+      expect(IncantationLexicon.ordinary.residualBearsAffinity, isFalse);
+      expect(IncantationLexicon.ordinary.residualAffinityOf(elements), isNull);
+      expect(IncantationLexicon.ordinary.eligibleAffinitiesOf(elements),
+          [SpellAffinity.fire],
+          reason: 'the trailing Air is dropped, exactly as before');
+      // Every ordinary config, not just the const default — a seeded ordinary
+      // leyline is still ordinary.
+      for (final seed in const ['mirkwood', 'rivendell', '']) {
+        final l = IncantationLexicon.of(LeylineConfig.ordinary(seed));
+        expect(l.residualBearsAffinity, isFalse, reason: 'ordinary "$seed"');
+        expect(l.eligibleAffinitiesOf(elements), [SpellAffinity.fire]);
+      }
+      expect(lexicon.residualBearsAffinity, isTrue);
+    });
+  });
+
+  // ── 5c. R-10: eligibility is NOT chain purity ─────────────────────────────
+  //
+  // RATIFIED 2026-09-04. A residual may lend its opening affinity to WILD
+  // MAGIC. It must not thereby become a new way to advance an elemental chain,
+  // earn a chain discount, or make an otherwise-pure completed spell hybrid for
+  // chain pricing. `pureAffinityOf` therefore stays on the meaningful COMPLETE
+  // formulas, and this group exists so a future refactor cannot quietly feed
+  // `eligibleAffinitiesOf` into it.
+  //
+  // The two readings are deliberately different TYPES —
+  // `List<ParsedFormula>` for purity, `List<SpellAffinity>` for eligibility —
+  // so the mistake does not compile. These tests pin the behaviour behind that,
+  // for the day someone "helpfully" adds a conversion.
+
+  group('chain purity is not affected (R-10)', () {
+    final lexicon = IncantationLexicon.of(_rivendell(4));
+
+    /// The complete formulas `pureAffinityOf` is entitled to see, cut from
+    /// [elements] the way certification cuts them.
+    List<ParsedFormula> complete(List<BorderZone> elements) => [
+          for (final chunk in segmentFormulas(elements, formulaLength: 4))
+            ParsedFormula.withTail(affinity: chunk[0], tail: chunk.sublist(1)),
+        ];
+
+    SpellAffinity? purityOf(List<BorderZone> elements) =>
+        DeterministicResolution.pureAffinityOf(
+          lexicon.meaningfulOf(complete(elements)),
+        );
+
+    test('residual-only Fire is WM-eligible but establishes no chain', () {
+      const elements = [BorderZone.fire, BorderZone.water, BorderZone.earth];
+      expect(lexicon.eligibleAffinitiesOf(elements), [SpellAffinity.fire],
+          reason: 'Fire may be wild-magic eligible…');
+      expect(purityOf(elements), isNull,
+          reason: '…and must still break the chain: there is no completed '
+              'meaningful formula, so there is nothing to advance a chain on');
+    });
+
+    test('completed Fire + Fire residual: purity comes from the formula', () {
+      final elements = <BorderZone>[
+        BorderZone.fire, ..._kL4MeaningfulKey,
+        BorderZone.fire, BorderZone.water,
+      ];
+      expect(purityOf(elements), SpellAffinity.fire);
+      expect(complete(elements), hasLength(1),
+          reason: 'the residual is not a formula, so it cannot be the thing '
+              'that decided purity — the completed Fire formula is');
+      // Same answer with the residual removed entirely: proof it contributed
+      // nothing rather than agreeing by luck.
+      expect(purityOf(elements.sublist(0, 4)), SpellAffinity.fire);
+    });
+
+    test('completed Fire + Water residual stays PURE FIRE', () {
+      // The case the ruling turned on. Eligibility sees a 1-1 Fire/Water tie;
+      // chain pricing must not — a residual cannot make an otherwise-pure
+      // completed spell hybrid.
+      final elements = <BorderZone>[
+        BorderZone.fire, ..._kL4MeaningfulKey,
+        BorderZone.water, BorderZone.earth,
+      ];
+      expect(lexicon.eligibleAffinitiesOf(elements),
+          [SpellAffinity.fire, SpellAffinity.water]);
+      expect(WildMagic.eligibleElements(lexicon.eligibleAffinitiesOf(elements)),
+          {SpellAffinity.fire, SpellAffinity.water},
+          reason: 'wild magic sees the tie');
+      expect(purityOf(elements), SpellAffinity.fire,
+          reason: 'chain pricing does NOT — the Water residual is not a '
+              'completed formula and cannot break purity');
+    });
+
+    test('Noise stays affinity-inert for both readings', () {
+      final elements = <BorderZone>[
+        BorderZone.fire, ..._kL4MeaningfulKey,
+        BorderZone.water, ..._kL4NoiseKey,
+      ];
+      expect(lexicon.eligibleAffinitiesOf(elements), [SpellAffinity.fire]);
+      expect(purityOf(elements), SpellAffinity.fire,
+          reason: 'unchanged by the correction — §6 already ruled this');
+    });
+
+    test('a genuinely hybrid completed spell still breaks the chain', () {
+      // The control. Purity must still be capable of returning null, or the
+      // assertions above would pass on a function that always says Fire.
+      final elements = <BorderZone>[
+        BorderZone.fire, ..._kL4MeaningfulKey,
+        BorderZone.water, ..._kL4MeaningfulKey,
+      ];
+      expect(purityOf(elements), isNull);
+    });
+
+    test('a residual adds no structural chunk and no effectCount', () {
+      // Stated on the pricing function directly, so the trajectory-length
+      // difference cannot muddy it. Same outputs, same T; only the chunking
+      // question is asked.
+      final withResidual = <BorderZone>[
+        BorderZone.fire, ..._kL4MeaningfulKey, BorderZone.water,
+      ];
+      final outputs = _outputsFor(withResidual);
+      final formulas =
+          TrajectoryParser.parse(outputs, formulaLength: 4).formulas;
+      expect(formulas, hasLength(1),
+          reason: '5 elements at L=4 is one formula plus a residual');
+      expect(
+        PeerCastVerifier.certifiedBaseManaCost(outputs, formulas),
+        PeerCastVerifier.semanticsOf(
+          outputs,
+          casterOwnerPubkeyHex: '0x${'11' * 32}',
+          lexicon: lexicon,
+        ).baseManaCost,
+        reason: 'certification prices the STRUCTURAL formulas and the residual '
+            'is not one of them',
+      );
     });
   });
 
@@ -540,9 +797,10 @@ void main() {
     });
 
     test('eligibility is the only leyline-dependent stage', () {
-      // triggersFor takes the formulas ONLY for eligibility (§7.2). Passing the
-      // meaningful subset is therefore the whole of the mutable change — and an
-      // empty subset short-circuits before the hash is even computed.
+      // triggersFor reads the leyline ONLY through the affinity list (§7.2 as
+      // amended by the partial-formula correction). Passing the lexicon's own
+      // reading is therefore the whole of the mutable change — and an empty
+      // list short-circuits before the hash is even computed.
       final outputs = _outputsFor(_alternating(12));
       final lexicon = IncantationLexicon.of(_rivendell(4));
       final certified = PeerCastVerifier.semanticsOf(
@@ -555,9 +813,95 @@ void main() {
         certifiedTrajectory: certified.elementSequence,
         certifiedBaseManaCost: certified.baseManaCost,
         leylineConfigHash: lexicon.leyline.leylineConfigHash,
-        formulas: lexicon.meaningfulOf(certified.formulas),
+        affinities: lexicon.eligibleAffinitiesOf(certified.elementSequence),
       );
       expect(certified.wildMagic, expected);
     });
+
+    test('a residual-only spell now reaches the wild-magic path', () {
+      // The partial-formula correction's live consequence, end to end through
+      // the real certification. Three elements under length 6: zero complete
+      // formulas, zero incantation effects — and one eligible affinity, which
+      // is enough to fire a trigger. Under v13 this spell's eligible set was
+      // empty and `triggersFor` short-circuited before it hashed anything.
+      //
+      // `seed7` at length 6 is a hunted fixture: it is one of the ~3% of
+      // (caster, spell, leyline) triples whose hash carries a pattern at all,
+      // chosen so this assertion is not vacuous agreement on two empty lists.
+      const elements = [BorderZone.fire, BorderZone.water, BorderZone.earth];
+      final outputs = _outputsFor(elements);
+      final caster = '0x${'11' * 32}';
+      final lexicon = IncantationLexicon.of(
+          LeylineConfig.mutable(communitySeed: 'seed7', formulaLength: 6));
+      final certified = PeerCastVerifier.semanticsOf(
+        outputs,
+        casterOwnerPubkeyHex: caster,
+        lexicon: lexicon,
+      );
+
+      expect(certified.formulas, isEmpty,
+          reason: 'no complete formula, so no incantation effect and a '
+              'certified effectCount of zero');
+      expect(lexicon.eligibleAffinitiesOf(certified.elementSequence),
+          [SpellAffinity.fire]);
+      expect(certified.wildMagic, hasLength(1));
+      expect(certified.wildMagic.single.element, SpellAffinity.fire);
+
+      // What v13 computed for the identical proof, caster and leyline: an
+      // empty eligible set, and therefore nothing at all.
+      expect(
+        WildMagic.triggersFor(
+          casterPubkeyHex: caster,
+          certifiedTrajectory: certified.elementSequence,
+          certifiedBaseManaCost: certified.baseManaCost,
+          leylineConfigHash: lexicon.leyline.leylineConfigHash,
+          affinities: const [],
+        ),
+        isEmpty,
+        reason: 'the eligible SET is the only thing that moved',
+      );
+    });
+
+    test('the preimage does not move with the residual', () {
+      // The hash reads the caster, the FLAT certified trajectory, the
+      // structural base cost and the config hash — and the residual is already
+      // inside the flat trajectory, exactly as it always was. So the hash for
+      // this spell is byte-identical to the one v13 computed and then threw
+      // away; only what it is combined with changed.
+      const elements = [BorderZone.fire, BorderZone.water, BorderZone.earth];
+      final outputs = _outputsFor(elements);
+      final caster = '0x${'11' * 32}';
+      final lexicon = IncantationLexicon.of(
+          LeylineConfig.mutable(communitySeed: 'seed7', formulaLength: 6));
+      final certified = PeerCastVerifier.semanticsOf(
+        outputs,
+        casterOwnerPubkeyHex: caster,
+        lexicon: lexicon,
+      );
+      expect(certified.elementSequence, elements,
+          reason: 'the certified trajectory carries the residual and always '
+              'did — this is why the preimage cannot have moved');
+      expect(
+        WildMagic.semanticHashHex(
+          casterPubkeyHex: caster,
+          certifiedTrajectory: certified.elementSequence,
+          certifiedBaseManaCost: certified.baseManaCost,
+          leylineConfigHash: lexicon.leyline.leylineConfigHash,
+        ),
+        _kSeed7ResidualHash,
+        reason: 'a fixed vector: if this literal ever has to move, the Wild '
+            'Magic preimage moved, and that is a separate ruling',
+      );
+    });
   });
 }
+
+/// The Wild Magic semantic hash for caster `0x11…11` casting the certified
+/// trajectory `[fire, water, earth]` (base cost 20) under `seed7` at length 6 —
+/// the residual-only fixture above.
+///
+/// Pinned as a literal because it is the *unchanged* half of the
+/// partial-formula correction: v13 computed this same hex for this same spell
+/// and then discarded it, having found nothing eligible to combine it with.
+const String _kSeed7ResidualHash =
+    'df75111c778983bd6a9dbb823d7f27601bcf60c1234854020bea6c87fc4edd0d';

@@ -26,9 +26,18 @@ import 'package:rune_duel/spells/incantation_display.dart';
 import 'package:rune_duel/spells/spell_asset.dart';
 import 'package:rune_duel/spells/wild_magic_preview.dart';
 import 'package:rune_duel/ui/spell_card_painter.dart';
+import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/ui/widgets/leyline_picker.dart';
 
 import '../support/wild_magic_fixture.dart';
+
+BorderZone _zone(String name) => switch (name) {
+      'fire' => BorderZone.fire,
+      'earth' => BorderZone.earth,
+      'water' => BorderZone.water,
+      'air' => BorderZone.air,
+      _ => throw ArgumentError(name),
+    };
 
 /// A caster key that fires no wild magic for the shared fixture, so these
 /// tests observe the rules box rather than a foil animation. (A foil card
@@ -75,8 +84,10 @@ SpellAsset _noiseSpell() => fixtureSpell(
       formula: const ['fire', 'water', 'fire', 'fire'],
     );
 
-/// A three-element spell: a complete formula ordinarily, structurally VOID
-/// under every mutable length.
+/// A three-element spell: a complete formula ordinarily, and INCANTATION-
+/// INCOMPLETE under every mutable length — no complete formula, no effect, and
+/// (since the 2026-09-04 partial-formula correction) Fire affinity all the
+/// same. Not "void": see [IncantationReading.isSilent].
 SpellAsset _threeElementSpell() =>
     fixtureSpell(name: 'Fixture', formula: const ['fire', 'fire', 'fire']);
 
@@ -469,11 +480,12 @@ void main() {
           findsNothing);
     });
 
-    testWidgets('a structurally void spell says so, and claims nothing',
+    testWidgets('an incantation-incomplete spell says so, and claims nothing',
         (t) async {
       // The high-risk gate. Three elements is a complete ordinary formula and
-      // NOTHING under length 4 — the card must not print the ordinary effect
-      // it would have had, and must not merely go blank either.
+      // NO complete formula under length 4 — the card must not print the
+      // ordinary effect it would have had, and must not merely go blank
+      // either.
       _viewUnder(_rivendell(4));
       await _pumpCard(t, _threeElementSpell());
       await t.tap(find.byType(SpellCardWidget));
@@ -489,10 +501,140 @@ void main() {
       expect(find.textContaining('rivendell 4'), findsOneWidget);
     });
 
-    testWidgets('the same void spell reads normally under an ordinary leyline',
+    testWidgets('…and shows the affinity it does still have', (t) async {
+      // The partial-formula correction's UI half. The same card must NOT say
+      // the cast does nothing, because that is now false: the residual lends
+      // Fire affinity, which wild magic can read. It must also not overstate
+      // it — eligibility is not an effect, so the sentence says "works no
+      // effect" first and names the affinity second.
+      _viewUnder(_rivendell(4));
+      await _pumpCard(t, _threeElementSpell());
+      await t.tap(find.byType(SpellCardWidget));
+      await t.pumpAndSettle();
+
+      expect(find.textContaining('do nothing', findRichText: true),
+          findsNothing);
+      expect(find.textContaining('does nothing', findRichText: true),
+          findsNothing);
+      expect(find.textContaining('work no effect', findRichText: true),
+          findsOneWidget);
+      expect(find.textContaining('Fire affinity', findRichText: true),
+          findsOneWidget);
+      expect(find.textContaining('wild magic', findRichText: true),
+          findsOneWidget);
+    });
+
+    testWidgets('a residual after complete formulas gets its own line',
         (t) async {
-      // The other half of the void gate: the spell is not broken, the leyline
-      // is. Its library identity is untouched.
+      // Five elements at length 4: one complete formula, then a one-element
+      // residual. The rules box keeps the formula's line and adds the
+      // residual's, muted, so the shape of the spell is legible without the
+      // residual pretending to be a formula.
+      _viewUnder(_rivendell(4));
+      await _pumpCard(
+        t,
+        fixtureSpell(
+          name: 'Fixture',
+          formula: const ['fire', 'earth', 'water', 'fire', 'water'],
+        ),
+      );
+      await t.tap(find.byType(SpellCardWidget));
+      await t.pumpAndSettle();
+
+      expect(find.textContaining('No complete formula'), findsNothing);
+      expect(find.textContaining('Water beginning', findRichText: true),
+          findsOneWidget);
+      expect(find.textContaining('Water affinity', findRichText: true),
+          findsOneWidget);
+    });
+
+    test('the cast tray never claims a residual cast does nothing', () {
+      // The moment the player commits mana. Slice E's line here was
+      // "No complete formula — this cast does nothing", which the correction
+      // makes false whenever the trajectory began a formula.
+      final lexicon = IncantationLexicon.of(_rivendell(4));
+      final short = incantationCastSummary(
+          _threeElementSpell().formula, lexicon);
+      expect(short, contains('No complete formula'));
+      expect(short, isNot(contains('does nothing')));
+      expect(short, contains('fire affinity'));
+
+      // With a complete formula and a residual, both are named.
+      final mixed = incantationCastSummary(
+          const ['fire', 'earth', 'water', 'fire', 'water'], lexicon);
+      expect(mixed, contains('Firey'));
+      expect(mixed, contains('water affinity'));
+
+      // No residual: the line is exactly the formula labels, unchanged.
+      expect(
+        incantationCastSummary(
+            const ['fire', 'earth', 'water', 'fire'], lexicon),
+        incantationLabelsFor(
+            const ['fire', 'earth', 'water', 'fire'], lexicon).join('  ·  '),
+      );
+
+      // And an ordinary leyline is untouched.
+      expect(
+        incantationCastSummary(
+            _threeElementSpell().formula, IncantationLexicon.ordinary),
+        incantationLabelsFor(
+            _threeElementSpell().formula, IncantationLexicon.ordinary)
+            .join('  ·  '),
+      );
+    });
+
+    test('a truly empty spell is the only one that does nothing', () {
+      // The other side of isSilent: no elements at all means no formula AND no
+      // residual, and only then may a surface say the cast is inert.
+      final lexicon = IncantationLexicon.of(_rivendell(4));
+      expect(incantationReadingFor(const [], lexicon).isSilent, isTrue);
+      expect(
+        incantationReadingFor(_threeElementSpell().formula, lexicon).isSilent,
+        isFalse,
+        reason: 'three elements at length 4: no formula, but Fire affinity',
+      );
+      expect(incantationCastSummary(const [], lexicon),
+          'No complete formula — this cast works no effect');
+    });
+
+    test('the display reading agrees with the engine derivation', () {
+      // The architecture claim, asserted directly: the card's affinity list is
+      // the lexicon's, not a second derivation that happens to match. A UI
+      // that disagreed with resolution about a residual is the exact failure
+      // the correction's architecture section names.
+      final lexicon = IncantationLexicon.of(_rivendell(4));
+      for (final formula in const <List<String>>[
+        ['fire', 'fire', 'fire'],
+        ['fire', 'earth', 'water', 'fire'],
+        ['fire', 'earth', 'water', 'fire', 'water'],
+        ['fire', 'water', 'fire', 'fire', 'air', 'earth'],
+      ]) {
+        final reading = incantationReadingFor(formula, lexicon);
+        expect(
+          reading.eligibleAffinities,
+          lexicon.eligibleAffinitiesOf(
+            [for (final n in formula) _zone(n)],
+          ),
+          reason: 'display vs engine disagreed for $formula',
+        );
+        // And the view-derived list is the same one, so neither half of the
+        // reading can drift from the other.
+        expect(
+          reading.eligibleAffinities,
+          [
+            for (final v in reading.views)
+              if (v.manifests) v.affinity,
+            ?reading.residualAffinity,
+          ],
+          reason: 'views + residual must reconstruct the canonical list',
+        );
+      }
+    });
+
+    testWidgets('the same spell reads normally under an ordinary leyline',
+        (t) async {
+      // The other half of the gate: the spell is not broken, the leyline is.
+      // Its library identity is untouched.
       await _pumpCard(t, _threeElementSpell());
       await t.tap(find.byType(SpellCardWidget));
       await t.pumpAndSettle();
@@ -530,9 +672,12 @@ void main() {
       }
     });
 
-    test('a void spell keeps its heraldry', () {
-      // Structurally void says nothing about identity: the trajectory is still
-      // the trajectory, and the card must still be recognisable as itself.
+    test('an incantation-incomplete spell keeps its heraldry', () {
+      // Having no complete formula says nothing about identity: the trajectory
+      // is still the trajectory, and the card must still be recognisable as
+      // itself. Residual affinity is a LIVE reading and must not touch the
+      // frame gradient or the emblem ring either — the loop below covers the
+      // three-element spell at every mutable length.
       final spell = _threeElementSpell();
       expect(frameColorShares(spell.formula), isNotEmpty);
       expect(elementSymbolsFor(spell.formula, spell.t), hasLength(spell.t));

@@ -62,11 +62,17 @@ class CertifiedCast {
 
   /// The flat certified activation sequence, residuals included. Summons read
   /// this (`CreatureSpec.fromElements` counts every activation, while
-  /// [formulas] drops a trailing 1–2), as does counter-charm matching.
+  /// [formulas] drops the trailing partial group), as does counter-charm
+  /// matching — and, since the 2026-09-04 partial-formula correction, so does
+  /// elemental eligibility: `IncantationLexicon.eligibleAffinitiesOf` takes
+  /// this sequence precisely because the residual it carries now counts.
   final List<BorderZone> elementSequence;
 
-  /// Wild-magic triggers derived from the certified outputs + [formulas] +
-  /// the agreed community seed (WILD_MAGIC_PLAN.md §4.6).
+  /// Wild-magic triggers derived from the certified outputs + the leyline's
+  /// reading of [elementSequence] + the agreed community seed
+  /// (WILD_MAGIC_PLAN.md §4.6). Eligibility came from [formulas] until the
+  /// 2026-09-04 partial-formula correction moved it to the flat sequence, so
+  /// that a trajectory's trailing incomplete group can speak for its element.
   final List<WildMagicTrigger> wildMagic;
 
   /// `5×segmentCount + dotCount`, grown by `1.05^T × 1.5^effectCount` — step 1

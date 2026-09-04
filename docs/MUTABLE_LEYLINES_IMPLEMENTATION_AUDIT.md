@@ -15,8 +15,9 @@ simultaneous resolution batch.
 
 ## Status — as-built, 2026-09-04
 
-**Mutable Incantations are live in the engine.** Slices A–D are committed;
-Slices E and F are not started. **Current versions: engine 13, protocol 7,
+**Mutable Incantations are live in the engine.** Slices A–D are committed, the
+player-facing surfaces shipped as "Slice E", and a semantic correction to
+partial-formula affinity followed. **Current versions: engine 14, protocol 7,
 ruleset 3, circuits/VK unchanged.**
 
 | Slice | State | Commit |
@@ -25,8 +26,10 @@ ruleset 3, circuits/VK unchanged.**
 | B — deterministic codebook + vectors | ✅ shipped | `4726649` |
 | C — noise-capable semantics | ✅ shipped | `09a7f61` |
 | D — live mutable interpretation | ✅ shipped | `3f4f08b` |
-| E — Summon / Armor rekeying | ⛔ blocked on R-8 | — |
-| F — player-facing surfaces | 🔜 next | — |
+| E — player-facing surfaces | ✅ shipped | `14349b9` |
+| — partial-formula affinity correction | ✅ shipped (engine 13 → 14) | *this change* |
+| — Summon / Armor rekeying | ⛔ blocked on R-8 | — |
+| F — discovery / host activation | 🔜 next | — |
 
 ### How to read this document
 
@@ -62,6 +65,12 @@ implementation, and the difference is usually the interesting part.
   context** — a `late final` on `DeterministicResolution`, itself a `late final`
   on `TurnLoop` — and passed down to the verifier paths rather than re-derived
   per cast. There is no cache.
+* **A formula's START fixes its affinity; only its COMPLETION fixes its
+  meaning** (the 2026-09-04 partial-formula correction, engine 14). The trailing
+  INCOMPLETE group of a trajectory — the residual — therefore lends its first
+  element to elemental eligibility, though it is never interpreted. One
+  canonical derivation, `IncantationLexicon.eligibleAffinitiesOf`, answers this
+  for the engine and for every surface. See §7.5.
 * **`ParsedFormula` retains its structural tail.** `chunk[0]` is the affinity;
   `chunk[1..]` is the tail, which *is* the codebook key. Affinity is never part
   of a key. `effectType1`/`effectType2` are ordinary-only readings that throw on
@@ -70,7 +79,9 @@ implementation, and the difference is usually the interesting part.
   Incantation effect, contributes no affinity eligibility and no Wild Magic
   eligibility, and never falls back to the ordinary table — but it consumes its
   chunk, counts toward intrinsic mana, and is therefore visible to structural
-  mechanics such as partial counter-charm suppression.
+  mechanics such as partial counter-charm suppression. **A residual is its
+  mirror image:** it lends affinity and has no meaning, where noise has a
+  meaning and lends no affinity.
 * **`certifiedBaseManaCost` is a function of the certified trajectory and the
   active `formulaLength` — never of codebook meaning.** Within a fixed grammar,
   flipping a key between meaningful and noise cannot move it (§7.4).
@@ -468,6 +479,9 @@ No rebalancing proposed here.
 
 ### 7.1 How affinity flows today
 
+*Superseded in part by §7.5. The trace below is the pre-correction flow and is
+kept because §7.2's reasoning rests on it.*
+
 ```
 certified trajectory
   → FormulaTracker.committed              (flat, chunk-free)
@@ -555,6 +569,131 @@ Implementation consequence for Slice C: the **count** of complete formulas and
 the **list of meaningful formulas** become two different things. Pricing reads
 the count; `EffectResolver`, `pureAffinityOf` and
 `WildMagic.eligibleElements` read the meaningful list.
+
+---
+
+### 7.5 RATIFIED (2026-09-04) — a formula's START establishes its affinity
+
+**Engine 13 → 14.** Slices A–E conflated two questions that turn out to be
+separate:
+
+| Question | Answered by |
+|---|---|
+| what is this element sequence's **affinity**? | its **first element**, as soon as the sequence begins |
+| what does this element sequence **mean**? | the completed formula, through `IncantationLexicon` |
+
+Segment a trajectory conceptually into consecutive formula-sized groups
+starting at `0, L, 2L, 3L, …`. **The first element of every non-empty group is
+that group's structural affinity — the final, incomplete group included.**
+
+At `L = 4`:
+
+```
+Fire  x x x      complete, meaningful  →  Fire affinity, an effect
+Water x x x      complete, Noise       →  no affinity,   no effect
+Air   x          INCOMPLETE residual   →  Air  affinity, no effect
+```
+
+The residual:
+
+* has an affinity;
+* has **no** Incantation meaning and produces **no** Incantation effect;
+* does **not** increment certified `effectCount`;
+* is **not** a fake or partial effect;
+* does **not** consume a counter-charm formula-suppression slot, because it is
+  not a complete structural formula.
+
+**The Noise exception stands.** A *completed* formula is interpreted through the
+active lexicon, and if it resolves to `IncantationNoise()` its structural
+affinity is not eligible. The residual cannot be classified as Noise, because
+there is no completed formula to interpret — and it must therefore never be
+padded, looked up through a partial codebook, or read through the ordinary
+triplet table. The three prohibitions §6 places on noise apply verbatim to the
+residual.
+
+#### Why
+
+Mutable Leylines change how many elements an Incantation needs before it
+acquires meaning. They should not make an **already-begun** elemental sequence
+lose its affinity merely because the leyline demands more elements to finish it.
+Under `L = 4`, `Fire · Water · Earth` has structural affinity Fire, zero
+complete formulas and zero effects. Before this correction it had **no
+Incantation-derived affinity at all**, which is a leyline changing what an
+affinity *means* — the one thing §3's protected invariant forbids.
+
+#### Scope: eligibility, not effect, and not chain purity
+
+The new flow, and exactly which consumers moved:
+
+```
+certified trajectory
+  → FormulaTracker.committed                        (flat, chunk-free, leyline-invariant)
+      ├─ segmentFormulas(L) → complete formulas
+      │     ├─ lexicon.meaningOf → effect | Noise
+      │     ├─ EffectResolver                        (unchanged: complete + meaningful)
+      │     ├─ certifiedBaseManaCost / effectCount   (unchanged: STRUCTURAL count)
+      │     ├─ counter-charm suppression             (unchanged: STRUCTURAL count)
+      │     └─ pureAffinityOf(meaningfulOf(...))     (UNCHANGED — see below)
+      └─ lexicon.eligibleAffinitiesOf(committed)     ← NEW canonical derivation
+            = [meaningful complete affinities…] + [residual affinity, if any]
+              ├─ WildMagic.eligibleElements → triggersFor    (CHANGED)
+              └─ IncantationReading.eligibleAffinities → UI  (CHANGED)
+```
+
+**R-10 — RATIFIED 2026-09-04: chain purity is NOT affected.**
+`pureAffinityOf`, the chain discount, certified cost and chain advancement stay
+on the meaningful COMPLETE formulas. The residual rule is deliberately narrower
+than "a residual has an affinity, so it counts everywhere": a residual may lend
+its opening affinity to Wild Magic, and must not thereby become a new way to
+advance an elemental chain, earn a chain discount, or make an otherwise-pure
+completed spell hybrid for chain pricing. Concretely:
+
+* residual-only Fire at L=4/5/6 → Fire may be Wild-Magic-eligible, but
+  establishes and advances no Fire chain;
+* completed Fire **+ Fire residual** → purity is decided by the completed Fire
+  formula;
+* completed Fire **+ Water residual** → stays **pure Fire** for chain purposes;
+* Noise stays affinity-inert throughout;
+* **no certified price moves.**
+
+The ruling's reasoning is worth keeping: broadening would have cut both ways.
+`Fire-complete · Water-residual` is pure Fire today and would have become
+hybrid, *breaking* a chain the caster currently keeps — the opposite of the
+correction's stated intent. Pinned by a dedicated test group so that a future
+refactor cannot quietly feed `eligibleAffinitiesOf` into `pureAffinityOf`.
+
+**R-11 — RATIFIED 2026-09-04: ordinary leylines are NOT affected.**
+`IncantationLexicon.ordinary.residualBearsAffinity` stays `false`. Ordinary
+1–2-element residuals lend nothing. Mutable residual affinity is a
+Mutable-grammar rule, not a retroactive change to ordinary magic — and the
+observable cost of broadening it is exactly why: it would retally
+`WildMagic.eligibleElements` for a large share of every existing spell (a
+4-element ordinary trajectory goes from `{fire}` to a `{fire, earth}` tie; a
+2-element one goes from no wild magic at all to some).
+
+#### What did NOT move
+
+* the **Wild Magic preimage** — six encoding decisions, the 3×4 table, the scan
+  and the batch coalescing are untouched; only the eligible-affinity SET the
+  unchanged hash is combined with moves. Pinned by a fixed hash vector;
+* **intrinsic certified cost and `effectCount`** — both count complete
+  structural chunks (§7.4). A residual is not a chunk;
+* **counter-charm suppression arithmetic** — it counts complete structural
+  formulas, noise included; a residual is not one. Both halves were already
+  true, and are now pinned;
+* **persisted identity** — `SpellAsset.formula`, inscription mana cost,
+  `behaviouralKinKey`, kin stacking and heraldry are inscription-side and
+  leyline-independent. Residual affinity is a live interpretation, not an
+  identity, and the Slice E ruling that heraldry is identity stands.
+
+#### Where it lives
+
+`IncantationLexicon.eligibleAffinitiesOf(List<BorderZone>)` is the one
+derivation. `PeerCastVerifier.semanticsOf` calls it and hands the result to
+`WildMagic.triggersFor`; `incantationReadingFor` calls it for the UI. Posture
+tests pin that nothing else does, and that
+`WildMagic.eligibleElements` — now a meaning-blind tally over a
+`List<SpellAffinity>` — has exactly one production caller.
 
 ---
 
@@ -1178,13 +1317,24 @@ resolved to "no change".
 
 #### As-built — a ratified consequence, and an open balance concern
 
-**A mutable grammar can make an existing spell structurally void.** A
+**A mutable grammar can leave an existing spell with no complete formula.** A
 three-element certified trajectory has *no complete formula* at lengths 4–6:
-no effect, no affinity, no wild magic, and `effectCount` 0. This is correct
-under the ratified rules — it falls straight out of §7's chunking and §16's
-lengths — and it is pinned by test rather than smoothed over. It surfaced as a
-real failure in `wild_magic_preview_test`, whose fixture spell is exactly three
-elements.
+no effect and `effectCount` 0. This is correct under the ratified rules — it
+falls straight out of §7's chunking and §16's lengths — and it is pinned by
+test rather than smoothed over. It surfaced as a real failure in
+`wild_magic_preview_test`, whose fixture spell is exactly three elements.
+
+> **Superseded in part, 2026-09-04 (§7.5, engine 14).** As shipped in Slice D
+> this case also had *no affinity and no wild magic*, and the word used for it
+> throughout Slices D and E was **"structurally void"**. That is no longer
+> accurate and the term is retired: such a spell is **Incantation-incomplete**,
+> not affinity-void. Its trailing incomplete group lends its first element's
+> affinity, so it can still be eligible for wild magic. Only a trajectory that
+> committed *nothing at all* is genuinely inert
+> (`IncantationReading.isSilent`). The paragraph above is left as written
+> because the balance concern below was raised against it and is unchanged in
+> substance — a long grammar still costs a short spell every one of its
+> effects.
 
 **This is an engine consequence, not an implementation defect.** It is recorded
 here as an **open balance question**: long grammars disproportionately punish
@@ -1315,8 +1465,9 @@ patched.** The guest chooses its chapter in `duel_join_chapter_screen.dart`,
 step 3. The mDNS advertisement carries `displayName` + `DeviceCapabilities` and
 no `MatchConfig`, so there is nowhere earlier to surface it without a discovery
 or protocol change — which this slice excludes. A host free to pick length 6
-could therefore render a guest's entire chapter structurally void with no
-warning and no way out. Solo has no guest and so has none of this. **Putting
+could therefore leave a guest's entire chapter Incantation-incomplete — every
+spell casting for its affinity alone and working no effect — with no warning
+and no way out. Solo has no guest and so has none of this. **Putting
 the picker on the host screen requires the leyline to be visible before chapter
 lock** (advertise it, or add a guest confirm step after config receipt) **and
 should close R-9 in the same change.**
@@ -1324,8 +1475,11 @@ should close R-9 in the same change.**
 **Interpretation has exactly one UI-facing entry point.**
 `lib/spells/incantation_display.dart` — `incantationViewsFor(formula, lexicon)`
 → one `IncantationFormulaView` per **complete structural formula, noise
-included, in order**. Widgets consume it; no widget derives a codebook, and
-three posture tests now say so (`no UI file can see the codebook`, `the
+included, in order**. (Since §7.5 the primary entry point is
+`incantationReadingFor`, which returns those views *plus* the residual's
+affinity and the canonical eligible-affinity list;
+`incantationViewsFor` is the complete-formula half of it.) Widgets consume it;
+no widget derives a codebook, and three posture tests now say so (`no UI file can see the codebook`, `the
 ordinary formula length is hardcoded only where ruled`, `the display model is
 the only lexicon-aware UI helper`).
 
@@ -1376,12 +1530,23 @@ ordinary label. `EffectKind` is untouched.
 * **`spell_view_screen.dart:154`'s mana readout** — the pre-existing §13.2 bug,
   still unfixed. Out of scope, and unrelated to leylines.
 
-**Structurally void spells stay selectable.** No filtering, no disabling, no
-balance rule — the strong default. The card names the condition instead: *"No
-complete formula under `rivendell 4` — this leyline reads 4 elements to a
-formula, and this spell has too few. It will cast, and do nothing."* The cast
-tray says the same in one line. There is no fallback to the ordinary reading,
-and a test asserts the ordinary effect name appears nowhere on such a card.
+**Spells with no complete formula stay selectable.** No filtering, no
+disabling, no balance rule — the strong default. The card names the condition
+instead: *"No complete formula under `rivendell 4` — this leyline reads 4
+elements to a formula, and this spell has too few…"* The cast tray says the
+same in one line. There is no fallback to the ordinary reading, and a test
+asserts the ordinary effect name appears nowhere on such a card.
+
+> **Wording corrected 2026-09-04 (§7.5).** As shipped, both sentences ended
+> *"It will cast, and do nothing"* / *"this cast does nothing"*. Under engine 14
+> that is false whenever the trajectory began a formula, so both now say the
+> cast **works no effect** and separately name the affinity it still lends —
+> *"…but its opening fire still lends the spell Fire affinity, which wild magic
+> can read."* The rules box additionally renders a muted **"Water beginning"**
+> line for a residual that follows complete formulas, and the leyline picker's
+> formula-length caption no longer promises "does nothing" either. Deliberately
+> understated: eligibility is not itself an effect, and the card's wild-magic
+> band remains the only place that says what actually fires.
 
 **Counter-charm suppression** is unchanged and now *pinned*: `applySpell`
 skips leading **structural** formulas, so a noise formula consumes a
@@ -1417,6 +1582,102 @@ shorter repeat line is worth considering if playtest finds it noisy.
 **Wild Magic** — no file touched. Slice D had already routed the preview
 through the lexicon; the audit confirmed noise-derived affinities cannot appear
 as eligible, and hash/table/RNG/coalescing are untouched (R-7).
+
+> **Amended 2026-09-04 (§7.5).** `wild_magic.dart` *was* touched by the
+> partial-formula correction, in one place: `eligibleElements` now tallies a
+> `List<SpellAffinity>` supplied by the lexicon instead of segmenting a
+> `List<ParsedFormula>` itself. Hash, preimage, table, RNG and coalescing
+> remain untouched, and R-7 stands. The card's wild-magic band needed no change
+> — it already derived from `certifyOwnProof`, so it picked the corrected
+> eligibility up for free.
+
+---
+
+### Partial-formula affinity correction ✅ **DONE 2026-09-04** (engine 13 → 14)
+
+*Not a slice. A semantic correction landed between Slice E and Slice F, before
+any networking work began. The ruling is §7.5; this is what was built.*
+
+**Versions: engine 13 → 14, protocol 7, ruleset 3, circuits/VK untouched.**
+The bump is required on the usual test — the same wire transcript yields a
+different canonical `BattleState` on either side, for any mutable match holding
+a spell whose trajectory does not divide evenly by the grammar length. Protocol
+does not move: nothing crosses the wire that did not before, and the new value
+is derived independently on both devices from data they already exchange.
+
+**What was conflated.** Slice D read a spell's affinities off its MEANINGFUL
+COMPLETE formulas alone, so a trajectory that *began* an elemental sequence and
+ran out of elements spoke for nothing. A formula's **start** fixes its affinity;
+only its **completion** fixes its meaning. §7.5 states the ratified table.
+
+**The canonical derivation.** `IncantationLexicon.eligibleAffinitiesOf(flat
+certified sequence)` — one function, one answer, consumed by
+`PeerCastVerifier.semanticsOf` (feeding `WildMagic.triggersFor`) and by
+`incantationReadingFor` (feeding every surface). It exists because the failure
+this correction most had to avoid is not a wrong answer but *two* answers:
+**UI says residual Fire affinity / battle says no Fire affinity.** Two posture
+tests pin the caller sets, and a third pins that `WildMagic.eligibleElements` —
+now a meaning-blind tally over a `List<SpellAffinity>` — has exactly one
+production caller.
+
+`IncantationReading` (`incantation_display.dart`) is the display counterpart:
+the complete-formula views, the residual's affinity, and the lexicon's own
+eligible list — taken from the lexicon rather than recomputed, with a test
+asserting the two reconstruct each other. `IncantationReading.isSilent`, not
+`views.isEmpty`, is now the only thing entitled to say a cast does nothing.
+
+**Deliberately NOT built — both scope limits ratified 2026-09-04:**
+
+* chain purity (`pureAffinityOf`) still reads meaningful complete formulas —
+  **R-10 ratified NO**, pinned by its own test group;
+* ordinary residuals still contribute nothing —
+  `IncantationLexicon.residualBearsAffinity` is false for ordinary lexicons —
+  **R-11 ratified NO**, pinned by test;
+* no Wild Magic hash/preimage/table/RNG/coalescing change; a fixed hash vector
+  pins the preimage for the residual-only fixture;
+* no Summon or Armor change (R-8 unaffected; the posture test still forbids them
+  the lexicon);
+* no persistence, heraldry, circuit or VK change;
+* no networking or discovery change — Slice F was not started.
+
+**Tests added (18 net; 2537 → 2555 green).** Short mutable trajectories at
+L=4/5/6 (zero formulas, zero effects, `effectCount` 0, one eligible affinity,
+no ordinary fallback); the meaningful/noise/residual fixture in one cast; the
+residual-only spell firing real wild magic end to end through
+`PeerCastVerifier.semanticsOf` under a hunted seed (`seed7`, L=6) with the v13
+empty-eligibility control beside it; the pinned preimage hash; counter-charm —
+a residual consumes no suppression slot and its affinity survives suppression of
+earlier formulas; the ordinary-residual scope limit; and the UI pins (no "does
+nothing", the affinity named, the residual's own muted rules line, the cast-tray
+summary, display-vs-engine agreement).
+
+**Replay corpus: zero movement.** Every script is an ordinary-leyline match and
+`residualBearsAffinity` is false there, so no golden byte moved. That is the
+scope limit doing its job, not the corpus failing to cover the change — the
+mutable coverage is in the targeted tests above, because the harness has no
+mutable script.
+
+**On-screen pass (Linux desktop, 2026-09-04).** Narrow, and deliberately so: a
+throwaway entrypoint rendered three `SpellCardWidget`s under `rivendell 4` — no
+complete formula, one formula + residual, one formula exactly — at 1170x860 and
+at **390x800** (narrower than the S25's ~384dp), driven with `xdotool` and
+captured with `ffmpeg x11grab`. The entrypoint was deleted afterwards. Findings:
+
+* the no-complete-formula card's new six-line sentence fits **with room to
+  spare** at 390x800 — no clipping, no overflow;
+* the residual's `Water beginning:` line renders muted and italic, visually of a
+  piece with a Noise line and clearly not a formula;
+* the grammar caption stays pinned above the list while it scrolls;
+* at 390x800 the residual line falls **below the fold and must be scrolled to**.
+  The rules box is a `ListView.separated`, so it scrolls cleanly and nothing is
+  unreachable — this is the same behaviour a three-formula spell already had,
+  and it is the existing "deferred, acceptable" note above rather than a new
+  defect. No fix applied.
+
+The `flutter run -d linux` route through the real app (solo settings → picker →
+library card) was not driven; the harness renders the same widget with the same
+`activeWildMagicContext` channel the app uses, which is what the changed code
+reads.
 
 ---
 
@@ -1464,6 +1725,8 @@ reason the host screen did not get it.
 | R-7 | Is the Wild Magic 3×4 → effect table itself rekeyed, or is the config hash sufficient? (§8) | ✅ **RATIFIED 2026-09-03 (§8)** — the config hash is sufficient; the table is **not** rekeyed. Slice D edited no wild-magic file; only *which formulas are eligible* changed. |
 | R-8 | Summon and Armor pattern-space mapping (§8 of the plan defers this explicitly) | ⛔ **OPEN — and no longer blocking.** Slice E activated Incantation only; Summon and Armor remain ordinary and the posture test forbids them the lexicon entirely. A ruling is still required before any mutable Summon/Armor code. |
 | R-9 | Should the legacy flat-`communitySeed` fallback become an error once mutable is live? (§10.3) | ⛔ **OPEN — gated on the HOST picker, not on mutable being live.** Slice E's picker is solo-only, so no mutable config crosses a wire and there is no downgrade to guard: the guest adopts the host config verbatim and holds no leyline opinion of its own. Close this in the same change that puts a picker on `duel_host_settings_screen.dart`. |
+| R-10 | Should a residual group's affinity also establish or break **chain purity** (`pureAffinityOf` → chain discount and advancement)? (§7.5) | ✅ **RATIFIED 2026-09-04 — NO.** Chain purity, the chain discount, certified cost and chain advancement stay on completed *meaningful* formulas. A residual may lend its opening affinity to Wild Magic and must not thereby advance a chain, earn a discount, or make an otherwise-pure completed spell hybrid for chain pricing. No certified price moves. Pinned by the `chain purity is not affected (R-10)` test group so a refactor cannot feed `eligibleAffinitiesOf` into `pureAffinityOf`. |
+| R-11 | Should **ordinary** residuals bear affinity too, for conceptual symmetry? (§7.5) | ✅ **RATIFIED 2026-09-04 — NO.** `IncantationLexicon.ordinary.residualBearsAffinity` stays `false`; ordinary 1–2-element residuals lend nothing. Mutable residual affinity is a Mutable-grammar rule, not a retroactive change to ordinary magic. Pinned by test. |
 
 **Not** ambiguous, and therefore **not** rulings: formula chunking is fully
 specified (§7 — disjoint, non-overlapping, trailing remainder discarded, affinity

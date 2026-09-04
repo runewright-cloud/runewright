@@ -22,8 +22,9 @@
 // advertisement carries `displayName` + `DeviceCapabilities` and no config, so
 // there is nowhere earlier to put it without a discovery/protocol change —
 // which Slice E excludes. A host who could pick length 6 would be able to
-// render a guest's whole chapter structurally void with no warning and no
-// way out. Solo practice has no guest, so it has none of that: it is where a
+// leave a guest's whole chapter incantation-incomplete — every spell casting
+// for its affinity alone and working no effect — with no warning and no way
+// out. Solo practice has no guest, so it has none of that: it is where a
 // player learns what a leyline does to their own spellbook before anyone
 // duels under one. Wiring this into the host screen is Slice F's job, and it
 // needs the leyline visible BEFORE chapter lock.
@@ -164,9 +165,14 @@ class LeylinePicker extends StatelessWidget {
             label: 'FORMULA LENGTH',
             // The one number a player MUST see. It decides how a trajectory
             // is cut, and therefore how many formulas a spell has at all — a
-            // spell with fewer than this many elements produces nothing.
+            // spell with fewer than this many elements works no incantation
+            // effect. It is NOT inert, though: the 2026-09-04 partial-formula
+            // correction gives the unfinished group its first element's
+            // affinity, so such a spell can still be eligible for wild magic,
+            // and a caption promising "does nothing" would be a lie the player
+            // only finds out about mid-duel.
             caption: 'Elements per formula. A spell with fewer elements than '
-                'this casts, and does nothing.',
+                'this works no effect — only the affinity it began with.',
             value: value.formulaLength,
             min: LeylineConfig.kMinMutableFormulaLength,
             max: LeylineConfig.kMaxMutableFormulaLength,

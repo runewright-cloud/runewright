@@ -306,35 +306,37 @@ void main() {
     await transportPeer.disconnect();
   });
 
-  // The Mutable Leylines slice-D epoch. Pinned as a literal pair rather than
-  // as `kBattleEngineVersion - 1` so a future bump has to come back here and
-  // say what it broke, instead of silently re-pointing this at the new
-  // neighbour. (The previous occupant of this group was v11 <-> v12, wild magic
-  // becoming a phase of a simultaneous resolution batch.)
+  // The Mutable Leylines partial-formula-affinity epoch. Pinned as a literal
+  // pair rather than as `kBattleEngineVersion - 1` so a future bump has to come
+  // back here and say what it broke, instead of silently re-pointing this at
+  // the new neighbour. (The previous occupant of this group was v12 <-> v13,
+  // a Mutable Leyline reinterpreting incantation formulas at all.)
   //
   // This bump is a good illustration of why the gate is separate from the other
-  // two: the wire is identical — `LeylineConfig` has carried `mutableMagic` and
-  // `formulaLength` since its first slice — and the proofs and the VK are
-  // untouched. What changes is what a build DOES with a mutable config: a v13
-  // build cuts the certified trajectory into 4-6 element formulas and looks
-  // their tails up in the leyline's derived codebook, where a formula may mean
-  // nothing at all; a v12 build cuts the same trajectory into triplets and
-  // reads the fixed table. They resolve different effects, and price the cast
-  // differently, from the first cast onward.
+  // two: the wire is identical, and the proofs and the VK are untouched. What
+  // changes is what a build DOES with a mutable config. A v13 build reads a
+  // spell's affinities off its MEANINGFUL COMPLETE formulas alone, so a
+  // trajectory that begins an elemental sequence and runs out of elements
+  // before the grammar's length speaks for nothing; a v14 build gives that
+  // trailing incomplete group its first element's affinity, which can make the
+  // spell eligible for wild magic the v13 build fires none of. One such cast is
+  // enough to diverge, and every consequence of a wild-magic trigger is hashed
+  // into the canonical state.
   //
-  // Ordinary play is bit-identical across the bump, which is exactly why the
-  // refusal cannot be conditional on the leyline: the handshake settles the
-  // config, and by the time a mutable one is agreed there is no safe way to
-  // discover the peer cannot interpret it.
-  group('v12 <-> v13 (mutable leyline interpretation)', () {
-    test('this build declares engine v13', () {
-      expect(kBattleEngineVersion, 13,
-          reason: 'a Mutable Leyline now reinterprets incantation formulas: '
-              'the structural grammar length comes from the active '
-              'LeylineConfig (3 ordinarily, 4-6 mutable) and a complete '
-              "formula's meaning comes from the leyline's derived codebook, "
-              'where it may be noise. '
-              'docs/MUTABLE_LEYLINES_IMPLEMENTATION_AUDIT.md §13 Slice D');
+  // Ordinary play is bit-identical across the bump — an ordinary residual still
+  // contributes nothing, deliberately — which is exactly why the refusal cannot
+  // be conditional on the leyline: the handshake settles the config, and by the
+  // time a mutable one is agreed there is no safe way to discover the peer
+  // reads its residuals differently.
+  group('v13 <-> v14 (partial-formula affinity)', () {
+    test('this build declares engine v14', () {
+      expect(kBattleEngineVersion, 14,
+          reason: "a formula's START now establishes its affinity while only "
+              'its COMPLETION establishes its meaning, so under a mutable '
+              'grammar the trailing incomplete group contributes its first '
+              'element to elemental eligibility. '
+              'docs/MUTABLE_LEYLINES_IMPLEMENTATION_AUDIT.md §13, '
+              'partial-formula affinity');
       expect(kBattleProtocolVersion, 7,
           reason: 'no framing changed — the new state is derived on both '
               'devices from values they already exchange');
@@ -342,15 +344,14 @@ void main() {
           reason: 'no proof semantics changed — the circuit is untouched');
     });
 
-    test('a v12 peer is refused by the capabilities gate', () async {
-      // The previous epoch is now the incompatible one: a v12 build has no
-      // notion of a leyline-supplied formula length or of a derived codebook,
-      // so handed a mutable config it chunks by three and resolves every tail
-      // through the fixed table. One cast is enough to diverge — and its mana
-      // cost diverges with it, because the structural chunk count moved.
+    test('a v13 peer is refused by the capabilities gate', () async {
+      // The previous epoch is now the incompatible one: a v13 build drops the
+      // residual group's affinity, so handed a mutable config and a trajectory
+      // that does not divide evenly it computes a different eligible set and
+      // fires different wild magic.
       final localIdentity = await Identity.ephemeral();
       final chapter = await makeChapter(
-        idSuffix: 'a12',
+        idSuffix: 'a13',
         ownerPubkeyHex: await localIdentity.ownerPubkeyHex(),
       );
 
@@ -362,7 +363,7 @@ void main() {
         localChapter: chapter,
         hostConfig: const MatchConfig(),
       );
-      final forfeitReason = fakePeer(transportPeer, engineVersion: 12);
+      final forfeitReason = fakePeer(transportPeer, engineVersion: 13);
 
       await expectLater(
         local,
@@ -371,8 +372,8 @@ void main() {
           'message',
           allOf(
             contains('battle engine version mismatch'),
-            contains('local=13'),
-            contains('peer=12'),
+            contains('local=14'),
+            contains('peer=13'),
           ),
         )),
       );
@@ -383,10 +384,10 @@ void main() {
       await transportPeer.disconnect();
     });
 
-    test('a host config pinned to v12 is refused as well', () async {
-      const v12Config = MatchConfig(battleEngineVersion: 12);
-      expect(const MatchConfig().matches(v12Config), isFalse);
-      expect(v12Config.battleEngineVersion, isNot(kBattleEngineVersion));
+    test('a host config pinned to v13 is refused as well', () async {
+      const v13Config = MatchConfig(battleEngineVersion: 13);
+      expect(const MatchConfig().matches(v13Config), isFalse);
+      expect(v13Config.battleEngineVersion, isNot(kBattleEngineVersion));
     });
   });
 

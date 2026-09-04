@@ -3428,9 +3428,13 @@ class DeterministicResolution {
         ? allFormulas
         : allFormulas.skip(suppressedFormulas).toList(growable: false);
     if (formulas.isEmpty) {
-      // Wild-magic stub (zero formulas = void spell). Nothing resolves, so a
-      // requested Rod of Wind is NOT consumed here (don't burn a rod on a
-      // no-op cast).
+      // No surviving complete formula — either the spell had none, or a
+      // counter charm suppressed them all. Nothing RESOLVES, so a requested
+      // Rod of Wind is NOT consumed here (don't burn a rod on a no-op cast).
+      // Deliberately not called a "void spell" any more: since the 2026-09-04
+      // partial-formula correction such a cast can still carry a residual
+      // affinity into wild-magic eligibility, which is decided upstream from
+      // the certified sequence and is untouched by this early return.
       return null;
     }
 
@@ -4416,11 +4420,22 @@ class DeterministicResolution {
   /// by [_updateChainState] and TurnLoop's `_spellManaCost`/`_certifiedManaCost`
   /// so "pure" can't drift between the advancement and discount paths.
   ///
-  /// **Callers pass the MEANINGFUL formulas** (`lexicon.meaningfulOf(...)`),
-  /// never the raw structural list — §6: a noise chunk carries an affinity
-  /// element structurally, but that element is not something the spell does, so
-  /// it can neither establish nor break purity. Under an ordinary leyline the
-  /// two lists are identical, which is why this is a no-op today.
+  /// **Callers pass the MEANINGFUL COMPLETE formulas**
+  /// (`lexicon.meaningfulOf(...)`), never the raw structural list — §6: a noise
+  /// chunk carries an affinity element structurally, but that element is not
+  /// something the spell does, so it can neither establish nor break purity.
+  /// Under an ordinary leyline the two lists are identical, which is why this
+  /// is a no-op today.
+  ///
+  /// **Never pass `IncantationLexicon.eligibleAffinitiesOf` here** (nor a list
+  /// derived from it). That is the WILD MAGIC eligibility reading, and since
+  /// the 2026-09-04 partial-formula correction it includes the trailing
+  /// INCOMPLETE residual. R-10 ratifies that chain purity does *not*: a
+  /// residual must not become a new way to advance a chain, earn a discount, or
+  /// make an otherwise-pure completed spell hybrid for chain pricing —
+  /// `completed Fire + Water residual` stays pure Fire here. The types differ
+  /// (`List<ParsedFormula>` vs `List<SpellAffinity>`) so the mistake will not
+  /// compile, and a test group pins the behaviour behind that.
   ///
   /// Kept static and meaning-blind on purpose: it is a tally over whatever it is
   /// given, and the decision about WHICH formulas count belongs at the seam that

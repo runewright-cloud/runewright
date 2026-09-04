@@ -80,7 +80,12 @@ import '../spells/spell_identity.dart';
 import '../spells/spell_asset.dart';
 import '../battle/engine/incantation_lexicon.dart' show IncantationLexicon;
 import '../battle/models/leyline_config.dart' show LeylineConfig;
-import '../spells/incantation_display.dart' show incantationViewsFor;
+import '../spells/incantation_display.dart'
+    show
+        IncantationReading,
+        incantationReadingFor,
+        kAffinityElementName,
+        residualAffinityNote;
 import '../spells/wild_magic_preview.dart';
 import 'foil_sheen.dart';
 import 'manuscript_theme.dart';
@@ -121,13 +126,6 @@ const Map<String, String> _kCastingStyleName = {
   'air': 'Velocity',
   'water': 'Efficiency',
   'earth': 'Mystery',
-};
-
-const Map<SpellAffinity, String> _kSpellAffinityName = {
-  SpellAffinity.fire: 'Fire',
-  SpellAffinity.air: 'Air',
-  SpellAffinity.water: 'Water',
-  SpellAffinity.earth: 'Earth',
 };
 
 /// Effect-affinity counts for [formula]: the first entry of each complete
@@ -259,7 +257,7 @@ String cardTypeLine(SpellAsset spell) {
   if (spell.isSummon) {
     final spec = CreatureSpec.fromElements(_borderZoneSequence(spell.formula));
     if (spec == null) return 'Summon';
-    return 'Summon — ${_kSpellAffinityName[spec.affinity]}';
+    return 'Summon — ${kAffinityElementName[spec.affinity]}';
   }
   final counts = _formulaAffinityCounts(spell.formula);
   if (counts.isEmpty) return 'Incantation';
@@ -1499,34 +1497,55 @@ class _CardFrame extends StatelessWidget {
   Widget _incantationRulesBody() {
     // One line per COMPLETE STRUCTURAL formula, noise included and in place:
     // the box is showing the player the shape of their own spell, and
-    // dropping the inert chunks would renumber everything after them.
-    final views = incantationViewsFor(spell.formula, lexicon);
+    // dropping the inert chunks would renumber everything after them. Plus,
+    // since the 2026-09-04 partial-formula correction, the trailing incomplete
+    // group's affinity — which is a real, live property of the cast even
+    // though it names no effect.
+    final reading = incantationReadingFor(spell.formula, lexicon);
+    final views = reading.views;
     if (views.isEmpty) {
       return Text(
         // Under a mutable leyline an empty list is a structural fact worth
         // naming, not an absence: a 3-element trajectory yields zero complete
-        // formulas at length 4–6, and the ratified behaviour is that the
-        // spell does nothing at all — no effect, no affinity, no wild magic,
-        // and NO fallback to the ordinary triplet reading. A card that said
-        // only 'No recorded effects' would leave the player to guess whether
-        // their spell was broken or the leyline was.
+        // formulas at length 4–6, and the ratified behaviour is that the spell
+        // works no incantation effect — with NO fallback to the ordinary
+        // triplet reading. A card that said only 'No recorded effects' would
+        // leave the player to guess whether their spell was broken or the
+        // leyline was.
+        //
+        // What it must NOT say any more is that the cast does nothing. The
+        // correction gives the residual group its first element's affinity, so
+        // such a spell can still be eligible for wild magic; the two sentences
+        // below are exactly the difference between "no effect" and "no
+        // consequence", and only the first is true.
         lexicon.isMutable
             ? 'No complete formula under ${lexicon.leyline.displayName} — '
                   'this leyline reads ${lexicon.formulaLength} elements to a '
-                  'formula, and this spell has too few. It will cast, and do '
-                  'nothing.'
+                  'formula, and this spell has too few. '
+                  '${_residualClause(reading)}'
             : 'No recorded effects.',
         style: manuscriptBodyStyle(fontSize: 13, color: kInkMutedColor),
       );
     }
+    final residual = reading.residualAffinity;
     final list = ListView.separated(
-      itemCount: views.length,
+      itemCount: views.length + (residual == null ? 0 : 1),
       separatorBuilder: (_, _) => const SizedBox(height: 8),
-      itemBuilder: (context, i) => _ruleLine(
-        views[i].name,
-        views[i].description,
-        muted: !views[i].manifests,
-      ),
+      itemBuilder: (context, i) => i < views.length
+          ? _ruleLine(
+              views[i].name,
+              views[i].description,
+              muted: !views[i].manifests,
+            )
+          // The residual is not a formula and never gets a formula's name: it
+          // is titled by its element, muted like noise, and described as what
+          // it is. Rendering it through _ruleLine keeps it visually of a piece
+          // with the formulas above without pretending to be one.
+          : _ruleLine(
+              '${kAffinityElementName[residual]!} beginning',
+              residualAffinityNote(residual!, lexicon),
+              muted: true,
+            ),
     );
     if (!lexicon.isMutable) return list;
     // Name the grammar this reading was taken under. Without it a player who
@@ -1548,6 +1567,20 @@ class _CardFrame extends StatelessWidget {
         Expanded(child: list),
       ],
     );
+  }
+
+  /// What the no-complete-formula card says after naming the shortfall.
+  ///
+  /// Two outcomes, and the distinction is the correction's: a trajectory that
+  /// begins a formula and runs out still speaks for that element, so the cast
+  /// is not inert. Only a trajectory with no committed activation at all is.
+  String _residualClause(IncantationReading reading) {
+    final residual = reading.residualAffinity;
+    if (residual == null) return 'It will cast, and work no effect.';
+    return 'It will cast and work no effect, but its opening '
+        '${kAffinityElementName[residual]!.toLowerCase()} still lends the '
+        'spell ${kAffinityElementName[residual]} affinity, which wild magic '
+        'can read.';
   }
 
   Widget _summonRulesBody() {
@@ -1709,7 +1742,7 @@ class _WildMagicPanel extends StatelessWidget {
           ),
         ),
         TextSpan(
-          text: ' (${_kSpellAffinityName[trigger.element]}) — ',
+          text: ' (${kAffinityElementName[trigger.element]}) — ',
           style: const TextStyle(fontWeight: FontWeight.w600),
         ),
         TextSpan(text: kWildMagicEffectDescription[trigger.effect]!),

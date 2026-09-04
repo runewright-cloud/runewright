@@ -32,7 +32,7 @@ import 'package:test/test.dart';
 
 import 'package:rune_duel/battle/engine/battle_events.dart';
 import 'package:rune_duel/engine/formula_segmentation.dart'
-    show completeFormulaElementCount;
+    show completeFormulaElementCount, segmentFormulas;
 import 'package:rune_duel/battle/engine/deterministic_resolution.dart';
 import 'package:rune_duel/battle/engine/draw_schedule.dart';
 import 'package:rune_duel/battle/engine/hash_rng.dart';
@@ -433,9 +433,11 @@ void main() {
           reason: 'a spell of pure noise is still spoken in full');
     });
 
-    test('a structurally void spell asks for nothing', () {
+    test('an incantation-incomplete spell asks for nothing', () {
       // Three elements under length 4: no complete formula, so no words are
-      // owed and none are scored.
+      // owed and none are scored. (Not "void": since the partial-formula
+      // correction such a spell still lends its first element's affinity —
+      // which is not something the caster recites.)
       final board = _board(leyline);
       expect(
         board.resolution.expectedRecitalSlots(
@@ -535,6 +537,59 @@ void main() {
             suppressedFormulas: 1),
         damagePerFormula,
       );
+    });
+
+    // ── The residual is not a formula and consumes no slot ──────────────────
+    //
+    // The 2026-09-04 partial-formula correction's counter-charm half. The
+    // ratified example, verbatim: `[Noise complete] [Fire complete] [Air
+    // residual]` with suppression 1 — the Noise eats the slot, the Fire
+    // survives, and the Air residual is untouched because it was never a
+    // formula to suppress.
+
+    test('an incomplete residual consumes no suppression slot', () async {
+      final board = _board(leyline);
+      // Noise | Blast | a two-element Air residual.
+      final elements = <BorderZone>[
+        BorderZone.water, ...noiseKey,
+        BorderZone.fire, ...damageKey,
+        BorderZone.air, BorderZone.earth,
+      ];
+      final formulas = [
+        for (final chunk
+            in segmentFormulas(elements, formulaLength: _rivendell4))
+          ParsedFormula.withTail(affinity: chunk[0], tail: chunk.sublist(1)),
+      ];
+      expect(formulas, hasLength(2),
+          reason: 'the residual is NOT one of the suppressible formulas — '
+              'suppression arithmetic counts complete structural formulas '
+              'only, and this is the whole claim');
+
+      final lost = await _hpLostCasting(board, formulas, suppressedFormulas: 1);
+      expect(lost, damagePerFormula,
+          reason: 'the Noise consumed the one suppression slot and the Blast '
+              'survived, exactly as it does with no residual present');
+    });
+
+    test('residual affinity survives suppression of earlier formulas',
+        () async {
+      // Eligibility is derived at certification, from the flat certified
+      // sequence, BEFORE any charm interferes — so cancelling leading formulas
+      // cannot retroactively silence the residual. Stated here because the two
+      // mechanisms both talk about "formulas" and it would be easy to wire the
+      // charm into the tally by accident.
+      final elements = <BorderZone>[
+        BorderZone.water, ...noiseKey,
+        BorderZone.fire, ...damageKey,
+        BorderZone.air, BorderZone.earth,
+      ];
+      expect(lexicon.eligibleAffinitiesOf(elements),
+          [SpellAffinity.fire, SpellAffinity.air],
+          reason: 'meaningful Fire and the Air residual; the Noise lends '
+              'nothing');
+      // Suppression takes an argument to applySpell and never reaches this
+      // derivation: same sequence, same answer.
+      expect(lexicon.residualAffinityOf(elements), SpellAffinity.air);
     });
   });
 }

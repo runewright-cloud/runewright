@@ -117,7 +117,9 @@ void main() {
               PeerCastVerifier.certifiedBaseManaCost(outputs, formulas),
           leylineConfigHash:
               LeylineConfig.ordinary(kDefaultCommunitySeed).leylineConfigHash,
-          formulas: formulas,
+          affinities: IncantationLexicon.of(
+            LeylineConfig.ordinary(kDefaultCommunitySeed),
+          ).eligibleAffinitiesOf(sequence),
         ),
       );
     });

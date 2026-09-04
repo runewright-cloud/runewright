@@ -56,13 +56,35 @@
 //     overlapping substring search over fixed 4-element patterns, and their
 //     mapping is an unruled design problem (audit §14 R-8). Do not route them
 //     through here and do not generalise this to try.
+//
+// ## Three questions, since the 2026-09-04 partial-formula correction
+//
+// A third question joined the two above, and it is the one place this object
+// looks at a whole trajectory rather than a single formula:
+//
+//   3. **Which affinities does this trajectory speak for?**
+//      ([eligibleAffinitiesOf]) — structural, and deliberately answered here so
+//      that a spell card and a duel cannot compute it differently.
+//
+// The correction that added it separated two things Slice D still conflated:
+// a formula's START establishes its affinity, and only its COMPLETION
+// establishes its meaning. So the trailing incomplete group of a trajectory —
+// the residual — bears its first element's affinity even though it can never be
+// interpreted. A completed Noise formula remains the opposite case: complete,
+// interpretable, and interpreted to nothing, so it lends no affinity at all.
+// See [eligibleAffinitiesOf] and [residualBearsAffinity].
 
 import 'package:rune_duel/battle/engine/trajectory_parser.dart'
     show ParsedFormula;
+import 'package:rune_duel/battle/models/effect_kind.dart'
+    show SpellAffinity, spellAffinityFromZone;
 import 'package:rune_duel/battle/models/incantation_meaning.dart';
 import 'package:rune_duel/battle/models/leyline_codebook.dart'
     show IncantationCodebook;
 import 'package:rune_duel/battle/models/leyline_config.dart' show LeylineConfig;
+import 'package:rune_duel/engine/border_zone.dart' show BorderZone;
+import 'package:rune_duel/engine/formula_segmentation.dart'
+    show completeFormulaElementCount, segmentFormulas;
 
 /// What formulas mean under one leyline.
 ///
@@ -149,6 +171,93 @@ class IncantationLexicon {
       for (final formula in formulas)
         if (incantationManifestsEffect(meaningOf(formula))) formula,
     ];
+  }
+
+  // ── Structural affinity (the 2026-09-04 partial-formula correction) ────────
+
+  /// Whether an INCOMPLETE trailing group lends its first element's affinity.
+  ///
+  /// **True under a mutable grammar only. RATIFIED 2026-09-04 (audit §7.5,
+  /// R-11): residual affinity is a Mutable-grammar rule, not a retroactive
+  /// change to ordinary magic.**
+  ///
+  /// The reasoning, kept because it is what the ruling turned on: ordinary
+  /// residuals are 1–2 elements and near-universal, so granting them affinity
+  /// would retally `WildMagic.eligibleElements` for a large fraction of every
+  /// existing spell — a 4-element ordinary trajectory goes from `{fire}` to a
+  /// `{fire, earth}` tie, and a 2-element one from no wild magic at all to
+  /// some. That is an unrelated change to ordinary battle semantics, and it was
+  /// ruled out rather than merely deferred.
+  ///
+  /// This getter is therefore a decision, not a placeholder. Do not flip it.
+  bool get residualBearsAffinity => isMutable;
+
+  /// The affinity of the trailing INCOMPLETE group of [elements] — the
+  /// residual — or null when there is no residual, or this grammar grants it
+  /// no affinity ([residualBearsAffinity]).
+  ///
+  /// The residual has an affinity and no MEANING. It is never interpreted:
+  /// there is no partial codebook lookup, no padding to length, and no
+  /// fallback to the ordinary triplet table. [meaningOf] is only ever asked
+  /// about a formula segmentation actually completed.
+  SpellAffinity? residualAffinityOf(List<BorderZone> elements) {
+    if (!residualBearsAffinity) return null;
+    final residualStart = completeFormulaElementCount(
+      elements.length,
+      formulaLength: formulaLength,
+    );
+    if (residualStart >= elements.length) return null;
+    return spellAffinityFromZone(elements[residualStart]);
+  }
+
+  /// Every affinity the flat element sequence [elements] contributes to LIVE
+  /// elemental eligibility under this leyline, in trajectory order.
+  ///
+  /// **The canonical answer to "which elements does this spell speak for".**
+  /// `WildMagic.eligibleElements` tallies exactly this list, and
+  /// `incantationReadingFor` renders exactly this list, so a card and a duel
+  /// cannot disagree about it — which is the whole reason it lives on the
+  /// lexicon rather than being recomputed at each surface.
+  ///
+  /// The rule, one line per structural group of [formulaLength] elements:
+  ///
+  ///   * complete **and meaningful** → its first element contributes;
+  ///   * complete **Noise** → contributes nothing (audit §6, unchanged);
+  ///   * the trailing **incomplete residual** → its first element contributes,
+  ///     under a mutable grammar ([residualBearsAffinity]).
+  ///
+  /// [elements] is the flat CERTIFIED committed sequence
+  /// (`TrajectoryParser.certifiedElementSequence`) — residual included, which
+  /// is the point. Segmenting it here reproduces `TrajectoryParser.parse`'s
+  /// complete-formula list exactly (both go through `segmentFormulas` at this
+  /// same [formulaLength]); that equivalence is pinned by test.
+  ///
+  /// **This is ELIGIBILITY, not effect and not chain purity.** A residual makes
+  /// an affinity *eligible*; it manifests nothing, prices nothing, and is not a
+  /// formula. `DeterministicResolution.pureAffinityOf` reads the meaningful
+  /// COMPLETE formulas only, and that is a **ratified** boundary, not an
+  /// oversight (audit §7.5, R-10): a residual must never become a new way to
+  /// advance an elemental chain, earn a chain discount, or make an
+  /// otherwise-pure completed spell hybrid for chain pricing. **Do not pass
+  /// this list to `pureAffinityOf`** — a test group exists precisely to catch a
+  /// refactor that does.
+  List<SpellAffinity> eligibleAffinitiesOf(List<BorderZone> elements) {
+    final out = <SpellAffinity>[];
+    for (final chunk in segmentFormulas(
+      elements,
+      formulaLength: formulaLength,
+    )) {
+      final formula = ParsedFormula.withTail(
+        affinity: chunk[0],
+        tail: chunk.sublist(1),
+      );
+      if (incantationContributesWildMagicEligibility(meaningOf(formula))) {
+        out.add(spellAffinityFromZone(chunk[0]));
+      }
+    }
+    final residual = residualAffinityOf(elements);
+    if (residual != null) out.add(residual);
+    return List.unmodifiable(out);
   }
 
   @override

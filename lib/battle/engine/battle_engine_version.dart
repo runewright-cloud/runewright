@@ -455,13 +455,83 @@
 // coupling that keeps it off the duel host screen, and R-9, which comes due in
 // the change that moves it.
 //
+// v14 (2026-09-04, Mutable Leylines — partial-formula affinity correction) —
+// a formula's START establishes its affinity; only its COMPLETION establishes
+// its meaning. The trailing INCOMPLETE group of a certified trajectory — the
+// residual — therefore contributes its first element to elemental eligibility,
+// even though it can never be interpreted.
+//
+// v13 conflated the two questions. It read affinity off the MEANINGFUL
+// COMPLETE formulas alone (`lexicon.meaningfulOf(formulas)` fed straight to
+// `WildMagic.eligibleElements`), so under a mutable grammar a trajectory that
+// began an elemental sequence and ran out of elements spoke for nothing at all.
+// A three-element spell under length 4 had no complete formula, no effect —
+// and, wrongly, no affinity either. That is the leyline changing what an
+// affinity means, which §3's protected invariant forbids: a leyline changes the
+// GRAMMAR, and a longer grammar should not retroactively silence an element the
+// caster already committed.
+//
+// v14 routes eligibility through one canonical derivation,
+// `IncantationLexicon.eligibleAffinitiesOf(certified element sequence)`, whose
+// ratified table is:
+//
+//   * complete AND meaningful  → its first element contributes;
+//   * complete Noise           → contributes nothing (unchanged, audit §6);
+//   * incomplete residual      → its first element contributes.
+//
+// The residual is never interpreted. There is no partial codebook lookup, no
+// padding to length, and no fallback to the ordinary triplet table — the same
+// three prohibitions §6 already imposes on noise.
+//
+// The gate has to fire, on the usual test. **The same wire transcript** — same
+// action bytes, same proofs, same VK, same `MatchConfig` — yields a different
+// canonical `BattleState` on either side of the change for any mutable match
+// containing a spell whose trajectory does not divide evenly by the grammar
+// length: a v13 build fires no wild magic for a three-element cast at length 4,
+// a v14 build may fire a Row-1 trigger, and every consequence of that trigger
+// (HP, mana, status effects, the pending-effect list) is hashed by
+// `BattleState.toCanonicalBytes`. Under an ORDINARY leyline the two builds are
+// bit-identical — `residualBearsAffinity` is false there, deliberately — but
+// "the honest inputs are unchanged" is not the test, and a mutable leyline is a
+// match input either build may be handed.
+//
+// What did NOT move, and must not:
+//
+//   * **the Wild Magic semantic hash.** Its preimage is the caster key, the
+//     flat certified trajectory, the structural base cost and the
+//     `leylineConfigHash` — all six encoding decisions, the 3x4 table, the scan
+//     and the batch coalescing are untouched. Only the eligible-affinity SET
+//     that the unchanged hash is combined with moves;
+//   * **intrinsic certified cost and certified effectCount.** Both count
+//     complete STRUCTURAL chunks (§7.4). A residual is not a chunk, contributes
+//     nothing to `certifiedBaseManaCost`, and leaves `effectCount` at zero for
+//     a spell with no complete formula;
+//   * **counter-charm suppression arithmetic.** Suppression counts complete
+//     structural formulas, noise included; a residual is not one and consumes
+//     no slot. Both halves were already true and are now pinned by test;
+//   * **chain purity.** `DeterministicResolution.pureAffinityOf` reads the
+//     meaningful COMPLETE formulas only, and R-10 ratifies that it keeps doing
+//     so: a residual may lend its opening affinity to Wild Magic and must not
+//     thereby advance an elemental chain, earn a chain discount, or make an
+//     otherwise-pure completed spell hybrid for chain pricing. No certified
+//     price moves, which is also why this bump's divergence is confined to the
+//     wild-magic path;
+//   * **persisted identity.** `SpellAsset.formula`, inscription mana cost,
+//     `behaviouralKinKey`, kin stacking and heraldry are all inscription-side
+//     and leyline-independent. Residual affinity is a live interpretation, not
+//     an identity.
+//
+// Nothing crosses the wire that did not before and the circuit is untouched, so
+// `kBattleProtocolVersion` stays 7 and `kRulesetVersion` stays 3. See
+// docs/MUTABLE_LEYLINES_IMPLEMENTATION_AUDIT.md §13, partial-formula affinity.
+//
 /// The deterministic battle-engine consensus epoch this build implements.
 ///
 /// The single canonical definition — [MatchConfig.battleEngineVersion] and
 /// [DeviceCapabilities.battleEngineVersion] both default to it rather than
 /// restating a literal, exactly as `MatchConfig.rulesetVersion` derives from
 /// `kRulesetVersion`. See this file's header for what forces a bump.
-const int kBattleEngineVersion = 13;
+const int kBattleEngineVersion = 14;
 
 /// What a peer that predates the engine-version gate implicitly declares: it
 /// omits the field, and an omitted field cannot be read as agreement.

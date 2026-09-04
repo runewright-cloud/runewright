@@ -560,6 +560,98 @@ void main() {
       }
     });
 
+    // ── The partial-formula correction: one derivation of affinity ─────────
+
+    test('affinity eligibility is derived in exactly one place', () {
+      // The correction's architecture claim. `eligibleAffinitiesOf` answers
+      // "which elements does this spell speak for" — the question the cast
+      // tray, the rules box and `WildMagic.eligibleElements` all ask — and the
+      // failure mode it exists to prevent is `UI says residual Fire affinity /
+      // battle says no Fire affinity`. Two derivations is that failure.
+      const allowed = {
+        // `eligibleAffinitiesOf` — the canonical list.
+        'eligibleAffinitiesOf(': {
+          // Defines it.
+          'battle/engine/incantation_lexicon.dart',
+          // The consensus caller: certification, feeding WildMagic.triggersFor.
+          'battle/engine/peer_cast_verifier.dart',
+          // The one UI-facing interpreted model, which asks rather than
+          // derives.
+          'spells/incantation_display.dart',
+        },
+        // `residualAffinityOf` — the display half. Certification never needs
+        // it separately: the residual is already the last entry of the list
+        // above, and asking twice would be two places that could disagree
+        // about whether a residual exists.
+        'residualAffinityOf(': {
+          'battle/engine/incantation_lexicon.dart',
+          'spells/incantation_display.dart',
+        },
+      };
+      allowed.forEach((method, expected) {
+        final callers = {
+          for (final file in _dartFiles(lib))
+            if (_codeOf(file).contains(method)) _rel(file),
+        };
+        expect(callers, expected,
+            reason: 'a new $method caller is a new affinity derivation site — '
+                'consume IncantationReading, or the CertifiedCast, instead');
+      });
+      // R-10's structural guard: chain purity lives in
+      // deterministic_resolution.dart, and it is ratified that a residual must
+      // NOT reach it. That file appearing in either set above is the refactor
+      // this correction most has to survive, so name it explicitly rather than
+      // leaving it to the reader to notice its absence.
+      expect(
+        _codeOf(File('${lib.path}/battle/engine/deterministic_resolution.dart'))
+            .contains('eligibleAffinitiesOf'),
+        isFalse,
+        reason: 'chain purity (pureAffinityOf, the chain discount, certified '
+            'cost, chain advancement) reads the meaningful COMPLETE formulas '
+            'and must never read the wild-magic eligibility list — R-10',
+      );
+    });
+
+    test('every pureAffinityOf caller passes the meaningful COMPLETE formulas',
+        () {
+      // The same guard from the other end. `pureAffinityOf` is a meaning-blind
+      // tally, so what protects it is entirely the argument each call site
+      // builds: `lexicon.meaningfulOf(...)` over the certified formula list.
+      // A call site that grew a different argument would be R-10's failure
+      // with nothing else to catch it.
+      final src = _codeOf(
+        File('${lib.path}/battle/engine/deterministic_resolution.dart'),
+      );
+      final calls = [
+        for (final m in RegExp(r'pureAffinityOf\(').allMatches(src))
+          // Skip the declaration itself; every other hit is a call.
+          if (!src.substring(0, m.start).endsWith('SpellAffinity? '))
+            src.substring(m.end, m.end + 120),
+      ];
+      expect(calls, hasLength(3),
+          reason: 'three call sites: _updateChainState, certifiedManaCost and '
+              'the wire-cost mirror. A fourth needs review, not a bumped '
+              'literal');
+      for (final call in calls) {
+        expect(call, contains('lexicon.meaningfulOf('),
+            reason: 'a pureAffinityOf argument that is not meaningfulOf(...) '
+                'is either a noise leak (§6) or a residual leak (R-10)');
+      }
+    });
+
+    test('nothing outside the lexicon segments a trajectory for affinity', () {
+      // The narrower half of the same guard: `WildMagic.eligibleElements` is
+      // now a meaning-blind tally over a `List<SpellAffinity>`, and the only
+      // production caller that supplies one is `triggersFor` itself. A second
+      // caller building that list by hand would be rebuilding the ratified
+      // meaningful/noise/residual table from memory.
+      final callers = {
+        for (final file in _dartFiles(lib))
+          if (_codeOf(file).contains('eligibleElements(')) _rel(file),
+      };
+      expect(callers, {'battle/engine/wild_magic.dart'});
+    });
+
     test('the ordinary formula length is hardcoded only where ruled', () {
       // `kIncantationFormulaLength` is the literal 3. In a surface that can
       // run inside a match it is a bug waiting to happen — the Slice E failure

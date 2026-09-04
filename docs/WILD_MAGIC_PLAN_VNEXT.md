@@ -189,9 +189,47 @@ Among meaningful completed formulas:
 - tally formula affinities;
 - the most frequent affinity is eligible;
 - ties make every tied affinity eligible;
-- no meaningful formulas means no Wild Magic eligibility.
+- ~~no meaningful formulas means no Wild Magic eligibility~~ — **amended
+  2026-09-04, see below.** Under a Mutable leyline a spell with no meaningful
+  formula can still be eligible, through its trailing incomplete group. Under an
+  ordinary leyline this bullet stands unchanged.
 
 Void Wild Magic remains absent.
+
+> ### ⚠️ Superseding amendment — 2026-09-04, partial-formula affinity (engine 14)
+>
+> **An incomplete trailing Mutable group has no formula meaning, effect,
+> `effectCount`, or suppression slot, but its first element contributes affinity
+> for Wild Magic eligibility. This exception does not apply to ordinary leylines
+> and does not participate in chain purity.**
+>
+> The statements above remain true as written for *formulas*: an incomplete
+> trailing group still does not form one, is never interpreted, and is never
+> padded or looked up. What changed is that eligibility is no longer read off
+> the completed-formula list alone. A formula's **start** establishes its
+> affinity; only its **completion** establishes its meaning.
+>
+> | group | affinity | meaning | effect | effectCount | suppression slot | chain purity |
+> |---|---|---|---|---|---|---|
+> | complete + meaningful | ✅ | codebook | ✅ | +1 | consumes | ✅ |
+> | complete + **Noise** | ❌ | inert | ❌ | +1 | consumes | ❌ |
+> | **incomplete residual** | ✅ | none | ❌ | +0 | does not consume | ❌ |
+>
+> Scope, ratified with the rule:
+>
+> * **R-10 — chain purity is NOT affected.** `pureAffinityOf`, the chain
+>   discount, certified cost and chain advancement stay on completed
+>   *meaningful* formulas. A residual-only Fire spell may be Wild-Magic-eligible
+>   for Fire without establishing or advancing a Fire chain; `completed Fire +
+>   Water residual` stays **pure Fire** for chain pricing. No certified price
+>   moves.
+> * **R-11 — ordinary leylines are NOT affected.**
+>   `IncantationLexicon.ordinary.residualBearsAffinity` is `false`. Ordinary
+>   1–2-element residuals lend nothing, exactly as before. This is a
+>   Mutable-grammar rule, not a retroactive change to ordinary magic.
+>
+> Canonical implementation: `IncantationLexicon.eligibleAffinitiesOf`. See
+> `docs/MUTABLE_LEYLINES_IMPLEMENTATION_AUDIT.md` §7.5.
 
 ---
 

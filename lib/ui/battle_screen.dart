@@ -56,7 +56,7 @@ import '../battle/networking/battle_session.dart';
 import '../battle/networking/solo_battle_session.dart';
 import '../battle/engine/incantation_lexicon.dart' show IncantationLexicon;
 import '../spells/incantation_display.dart'
-    show incantationLabelsFor, incantationViewsFor;
+    show incantationCastSummary, incantationViewsFor;
 import '../engine/formula_segmentation.dart';
 import '../engine/hex_grid.dart';
 import '../ffi/prover.dart' as prover;
@@ -4555,15 +4555,16 @@ class _ActionBar extends StatelessWidget {
   /// effects-only view. A spell with no complete formula says so outright
   /// instead of rendering an empty string, which would read as a layout bug at
   /// exactly the wrong moment.
-  String _castTraySummary(SpellAsset spell) {
-    final labels = incantationLabelsFor(spell.formula, lexicon);
-    if (labels.isEmpty) {
-      return lexicon.isMutable
-          ? 'No complete formula — this cast does nothing'
-          : 'No recorded effects';
-    }
-    return labels.join('  ·  ');
-  }
+  ///
+  /// It no longer says the cast "does nothing", because since the 2026-09-04
+  /// partial-formula correction that is usually false: the trailing incomplete
+  /// group lends its first element's affinity, and that affinity can still make
+  /// the spell eligible for wild magic. The line names the affinity instead,
+  /// and stops short of promising anything — eligibility is not an effect, and
+  /// the wild-magic band on the card is where a player finds out whether it
+  /// bought them a trigger.
+  String _castTraySummary(SpellAsset spell) =>
+      incantationCastSummary(spell.formula, lexicon);
 
   /// With either spell component in play, CAST becomes a press-and-hold that
   /// doubles as the capture window for both (VOCAL_RECALL_PLAN.md §9.4,

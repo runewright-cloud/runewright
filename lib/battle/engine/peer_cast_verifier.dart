@@ -296,12 +296,15 @@ class PeerCastVerifier {
     //    has to avoid, which is why the interpretation is below it.
     final baseManaCost = certifiedBaseManaCost(outputs, formulas);
     // 3. Wild Magic, over 1 and 2 — and nothing else from `outputs`.
-    //    Eligibility reads the MEANINGFUL formulas (§7.2): a noise chunk
-    //    contributes no affinity to the tally, exactly as if the spell had one
-    //    fewer formula. Nothing about the hash changes — its trajectory field
-    //    is the flat sequence above and its cost field is the structural price,
-    //    both leyline-invariant given the config, and `leylineConfigHash` was
-    //    already field 7.
+    //    Eligibility is the lexicon's canonical structural reading of the flat
+    //    sequence (§7.2 as amended by the 2026-09-04 partial-formula
+    //    correction): a MEANINGFUL complete formula lends its first element, a
+    //    NOISE one lends nothing, and the trailing INCOMPLETE residual lends
+    //    its first element too — a formula's start fixes its affinity, only its
+    //    completion fixes its meaning. Nothing about the hash changes — its
+    //    trajectory field is the flat sequence above and its cost field is the
+    //    structural price, both leyline-invariant given the config, and
+    //    `leylineConfigHash` was already field 7.
     return CertifiedCast(
       formulas: formulas,
       elementSequence: elementSequence,
@@ -311,7 +314,7 @@ class PeerCastVerifier {
         certifiedTrajectory: elementSequence,
         certifiedBaseManaCost: baseManaCost,
         leylineConfigHash: lexicon.leyline.leylineConfigHash,
-        formulas: lexicon.meaningfulOf(formulas),
+        affinities: lexicon.eligibleAffinitiesOf(elementSequence),
       ),
     );
   }

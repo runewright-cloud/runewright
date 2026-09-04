@@ -26,9 +26,9 @@ import 'package:rune_duel/battle/engine/peer_cast_verifier.dart';
 import 'package:rune_duel/battle/engine/incantation_lexicon.dart';
 import 'package:rune_duel/battle/models/certified_cast.dart';
 import 'package:rune_duel/battle/engine/proof_intake.dart';
-import 'package:rune_duel/battle/engine/trajectory_parser.dart';
 import 'package:rune_duel/battle/engine/wild_magic.dart';
-import 'package:rune_duel/battle/models/effect_kind.dart' show SpellAffinity;
+import 'package:rune_duel/battle/models/effect_kind.dart'
+    show SpellAffinity, spellAffinityFromZone;
 import 'package:rune_duel/battle/models/leyline_config.dart';
 import 'package:rune_duel/battle/models/wild_magic_effect.dart';
 import 'package:rune_duel/engine/border_zone.dart';
@@ -97,11 +97,15 @@ CertifiedCast _semantics(VerifiedSpellOutputs outputs,
       lexicon: IncantationLexicon.of(leyline ?? LeylineConfig.ordinaryDefault),
     );
 
-ParsedFormula _formula(BorderZone affinity) => ParsedFormula(
-      affinity: affinity,
-      effectType1: BorderZone.fire,
-      effectType2: BorderZone.fire,
-    );
+/// One affinity contribution, as `IncantationLexicon.eligibleAffinitiesOf`
+/// hands them to [WildMagic.eligibleElements].
+///
+/// It used to build a whole `ParsedFormula`, back when eligibility tallied
+/// complete formulas directly. The 2026-09-04 partial-formula correction moved
+/// "which groups speak for an element" onto the lexicon (a residual speaks, a
+/// Noise formula does not), so what arrives here is the affinity list itself
+/// and this helper is now just a rename.
+SpellAffinity _formula(BorderZone affinity) => spellAffinityFromZone(affinity);
 
 /// A 64-char hex string that starts with [prefix] and is padded with a
 /// character that can never extend a run or an ascending sequence out of it.
@@ -112,7 +116,7 @@ String _hash64(String prefix, {String pad = '7'}) {
 
 /// [WildMagic.triggersFor] with the vector defaults filled in.
 List<WildMagicTrigger> _triggers(
-  List<ParsedFormula> formulas, {
+  List<SpellAffinity> affinities, {
   String? caster,
   List<BorderZone> trajectory = _traj,
   int baseManaCost = 17,
@@ -123,7 +127,7 @@ List<WildMagicTrigger> _triggers(
       certifiedTrajectory: trajectory,
       certifiedBaseManaCost: baseManaCost,
       leylineConfigHash: leylineConfigHash ?? _leyline(),
-      formulas: formulas,
+      affinities: affinities,
     );
 
 void main() {
@@ -680,7 +684,8 @@ void main() {
           certifiedTrajectory: sem.elementSequence,
           certifiedBaseManaCost: sem.baseManaCost,
           leylineConfigHash: LeylineConfig.ordinaryDefault.leylineConfigHash,
-          formulas: sem.formulas,
+          affinities: IncantationLexicon.ordinary
+              .eligibleAffinitiesOf(sem.elementSequence),
         ),
       );
     });
@@ -868,12 +873,15 @@ void main() {
       );
     });
 
-    test('zero formulas (a void spell) yields nothing eligible', () {
+    test('no affinity contributions yields nothing eligible', () {
+      // Under an ordinary grammar this is still "a spell with no complete
+      // formula". Under a mutable one it is narrower: a spell whose trajectory
+      // committed nothing at all, since a residual alone now contributes.
       expect(WildMagic.eligibleElements(const []), isEmpty);
     });
 
-    test('iteration order is SpellAffinity.values, not formula order', () {
-      // Built from formulas in air, water, earth, fire order — the result must
+    test('iteration order is SpellAffinity.values, not contribution order', () {
+      // Built from contributions in air, water, earth, fire order — the result must
       // still iterate fire, earth, water, air. Unordered iteration here is a
       // lockstep landmine (§4.3).
       final eligible = WildMagic.eligibleElements([

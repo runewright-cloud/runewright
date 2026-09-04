@@ -65,14 +65,11 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' show sha256;
 
-import 'package:rune_duel/battle/models/effect_kind.dart'
-    show SpellAffinity, spellAffinityFromZone;
+import 'package:rune_duel/battle/models/effect_kind.dart' show SpellAffinity;
 import 'package:rune_duel/battle/models/wild_magic_effect.dart';
 import 'package:rune_duel/battle/models/wild_magic_effect.dart' as models
     show normalizeCommunitySeed;
 import 'package:rune_duel/engine/border_zone.dart';
-
-import 'trajectory_parser.dart' show ParsedFormula;
 
 class WildMagic {
   // ── §5 The canonical semantic key ───────────────────────────────────────
@@ -361,27 +358,36 @@ class WildMagic {
 
   /// The elements whose column(s) of the effects table this spell reads.
   ///
-  /// Tally the first-entry element of every **completed** formula; the most
-  /// frequent element wins, and on a tie **every** tied element is eligible
-  /// (the "wild magic specialist" archetype). Not `border_activations`, not
-  /// generations-dominant — design §Eligibility says "cumulative across all
-  /// **formulas**", and this reading reuses the certified [ParsedFormula] list
-  /// [TrajectoryParser.parse] already produces, adding no new certified surface.
+  /// Tally [affinities]; the most frequent element wins, and on a tie **every**
+  /// tied element is eligible (the "wild magic specialist" archetype). Not
+  /// `border_activations`, not generations-dominant — design §Eligibility says
+  /// "cumulative across all **formulas**".
   ///
-  /// A zero-formula spell yields an empty set and therefore fires no wild
-  /// magic — which is the design's "void effects entirely removed for now",
-  /// for free and with no special case.
+  /// **[affinities] is `IncantationLexicon.eligibleAffinitiesOf(certified
+  /// element sequence)` and nothing else.** It used to be the certified
+  /// `ParsedFormula` list, i.e. one entry per COMPLETE formula; the 2026-09-04
+  /// partial-formula correction moved that decision out of here and onto the
+  /// lexicon, because "which groups speak for an element" turned out to be a
+  /// grammar question with three answers (meaningful → yes, Noise → no,
+  /// incomplete residual → yes) rather than a property of a formula list. This
+  /// function stayed a meaning-blind tally over whatever it is given, exactly
+  /// as `DeterministicResolution.pureAffinityOf` did for the same reason.
+  ///
+  /// An empty list yields an empty set and therefore fires no wild magic —
+  /// which is the design's "void effects entirely removed for now", for free
+  /// and with no special case. Note that under a mutable grammar a spell with
+  /// no complete formula is no longer necessarily such a spell: its residual
+  /// alone can make one element eligible.
   ///
   /// The returned set iterates in `SpellAffinity.values` order
   /// (`fire, earth, water, air`), **not** map-insertion order. That is a
-  /// lockstep landmine: both clients see the same formulas in the same order
+  /// lockstep landmine: both clients see the same affinities in the same order
   /// today, but the moment they don't, unordered iteration turns a cosmetic
   /// difference into a state-hash divergence.
-  static Set<SpellAffinity> eligibleElements(List<ParsedFormula> formulas) {
-    if (formulas.isEmpty) return const {};
+  static Set<SpellAffinity> eligibleElements(List<SpellAffinity> affinities) {
+    if (affinities.isEmpty) return const {};
     final counts = <SpellAffinity, int>{};
-    for (final f in formulas) {
-      final e = spellAffinityFromZone(f.affinity);
+    for (final e in affinities) {
       counts[e] = (counts[e] ?? 0) + 1;
     }
     final maxCount = counts.values.reduce((a, b) => a > b ? a : b);
@@ -410,7 +416,12 @@ class WildMagic {
   /// the second question open — candidate B would give each eligible affinity
   /// its own domain-separated roll off the same hash — so the trigger producer
   /// below must stay swappable without touching the preimage above. Nothing
-  /// here reads a raw preimage field; it reads the hash and the formulas.
+  /// here reads a raw preimage field; it reads the hash and the affinities.
+  ///
+  /// The 2026-09-04 partial-formula correction changed [affinities] and NOTHING
+  /// else on this path: the preimage layout, its six encoding decisions, the
+  /// 3×4 table, the scan and the coalescing are all untouched. A spell whose
+  /// eligibility moved hashes to the identical value it always did.
   ///
   /// Every argument must come from **certified** proof outputs and the
   /// authenticated caster identity, never from a wire `SpellAsset`
@@ -421,11 +432,11 @@ class WildMagic {
     required List<BorderZone> certifiedTrajectory,
     required int certifiedBaseManaCost,
     required String leylineConfigHash,
-    required List<ParsedFormula> formulas,
+    required List<SpellAffinity> affinities,
   }) {
-    // Eligibility first: a spell with no completed formula fires nothing
+    // Eligibility first: a spell that speaks for no element fires nothing
     // whatever it hashes to, so there is no reason to hash it.
-    final eligible = eligibleElements(formulas);
+    final eligible = eligibleElements(affinities);
     if (eligible.isEmpty) return const [];
 
     final rows = scan(semanticHashHex(
