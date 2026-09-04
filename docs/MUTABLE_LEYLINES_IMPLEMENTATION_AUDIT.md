@@ -1,14 +1,83 @@
 # Mutable Leylines — implementation-boundary audit
 
-*Written 2026-09-03. **Read-only audit. No implementation code was written; no
-version was bumped; no golden was regenerated.** The only file added is this
-one, and it is deliberately uncommitted.*
+*Written 2026-09-03 as a **read-only audit**, before any implementation. Slices
+A–D shipped on 2026-09-03/04 and this document was amended in place; see the
+status banner below for what is now as-built and what is still a proposal.*
 
 Sources of truth: `docs/LEYLINE_SEED_PLAN.md`, `docs/WILD_MAGIC_PLAN_VNEXT.md`.
-Implementation baseline: engine 12, protocol 7, ruleset 3, `LeylineConfig` +
-`leylineConfigHash` shipped and behaviourally inert, Wild Magic v2 keyed on
-caster × certified trajectory × certified base cost × leyline hash, wild magic
-resolved as a coalesced phase per simultaneous resolution batch.
+Audit baseline (the state this document was written *against*): engine 12,
+protocol 7, ruleset 3, `LeylineConfig` + `leylineConfigHash` shipped and
+behaviourally inert, Wild Magic v2 keyed on caster × certified trajectory ×
+certified base cost × leyline hash, wild magic resolved as a coalesced phase per
+simultaneous resolution batch.
+
+---
+
+## Status — as-built, 2026-09-04
+
+**Mutable Incantations are live in the engine.** Slices A–D are committed;
+Slices E and F are not started. **Current versions: engine 13, protocol 7,
+ruleset 3, circuits/VK unchanged.**
+
+| Slice | State | Commit |
+|---|---|---|
+| A — consolidate segmentation | ✅ shipped | `be9132c` |
+| B — deterministic codebook + vectors | ✅ shipped | `4726649` |
+| C — noise-capable semantics | ✅ shipped | `09a7f61` |
+| D — live mutable interpretation | ✅ shipped | `3f4f08b` |
+| E — Summon / Armor rekeying | ⛔ blocked on R-8 | — |
+| F — player-facing surfaces | 🔜 next | — |
+
+### How to read this document
+
+Sections 1–12 are the **original audit**: a trace of the code as it stood on
+2026-09-03, written to find the boundaries. They are preserved because the
+reasoning is what the rulings rest on, but **they describe the pre-Slice-A code
+and must not be read as current design.** Where a section has been overtaken,
+it now says so inline.
+
+§13's slice entries are the current record. Each shipped slice leads with an
+**as-built** description and keeps its **Original plan** at the end, clearly
+labelled — several plans were superseded by something better during
+implementation, and the difference is usually the interesting part.
+
+### The shipped architecture in one page
+
+* **Structure and meaning are separate questions.** Segmentation
+  (`formula_segmentation.dart`) cuts a certified trajectory into complete
+  formulas at the active grammar length; interpretation happens *afterwards*,
+  on an already-cut formula. Nothing interprets before it segments.
+* **`IncantationLexicon.of(LeylineConfig)`
+  (`lib/battle/engine/incantation_lexicon.dart`) is the sole live interpretation
+  and config boundary.** It answers exactly two questions: `formulaLength`
+  (structural) and `meaningOf(ParsedFormula) → IncantationMeaning` (semantic).
+  It is the **only** production reader of `LeylineConfig.mutableMagic`, the only
+  production importer of `leyline_codebook.dart`, and the only caller of
+  `IncantationCodebook.derive`. All three are pinned by posture tests in
+  `test/battle/models/incantation_meaning_test.dart`.
+* **Ordinary interpretation remains canonical through `effectKindFromPair`**,
+  reached via `ordinaryIncantationMeaning`. An ordinary lexicon derives no
+  codebook and reads no seed, hash, ordering or noise density.
+* **A mutable codebook is derived once per deterministic match-resolution
+  context** — a `late final` on `DeterministicResolution`, itself a `late final`
+  on `TurnLoop` — and passed down to the verifier paths rather than re-derived
+  per cast. There is no cache.
+* **`ParsedFormula` retains its structural tail.** `chunk[0]` is the affinity;
+  `chunk[1..]` is the tail, which *is* the codebook key. Affinity is never part
+  of a key. `effectType1`/`effectType2` are ordinary-only readings that throw on
+  a mutable-length tail rather than silently truncating it.
+* **Noise is a structurally complete formula with no meaning.** It produces no
+  Incantation effect, contributes no affinity eligibility and no Wild Magic
+  eligibility, and never falls back to the ordinary table — but it consumes its
+  chunk, counts toward intrinsic mana, and is therefore visible to structural
+  mechanics such as partial counter-charm suppression.
+* **`certifiedBaseManaCost` is a function of the certified trajectory and the
+  active `formulaLength` — never of codebook meaning.** Within a fixed grammar,
+  flipping a key between meaningful and noise cannot move it (§7.4).
+* **Persisted inscription identity is leyline-independent.** `SpellAsset
+  .manaCost`, `behaviouralKinKey`, kin stacking and heraldry are all derived
+  inscription-side under the ordinary structure and are not redefined by mutable
+  interpretation.
 
 ---
 
@@ -131,6 +200,15 @@ a function of the leyline (both because `L` changes how many chunks fit and
 because noise formulas may or may not count). See §7.3 — this is the sharpest
 consensus coupling in the whole feature.
 
+> **As-built, 2026-09-04.** Half of that parenthetical was closed by §7.4 and is
+> no longer an open question: **noise formulas always count.** The cost is a
+> function of the certified trajectory and the active `formulaLength` alone —
+> `L` moving the chunk count is the *only* way a leyline reaches it, and that is
+> ratified because a different `L` is already a different `leylineConfigHash`.
+> Slice D's `semanticsOf` prices the raw structural list on the line **before**
+> any interpretation runs, so the coupling is closed structurally rather than by
+> convention.
+
 **No circularity:** `leylineConfigHash` is independent of any spell, so
 `cost → wildMagic` and `leyline → cost` compose cleanly.
 
@@ -143,6 +221,12 @@ consensus coupling in the whole feature.
 * `SpellAsset.manaCost` — **persisted**, derived at inscribe time from
   `formulas.length` (`spell_asset_integrity.dart:184-193`, `main.dart:626`).
   Under mutable this stored number no longer matches what the duel charges.
+  **As-built (R-6):** that is the accepted outcome, not a bug to fix. Both sites
+  deliberately keep the ordinary length — inscription has no leyline — so the
+  persisted number, and `behaviouralKinKey` / kin stacking / heraldry derived
+  from it, stay leyline-independent. A proof-backed cast has been priced from
+  `CertifiedCast.baseManaCost` rather than this field since M4.22, so nothing
+  reads it for money.
 * `SpellAsset.behaviouralKinKey` — `behaviouralKinKey(trajectory: formula,
   baseManaCost: manaCost)`. Kin-stacking forfeits and heraldic arms key off it,
   so a leyline-dependent `manaCost` moves kinship too.
@@ -558,6 +642,20 @@ Also: **no production path can construct a mutable config today.** `LeylineConfi
 .mutable` has zero callers in `lib/` — only tests. That is what makes the
 current wire exposure latent rather than live (§10).
 
+> **As-built amendment, 2026-09-04 (Slice D).** Two rows of the table above have
+> moved. `wild_magic_preview.dart` now derives through `IncantationLexicon`, so
+> it is leyline-correct rather than merely proof-correct — a preview must not
+> promise a trigger the cast cannot fire. `expectedRecitalSlots` (and its UI
+> twin `battle_screen.dart:_expectedElementCount`'s consensus counterpart)
+> follows the active grammar in-match.
+>
+> **Every other row is unchanged and still assumes L=3, a fixed dictionary and
+> no noise.** The divergence flagged above is therefore still open, and is now
+> enumerated as Slice F's inherited scope (§13). The final paragraph still
+> holds: `LeylineConfig.mutable` has zero callers in `lib/`, so mutable
+> interpretation is reachable from the engine and from tests but not from the
+> app — which is exactly what makes deferring the display work safe.
+
 ---
 
 ## 10. Backward compatibility / wire audit — **the major stop gate**
@@ -643,6 +741,14 @@ not honour is the same hazard pointed inward.
 how a certified trajectory is *interpreted*, never what the automaton does, what
 a proof attests, or which VK accepts it (§17, and CLAUDE.md's separation of the
 three version constants).
+
+> **As-built, 2026-09-04.** The forecast held exactly. Rows 1–3 shipped with no
+> version movement (Slices A/B/C). Row 4 shipped as Slice D and moved
+> `kBattleEngineVersion` **12 → 13** and nothing else: protocol stayed 7 —
+> `LeylineConfig` has carried `mutableMagic` and `formulaLength` on the wire
+> since its own first slice, and no framing changed — and ruleset stayed 3 with
+> circuits and VK untouched. Rows 5–7 (Summon, Armor, the picker) are not
+> started.
 
 ---
 
@@ -926,7 +1032,61 @@ shells out to Python.
    per-effect counts, the vector corpus.
 8. **Gate:** vectors reviewed and ratified as the permanent record.
 
-### Slice C — noise-capable formula representation, ordinary-only
+### Slice C — noise-capable formula representation, ordinary-only ✅ **DONE 2026-09-03** (`09a7f61`)
+
+Shipped as `lib/battle/models/incantation_meaning.dart` +
+`test/battle/models/incantation_meaning_test.dart`. Full suite 2442/2442 green,
+replay corpus zero deltas, analyzer identical to baseline, engine 12 / protocol
+7 / ruleset 3 / VK untouched. No production caller derived a codebook, imported
+`leyline_codebook.dart`, or read `mutableMagic` at the end of this slice — all
+three asserted by source-scanning posture tests.
+
+#### As-built — what changed from the plan
+
+**The plan's "`ParsedFormula` grows a nullable effect" was NOT built, and
+should not be revived.** §13's Slice B entry had already rejected `EffectKind?`
+on its own terms; Slice C took that further and made the *formula* and its
+*meaning* separate values rather than one value with an optional field. The
+distinction the slice actually established is:
+
+```
+complete structural formula   !=   meaningful incantation effect
+```
+
+Concretely:
+
+* **`IncantationMeaning` / `IncantationEffect` / `IncantationNoise` were
+  extracted** out of `leyline_codebook.dart` into
+  `lib/battle/models/incantation_meaning.dart`, verbatim, and re-exported from
+  the codebook so every existing importer and every Slice B vector saw exactly
+  what it saw before. The move is a **dependency boundary**: ordinary
+  production code must be able to *name* a meaning without importing the
+  codebook and thereby coming within reach of `IncantationCodebook.derive`.
+  That extraction is what made Slice D's posture guards expressible.
+* **`ordinaryIncantationMeaning(effectType1, effectType2)`** wraps
+  `effectKindFromPair` and nothing else, and returns `IncantationEffect` — not
+  `IncantationMeaning`. The narrowed return type *is* the statement that
+  ordinary interpretation is total: a caller holding the result needs no noise
+  branch and the analyzer says so. It takes only the **tail**; affinity is not a
+  parameter, because §3's protected invariant is that a leyline may change what
+  a tail means and never what an affinity means.
+* **Three eligibility predicates** over one exhaustive switch —
+  `incantationManifestsEffect`, `incantationContributesAffinity`,
+  `incantationContributesWildMagicEligibility` — one per row of §7.4's ratified
+  table, named separately because three different consumers read three
+  different rows.
+* **`meaningfulIncantationCount`** exists precisely so the two counts have
+  different names. It is documented as *not* the number anything prices from.
+
+**No wrapper type was added.** Nothing consumes affinity + meaning as a pair,
+and `chunk[0]` is in hand at every call site, so the predicates take a meaning
+alone rather than a class whose only callers would be its own tests.
+
+**Item 5 of the original plan below ("Unresolved: the `effectCount` ruling") was
+already closed** by §7.4 before this slice started — see R-5/R-6 in §14. Nothing
+in Slice C touched `certifiedBaseManaCost`.
+
+#### Original plan *(superseded in part — see as-built above)*
 
 1. **Goal:** let a formula *be* noise without any leyline reading it yet:
    `ParsedFormula` grows a nullable effect (or gains a sibling type), and every
@@ -947,7 +1107,116 @@ shells out to Python.
    inertness across all four consumers.
 8. **Gate:** replay corpus, zero deltas.
 
-### Slice D — wire mutable Incantation behaviour + the engine gate
+### Slice D — wire mutable Incantation behaviour + the engine gate ✅ **DONE 2026-09-04** (`3f4f08b`)
+
+The first slice that changes what a duel does. Shipped as
+`lib/battle/engine/incantation_lexicon.dart` + two new test suites
+(`incantation_lexicon_test.dart`, `mutable_incantation_resolution_test.dart`),
+with seven production files threaded. Full suite 2488/2488 green, replay corpus
+zero deltas with no golden regenerated, analyzer identical to baseline.
+**Engine 12 → 13; protocol 7, ruleset 3, circuits/VK unchanged.**
+
+#### As-built — the seam
+
+The plan said "chunk at `formulaLength`, look the tail up in the codebook".
+What that required, and what was built:
+
+* **`IncantationLexicon.of(LeylineConfig)`** — one object, built once from the
+  match's canonical config, answering the two leyline-dependent questions the
+  engine has: `formulaLength` (structural) and `meaningOf` (semantic). Both live
+  on one object deliberately: a build that chunked at one length while
+  interpreting under another leyline's dictionary would resolve a spell no
+  device agrees with, so there is one constructor, it takes the whole config,
+  and it cannot be assembled from halves.
+* **Derivation happens once per deterministic context** — `late final lexicon`
+  on `DeterministicResolution`, which is itself `late final` on `TurnLoop`.
+  `TurnLoop` passes `_resolution.lexicon` into `PeerCastVerifier` rather than
+  letting it derive a second one, so a match cannot end up holding two codebooks.
+  No cache: ~1040 SHA-256s once per match is not worth a consensus hazard, and a
+  cache keyed on less than the full canonical config would be one.
+* **`ParsedFormula` gained its structural `tail`** (`chunk.sublist(1)`), which is
+  the codebook key under a mutable leyline and the `effectKindFromPair` argument
+  pair under an ordinary one. `effectType1`/`effectType2` now **throw** on a
+  non-ordinary tail instead of returning `tail[0..1]` in the wrong role — a
+  mutable formula must reach the codebook or reach nothing.
+* **`CertifiedCast.formulas` stays structural.** Certification certifies
+  structural spell facts; interpretation is applied downstream by the lexicon.
+  No codebook-dependent meaning is baked into a certificate.
+* **Interpretation follows segmentation, at three consumers only.** The
+  resolution loop keeps one iteration per *structural* formula and `continue`s
+  past noise; `pureAffinityOf` and `WildMagic.eligibleElements` receive
+  `lexicon.meaningfulOf(...)`. `EffectResolver.resolveKind` takes an
+  already-interpreted kind and has **no noise case at all**, so there is no
+  no-op descriptor for anyone to apply by accident.
+* **`expectedRecitalSlots` follows the active grammar in-match**, and became an
+  instance method to do so. Required by its own contract — never ask a caster to
+  recite words the cast discards — since the residual is a different length
+  under a mutable grammar. It is the *structural* prefix: a noise formula is
+  still recited, because §7.4 says the chunk is consumed like any other.
+* **`parsedFormulas` became an instance method** reading `lexicon.formulaLength`,
+  so the certified path and the authored/local fallback cannot cut the same
+  element sequence differently. `SpellAsset.formula` is a flat name list, so
+  persisted metadata already represents mutable formulas faithfully — **no
+  migration and no new persistence format were needed.**
+
+#### As-built — the mana gate, investigated before any production edit
+
+Activating lengths 4–6 **does** move `certifiedBaseManaCost` for an identical
+certified trajectory: `effectCount` is `max(0, formulas.length - 1)` and the
+chunk count is `committed.length ~/ L`. That is the case §7.4 ratifies — cost
+moves with the **grammar**, which is already a different `leylineConfigHash`.
+The forbidden case (meaning moving cost) is prevented *structurally*, not by
+convention: `semanticsOf` prices the raw structural list on the line **before**
+any interpretation happens. Within a fixed grammar, flipping a key between
+meaningful and noise cannot change certified base mana.
+
+Persisted identity is untouched because inscription has no leyline:
+`main.dart:_computeManaCost` and `spell_asset_integrity` both keep the ordinary
+length, so `SpellAsset.manaCost` → `behaviouralKinKey` → kin stacking →
+heraldry remain leyline-independent. §7.3's three feared consequences all
+resolved to "no change".
+
+#### As-built — a ratified consequence, and an open balance concern
+
+**A mutable grammar can make an existing spell structurally void.** A
+three-element certified trajectory has *no complete formula* at lengths 4–6:
+no effect, no affinity, no wild magic, and `effectCount` 0. This is correct
+under the ratified rules — it falls straight out of §7's chunking and §16's
+lengths — and it is pinned by test rather than smoothed over. It surfaced as a
+real failure in `wild_magic_preview_test`, whose fixture spell is exactly three
+elements.
+
+**This is an engine consequence, not an implementation defect.** It is recorded
+here as an **open balance question**: long grammars disproportionately punish
+short spells, and every existing spellbook is full of them. Whether that is
+desirable — and whether noise density or length bounds should compensate — is a
+design call for playtest, not something to patch in the engine.
+
+#### As-built — Wild Magic, untouched
+
+No file under `wild_magic*` was edited. The v2 preimage's trajectory field is
+the flat committed sequence, which is leyline-invariant because
+`FormulaTracker`'s three commit rules are length-independent; its cost field is
+the structural price. **Only *which formulas are eligible* changed**, and that
+is a filter applied to `triggersFor`'s `formulas` argument — exactly what §7.2
+predicted would suffice. The hash, the 3×4 table, `kWildMagicEffectCode`, the
+event RNG and Slice 7 coalescing are all as they were (R-7).
+
+#### As-built — what was deliberately NOT done
+
+* **The two-device hardware pass in item 8 below has not been run.** It is still
+  the right gate for this slice and remains outstanding. It is cheap to defer
+  today only because no UI can construct a mutable config (below), so no
+  hardware duel can currently *be* mutable.
+* **`duel_setup.dart` / §10.3 compat hardening was not touched.** R-9 is still
+  open, and the flat-`communitySeed` fallback is unchanged.
+* **No mutable picker exists.** `LeylineConfig.mutable` still has zero callers
+  in `lib/`, so mutable interpretation is reachable from the engine and from
+  tests but not from the app. That is Slice F, and it is what keeps this slice's
+  blast radius honest.
+* **Player-facing display was left ordinary on purpose.** See Slice F.
+
+#### Original plan *(shipped, with the seam elaborated above)*
 
 1. **Goal:** `mutableMagic` finally *does* something: chunk at `formulaLength`,
    look the tail up in the codebook, resolve noise as inert.
@@ -981,15 +1250,60 @@ Presentation and persisted-discovery scope. Must land **after** Slice D's gate.
 Also the right place to fix the pre-existing preview-vs-certification divergence
 (§9).
 
+#### Inherited from Slice D — the exact list
+
+Slice D wired the engine and deliberately left every player-facing surface
+interpreting ordinarily. Those surfaces are **currently unreachable under a
+mutable leyline** — no production path constructs a mutable `LeylineConfig` —
+which is what makes deferring them safe rather than merely convenient. Each
+would mis-render the moment a picker exists:
+
+* **`formulaEffects` / `formulaEffectLabels`** (`effect_kind.dart`) — one
+  ordinary effect per complete triplet, read by the spell card, library,
+  sightings and battle screen. It must **not** be globally redefined as
+  "meaningful effects only": several consumers depend on structural
+  correspondence, and what a noise position should *look like* is an unmade
+  design decision.
+* **`formulaTripletKind`** — live inscription (`formula_bar.dart`) and
+  `RecipeBook` discovery (`main.dart:_recordNewFormulas`). Discovery is
+  **persisted state**, so leyline-scoping it is a storage decision, not a
+  rendering one.
+* **`spell_card_painter.dart`'s affinity histogram** — counts `chunk[0]` of the
+  raw stored list with no interpretation, so under a mutable leyline it would
+  count noise-formula affinities as effect-eligible. Its Slice A input quirk
+  (raw-string segmentation **before** invalid-name filtering) is deliberate and
+  must be preserved; do not "clean it up" while fixing the interpretation.
+* **Out-of-match practice teaching** — `PracticeFormula.fromSpellFormula` drills
+  at length 3, while `expectedRecitalSlots` now follows the active grammar
+  in-match. A mutable duel therefore expects a different word count than the
+  drill taught.
+* **Final noise presentation** — how a noise formula reads on a card, in the
+  library, and in the recital. Undesigned, and deliberately so: Slice D kept the
+  engine correct and left the visual language open.
+* **`spell_view_screen.dart:154`** — the pre-existing `(committed.length - 1) ~/
+  3` mana readout bug recorded in §13.2, still unfixed and still display-only.
+* **`recipes_screen.dart`** — teaches the fixed 16-pair table, which under a
+  mutable leyline is unknown by design.
+
+`wild_magic_preview.dart` is **already done**: Slice D routed it through the
+live lexicon, because a preview that ignored noise would promise triggers the
+cast cannot fire.
+
 ---
 
 ## 14. Stop conditions reached
 
-Per the audit's own stop rules, **implementation must not begin** until the
-following are ruled. Each maps to a listed stop condition.
+Per the audit's own stop rules, implementation was not to begin until the
+following were ruled. Each maps to a listed stop condition.
 
-**Update 2026-09-03:** R-1 … R-4 are **RATIFIED** and pinned by vectors
-(§13, Slice B). R-5 … R-9 remain open and block Slices C-E.
+**Update 2026-09-03:** R-1 … R-4 **RATIFIED** and pinned by vectors (§13,
+Slice B).
+
+**Update 2026-09-04 (as-built):** R-5, R-6 and R-7 are **RATIFIED and shipped**
+— R-5/R-6 by §7.4's noise-does-not-move-mana ruling, R-7 by §8's
+`wildMagicEffectFor`-is-not-rekeyed ruling. Slices C and D are complete on that
+basis. **R-8 remains open and blocks Slice E; R-9 remains open** and is
+unchanged by Slice D, which touched no compatibility negotiation.
 
 | # | Ruling | Stop condition |
 |---|---|---|
@@ -997,11 +1311,11 @@ following are ruled. Each maps to a listed stop condition.
 | R-2 | The meaningful-tail → effect allocation rule (round-robin vs. blocked) | ✅ **RATIFIED** — round-robin (numbering here follows §13's Slice B, which splits rounding from allocation) |
 | R-3 | The remainder rule when `M` is not divisible by 16, and the permille→`M` rounding | ✅ **RATIFIED** — round-half-up on noise, no floor; remainder to a prefix of the derived effect order |
 | R-4 | Exact domain-tag bytes and length-prefixing | ✅ **RATIFIED** — §4/§8/§9 literals, uint8 length prefix |
-| R-5 | Does `effectCount` (and therefore certified base mana cost, and therefore Wild Magic's preimage, and therefore `behaviouralKinKey`) count noise formulas? | proof/certified semantics |
-| R-6 | What happens to persisted `SpellAsset.manaCost` and kin keys under a mutable leyline | proof/certified semantics |
-| R-7 | Is the Wild Magic 3×4 → effect table itself rekeyed, or is the config hash sufficient? (§8) | affinity semantics |
-| R-8 | Summon and Armor pattern-space mapping (§8 of the plan defers this explicitly) | — |
-| R-9 | Should the legacy flat-`communitySeed` fallback become an error once mutable is live? (§10.3) | old-client compatibility |
+| R-5 | Does `effectCount` (and therefore certified base mana cost, and therefore Wild Magic's preimage, and therefore `behaviouralKinKey`) count noise formulas? | ✅ **RATIFIED 2026-09-03 (§7.4)** — **yes**, every syntactically complete chunk counts, noise included. Cost is a function of the certified trajectory and the active `formulaLength` alone, never of the codebook. Shipped in Slice D. |
+| R-6 | What happens to persisted `SpellAsset.manaCost` and kin keys under a mutable leyline | ✅ **RATIFIED 2026-09-03 (§7.4)** — **nothing**. Inscription has no leyline, so persisted cost, `behaviouralKinKey`, kin stacking and heraldry stay inscription-side and leyline-independent. Shipped in Slice D. |
+| R-7 | Is the Wild Magic 3×4 → effect table itself rekeyed, or is the config hash sufficient? (§8) | ✅ **RATIFIED 2026-09-03 (§8)** — the config hash is sufficient; the table is **not** rekeyed. Slice D edited no wild-magic file; only *which formulas are eligible* changed. |
+| R-8 | Summon and Armor pattern-space mapping (§8 of the plan defers this explicitly) | ⛔ **OPEN — blocks Slice E.** A design ruling is required before any code. |
+| R-9 | Should the legacy flat-`communitySeed` fallback become an error once mutable is live? (§10.3) | ⛔ **OPEN.** Unchanged by Slice D, which touched no compatibility negotiation. Mutable is live in the engine but unreachable from the UI, so this is not yet urgent — it becomes a gate for Slice F. |
 
 **Not** ambiguous, and therefore **not** rulings: formula chunking is fully
 specified (§7 — disjoint, non-overlapping, trailing remainder discarded, affinity
