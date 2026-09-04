@@ -533,6 +533,102 @@ void main() {
             'behaviouralKinKey and heraldry, depend on where it was cast',
       );
     });
+
+    // ── Slice E: the UI reads the lexicon, it does not rebuild it ───────────
+
+    test('no UI file can see the codebook', () {
+      // Implied by 'only the lexicon imports the codebook' above, but stated
+      // separately because it is the Slice E failure mode with its own name:
+      // `UI derives its own Mutable codebook independently`. A widget that
+      // derived one would be deriving it per repaint, from whatever config it
+      // happened to hold, with no guarantee it is the match's.
+      final uiFiles = _dartFiles(Directory('${lib.path}/ui')).toList();
+      expect(uiFiles.length, greaterThan(20),
+          reason: 'the ui/ walk found ${uiFiles.length} files — it is not '
+              'looking at lib/ui/');
+      for (final file in uiFiles) {
+        final src = _codeOf(file);
+        for (final forbidden in const [
+          'leyline_codebook',
+          'IncantationCodebook',
+          'mutableMagic',
+        ]) {
+          expect(src.contains(forbidden), isFalse,
+              reason: '${_rel(file)} must not know about $forbidden — ask '
+                  'IncantationLexicon a question instead');
+        }
+      }
+    });
+
+    test('the ordinary formula length is hardcoded only where ruled', () {
+      // `kIncantationFormulaLength` is the literal 3. In a surface that can
+      // run inside a match it is a bug waiting to happen — the Slice E failure
+      // mode `battle uses length 5 / UI groups triplets` was exactly this, in
+      // `BattleScreen._expectedElementCount`. The remaining uses are each a
+      // ratified decision, so they are listed rather than counted.
+      const allowed = {
+        // Owns the constant.
+        'engine/formula_segmentation.dart',
+        // Aliases it as the ordinary grammar's length.
+        'battle/models/leyline_config.dart',
+        // The parser's default, for out-of-match callers (pinned above).
+        'battle/engine/trajectory_parser.dart',
+        // The live inscription tracker. Rune Craft has no leyline.
+        'engine/formula.dart',
+        // The legacy ordinary display helper, deliberately not made
+        // leyline-aware; its in-match consumers moved to
+        // `incantation_display.dart` instead.
+        'battle/models/effect_kind.dart',
+        // Practice drills the ordinary grammar, out of match, by ruling.
+        'practice/formula_generator.dart',
+        // Authored-geometry helpers for the card's ordinary reading.
+        'spells/wild_magic_preview.dart',
+        // The card's HERALDIC histogram — identity, ruled leyline-independent
+        // (Slice E). Its rules box is separately lexicon-aware.
+        'ui/spell_card_painter.dart',
+        // The formula bar's ordinary-only guard: a group of any other length
+        // is drawn structurally rather than named through the ordinary table.
+        'ui/formula_bar.dart',
+      };
+      final users = {
+        for (final file in _dartFiles(lib))
+          if (_codeOf(file).contains('kIncantationFormulaLength')) _rel(file),
+      };
+      expect(users, allowed,
+          reason: 'a new hardcoded ordinary formula length must be justified '
+              'in review: if the surface can run inside a match it must read '
+              'lexicon.formulaLength instead');
+    });
+
+    test('the display model is the only lexicon-aware UI helper', () {
+      // Slice E's architecture in one assertion: widgets consume an
+      // already-interpreted view model, they do not each grow their own
+      // interpretation. `incantation_display.dart` is that model; the files
+      // below hold the lexicon in order to hand it to one.
+      const allowed = {
+        // The seam itself, and the layers that own a match's lexicon.
+        'battle/engine/incantation_lexicon.dart',
+        'battle/engine/deterministic_resolution.dart',
+        'battle/engine/peer_cast_verifier.dart',
+        // Not a holder: `ParsedFormula._ordinaryTail`'s StateError message
+        // names the lexicon, to tell whoever hits it where a mutable formula
+        // is supposed to go. `_codeOf` strips comments, not string literals.
+        'battle/engine/trajectory_parser.dart',
+        // The one UI-facing interpreted model.
+        'spells/incantation_display.dart',
+        // Preview and surfaces that PASS a lexicon down.
+        'spells/wild_magic_preview.dart',
+        'ui/spell_card_painter.dart',
+        'ui/battle_screen.dart',
+      };
+      final holders = {
+        for (final file in _dartFiles(lib))
+          if (_codeOf(file).contains('IncantationLexicon')) _rel(file),
+      };
+      expect(holders, allowed,
+          reason: 'a new IncantationLexicon holder is a new interpretation '
+              'site — prefer consuming incantationViewsFor');
+    });
   });
 }
 

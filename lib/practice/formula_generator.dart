@@ -53,6 +53,26 @@ class PracticeFormula {
   ///
   /// Returns null if the spell has fewer than three activations (nothing
   /// castable to recite) or if any entry is not a recognised zone name.
+  ///
+  /// **Ordinary length 3, deliberately, and that is a ratified Slice E
+  /// deferral** (docs/MUTABLE_LEYLINES_IMPLEMENTATION_AUDIT.md §13 Slice E).
+  /// Practice is reachable from exactly two places — the library and the
+  /// vocabulary screen — and NEITHER has an active leyline: there is no match,
+  /// no `MatchConfig`, and no host to adopt one from. Drilling under the
+  /// ordinary grammar is therefore not a false claim about a mutable duel; it
+  /// is general practice, which is what it has always been.
+  ///
+  /// The claim that WOULD have been false is in-match: `BattleScreen
+  /// ._expectedElementCount` used to hardcode this same length while
+  /// `DeterministicResolution.expectedRecitalSlots` cut at the active
+  /// grammar's, so a mutable match would have asked the caster for a
+  /// different number of words than it scored. That one is fixed and reads
+  /// the lexicon. This one stays put.
+  ///
+  /// A dedicated mutable practice mode — enter a leyline, drill its grammar —
+  /// is deferred, not forgotten. It needs a leyline to practise against, which
+  /// means a place to choose one outside a match, which is a bigger surface
+  /// than Slice E owns.
   static PracticeFormula? fromSpellFormula(
     List<String> spellFormula, {
     bool isSummon = false,

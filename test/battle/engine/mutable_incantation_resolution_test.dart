@@ -31,6 +31,8 @@ import 'package:crypto/crypto.dart' show sha256;
 import 'package:test/test.dart';
 
 import 'package:rune_duel/battle/engine/battle_events.dart';
+import 'package:rune_duel/engine/formula_segmentation.dart'
+    show completeFormulaElementCount;
 import 'package:rune_duel/battle/engine/deterministic_resolution.dart';
 import 'package:rune_duel/battle/engine/draw_schedule.dart';
 import 'package:rune_duel/battle/engine/hash_rng.dart';
@@ -201,10 +203,15 @@ SpellAsset _spell() => SpellAsset(
     );
 
 /// Resolve [formulas] as one cast and return the target's HP loss.
+///
+/// [suppressedFormulas] is a trajectory counter charm's partial counter — the
+/// number of LEADING STRUCTURAL formulas the charm cancelled before anything
+/// reached the effect resolver.
 Future<int> _hpLostCasting(
   _Board board,
-  List<ParsedFormula> formulas,
-) async {
+  List<ParsedFormula> formulas, {
+  int suppressedFormulas = 0,
+}) async {
   final before = board.target.hp;
   await board.resolution.applySpell(
     board.ctx,
@@ -216,6 +223,7 @@ Future<int> _hpLostCasting(
     certFormulas: formulas,
     certElementSequence: const [],
     skipChainUpdate: true,
+    suppressedFormulas: suppressedFormulas,
   );
   return before - board.target.hp;
 }
@@ -361,5 +369,172 @@ void main() {
     expect(lost, damagePerFormula,
         reason: 'fire-fire-fire is Blast under the fixed table, as it always '
             'has been');
+  });
+
+  // ── Recital follows the active grammar (Slice E pin) ──────────────────────
+  //
+  // `expectedRecitalSlots` is what a vocal cast is SCORED against. Slice E
+  // fixed `BattleScreen._expectedElementCount`, which told the caster how many
+  // words to say and had hardcoded the ordinary 3 — so under a length-5
+  // leyline the screen asked for 12 words while the engine scored 10, and a
+  // caster who did exactly what the screen said was penalised for it.
+  //
+  // The engine side is canonical and is pinned here; the screen now computes
+  // the same thing from `lexicon.formulaLength`, and the posture test in
+  // `incantation_meaning_test.dart` keeps it from drifting back to the literal.
+
+  group('expected recital slots', () {
+    /// Twelve elements, no two adjacent equal — the shape a real committed
+    /// trajectory has.
+    List<BorderZone> twelve() => [
+          for (var i = 0; i < 12; i++) BorderZone.values[i % 4],
+        ];
+
+    test('the slot count is the complete-formula prefix, per grammar', () {
+      // 12 is divisible by 3, 4 and 6 but not 5, so the length-5 row is also
+      // the residual-is-discarded case.
+      const expected = {3: 12, 4: 12, 5: 10, 6: 12};
+      for (final entry in expected.entries) {
+        final leyline = entry.key == 3
+            ? LeylineConfig.ordinaryDefault
+            : LeylineConfig.mutable(
+                communitySeed: 'rivendell', formulaLength: entry.key);
+        final board = _board(leyline);
+        expect(
+          board.resolution.expectedRecitalSlots(twelve()).length,
+          entry.value,
+          reason: 'length ${entry.key}',
+        );
+        // And it is exactly what the UI now computes independently.
+        expect(
+          board.resolution.expectedRecitalSlots(twelve()).length,
+          completeFormulaElementCount(
+            12,
+            formulaLength: board.resolution.lexicon.formulaLength,
+          ),
+          reason: 'length ${entry.key}: the screen and the engine must agree '
+              'about how many words the caster owes',
+        );
+      }
+    });
+
+    test('a noise formula is still recited', () {
+      // §6: a noise chunk is consumed exactly like a meaningful one — only its
+      // EFFECT is absent. The caster still speaks its words, so the slot count
+      // is structural and cannot depend on the codebook.
+      final board = _board(leyline);
+      final allNoise = [
+        ...(_f(BorderZone.water, noiseKey).tail),
+        BorderZone.water,
+      ];
+      // Four elements = one complete length-4 formula, whatever it means.
+      expect(allNoise.length, 4);
+      expect(board.resolution.expectedRecitalSlots(allNoise).length, 4,
+          reason: 'a spell of pure noise is still spoken in full');
+    });
+
+    test('a structurally void spell asks for nothing', () {
+      // Three elements under length 4: no complete formula, so no words are
+      // owed and none are scored.
+      final board = _board(leyline);
+      expect(
+        board.resolution.expectedRecitalSlots(
+          const [BorderZone.fire, BorderZone.water, BorderZone.earth],
+        ),
+        isEmpty,
+      );
+    });
+  });
+
+  // ── Counter-charm suppression counts STRUCTURAL formulas (Slice E pin) ─────
+  //
+  // Ratified in Slice D and pinned here because Slice E puts a number of
+  // countered formulas in front of players: a partial counter cancels the
+  // leading formulas of the STRUCTURAL list, noise included, because that is
+  // what the charm actually matched against — the certified element sequence,
+  // which is leyline-independent. A charm cannot know, and must not depend on,
+  // which of the chunks it cancelled happened to mean something.
+  //
+  // The consequence UI copy has to respect: "1 formula countered" does NOT
+  // mean "1 effect cancelled". Suppressing a noise formula cancels nothing
+  // observable, and the charm's owner still pays for it.
+
+  group('partial counter-charm suppression', () {
+    test('a suppressed noise formula consumes a suppression slot', () async {
+      // Noise, then two Blasts. Suppressing ONE formula eats the noise — so
+      // both Blasts survive and the cast is undiminished, even though a
+      // formula was cancelled.
+      final board = _board(leyline);
+      final lost = await _hpLostCasting(
+        board,
+        [
+          _f(BorderZone.water, noiseKey),
+          _f(BorderZone.fire, damageKey),
+          _f(BorderZone.fire, damageKey),
+        ],
+        suppressedFormulas: 1,
+      );
+      expect(lost, damagePerFormula * 2,
+          reason: 'suppression skips the leading STRUCTURAL formula, which '
+              'here is the noise — if it skipped the leading MEANINGFUL one, '
+              'a Blast would have been eaten and this would be one Blast');
+    });
+
+    test('suppressing a meaningful formula does cancel its effect', () async {
+      // The control. Same shape, noise moved to the back: now the leading
+      // structural formula is a Blast, and suppressing one really does cost
+      // the caster an effect.
+      final board = _board(leyline);
+      final lost = await _hpLostCasting(
+        board,
+        [
+          _f(BorderZone.fire, damageKey),
+          _f(BorderZone.fire, damageKey),
+          _f(BorderZone.water, noiseKey),
+        ],
+        suppressedFormulas: 1,
+      );
+      expect(lost, damagePerFormula);
+    });
+
+    test('suppression counts positions, not effects', () async {
+      // Stated directly: two casts with the SAME number of meaningful
+      // formulas and the same suppression count resolve differently, purely
+      // because of where the noise sits. That is the whole of the ruling.
+      final noiseFirst = await _hpLostCasting(
+        _board(leyline),
+        [
+          _f(BorderZone.water, noiseKey),
+          _f(BorderZone.fire, damageKey),
+        ],
+        suppressedFormulas: 1,
+      );
+      final noiseLast = await _hpLostCasting(
+        _board(leyline),
+        [
+          _f(BorderZone.fire, damageKey),
+          _f(BorderZone.water, noiseKey),
+        ],
+        suppressedFormulas: 1,
+      );
+      expect(noiseFirst, damagePerFormula);
+      expect(noiseLast, 0);
+    });
+
+    test('ordinary suppression is unchanged', () async {
+      // Ordinary interpretation is total, so structural and meaningful
+      // suppression are the same thing — and must stay the same thing.
+      final board = _board(LeylineConfig.ordinaryDefault);
+      ParsedFormula blast() => ParsedFormula(
+            affinity: BorderZone.fire,
+            effectType1: BorderZone.fire,
+            effectType2: BorderZone.fire,
+          );
+      expect(
+        await _hpLostCasting(board, [blast(), blast()],
+            suppressedFormulas: 1),
+        damagePerFormula,
+      );
+    });
   });
 }

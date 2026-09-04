@@ -1235,6 +1235,14 @@ event RNG and Slice 7 coalescing are all as they were (R-7).
 
 ### Slice E — Summon and Armor rekeying *(specify first)*
 
+> **Lettering note (2026-09-04).** The slice actually built and shipped as
+> "Slice E" is the **player-facing activation** slice described under *Slice F*
+> below, not this one. The build brief renumbered; this document keeps its
+> original letters so the R-8/R-9 ledger and §13's cross-references stay valid.
+> Read "Slice E" in commit messages and in `incantation_display.dart` as
+> "the UI slice, §13 Slice F here". Summon/Armor rekeying — the entry below —
+> **remains unbuilt and unruled (R-8)**.
+
 1. **Goal:** rekey the pattern languages, preserving CA-derived stats/affinity.
 2. **Unresolved, and blocking:** §8 says the summon pattern-space mapping *must*
    be specified against the current implementation before coding. Neither
@@ -1289,6 +1297,127 @@ would mis-render the moment a picker exists:
 live lexicon, because a preview that ignored noise would promise triggers the
 cast cannot fire.
 
+#### As-built — 2026-09-04 (shipped as "Slice E"; see the lettering note above)
+
+**Versions unchanged: engine 13, protocol 7, ruleset 3, circuits/VK untouched.**
+Nothing here moves a deterministic output — it exposes an already-supported
+config and corrects what the screen *says* about it. Per §11, that is not an
+engine bump.
+
+**The activation boundary is solo practice, and only solo practice.**
+`LeylinePicker` (`lib/ui/widgets/leyline_picker.dart`) is the one production
+caller of `LeylineConfig.mutable`, and it is mounted only on
+`solo_practice_settings_screen.dart`.
+
+**Why not the duel host screen — a fairness coupling, reported rather than
+patched.** The guest chooses its chapter in `duel_join_chapter_screen.dart`,
+*before* connecting, and first sees the host's leyline inside `runDuelSetup`
+step 3. The mDNS advertisement carries `displayName` + `DeviceCapabilities` and
+no `MatchConfig`, so there is nowhere earlier to surface it without a discovery
+or protocol change — which this slice excludes. A host free to pick length 6
+could therefore render a guest's entire chapter structurally void with no
+warning and no way out. Solo has no guest and so has none of this. **Putting
+the picker on the host screen requires the leyline to be visible before chapter
+lock** (advertise it, or add a guest confirm step after config receipt) **and
+should close R-9 in the same change.**
+
+**Interpretation has exactly one UI-facing entry point.**
+`lib/spells/incantation_display.dart` — `incantationViewsFor(formula, lexicon)`
+→ one `IncantationFormulaView` per **complete structural formula, noise
+included, in order**. Widgets consume it; no widget derives a codebook, and
+three posture tests now say so (`no UI file can see the codebook`, `the
+ordinary formula length is hardcoded only where ruled`, `the display model is
+the only lexicon-aware UI helper`).
+
+**Noise reads as the word `Noise`** — a muted, italicised rules line with its
+own one-line description. Not a blank, not a seventeenth `EffectKind`, not an
+ordinary label. `EffectKind` is untouched.
+
+**Surfaces made lexicon-aware** (each takes a lexicon; all default to
+`IncantationLexicon.ordinary`, so ordinary play is untouched):
+
+* `spell_card_painter.dart` — the **rules box only**, via `_CardFrame.lexicon`,
+  fed from the `activeWildMagicContext` builder that already wrapped the card.
+  A mutable card also captions which grammar the reading was taken under.
+* `battle_screen.dart` — `spellNeedsConveyorDirection` (effects-only, category
+  A), the cast-tray summary (structural, category B), and
+  `_expectedElementCount`, which **was a real bug**: it hardcoded 3 while
+  `expectedRecitalSlots` cut at the active grammar, so a length-5 match would
+  have asked the caster for more words than it scored.
+
+**Deliberately left ordinary, each for a stated reason:**
+
+* **The card's heraldry** — `frameColorShares` and `elementSymbolsFor`, both
+  fed by `_formulaAffinityCounts`. **Ruling: identity is not leyline-dependent.**
+  A library that re-skinned itself under every host's leyline would be a worse
+  lie than the one this slice fixes. The noise-affinity correction the audit
+  owed lands in the rules box instead, where an affinity is *claimed* rather
+  than merely drawn. Pinned by test across all four leylines. The Slice A
+  raw-string segmentation quirk is preserved untouched.
+* **`formulaEffects` / `formulaEffectLabels`** — not mutated. Their in-match
+  consumers moved to `incantationViewsFor`; they remain the ordinary
+  out-of-match helper, and now serve as an independent oracle in the ordinary
+  -invariance test.
+* **`formulaTripletKind`** — still ordinary-only, still called only from
+  `main.dart`'s `RecipeBook` discovery (inscription, no leyline) and
+  `formula_bar.dart`. The bar now **fails closed**: a group of any length but 3
+  is drawn structurally with no effect name, because `formulaTripletKind`'s
+  `assert` is stripped in release. Not renamed — the name is accurate.
+* **Practice** — `PracticeFormula.fromSpellFormula` stays at length 3. Practice
+  is reachable only from the library and the vocabulary screen, neither of
+  which has a match or a leyline, so ordinary drilling is general practice
+  rather than a false claim. A dedicated mutable practice mode is deferred.
+* **`recipes_screen.dart`** — reachable only from Rune Craft (`main.dart`),
+  which has no leyline. Teaching the fixed table out of match is correct.
+* **The library** — has no active leyline (the context is primed from the
+  device's own seed as `LeylineConfig.ordinary`), so it reads ordinarily, and
+  persisted `SpellAsset.formula` / `manaCost` / `behaviouralKinKey` / heraldry
+  are untouched per R-6.
+* **`spell_view_screen.dart:154`'s mana readout** — the pre-existing §13.2 bug,
+  still unfixed. Out of scope, and unrelated to leylines.
+
+**Structurally void spells stay selectable.** No filtering, no disabling, no
+balance rule — the strong default. The card names the condition instead: *"No
+complete formula under `rivendell 4` — this leyline reads 4 elements to a
+formula, and this spell has too few. It will cast, and do nothing."* The cast
+tray says the same in one line. There is no fallback to the ordinary reading,
+and a test asserts the ordinary effect name appears nowhere on such a card.
+
+**Counter-charm suppression** is unchanged and now *pinned*: `applySpell`
+skips leading **structural** formulas, so a noise formula consumes a
+suppression slot. Four regression tests, including the one that states it
+directly — two casts with equally many meaningful formulas and the same
+suppression count resolve differently purely because of where the noise sits.
+**Consequence for UI copy: "1 formula countered" does not mean "1 effect
+cancelled."**
+
+**On-screen pass (Linux desktop, 2026-09-04).** Ran at 1332x819, 1100x850 and
+390x800 (narrower than the S25's ~384dp, so the narrowest layout this ships to
+is covered). The picker, a real in-battle void card, and the rules box at
+ordinary/4/5/6 were all inspected. **Two visual defects were found and fixed:**
+
+* **`IntStepperRow` wrapped the three-digit noise value** — 500 rendered as
+  "50" over "0". Its value box is a fixed 48px, sized for the one- and
+  two-digit values every previous caller had. Fixed by an opt-in `valueWidth`
+  parameter defaulting to the old 48, so HP, grid radius and formula length are
+  pixel-identical and only the noise row opts wider.
+* **The two leyline option cards had ragged heights** on a narrow phone, where
+  their captions wrap to different line counts. Wrapped the row in
+  `IntrinsicHeight` so the pair reads as one either/or choice.
+
+Both are pinned by test — the noise one by measuring the value's HEIGHT against
+the single-digit formula-length value, so it keeps testing the wrap rather than
+the width constant.
+
+Deferred, acceptable: under a leyline where several formulas are noise the
+rules box repeats the full noise sentence per line (two identical paragraphs at
+`rivendell 4`). Honest — they are genuinely two separate inert formulas — but a
+shorter repeat line is worth considering if playtest finds it noisy.
+
+**Wild Magic** — no file touched. Slice D had already routed the preview
+through the lexicon; the audit confirmed noise-derived affinities cannot appear
+as eligible, and hash/table/RNG/coalescing are untouched (R-7).
+
 ---
 
 ## 14. Stop conditions reached
@@ -1302,8 +1431,27 @@ Slice B).
 **Update 2026-09-04 (as-built):** R-5, R-6 and R-7 are **RATIFIED and shipped**
 — R-5/R-6 by §7.4's noise-does-not-move-mana ruling, R-7 by §8's
 `wildMagicEffectFor`-is-not-rekeyed ruling. Slices C and D are complete on that
-basis. **R-8 remains open and blocks Slice E; R-9 remains open** and is
-unchanged by Slice D, which touched no compatibility negotiation.
+basis.
+
+**Update 2026-09-04 (Slice E):** neither R-8 nor R-9 was required by Slice E,
+and neither was closed. The earlier "R-8 blocks Slice E" wording assumed a
+Slice E that activated *every* domain; the slice as scoped activates
+Incantation only, and the posture test still forbids Summon and Armor from so
+much as importing the lexicon. **R-8 stays open, and is no longer a blocker for
+anything that has shipped.**
+
+**R-9 is not reachable by the activation Slice E shipped, for a reason worth
+recording.** §10.3's fear is a same-engine peer whose missing `leyline` object
+silently degrades a mutable match to ordinary. That needs a peer with a leyline
+opinion of its own. The duel path has none: the host authors the whole
+`MatchConfig` and the guest adopts it verbatim (`runDuelSetup` step 3 —
+`receiveHostMatchConfig`), so there is no guest-side intent to downgrade *from*,
+and a host that omits its own leyline object has simply chosen ordinary. Slice
+E's picker is on the **solo** screen, which crosses no wire at all. **R-9
+becomes live the moment a mutable config can travel — i.e. the moment the host
+screen gets the picker — and it should be closed as part of that change, not
+before it.** See §13's Slice E entry for the fairness coupling that is the real
+reason the host screen did not get it.
 
 | # | Ruling | Stop condition |
 |---|---|---|
@@ -1314,8 +1462,8 @@ unchanged by Slice D, which touched no compatibility negotiation.
 | R-5 | Does `effectCount` (and therefore certified base mana cost, and therefore Wild Magic's preimage, and therefore `behaviouralKinKey`) count noise formulas? | ✅ **RATIFIED 2026-09-03 (§7.4)** — **yes**, every syntactically complete chunk counts, noise included. Cost is a function of the certified trajectory and the active `formulaLength` alone, never of the codebook. Shipped in Slice D. |
 | R-6 | What happens to persisted `SpellAsset.manaCost` and kin keys under a mutable leyline | ✅ **RATIFIED 2026-09-03 (§7.4)** — **nothing**. Inscription has no leyline, so persisted cost, `behaviouralKinKey`, kin stacking and heraldry stay inscription-side and leyline-independent. Shipped in Slice D. |
 | R-7 | Is the Wild Magic 3×4 → effect table itself rekeyed, or is the config hash sufficient? (§8) | ✅ **RATIFIED 2026-09-03 (§8)** — the config hash is sufficient; the table is **not** rekeyed. Slice D edited no wild-magic file; only *which formulas are eligible* changed. |
-| R-8 | Summon and Armor pattern-space mapping (§8 of the plan defers this explicitly) | ⛔ **OPEN — blocks Slice E.** A design ruling is required before any code. |
-| R-9 | Should the legacy flat-`communitySeed` fallback become an error once mutable is live? (§10.3) | ⛔ **OPEN.** Unchanged by Slice D, which touched no compatibility negotiation. Mutable is live in the engine but unreachable from the UI, so this is not yet urgent — it becomes a gate for Slice F. |
+| R-8 | Summon and Armor pattern-space mapping (§8 of the plan defers this explicitly) | ⛔ **OPEN — and no longer blocking.** Slice E activated Incantation only; Summon and Armor remain ordinary and the posture test forbids them the lexicon entirely. A ruling is still required before any mutable Summon/Armor code. |
+| R-9 | Should the legacy flat-`communitySeed` fallback become an error once mutable is live? (§10.3) | ⛔ **OPEN — gated on the HOST picker, not on mutable being live.** Slice E's picker is solo-only, so no mutable config crosses a wire and there is no downgrade to guard: the guest adopts the host config verbatim and holds no leyline opinion of its own. Close this in the same change that puts a picker on `duel_host_settings_screen.dart`. |
 
 **Not** ambiguous, and therefore **not** rulings: formula chunking is fully
 specified (§7 — disjoint, non-overlapping, trailing remainder discarded, affinity

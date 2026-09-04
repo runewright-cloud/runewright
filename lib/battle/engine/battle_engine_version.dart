@@ -435,6 +435,26 @@
 // untouched, so `kBattleProtocolVersion` stays 7 and `kRulesetVersion` stays 3.
 // See docs/MUTABLE_LEYLINES_IMPLEMENTATION_AUDIT.md §13 Slice D.
 //
+// NOT a bump (2026-09-04, Mutable Leylines UI slice) — recorded here because a
+// reader who finds that mutable leylines became *selectable* with no version
+// change deserves the reasoning rather than a hunt. That slice added
+// `LeylinePicker` (the first production caller of `LeylineConfig.mutable`),
+// routed the reachable UI through `IncantationLexicon`, and fixed
+// `BattleScreen._expectedElementCount`, which had hardcoded the ordinary 3
+// while the engine's `expectedRecitalSlots` cut at the active grammar.
+//
+// None of that moves a deterministic output. v13 already implements every
+// mutable config the picker can construct; the slice changed which configs a
+// PLAYER can ask for and what the SCREEN says about them, and two v13 devices
+// handed the same `MatchConfig` still resolve identically byte for byte (the
+// replay corpus moved by zero bytes). A bump here would have been a lie about
+// compatibility: it would refuse duels between builds that agree completely.
+//
+// The picker is deliberately on the SOLO screen only, so no mutable config
+// yet crosses a wire — see the audit's Slice E as-built for the fairness
+// coupling that keeps it off the duel host screen, and R-9, which comes due in
+// the change that moves it.
+//
 /// The deterministic battle-engine consensus epoch this build implements.
 ///
 /// The single canonical definition — [MatchConfig.battleEngineVersion] and

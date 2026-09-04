@@ -43,8 +43,6 @@ import '../battle/models/effect_kind.dart'
     show
         SpellAffinity,
         EffectKind,
-        formulaEffects,
-        formulaEffectLabels,
         kAffinityLabel,
         primaryFormulaAffinity;
 import '../battle/models/hex_battlefield.dart' show hexDistance;
@@ -56,6 +54,9 @@ import '../battle/models/status_effect_ids.dart';
 import '../battle/models/wizard_avatar.dart';
 import '../battle/networking/battle_session.dart';
 import '../battle/networking/solo_battle_session.dart';
+import '../battle/engine/incantation_lexicon.dart' show IncantationLexicon;
+import '../spells/incantation_display.dart'
+    show incantationLabelsFor, incantationViewsFor;
 import '../engine/formula_segmentation.dart';
 import '../engine/hex_grid.dart';
 import '../ffi/prover.dart' as prover;
@@ -191,8 +192,16 @@ List<SightingCapture> sightingsFromResolved(
 
 /// Whether casting [spell] will resolve to an Air-flavor tileModification
 /// effect (always a ConveyorTile for that pairing) -- pure/cheap, needs only
-/// the spell's own formula (see effect_kind.dart formulaEffects) plus its
-/// mode.
+/// the spell's own formula plus its mode.
+///
+/// [lexicon] is the match's, so the question is asked under the grammar the
+/// cast will actually resolve under. It matters twice under a mutable leyline:
+/// the formula is re-cut at 4-6 elements, and an inert chunk yields no view
+/// with a kind at all -- so a noise formula can no longer prompt for a push
+/// direction the cast will never use. This is the effects-ONLY reading of
+/// `incantationViewsFor` (audit's consumer category A): the question is "does
+/// this spell produce X", and structural position is irrelevant to it, so
+/// filtering noise out here is correct rather than lossy.
 ///
 /// Summon-mode spells never qualify: TurnLoop._applySpell reads their element
 /// sequence as a creature and returns before EffectResolver/EffectApplicator
@@ -200,12 +209,15 @@ List<SightingCapture> sightingsFromResolved(
 /// direction is discarded. Without the isSummon guard, a summon whose formula
 /// happens to contain an Air tileModification triplet — e.g. the bundled
 /// Basic Windhound — prompts the caster for a push direction it never uses.
-bool spellNeedsConveyorDirection(SpellAsset spell) =>
+bool spellNeedsConveyorDirection(
+  SpellAsset spell, {
+  IncantationLexicon lexicon = IncantationLexicon.ordinary,
+}) =>
     !spell.isSummon &&
-    formulaEffects(spell.formula).any(
-      (e) =>
-          e.kind == EffectKind.tileModification &&
-          e.affinity == SpellAffinity.air,
+    incantationViewsFor(spell.formula, lexicon).any(
+      (v) =>
+          v.kind == EffectKind.tileModification &&
+          v.affinity == SpellAffinity.air,
     );
 
 /// Whether leaving the battle screen should ask first.
@@ -847,6 +859,23 @@ class _BattleScreenState extends State<BattleScreen>
   /// performing banner and blocks the action bar.
   bool get _isPerformingComponents => _isCapturingVoice || _isCapturingGesture;
 
+  /// The match's incantation lexicon — the SAME question
+  /// `DeterministicResolution` asks of the SAME config, so every effect name,
+  /// formula grouping and recited-word count on this screen agrees with what
+  /// resolution will do (audit §13 Slice E's core invariant).
+  ///
+  /// Derived ONCE, not per build. `IncantationLexicon.of` on a mutable config
+  /// runs ~1040 SHA-256s and a sort; `_ActionBar` reads this from `build`,
+  /// which runs every frame through a battle animation. `MatchConfig` is
+  /// immutable for the life of the duel, so one derivation is also one
+  /// correct answer — the same posture `DeterministicResolution` takes.
+  ///
+  /// `late final` rather than `initState`, so it is keyed on the whole
+  /// canonical config at first use and there is no second place a partial key
+  /// could creep in.
+  late final IncantationLexicon _lexicon =
+      IncantationLexicon.of(widget.state.config.leyline);
+
   bool get _vocalOn => widget.state.config.vocalComponents;
   bool get _somaticOn => widget.state.config.somaticComponents;
   bool get _componentsOn => widget.state.config.componentsEnabled;
@@ -1305,13 +1334,23 @@ class _BattleScreenState extends State<BattleScreen>
     }
   }
 
-  /// How many element words this spell's incantation asks for — its complete
-  /// triplets, matching PracticeFormula.fromSpellFormula and the engine's
-  /// expected recital. Residual activations resolve to no effect, so they are
-  /// neither drilled nor recited nor priced.
+  /// How many element words this spell's incantation asks for — the elements
+  /// inside its complete formulas, cut at the ACTIVE grammar's length, which
+  /// is what `DeterministicResolution.expectedRecitalSlots` counts. Residual
+  /// activations resolve to no effect, so they are neither recited nor priced.
+  ///
+  /// **Reads the lexicon, not [kIncantationFormulaLength].** Under a mutable
+  /// leyline these differ: a 12-element spell asks for 12 words at length 3
+  /// or 4 or 6, but 10 at length 5 — and a UI that asked for 12 while the
+  /// engine scored 10 would penalise a caster who recited exactly what the
+  /// screen told them to. The engine's count is canonical; this must track it.
+  ///
+  /// Practice (`PracticeFormula.fromSpellFormula`) stays ordinary and does NOT
+  /// track this — it is entered from the library, which has no active leyline.
+  /// See its header and Slice E's practice ruling.
   int _expectedElementCount(SpellAsset spell) => completeFormulaElementCount(
         spell.formula.length,
-        formulaLength: kIncantationFormulaLength,
+        formulaLength: _lexicon.formulaLength,
       );
 
   /// Opens the mic and the IMU when the caster presses and holds CAST.
@@ -2213,7 +2252,7 @@ class _BattleScreenState extends State<BattleScreen>
     // targeting. Mystery/delayed casts don't get this prompt (handled above,
     // before this point) and fall back to a random direction in the engine.
     HexCoord? conveyorDirection;
-    if (spellNeedsConveyorDirection(spell)) {
+    if (spellNeedsConveyorDirection(spell, lexicon: _lexicon)) {
       conveyorDirection = await _pickConveyorDirection(target);
       if (conveyorDirection == null) return; // player cancelled
       if (!mounted) return;
@@ -3940,6 +3979,7 @@ class _BattleScreenState extends State<BattleScreen>
             _ActionBar(
               phase: _phase,
               selectedSpell: _selectedSpell,
+              lexicon: _lexicon,
               // Priced under the enhancement actually chosen, which can differ
               // from the hand strip's best-case figure (Water/Efficiency is −1/3;
               // everything else is full price).
@@ -4457,10 +4497,16 @@ class _ActionBar extends StatelessWidget {
     required this.onDeclineMelee,
     required this.onDeclineFreeMove,
     required this.onConfirmFreeMove,
+    this.lexicon = IncantationLexicon.ordinary,
   });
 
   final _InputPhase phase;
   final SpellAsset? selectedSpell;
+
+  /// The match's lexicon, so the selected spell's one-line effect summary
+  /// names what the cast will actually do. Ordinary by default, which is what
+  /// every ordinary duel and every existing test gets.
+  final IncantationLexicon lexicon;
 
   /// Mana [selectedSpell] costs under the currently-chosen enhancement, or
   /// null when nothing is selected / there's no local avatar to price against.
@@ -4500,6 +4546,24 @@ class _ActionBar extends StatelessWidget {
   final VoidCallback onDash;
   final VoidCallback onMeditateMain;
   final VoidCallback onCast;
+
+  /// The one-line "what am I about to cast" summary under the spell picker.
+  ///
+  /// One entry per COMPLETE STRUCTURAL formula under [lexicon], noise
+  /// included and in position — this is the moment the player commits mana,
+  /// so the line has to show the spell's real shape rather than a tidied
+  /// effects-only view. A spell with no complete formula says so outright
+  /// instead of rendering an empty string, which would read as a layout bug at
+  /// exactly the wrong moment.
+  String _castTraySummary(SpellAsset spell) {
+    final labels = incantationLabelsFor(spell.formula, lexicon);
+    if (labels.isEmpty) {
+      return lexicon.isMutable
+          ? 'No complete formula — this cast does nothing'
+          : 'No recorded effects';
+    }
+    return labels.join('  ·  ');
+  }
 
   /// With either spell component in play, CAST becomes a press-and-hold that
   /// doubles as the capture window for both (VOCAL_RECALL_PLAN.md §9.4,
@@ -4774,9 +4838,7 @@ class _ActionBar extends StatelessWidget {
                     selectedSpell!.isSummon
                         ? (summonSummaryFromFormula(selectedSpell!.formula) ??
                               'Void Summon')
-                        : formulaEffectLabels(
-                            selectedSpell!.formula,
-                          ).join('  ·  '),
+                        : _castTraySummary(selectedSpell!),
                     textAlign: TextAlign.center,
                     // Same reasoning as the prompt above, and this one is
                     // formula-derived, so its length is not even bounded by a

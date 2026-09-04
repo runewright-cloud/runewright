@@ -40,6 +40,29 @@
 // whichever leyline is in force (activeWildMagicContext); see
 // wild_magic_preview.dart on why neither is always the player's own default,
 // and why a card with no viewer identity shows nothing at all.
+//
+// ── Heraldry vs. rules: what a leyline may and may not repaint ────────────────
+// Two things on this card are derived from `SpellAsset.formula`, and Slice E
+// rules them apart on purpose
+// (docs/MUTABLE_LEYLINES_IMPLEMENTATION_AUDIT.md §13 Slice E):
+//
+//   • **Heraldic identity** — the frame gradient ([frameColorShares]) and the
+//     emblem's symbol ring ([elementSymbolsFor]), both fed by
+//     [_formulaAffinityCounts]. These stay STRUCTURAL and LEYLINE-INDEPENDENT.
+//     They are how a player recognises their own card, they sit beside a
+//     shield keyed to the trajectory, and a library that re-skinned itself
+//     under every host's leyline would be a worse lie than the one Slice E
+//     fixes. Do not pass a lexicon into them.
+//   • **The rules box** — what the card CLAIMS the spell does. This is
+//     leyline-aware, through `_CardFrame.lexicon` and
+//     `incantationViewsFor`, because it is the surface that can name a
+//     different spell than the one the engine will cast. Under a mutable
+//     leyline it re-cuts at the active formula length, names each chunk
+//     through the derived codebook, and prints inert chunks as Noise rather
+//     than silently omitting them.
+//
+// The split is the answer to "may a card look different in a duel": its
+// picture may not, its promises must.
 
 import 'dart:async' show Timer;
 import 'dart:math' as math;
@@ -55,6 +78,9 @@ import '../engine/formula_segmentation.dart';
 import '../spells/spell_art_resolver.dart';
 import '../spells/spell_identity.dart';
 import '../spells/spell_asset.dart';
+import '../battle/engine/incantation_lexicon.dart' show IncantationLexicon;
+import '../battle/models/leyline_config.dart' show LeylineConfig;
+import '../spells/incantation_display.dart' show incantationViewsFor;
 import '../spells/wild_magic_preview.dart';
 import 'foil_sheen.dart';
 import 'manuscript_theme.dart';
@@ -116,6 +142,13 @@ const Map<SpellAffinity, String> _kSpellAffinityName = {
 /// affinity. That difference predates the shared primitive and is preserved by
 /// it (see formula_segmentation.dart's header) — this is a card's decorative
 /// histogram, not a resolution path.
+///
+/// **Stays ordinary, and must not take a lexicon** (Slice E ruling; see this
+/// file's "Heraldry vs. rules" header section). Its two consumers are the
+/// frame gradient and the emblem symbol ring, which are the card's IDENTITY.
+/// The noise-affinity correction Slice E owes lands in the rules box instead,
+/// via `incantationViewsFor`, where an affinity is actually being claimed as
+/// eligible rather than merely drawn.
 Map<String, int> _formulaAffinityCounts(List<String> formula) {
   final counts = <String, int>{};
   for (final chunk in segmentFormulas(
@@ -791,6 +824,31 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
   bool get _hasArt => _hasCustomArt(widget.spell);
   bool get _animated => widget.growFrom != null;
 
+  /// One-entry memo of the rules box's lexicon, keyed on the WHOLE canonical
+  /// [LeylineConfig].
+  ///
+  /// `IncantationLexicon.of` runs ~1040 SHA-256s and a sort on a mutable
+  /// config, and the call site below sits inside a `ValueListenableBuilder`
+  /// wrapping an `AnimatedBuilder` — i.e. it runs every frame of the card's
+  /// flip and intro animations. Deriving there would be a per-frame codebook.
+  ///
+  /// Keyed on the full config and nothing less: `LeylineConfig.==` compares
+  /// the normalized seed plus every grammar field, which is the same notion of
+  /// agreement `leylineConfigHash` uses. A memo keyed on a seed alone would be
+  /// the consensus hazard `incantation_lexicon.dart`'s header warns about.
+  /// Single-entry and per-widget — it dies with the card, and the leyline
+  /// changes at most once in a card's lifetime (a duel starting or ending).
+  LeylineConfig? _lexiconKey;
+  IncantationLexicon? _lexiconMemo;
+
+  IncantationLexicon _lexiconFor(LeylineConfig leyline) {
+    if (_lexiconKey != leyline || _lexiconMemo == null) {
+      _lexiconKey = leyline;
+      _lexiconMemo = IncantationLexicon.of(leyline);
+    }
+    return _lexiconMemo!;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -963,6 +1021,15 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
                                     widget.spell,
                                     wmContext,
                                   ),
+                                  // The card's CLAIM about what the spell
+                                  // does, taken under whichever leyline is
+                                  // actually in force — the same one battle
+                                  // resolution builds its lexicon from. The
+                                  // frame gradient and emblem ring above are
+                                  // deliberately NOT given this: those are
+                                  // heraldic identity and stay leyline-
+                                  // independent (Slice E ruling).
+                                  lexicon: _lexiconFor(wmContext.leyline),
                                 ),
                               ),
                             ),
@@ -1229,10 +1296,24 @@ class _CardFrame extends StatelessWidget {
     this.liveHp,
     this.liveMaxHp,
     this.wildMagic = const [],
+    this.lexicon = IncantationLexicon.ordinary,
   });
 
   final SpellAsset spell;
   final SpellCardPainter emblemPainter;
+
+  /// The leyline the card's rules box is read under.
+  ///
+  /// Defaults to the ordinary lexicon so a card built with no context reads
+  /// exactly as it always has. Under a mutable leyline this re-cuts the
+  /// formula at the active length and names each chunk through the derived
+  /// codebook, so the rules box and the duel cannot disagree — the whole
+  /// point of Slice E.
+  ///
+  /// Scope: the RULES BOX only. [emblemPainter] and [cardFrameGradient] are
+  /// heraldry, derived from the stored asset, and stay leyline-independent so
+  /// a player's library does not re-skin itself per duel.
+  final IncantationLexicon lexicon;
 
   /// The wild-magic effects this spell fires under the leyline seed currently
   /// in force, empty for the great majority of spells. Non-empty turns on both
@@ -1416,18 +1497,56 @@ class _CardFrame extends StatelessWidget {
   );
 
   Widget _incantationRulesBody() {
-    final effects = formulaEffects(spell.formula);
-    if (effects.isEmpty) {
+    // One line per COMPLETE STRUCTURAL formula, noise included and in place:
+    // the box is showing the player the shape of their own spell, and
+    // dropping the inert chunks would renumber everything after them.
+    final views = incantationViewsFor(spell.formula, lexicon);
+    if (views.isEmpty) {
       return Text(
-        'No recorded effects.',
+        // Under a mutable leyline an empty list is a structural fact worth
+        // naming, not an absence: a 3-element trajectory yields zero complete
+        // formulas at length 4–6, and the ratified behaviour is that the
+        // spell does nothing at all — no effect, no affinity, no wild magic,
+        // and NO fallback to the ordinary triplet reading. A card that said
+        // only 'No recorded effects' would leave the player to guess whether
+        // their spell was broken or the leyline was.
+        lexicon.isMutable
+            ? 'No complete formula under ${lexicon.leyline.displayName} — '
+                  'this leyline reads ${lexicon.formulaLength} elements to a '
+                  'formula, and this spell has too few. It will cast, and do '
+                  'nothing.'
+            : 'No recorded effects.',
         style: manuscriptBodyStyle(fontSize: 13, color: kInkMutedColor),
       );
     }
-    return ListView.separated(
-      itemCount: effects.length,
+    final list = ListView.separated(
+      itemCount: views.length,
       separatorBuilder: (_, _) => const SizedBox(height: 8),
-      itemBuilder: (context, i) =>
-          _ruleLine(effects[i].name, effects[i].description),
+      itemBuilder: (context, i) => _ruleLine(
+        views[i].name,
+        views[i].description,
+        muted: !views[i].manifests,
+      ),
+    );
+    if (!lexicon.isMutable) return list;
+    // Name the grammar this reading was taken under. Without it a player who
+    // flips between the library (ordinary) and a mutable match sees the same
+    // card make two different claims with nothing to say why. Ordinary cards
+    // get no such line — there is only one ordinary grammar, and captioning
+    // every card with it would be noise.
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Under ${lexicon.leyline.displayName} · '
+          '${lexicon.formulaLength} elements to a formula',
+          style: manuscriptCaptionStyle(
+            color: kInkMutedColor.withValues(alpha: 0.8),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Expanded(child: list),
+      ],
     );
   }
 
@@ -1490,18 +1609,30 @@ class _CardFrame extends StatelessWidget {
     ).copyWith(fontWeight: FontWeight.w700),
   );
 
-  Widget _ruleLine(String name, String description) => RichText(
-    text: TextSpan(
-      style: manuscriptBodyStyle(fontSize: 13),
-      children: [
-        TextSpan(
-          text: '$name: ',
-          style: const TextStyle(fontWeight: FontWeight.w700),
+  /// One rules line. [muted] greys it and italicises the name — the visual
+  /// difference between "this formula does something" and "this formula is
+  /// inert". Deliberately still a full line with a real label: a noise
+  /// formula occupies a slot in the spell, and hiding it would misrepresent
+  /// the spell's shape (and its cost, which counts noise like anything else).
+  Widget _ruleLine(String name, String description, {bool muted = false}) =>
+      RichText(
+        text: TextSpan(
+          style: manuscriptBodyStyle(
+            fontSize: 13,
+            color: muted ? kInkMutedColor : kInkColor,
+          ),
+          children: [
+            TextSpan(
+              text: '$name: ',
+              style: TextStyle(
+                fontWeight: FontWeight.w700,
+                fontStyle: muted ? FontStyle.italic : FontStyle.normal,
+              ),
+            ),
+            TextSpan(text: description),
+          ],
         ),
-        TextSpan(text: description),
-      ],
-    ),
-  );
+      );
 }
 
 /// The card's wild-magic panel: a rubric-red band under the rules box naming

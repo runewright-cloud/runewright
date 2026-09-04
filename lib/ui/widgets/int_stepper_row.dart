@@ -9,6 +9,10 @@ import 'package:flutter/material.dart';
 
 import '../manuscript_theme.dart';
 
+/// Fits two digits at the 28pt serif this row uses. See [IntStepperRow
+/// .valueWidth] for why a wider value is opt-in rather than the default.
+const double _kDefaultValueWidth = 48;
+
 class IntStepperRow extends StatelessWidget {
   const IntStepperRow({
     super.key,
@@ -19,6 +23,7 @@ class IntStepperRow extends StatelessWidget {
     required this.max,
     required this.step,
     required this.onChanged,
+    this.valueWidth = _kDefaultValueWidth,
   });
 
   final String label;
@@ -28,6 +33,16 @@ class IntStepperRow extends StatelessWidget {
   final int max;
   final int step;
   final ValueChanged<int> onChanged;
+
+  /// Width of the number between the two buttons.
+  ///
+  /// [_kDefaultValueWidth] fits the one- and two-digit values every original
+  /// caller has (HP tops out at 48, grid radius at 6, formula length at 6).
+  /// A three-digit value does not fit it and WRAPS — "500" renders as "50"
+  /// over "0" — so a caller with a wider range must say so. Widening the
+  /// default instead would re-space every existing stepper on two settings
+  /// screens for the sake of one control, which is a worse trade.
+  final double valueWidth;
 
   @override
   Widget build(BuildContext context) {
@@ -52,9 +67,10 @@ class IntStepperRow extends StatelessWidget {
             ),
             const SizedBox(width: 24),
             SizedBox(
-              width: 48,
+              width: valueWidth,
               child: Text(
                 '$value',
+                maxLines: 1,
                 style: const TextStyle(
                   fontFamily: 'serif',
                   fontSize: 28,

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart' hide Element;
 import '../battle/models/effect_kind.dart' show formulaTripletKind, kAffinityLabel, kEffectKindLabel;
 import '../engine/border_zone.dart';
+import '../engine/formula_segmentation.dart' show kIncantationFormulaLength;
 
 class FormulaBar extends StatelessWidget {
   final List<List<BorderZone>> formulas;
@@ -53,12 +54,29 @@ class FormulaBar extends StatelessWidget {
     );
   }
 
-  // A complete triple, visually bracketed, with the effect it produces
+  // A complete formula, visually bracketed, with the effect it produces
   // (same "[flavor] [base effect]" naming as the library/recipe book --
   // see kAffinityLabel/kEffectKindLabel in effect_kind.dart) named beneath.
+  //
+  // ORDINARY-ONLY, and fail-closed about it. Both of this widget's callers --
+  // the Rune Craft inscription screen and the library's spell replay -- are
+  // out-of-match surfaces with no active leyline, so their FormulaTracker
+  // groups are ordinary triplets and `formulaTripletKind` is the right table.
+  // If a group ever arrives at some other length it is NOT an ordinary
+  // formula, and naming it through the ordinary table would be exactly the
+  // failure Slice E exists to prevent: `formulaTripletKind`'s own assert is
+  // stripped in release, so the guard has to be a real branch. Such a group
+  // is drawn structurally, with no effect name -- structure is always true,
+  // and a leyline-aware surface must build its label from
+  // `incantationViewsFor` instead of routing a mutable formula through here.
   Widget _formulaGroup(List<BorderZone> zones) {
-    final (affinity, kind) = formulaTripletKind(zones);
-    final effectName = '${kAffinityLabel[affinity]!} ${kEffectKindLabel[kind]!}';
+    final String? effectName;
+    if (zones.length == kIncantationFormulaLength) {
+      final (affinity, kind) = formulaTripletKind(zones);
+      effectName = '${kAffinityLabel[affinity]!} ${kEffectKindLabel[kind]!}';
+    } else {
+      effectName = null;
+    }
     return Container(
       margin: const EdgeInsets.only(right: 6),
       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
@@ -87,7 +105,7 @@ class FormulaBar extends StatelessWidget {
             ],
           ),
           Text(
-            effectName,
+            effectName ?? '',
             style: const TextStyle(
               color: Color(0xFF9A9488),
               fontSize: 9,

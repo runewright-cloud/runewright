@@ -22,6 +22,7 @@ import 'manuscript_theme.dart';
 import 'widgets/chapter_picker.dart';
 import 'widgets/component_toggles.dart';
 import 'widgets/int_stepper_row.dart';
+import 'widgets/leyline_picker.dart';
 import 'safe_layout.dart';
 
 class SoloPracticeSettingsScreen extends StatefulWidget {
@@ -49,6 +50,16 @@ class _SoloPracticeSettingsScreenState
   /// magic behaves here exactly as it will in a duel this player hosts.
   String _communitySeed = kDefaultCommunitySeed;
 
+  /// The leyline this practice match is fought under — ordinary by default,
+  /// and the ONE place in the app a player can choose a Mutable one
+  /// (docs/MUTABLE_LEYLINES_IMPLEMENTATION_AUDIT.md §13 Slice E; see
+  /// `LeylinePicker`'s header for why solo and not the duel host screen).
+  ///
+  /// Held whole rather than as a `mutable` bool plus a length: the config is
+  /// canonical, and a screen that carried the pieces would be a second place
+  /// they could be assembled inconsistently.
+  LeylineConfig _leyline = LeylineConfig.ordinaryDefault;
+
   static const _hpMin = 8;
   static const _hpMax = 48;
   static const _hpStep = 4;
@@ -61,7 +72,21 @@ class _SoloPracticeSettingsScreenState
     // Guarded — see DuelHostSettingsScreen.initState for why.
     Identity.loadCommunitySeed().then((seed) {
       if (!mounted || seed == null) return;
-      setState(() => _communitySeed = seed);
+      setState(() {
+        _communitySeed = seed;
+        // Re-seat the leyline on the loaded word, keeping whatever grammar is
+        // already chosen. The word arrives asynchronously and the picker may
+        // have been touched first, so rebuilding the config is the only way
+        // the two cannot drift apart.
+        _leyline = _leyline.formulaLength ==
+                LeylineConfig.kOrdinaryFormulaLength
+            ? LeylineConfig.ordinary(seed)
+            : LeylineConfig.mutable(
+                communitySeed: seed,
+                formulaLength: _leyline.formulaLength,
+                noiseDensityPermille: _leyline.noiseDensityPermille,
+              );
+      });
     }).catchError((_) {});
   }
 
@@ -71,9 +96,10 @@ class _SoloPracticeSettingsScreenState
         maxPlayers: 2,
         vocalComponents: _vocalComponents,
         somaticComponents: _somaticComponents,
-        // Solo practice is always the ordinary grammar — mutable leylines
-        // are a tournament/workshop format (LEYLINE_SEED_PLAN.md §1).
-        leyline: LeylineConfig.ordinary(_communitySeed),
+        // Whatever the player chose. Solo practice is where a Mutable
+        // Leyline is learned: the engine has interpreted them since Slice D,
+        // and this is the surface that can now ask for one.
+        leyline: _leyline,
       );
 
   @override
@@ -112,6 +138,12 @@ class _SoloPracticeSettingsScreenState
                       _buildGridRadiusStepper(),
                       const SizedBox(height: 28),
                       _buildComponentToggles(),
+                      const SizedBox(height: 28),
+                      LeylinePicker(
+                        communitySeed: _communitySeed,
+                        value: _leyline,
+                        onChanged: (c) => setState(() => _leyline = c),
+                      ),
                     ],
                   ),
                 ),
