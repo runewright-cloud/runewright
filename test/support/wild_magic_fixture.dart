@@ -105,6 +105,7 @@ SpellAsset fixtureSpell({
   int dotCount = 1,
   Uint8List? proofBytes,
   String name = 'Fixture',
+  bool isSummon = false,
 }) =>
     SpellAsset(
       id: 'wm-fixture',
@@ -127,4 +128,5 @@ SpellAsset fixtureSpell({
       commitmentHex: commitmentHex ?? kFixtureCommitmentHex,
       spellHashHex: '0x${'b' * 64}',
       formula: formula,
+      isSummon: isSummon,
     );

@@ -7,7 +7,7 @@
 //
 //   local  : SpellAsset.proofBytes -> ProofIntake.parseOwn      -> outputs
 //   peer   : ArmorEnvelope         -> ProofIntake.verifyAndParse -> outputs
-//   both   : outputs -> validate -> CertifiedArmor.fromOutputs
+//   both   : outputs -> validate -> CertifiedArmor.fromOutputs(agreed lexicon)
 //
 // The two paths differ only in whether the bytes are cryptographically
 // verified first — ours are ours, and re-verifying a proof this device
@@ -76,10 +76,17 @@ int armorProofTier(SpellAsset armor) => tierForProof(armor.t, armor.tier);
 /// [armor] must already have been resolved from `ChapterAsset.armorSpellId`;
 /// `isArmor` is checked here as local equipment-selection metadata (it decides
 /// what we are allowed to equip), never as anything a peer is told or trusts.
+///
+/// [lexicon] is the match's agreed leyline reading. REQUIRED rather than
+/// defaulted: a certification boundary must not be able to fall back to the
+/// ordinary tradition by omission — that is how one device reads Flying off an
+/// armor the other reads nothing off. Callers pass
+/// `ArmorLexicon.of(effectiveConfig.leyline)`.
 CertifiedArmor? certifyOwnArmor({
   required SpellAsset? armor,
   required String wearerOwnerPubkeyHex,
   required int ordinaryArtifactCount,
+  required ArmorLexicon lexicon,
 }) {
   if (armor == null) return null;
   if (!armor.isArmor) {
@@ -104,6 +111,7 @@ CertifiedArmor? certifyOwnArmor({
     declaredTier: tier,
     wearerOwnerPubkeyHex: wearerOwnerPubkeyHex,
     ordinaryArtifactCount: ordinaryArtifactCount,
+    lexicon: lexicon,
     side: 'local',
   );
 }
@@ -124,6 +132,7 @@ Future<CertifiedArmor?> certifyPeerArmor({
   required int ordinaryArtifactCount,
   required ProofVerifier? verifyProof,
   required Uint8List? Function(int tier)? vkBytesForTier,
+  required ArmorLexicon lexicon,
 }) async {
   if (envelope == null) return null;
 
@@ -167,6 +176,7 @@ Future<CertifiedArmor?> certifyPeerArmor({
     declaredTier: envelope.tier,
     wearerOwnerPubkeyHex: wearerOwnerPubkeyHex,
     ordinaryArtifactCount: ordinaryArtifactCount,
+    lexicon: lexicon,
     side: 'peer',
   );
 }
@@ -179,6 +189,7 @@ CertifiedArmor _validateAndDerive({
   required int declaredTier,
   required String wearerOwnerPubkeyHex,
   required int ordinaryArtifactCount,
+  required ArmorLexicon lexicon,
   required String side,
 }) {
   if (outputs.rulesetVersion != kRulesetVersion) {
@@ -205,7 +216,10 @@ CertifiedArmor _validateAndDerive({
     );
   }
 
-  final armor = CertifiedArmor.fromOutputs(outputs);
+  // Both sides derive under the SAME agreed leyline, which is what makes one
+  // proof plus one accepted config one armor. Nothing about the keyword set
+  // crosses the wire — the envelope carries a proof and a routing tier.
+  final armor = CertifiedArmor.fromOutputs(outputs, lexicon: lexicon);
 
   // Recomputed from the certified T, never from a persisted or transmitted
   // slot cost.

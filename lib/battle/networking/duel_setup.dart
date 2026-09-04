@@ -421,6 +421,11 @@ Future<DuelSetupResult> _runSetupSteps({
       armor: localArmorAsset,
       wearerOwnerPubkeyHex: myOwnerHex,
       ordinaryArtifactCount: localChapter.ordinaryArtifactCount,
+      // The leyline agreed at step 3, hundreds of lines above — the host's, or
+      // ours if we are the host. Both devices reach this line holding the same
+      // `effectiveConfig`, so both derive the same keyword dictionary and the
+      // wire carries nothing about it (audit R-8).
+      lexicon: ArmorLexicon.of(effectiveConfig.leyline),
     );
   } on ArmorCertificationException catch (e) {
     session.sendForfeit('armor_certification_failed');
@@ -454,6 +459,7 @@ Future<DuelSetupResult> _runSetupSteps({
       ordinaryArtifactCount: peerArtifacts.length,
       verifyProof: verifyProof,
       vkBytesForTier: vkBytesForTier,
+      lexicon: ArmorLexicon.of(effectiveConfig.leyline),
     );
   } on ArmorCertificationException catch (e) {
     session.sendForfeit('armor_certification_failed');

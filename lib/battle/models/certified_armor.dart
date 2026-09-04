@@ -31,71 +31,37 @@
 // and pulses. See that method's doc for why both readings are legitimate
 // views of one array.
 //
+// ## Intrinsic vs. pattern-derived (Slice F)
+//
+// Two halves, and keeping them apart is the point of the [ArmorLexicon]
+// parameter:
+//
+//   * **intrinsic** — T, slot cost, the four element counts, and every curved
+//     stat bonus off them (melee/Fire, move/Air, range/Water, armor HP/Earth).
+//     Arithmetic over the certified trajectory, identical under EVERY leyline;
+//   * **pattern-derived** — [keywords], and nothing else. Under a Mutable
+//     Leyline a different set of four-element runs names them (audit R-8), so
+//     one proof yields the same numbers and a different keyword set under a
+//     different tradition.
+//
+// An armor with no keyed keyword under a mutable leyline is exactly as strong
+// as its ladders say. Nothing here consults a persisted or transmitted keyword.
+//
 // This layer is pure: no I/O, no Flutter, no networking, no BattleState.
 
 import 'package:rune_duel/engine/border_zone.dart';
 
 import '../engine/proof_outputs.dart' show VerifiedSpellOutputs;
 import '../engine/trajectory_parser.dart' show TrajectoryParser;
+import 'armor_keyword.dart';
+import 'armor_lexicon.dart' show ArmorLexicon;
 
-// ── Keywords ──────────────────────────────────────────────────────────────────
-
-/// A property an armor grants when its four-element pattern appears anywhere
-/// in the certified dominance sequence.
-///
-/// Patterns are contiguous substrings of that sequence. Elements may be reused
-/// between keywords and matches may overlap, but each keyword is granted at
-/// most once no matter how many times its pattern occurs.
-enum ArmorKeyword {
-  /// AAAA
-  flying,
-
-  /// FFFF
-  cleave,
-
-  /// FAFA
-  charger,
-
-  /// WEWE
-  muddy,
-
-  /// EFEF
-  moltenCarapace,
-
-  /// AWAW
-  stealthy,
-
-  /// EEEE
-  anchored,
-}
-
-/// The certified pattern for each keyword, as a contiguous element run.
-//
-// Morphic (WWWW) is deliberately absent — it is designed but not implemented,
-// so a WWWW armor grants no keyword rather than a placeholder one.
-const Map<ArmorKeyword, List<BorderZone>> armorKeywordPatterns = {
-  ArmorKeyword.flying: [
-    BorderZone.air, BorderZone.air, BorderZone.air, BorderZone.air,
-  ],
-  ArmorKeyword.cleave: [
-    BorderZone.fire, BorderZone.fire, BorderZone.fire, BorderZone.fire,
-  ],
-  ArmorKeyword.charger: [
-    BorderZone.fire, BorderZone.air, BorderZone.fire, BorderZone.air,
-  ],
-  ArmorKeyword.muddy: [
-    BorderZone.water, BorderZone.earth, BorderZone.water, BorderZone.earth,
-  ],
-  ArmorKeyword.moltenCarapace: [
-    BorderZone.earth, BorderZone.fire, BorderZone.earth, BorderZone.fire,
-  ],
-  ArmorKeyword.stealthy: [
-    BorderZone.air, BorderZone.water, BorderZone.air, BorderZone.water,
-  ],
-  ArmorKeyword.anchored: [
-    BorderZone.earth, BorderZone.earth, BorderZone.earth, BorderZone.earth,
-  ],
-};
+// The keyword VOCABULARY moved to `armor_keyword.dart` in Slice F so that
+// `ArmorLexicon` could name a keyword without importing this file. Re-exported,
+// so every existing importer — `show ArmorKeyword`, `armorKeywordPatterns` —
+// sees what it always did.
+export 'armor_keyword.dart';
+export 'armor_lexicon.dart' show ArmorLexicon;
 
 // ── Bonus ladders ─────────────────────────────────────────────────────────────
 
@@ -169,10 +135,23 @@ class CertifiedArmor {
   /// This is the single AUTHORITATIVE derivation. Local and peer paths both
   /// call it, so an armor cannot mean one thing on the wearer's device and
   /// another on the opponent's.
-  factory CertifiedArmor.fromOutputs(VerifiedSpellOutputs outputs) =>
+  ///
+  /// [lexicon] decides only which four-element runs name which keywords (audit
+  /// R-8). It cannot move T, the slot cost, the element counts or any stat
+  /// ladder — those are arithmetic over the certified trajectory and are
+  /// identical under every leyline. It defaults to
+  /// [ArmorLexicon.ordinary] so every out-of-match reading (the library, the
+  /// chapter editor) keeps the reference tradition; in-match certification
+  /// passes the leyline both peers agreed at the handshake, which is what makes
+  /// one proof plus one accepted config one armor on both devices.
+  factory CertifiedArmor.fromOutputs(
+    VerifiedSpellOutputs outputs, {
+    ArmorLexicon lexicon = ArmorLexicon.ordinary,
+  }) =>
       CertifiedArmor.previewFromElementSequence(
         TrajectoryParser.certifiedPerGenerationDominantSequence(outputs),
         t: outputs.t,
+        lexicon: lexicon,
       );
 
   /// PREVIEW ONLY — the same rules applied to a per-generation dominant
@@ -195,6 +174,7 @@ class CertifiedArmor {
   factory CertifiedArmor.previewFromElementSequence(
     List<BorderZone> sequence, {
     required int t,
+    ArmorLexicon lexicon = ArmorLexicon.ordinary,
   }) {
     var fire = 0, air = 0, water = 0, earth = 0;
     for (final zone in sequence) {
@@ -210,10 +190,8 @@ class CertifiedArmor {
       }
     }
 
-    final keywords = <ArmorKeyword>{};
-    for (final entry in armorKeywordPatterns.entries) {
-      if (_containsRun(sequence, entry.value)) keywords.add(entry.key);
-    }
+    // The ONE pattern-derived property, and the only thing [lexicon] touches.
+    final keywords = lexicon.keywordsOf(sequence);
 
     return CertifiedArmor(
       t: t,
@@ -274,19 +252,4 @@ class CertifiedArmor {
       'F$fireCount A$airCount W$waterCount E$earthCount, '
       'melee +$meleeBonus, move +$moveSpeedBonus, range +$spellRangeBonus, '
       'armor HP +$armorHpBonus, keywords: ${keywords.map((k) => k.name).join(', ')})';
-}
-
-/// Whether [pattern] occurs as a contiguous run anywhere in [sequence].
-bool _containsRun(List<BorderZone> sequence, List<BorderZone> pattern) {
-  for (var start = 0; start + pattern.length <= sequence.length; start++) {
-    var matched = true;
-    for (var i = 0; i < pattern.length; i++) {
-      if (sequence[start + i] != pattern[i]) {
-        matched = false;
-        break;
-      }
-    }
-    if (matched) return true;
-  }
-  return false;
 }

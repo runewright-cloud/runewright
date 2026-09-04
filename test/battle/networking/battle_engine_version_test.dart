@@ -306,37 +306,36 @@ void main() {
     await transportPeer.disconnect();
   });
 
-  // The Mutable Leylines partial-formula-affinity epoch. Pinned as a literal
+  // The Mutable Leylines Summon-and-Armor-rekeying epoch. Pinned as a literal
   // pair rather than as `kBattleEngineVersion - 1` so a future bump has to come
   // back here and say what it broke, instead of silently re-pointing this at
-  // the new neighbour. (The previous occupant of this group was v12 <-> v13,
-  // a Mutable Leyline reinterpreting incantation formulas at all.)
+  // the new neighbour. (The previous occupants of this group were v13 <-> v14,
+  // the partial-formula affinity correction, and v12 <-> v13, a Mutable Leyline
+  // reinterpreting incantation formulas at all.)
   //
   // This bump is a good illustration of why the gate is separate from the other
   // two: the wire is identical, and the proofs and the VK are untouched. What
-  // changes is what a build DOES with a mutable config. A v13 build reads a
-  // spell's affinities off its MEANINGFUL COMPLETE formulas alone, so a
-  // trajectory that begins an elemental sequence and runs out of elements
-  // before the grammar's length speaks for nothing; a v14 build gives that
-  // trailing incomplete group its first element's affinity, which can make the
-  // spell eligible for wild magic the v13 build fires none of. One such cast is
-  // enough to diverge, and every consequence of a wild-magic trigger is hashed
-  // into the canonical state.
+  // changes is what a build DOES with a mutable config. A v14 build reads a
+  // creature's abilities and an armor's keywords off the FIXED four-element
+  // pattern tables; a v15 build reads them off dictionaries derived from the
+  // leyline's tradition (audit R-8). One summon whose certified sequence
+  // contains a keyed window is enough to diverge — the minion ability mask and
+  // the avatar's armor are both hashed into the canonical state.
   //
-  // Ordinary play is bit-identical across the bump — an ordinary residual still
-  // contributes nothing, deliberately — which is exactly why the refusal cannot
-  // be conditional on the leyline: the handshake settles the config, and by the
-  // time a mutable one is agreed there is no safe way to discover the peer
-  // reads its residuals differently.
-  group('v13 <-> v14 (partial-formula affinity)', () {
-    test('this build declares engine v14', () {
-      expect(kBattleEngineVersion, 14,
-          reason: "a formula's START now establishes its affinity while only "
-              'its COMPLETION establishes its meaning, so under a mutable '
-              'grammar the trailing incomplete group contributes its first '
-              'element to elemental eligibility. '
-              'docs/MUTABLE_LEYLINES_IMPLEMENTATION_AUDIT.md §13, '
-              'partial-formula affinity');
+  // Ordinary play is bit-identical across the bump — an ordinary lexicon
+  // derives nothing and reads the same fixed tables — which is exactly why the
+  // refusal cannot be conditional on the leyline: the handshake settles the
+  // config, and by the time a mutable one is agreed there is no safe way to
+  // discover the peer reads its patterns differently.
+  group('v14 <-> v15 (Summon and Armor rekeying)', () {
+    test('this build declares engine v15', () {
+      expect(kBattleEngineVersion, 15,
+          reason: 'a Mutable Leyline now rekeys which four-element pattern '
+              'names which SummonAbility and which four-element run names '
+              'which ArmorKeyword, so two builds handed one mutable config '
+              'summon different creatures from one certified trajectory. '
+              'docs/MUTABLE_LEYLINES_IMPLEMENTATION_AUDIT.md §13 Slice E '
+              '(Summon and Armor rekeying), R-8');
       expect(kBattleProtocolVersion, 7,
           reason: 'no framing changed — the new state is derived on both '
               'devices from values they already exchange');
@@ -344,14 +343,14 @@ void main() {
           reason: 'no proof semantics changed — the circuit is untouched');
     });
 
-    test('a v13 peer is refused by the capabilities gate', () async {
-      // The previous epoch is now the incompatible one: a v13 build drops the
-      // residual group's affinity, so handed a mutable config and a trajectory
-      // that does not divide evenly it computes a different eligible set and
-      // fires different wild magic.
+    test('a v14 peer is refused by the capabilities gate', () async {
+      // The previous epoch is now the incompatible one: a v14 build reads the
+      // fixed summon/armor pattern tables, so handed a mutable config it grants
+      // a creature different abilities and an armor different keywords from the
+      // same certified bytes.
       final localIdentity = await Identity.ephemeral();
       final chapter = await makeChapter(
-        idSuffix: 'a13',
+        idSuffix: 'a14',
         ownerPubkeyHex: await localIdentity.ownerPubkeyHex(),
       );
 
@@ -363,7 +362,7 @@ void main() {
         localChapter: chapter,
         hostConfig: const MatchConfig(),
       );
-      final forfeitReason = fakePeer(transportPeer, engineVersion: 13);
+      final forfeitReason = fakePeer(transportPeer, engineVersion: 14);
 
       await expectLater(
         local,
@@ -372,8 +371,8 @@ void main() {
           'message',
           allOf(
             contains('battle engine version mismatch'),
-            contains('local=14'),
-            contains('peer=13'),
+            contains('local=15'),
+            contains('peer=14'),
           ),
         )),
       );
@@ -384,10 +383,10 @@ void main() {
       await transportPeer.disconnect();
     });
 
-    test('a host config pinned to v13 is refused as well', () async {
-      const v13Config = MatchConfig(battleEngineVersion: 13);
-      expect(const MatchConfig().matches(v13Config), isFalse);
-      expect(v13Config.battleEngineVersion, isNot(kBattleEngineVersion));
+    test('a host config pinned to v14 is refused as well', () async {
+      const v14Config = MatchConfig(battleEngineVersion: 14);
+      expect(const MatchConfig().matches(v14Config), isFalse);
+      expect(v14Config.battleEngineVersion, isNot(kBattleEngineVersion));
     });
   });
 

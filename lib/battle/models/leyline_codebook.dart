@@ -75,21 +75,26 @@
 // ## Domain separation
 //
 // [leylineStreamScore] takes its domain tag as an argument and the three tags
-// (§4, §8, §9) are pinned below, so the eventual Summon and Armor derivations
-// reuse this primitive without inheriting incantation *semantics*. Only
-// Incantation consumes it today: **Summon and Armor key spaces are deliberately
-// not defined here** — neither domain chunks, both do overlapping substring
-// search, and their mapping is an unruled design problem (audit §14 R-8). Do
-// not generalise [IncantationCodebook] to try to serve them.
+// (§4, §8, §9) live in `leyline_stream.dart`, so the Summon and Armor
+// derivations reuse the primitive without inheriting incantation *semantics*.
+// **Summon and Armor key spaces are deliberately not defined here** — neither
+// domain chunks, both do overlapping four-element window search, and both key
+// on the leyline's TRADITION hash rather than its config hash (R-8). They live
+// in `leyline_pattern_codebook.dart`. Do not generalise [IncantationCodebook]
+// to try to serve them.
+//
+// The one asymmetry worth stating twice: this codebook's keys are `4^(L-1)`
+// tails and its size, its noise share and its very existence all move with
+// `formulaLength` and `noiseDensityPermille`. The pattern codebooks' keys are
+// the 256 four-element windows under every grammar. That is why they bind
+// different hashes.
 
-import 'dart:convert' show utf8;
 import 'dart:typed_data';
-
-import 'package:crypto/crypto.dart' show sha256;
 
 import 'package:rune_duel/battle/models/effect_kind.dart';
 import 'package:rune_duel/battle/models/incantation_meaning.dart';
 import 'package:rune_duel/battle/models/leyline_config.dart';
+import 'package:rune_duel/battle/models/leyline_stream.dart';
 import 'package:rune_duel/engine/border_zone.dart';
 
 export 'package:rune_duel/battle/models/incantation_meaning.dart'
@@ -99,23 +104,20 @@ export 'package:rune_duel/battle/models/incantation_meaning.dart'
         IncantationNoise,
         kIncantationNoise;
 
-// ── Domain tags (LEYLINE_SEED_PLAN.md §4, §8, §9) ─────────────────────────────
-
-/// The incantation codebook's domain tag, transcribed from §4.
-///
-/// `v1` versions THIS BYTE LAYOUT, not the codebook generation — that is
-/// [LeylineConfig.lexiconVersion], which moves independently. Conflating them
-/// would mean a new dictionary generation silently rewrote every old layout.
-const String kLeylineIncantationDomain = 'Runewright/Leyline/v1/Incantation';
-
-/// §8's summon domain tag. **Pinned, unused.** Present so the eventual Summon
-/// derivation cannot quietly invent a different string, and so the
-/// domain-separation test has a second real tag to prove separation against.
-const String kLeylineSummonDomain = 'Runewright/Leyline/v1/Summon';
-
-/// §9's Aetherial Armor domain tag. **Pinned, unused.** See
-/// [kLeylineSummonDomain].
-const String kLeylineArmorDomain = 'Runewright/Leyline/v1/Armor';
+// The primitives this derivation is built from moved to `leyline_stream.dart`
+// in Slice F so Summon and Armor could reach them without importing this file
+// (the posture test forbids that import, and a shared hash function is not a
+// shared dictionary). Re-exported so every existing importer of this file — and
+// every Slice B vector — sees exactly the names it always did.
+export 'package:rune_duel/battle/models/leyline_stream.dart'
+    show
+        compareLeylineScores,
+        kLeylineArmorDomain,
+        kLeylineIncantationDomain,
+        kLeylineKeyAlphabet,
+        kLeylineSummonDomain,
+        leylineKeyElementCode,
+        leylineStreamScore;
 
 // ── Stream tags ───────────────────────────────────────────────────────────────
 
@@ -131,43 +133,6 @@ const int kLeylineKeyOrderStream = 0x01;
 /// but relying on that would make a future length bound silently
 /// consensus-critical.)
 const int kLeylineEffectOrderStream = 0x02;
-
-// ── The element alphabet (§3, §15 "element encoding") ─────────────────────────
-
-/// The formula-key alphabet, in canonical enumeration order.
-///
-/// **Neutral is deliberately absent.** A formula element is an entry that
-/// `FormulaTracker.step` committed, and every one of its three rules is guarded
-/// by `zone != null` — a neutral or tied generation commits nothing. So a
-/// neutral can never appear in a trajectory chunk, and admitting it into the
-/// key space would enumerate 5^(L-1) tails of which most are unreachable. §3 is
-/// explicit that the tail space is `4^(L-1)`.
-///
-/// The order is the circuit's element order minus neutral
-/// (`circuits/GRID_ORDERING_v2.md` §Rule indices: 1 Fire, 2 Air, 3 Water,
-/// 4 Earth), which is also `BorderZone`'s declaration order and also
-/// `ca_run.dart`'s `zoneIndex` order. All three already agree; this constant
-/// asserts that agreement rather than adding a fourth opinion.
-const List<BorderZone> kLeylineKeyAlphabet = [
-  BorderZone.fire,
-  BorderZone.air,
-  BorderZone.water,
-  BorderZone.earth,
-];
-
-/// The canonical wire code of a key element: the circuit's rule index, so
-/// `fire` is 1 and neutral's 0 is never emitted.
-///
-/// Deliberately NOT `BorderZone.index` — a byte layout must not move because
-/// someone reorders an enum, and the two happen to differ by exactly the
-/// neutral offset, which is the kind of coincidence that reads as intentional
-/// three years later.
-int leylineKeyElementCode(BorderZone zone) => switch (zone) {
-      BorderZone.fire => 1,
-      BorderZone.air => 2,
-      BorderZone.water => 3,
-      BorderZone.earth => 4,
-    };
 
 // ── Canonical effect codes ────────────────────────────────────────────────────
 
@@ -219,106 +184,6 @@ int incantationEffectCode(EffectKind kind) {
 // codebook, and it must not reach [IncantationCodebook.derive] to do so. The
 // rationale for the sealed hierarchy (over `EffectKind?`, a seventeenth enum
 // member, or a `bool isNoise`) travelled with the types; see that file.
-
-// ── The scoring primitive (R-1, R-4) ──────────────────────────────────────────
-
-/// One entry's sort key in a leyline-derived ordering.
-///
-/// ```
-/// preimage = uint8(len(domainTag)) ‖ ascii(domainTag)
-///          ‖ uint8(lexiconVersion)
-///          ‖ leylineConfigHash[32]          // RAW bytes, not the hex text
-///          ‖ uint8(streamTag)
-///          ‖ uint8(len(payload))
-///          ‖ payload                        // key element codes, or [effectCode]
-/// score    = SHA-256(preimage)              // all 32 bytes, compared big-endian
-/// ```
-///
-/// Five encoding decisions, and why each is what it is:
-///
-///   1. **Sort-by-hash, not a seeded shuffle** (R-1, audit §5.2 candidate B).
-///      A Fisher-Yates over a `HashRng` would be equally deterministic *given
-///      an identical shuffle implementation* — and that is precisely the
-///      dependency to refuse. `List.shuffle`'s algorithm is a Dart SDK detail,
-///      not a specification; a second implementation in Python, Rust or Noir
-///      would have to reproduce it exactly, including its draw order and its
-///      rejection sampling. A per-entry score has no such coupling: each
-///      entry's rank is independently computable and independently verifiable,
-///      the construction is order-independent by definition, and porting it is
-///      one hash and one sort.
-///   2. **Keyed on `leylineConfigHash`, not on a re-serialisation of the
-///      config.** That value is already pinned by vectors, already binds all
-///      five fields including the normalized seed, and is already what Wild
-///      Magic v2 consumes — so a codebook and the Wild Magic under it can never
-///      disagree about which leyline they are in. Re-serialising the fields
-///      here would be a second spelling of a consensus preimage, i.e. the exact
-///      drift `LeylineConfig`'s header warns about. It is hashed as the RAW 32
-///      bytes rather than the 64-char hex string: fixed-width, no case or
-///      encoding question to get wrong.
-///   3. **`lexiconVersion` is emitted even though `leylineConfigHash` already
-///      binds it.** Redundant on purpose. It sits immediately after the domain
-///      tag, mirroring `LeylineConfig`'s layout exactly, so the two preimages
-///      read as siblings; and it is the field that versions *this derivation*,
-///      which makes it worth being visible in the derivation's own bytes.
-///   4. **Every field is fixed-width or length-delimited**, tags included —
-///      `LeylineConfig`'s rule 1, for the same reason: it is what makes
-///      `("ab", …)` and `("a", …)` structurally unable to collide.
-///   5. **Nothing else is in scope.** No player, no caster, no proof bytes, no
-///      grid, no turn, no wall clock, no map or set iteration. A codebook is a
-///      property of a leyline and of nothing else.
-Uint8List leylineStreamScore({
-  required String domainTag,
-  required LeylineConfig config,
-  required int streamTag,
-  required List<int> payload,
-}) {
-  final domain = utf8.encode(domainTag);
-  if (domain.length > 0xFF) {
-    throw ArgumentError('domain tag must fit a uint8 length prefix');
-  }
-  if (streamTag < 0 || streamTag > 0xFF) {
-    throw ArgumentError('streamTag $streamTag does not fit a uint8');
-  }
-  if (payload.length > 0xFF) {
-    throw ArgumentError('payload must fit a uint8 length prefix');
-  }
-  for (final b in payload) {
-    if (b < 0 || b > 0xFF) {
-      throw ArgumentError('payload byte $b does not fit a uint8');
-    }
-  }
-
-  final buf = BytesBuilder(copy: false)
-    ..addByte(domain.length)
-    ..add(domain)
-    ..addByte(config.lexiconVersion)
-    ..add(_hexToBytes(config.leylineConfigHash))
-    ..addByte(streamTag)
-    ..addByte(payload.length)
-    ..add(payload);
-
-  return Uint8List.fromList(sha256.convert(buf.takeBytes()).bytes);
-}
-
-/// Big-endian unsigned comparison of two equal-length digests.
-int _compareBytes(List<int> a, List<int> b) {
-  final n = a.length < b.length ? a.length : b.length;
-  for (var i = 0; i < n; i++) {
-    if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
-  }
-  return a.length.compareTo(b.length);
-}
-
-Uint8List _hexToBytes(String hex) {
-  if (hex.length.isOdd) {
-    throw ArgumentError('hex string must have an even length');
-  }
-  final out = Uint8List(hex.length ~/ 2);
-  for (var i = 0; i < out.length; i++) {
-    out[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
-  }
-  return out;
-}
 
 // ── The noise count (R-2) ─────────────────────────────────────────────────────
 
@@ -596,7 +461,7 @@ List<EffectKind> deriveEffectOrder(LeylineConfig config) {
         kind,
       ),
   ]..sort((a, b) {
-      final byScore = _compareBytes(a.$1, b.$1);
+      final byScore = compareLeylineScores(a.$1, b.$1);
       return byScore != 0 ? byScore : a.$2.compareTo(b.$2);
     });
   return [for (final entry in scored) entry.$3];
@@ -634,8 +499,8 @@ List<int> _orderedKeyIndices(
     ));
   }
   scored.sort((a, b) {
-    final byScore = _compareBytes(a.$1, b.$1);
-    return byScore != 0 ? byScore : _compareBytes(a.$2, b.$2);
+    final byScore = compareLeylineScores(a.$1, b.$1);
+    return byScore != 0 ? byScore : compareLeylineScores(a.$2, b.$2);
   });
   return [for (final entry in scored) entry.$3];
 }

@@ -59,7 +59,10 @@
 //     different spell than the one the engine will cast. Under a mutable
 //     leyline it re-cuts at the active formula length, names each chunk
 //     through the derived codebook, and prints inert chunks as Noise rather
-//     than silently omitting them.
+//     than silently omitting them. Slice F extends the same rule to a SUMMON
+//     card's ability list, through `_CardFrame.summonLexicon`: the creature's
+//     affinity and its four stats are CA-derived and stay leyline-independent,
+//     while which four-element patterns name which abilities is rekeyed (R-8).
 //
 // The split is the answer to "may a card look different in a duel": its
 // picture may not, its promises must.
@@ -79,6 +82,7 @@ import '../spells/spell_art_resolver.dart';
 import '../spells/spell_identity.dart';
 import '../spells/spell_asset.dart';
 import '../battle/engine/incantation_lexicon.dart' show IncantationLexicon;
+import '../battle/models/summon_lexicon.dart' show SummonLexicon;
 import '../battle/models/leyline_config.dart' show LeylineConfig;
 import '../spells/incantation_display.dart'
     show
@@ -836,15 +840,33 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
   /// the consensus hazard `incantation_lexicon.dart`'s header warns about.
   /// Single-entry and per-widget — it dies with the card, and the leyline
   /// changes at most once in a card's lifetime (a duel starting or ending).
+  ///
+  /// The SUMMON lexicon is memoised beside it, on the same key and for the same
+  /// reason (264 SHA-256s and two sorts). Two objects rather than one because
+  /// they are two languages — see `summon_lexicon.dart`'s header — and the card
+  /// needs whichever its spell is.
   LeylineConfig? _lexiconKey;
   IncantationLexicon? _lexiconMemo;
+  SummonLexicon? _summonLexiconMemo;
 
-  IncantationLexicon _lexiconFor(LeylineConfig leyline) {
-    if (_lexiconKey != leyline || _lexiconMemo == null) {
+  void _primeLexicons(LeylineConfig leyline) {
+    if (_lexiconKey != leyline ||
+        _lexiconMemo == null ||
+        _summonLexiconMemo == null) {
       _lexiconKey = leyline;
       _lexiconMemo = IncantationLexicon.of(leyline);
+      _summonLexiconMemo = SummonLexicon.of(leyline);
     }
+  }
+
+  IncantationLexicon _lexiconFor(LeylineConfig leyline) {
+    _primeLexicons(leyline);
     return _lexiconMemo!;
+  }
+
+  SummonLexicon _summonLexiconFor(LeylineConfig leyline) {
+    _primeLexicons(leyline);
+    return _summonLexiconMemo!;
   }
 
   @override
@@ -1028,6 +1050,8 @@ class _FullscreenSpellCardState extends State<_FullscreenSpellCard>
                                   // heraldic identity and stay leyline-
                                   // independent (Slice E ruling).
                                   lexicon: _lexiconFor(wmContext.leyline),
+                                  summonLexicon:
+                                      _summonLexiconFor(wmContext.leyline),
                                 ),
                               ),
                             ),
@@ -1295,6 +1319,7 @@ class _CardFrame extends StatelessWidget {
     this.liveMaxHp,
     this.wildMagic = const [],
     this.lexicon = IncantationLexicon.ordinary,
+    this.summonLexicon = SummonLexicon.ordinary,
   });
 
   final SpellAsset spell;
@@ -1312,6 +1337,19 @@ class _CardFrame extends StatelessWidget {
   /// heraldry, derived from the stored asset, and stay leyline-independent so
   /// a player's library does not re-skin itself per duel.
   final IncantationLexicon lexicon;
+
+  /// The leyline the card's SUMMON rules body is read under.
+  ///
+  /// Defaults to the ordinary lexicon for the same reason [lexicon] does. Under
+  /// a mutable leyline this names the abilities the duel will actually grant
+  /// (audit R-8) — a card that printed the ordinary ability for a pattern the
+  /// engine reads as nothing is the `battle says grounded / card says Flying`
+  /// failure this seam exists to prevent.
+  ///
+  /// Scope: the ABILITY LIST only. The creature's affinity and its four stats
+  /// are CA-derived and leyline-independent, so they are read from
+  /// `CreatureSpec` exactly as before.
+  final SummonLexicon summonLexicon;
 
   /// The wild-magic effects this spell fires under the leyline seed currently
   /// in force, empty for the great majority of spells. Non-empty turns on both
@@ -1584,7 +1622,11 @@ class _CardFrame extends StatelessWidget {
   }
 
   Widget _summonRulesBody() {
-    final spec = CreatureSpec.fromElements(_borderZoneSequence(spell.formula));
+    // Through the lexicon (Slice F): stats and affinity are CA-derived and
+    // identical under every leyline, the ability list is not. Under a mutable
+    // leyline this is the same reading `DeterministicResolution` will make from
+    // the certified sequence.
+    final spec = summonLexicon.specOf(_borderZoneSequence(spell.formula));
     if (spec == null) {
       return Text(
         'Void Summon — no recorded elements.',
@@ -1611,10 +1653,30 @@ class _CardFrame extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 8),
+        if (summonLexicon.isMutable) ...[
+          // Name the tradition this reading was taken under, exactly as the
+          // incantation rules box does. Without it a player who flips between
+          // the library (ordinary) and a mutable match sees one card make two
+          // different claims with nothing to say why.
+          Text(
+            'Ability patterns under ${summonLexicon.leyline.displayName}',
+            style: manuscriptCaptionStyle(
+              color: kInkMutedColor.withValues(alpha: 0.8),
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
         Expanded(
           child: abilities.isEmpty
               ? Text(
-                  'No abilities.',
+                  // "No abilities" is true but, under a mutable leyline,
+                  // uninformative: the creature spells nothing THIS leyline has
+                  // a word for, and its stats are untouched either way.
+                  summonLexicon.isMutable
+                      ? 'No keyed ability under '
+                          '${summonLexicon.leyline.displayName}. Its elemental '
+                          'stats are unchanged.'
+                      : 'No abilities.',
                   style: manuscriptBodyStyle(
                     fontSize: 13,
                     color: kInkMutedColor,

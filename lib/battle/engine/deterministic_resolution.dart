@@ -179,6 +179,7 @@ import 'terrain_ops.dart';
 import 'tile_entry_resolver.dart';
 import 'peer_cast_verifier.dart' show PeerCastVerifier;
 import 'incantation_lexicon.dart' show IncantationLexicon;
+import '../models/summon_lexicon.dart' show SummonLexicon;
 import 'trajectory_parser.dart' show ParsedFormula;
 import 'statuesque_break.dart';
 import 'turn_actions.dart';
@@ -561,6 +562,25 @@ class DeterministicResolution {
   /// reads `leyline.mutableMagic` directly.
   late final IncantationLexicon lexicon =
       IncantationLexicon.of(state.config.leyline);
+
+  /// What element PATTERNS mean to a creature in THIS match (audit Slice F,
+  /// R-8).
+  ///
+  /// The summon counterpart of [lexicon], derived the same way from the same
+  /// agreed config, and deliberately a SECOND object rather than a method on
+  /// the first: incantations and summons are different languages over the same
+  /// trajectory — one chunks disjointly at a leyline-chosen length, the other
+  /// slides a fixed four-element window — and §3.2 ratified that they must not
+  /// be unified behind one lookup.
+  ///
+  /// It decides ONLY which abilities a creature has. Affinity, HP, damage,
+  /// move speed, attack range and the resistance wheel come from
+  /// `CreatureSpec` and are identical under every leyline, which is why the
+  /// three chain/cost sites below still call `CreatureSpec.fromElements`
+  /// directly for `.affinity` — a certified price must not move because a
+  /// dictionary did.
+  late final SummonLexicon summonLexicon =
+      SummonLexicon.of(state.config.leyline);
 
   final BattleState state;
 
@@ -2371,7 +2391,11 @@ class DeterministicResolution {
     state.minions.removeWhere((m) => !m.isAlive);
     var seq = 0;
     for (final m in dead) {
-      state.minions.addAll(m.onDeath(rng.nextInt, '${m.id}_reform${seq++}'));
+      state.minions.addAll(m.onDeath(
+        rng.nextInt,
+        '${m.id}_reform${seq++}',
+        lexicon: summonLexicon,
+      ));
     }
   }
 
@@ -3678,7 +3702,12 @@ class DeterministicResolution {
     HashRng rng, {
     bool rodRequested = false,
   }) {
-    final spec = CreatureSpec.fromElements(sequence);
+    // Through the lexicon, not `CreatureSpec.fromElements`: under a mutable
+    // leyline the creature's stats and affinity are the same and its ABILITIES
+    // are rekeyed (R-8). Both devices derive this from the same certified
+    // sequence and the same agreed config; nothing about abilities is
+    // transmitted.
+    final spec = summonLexicon.specOf(sequence);
     if (spec == null) return null; // no activations -- nothing to summon (void)
 
     // Rod of Wind: a real creature will spawn, so consume the rod now (if

@@ -14,8 +14,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:rune_duel/battle/engine/armor_certification.dart';
 import 'package:rune_duel/battle/models/armor_envelope.dart';
 import 'package:rune_duel/battle/models/certified_armor.dart';
+import 'package:rune_duel/battle/models/leyline_config.dart';
 import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/spells/inscribe.dart' show kRulesetVersion;
+import 'package:rune_duel/spells/spell_asset.dart' show SpellAsset;
 
 import 'certified_cast_fixture.dart' show syntheticProof;
 
@@ -53,6 +55,7 @@ Future<CertifiedArmor?> certify(
   int artifacts = 0,
   Future<bool> Function(Uint8List, Uint8List)? verifier = _accept,
   Uint8List? Function(int)? vk = _vk,
+  ArmorLexicon lexicon = ArmorLexicon.ordinary,
 }) =>
     certifyPeerArmor(
       envelope: envelope,
@@ -60,6 +63,7 @@ Future<CertifiedArmor?> certify(
       ordinaryArtifactCount: artifacts,
       verifyProof: verifier,
       vkBytesForTier: vk,
+      lexicon: lexicon,
     );
 
 Matcher throwsCertification(Matcher reason) => throwsA(
@@ -259,6 +263,115 @@ void main() {
           reason: bad,
         );
       }
+    });
+  });
+
+  // ── Mutable Leylines: one proof + one agreed config = one armor ───────────
+  //
+  // Slice F (R-8). The two paths already differ only in whether the bytes were
+  // verified first; the lexicon is the second input both sides must agree on,
+  // which is why it is REQUIRED here rather than defaulted. Nothing about the
+  // derived keywords crosses the wire — the envelope test above pins that the
+  // payload carries a tier and a proof and nothing else.
+  group('the agreed leyline reaches both certifications', () {
+    final rivendell4 =
+        LeylineConfig.mutable(communitySeed: 'rivendell', formulaLength: 4);
+
+    // AAAA (Flying ordinarily, inert under rivendell 4) then EFWA (inert
+    // ordinarily, Muddy under rivendell 4), padded with earth for a real T.
+    final elements = <BorderZone>[
+      ...List.filled(4, BorderZone.air),
+      BorderZone.earth,
+      BorderZone.fire,
+      BorderZone.water,
+      BorderZone.air,
+      ...List.filled(4, BorderZone.earth),
+    ];
+
+    SpellAsset localArmorAsset() => SpellAsset(
+          id: 'armor-mutable',
+          createdAt: DateTime.utc(2026, 9, 4),
+          tier: 12,
+          t: elements.length,
+          ownerPubkeyHex: _ownerHex,
+          manaCost: 1,
+          segmentCount: 0,
+          dotCount: 0,
+          initialGrid: List<int>.filled(469, 0)..[234] = 1,
+          proofBytes: _proof(tier: 12, t: elements.length, elements: elements),
+          name: 'Mutable Plate',
+          commitmentHex: '0x00',
+          spellHashHex: '0x01',
+          formula: const ['earth'],
+          isArmor: true,
+        );
+
+    test('local and peer derive identical semantics under one config', () async {
+      final local = certifyOwnArmor(
+        armor: localArmorAsset(),
+        wearerOwnerPubkeyHex: _ownerHex,
+        ordinaryArtifactCount: 0,
+        lexicon: ArmorLexicon.of(rivendell4),
+      )!;
+      final peer = await certify(
+        ArmorEnvelope(
+          tier: 12,
+          proofBytes: _proof(tier: 12, t: elements.length, elements: elements),
+        ),
+        lexicon: ArmorLexicon.of(rivendell4),
+      );
+
+      expect(peer!.keywords, local.keywords);
+      expect(peer.t, local.t);
+      expect(peer.slotCost, local.slotCost);
+      expect(peer.meleeBonus, local.meleeBonus);
+      expect(peer.moveSpeedBonus, local.moveSpeedBonus);
+      expect(peer.armorHpBonus, local.armorHpBonus);
+    });
+
+    test('the leyline moves the keywords and nothing else', () async {
+      final ordinary = await certify(
+        ArmorEnvelope(
+          tier: 12,
+          proofBytes: _proof(tier: 12, t: elements.length, elements: elements),
+        ),
+      );
+      final mutable = await certify(
+        ArmorEnvelope(
+          tier: 12,
+          proofBytes: _proof(tier: 12, t: elements.length, elements: elements),
+        ),
+        lexicon: ArmorLexicon.of(rivendell4),
+      );
+
+      expect(ordinary!.keywords, contains(ArmorKeyword.flying));
+      expect(mutable!.keywords, {ArmorKeyword.muddy});
+      // Everything else is arithmetic over the same certified trajectory.
+      expect(mutable.t, ordinary.t);
+      expect(mutable.slotCost, ordinary.slotCost);
+      expect(mutable.fireCount, ordinary.fireCount);
+      expect(mutable.airCount, ordinary.airCount);
+      expect(mutable.waterCount, ordinary.waterCount);
+      expect(mutable.earthCount, ordinary.earthCount);
+      expect(mutable.meleeBonus, ordinary.meleeBonus);
+      expect(mutable.moveSpeedBonus, ordinary.moveSpeedBonus);
+      expect(mutable.spellRangeBonus, ordinary.spellRangeBonus);
+      expect(mutable.armorHpBonus, ordinary.armorHpBonus);
+      expect(mutable.elementSequence, ordinary.elementSequence);
+    });
+
+    test('the budget check still runs on the certified T, not the keywords',
+        () async {
+      // The lexicon must not have become a way to smuggle a different slot
+      // cost: the refusal below is unchanged from the ordinary case.
+      expect(
+        certify(
+          ArmorEnvelope(tier: 48, proofBytes: _proof(tier: 48, t: 48)),
+          artifacts: 11,
+          lexicon: ArmorLexicon.of(rivendell4),
+        ),
+        throwsCertification(contains('artifact slots')),
+      );
     });
   });
 }

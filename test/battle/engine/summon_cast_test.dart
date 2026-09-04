@@ -13,8 +13,11 @@ import 'dart:typed_data';
 import 'package:test/test.dart';
 import 'package:rune_duel/battle/engine/turn_loop.dart';
 import 'package:rune_duel/battle/models/battle_state.dart';
+import 'package:rune_duel/battle/models/creature_spec.dart' show CreatureSpec;
+import 'package:rune_duel/battle/models/summon_lexicon.dart' show SummonLexicon;
 import 'package:rune_duel/battle/models/effect_kind.dart' show SpellAffinity;
 import 'package:rune_duel/battle/models/hex_battlefield.dart' show Battlefield, hexDistance;
+import 'package:rune_duel/battle/models/leyline_config.dart';
 import 'package:rune_duel/battle/models/match_config.dart';
 import 'package:rune_duel/battle/models/minion.dart';
 import 'package:rune_duel/battle/models/status_effect_ids.dart';
@@ -61,6 +64,7 @@ SpellAsset _summonSpell({
   HexCoord? dummyPos,
   int radius = 6,
   int range = 6,
+  LeylineConfig leyline = LeylineConfig.ordinaryDefault,
 }) {
   const localId = 'local';
   const dummyId = 'dummy';
@@ -93,7 +97,12 @@ SpellAsset _summonSpell({
   );
 
   final state = BattleState(
-    config: MatchConfig(playerHp: 24, gridRadius: radius, maxPlayers: 2),
+    config: MatchConfig(
+      playerHp: 24,
+      gridRadius: radius,
+      maxPlayers: 2,
+      leyline: leyline,
+    ),
     avatars: [local, dummy],
     teams: [
       Team(id: 'solo', playerIds: const [localId]),
@@ -594,6 +603,129 @@ void main() {
         modifiers: const {'speedDelta': -1},
       ));
       expect(target.effectiveMoveSpeed, 1);
+    });
+  });
+
+  // ── Mutable Leylines: the ability language is rekeyed (Slice F, R-8) ───────
+  //
+  // The engine-side half of the review gate. `EWWE` names Stealthy under
+  // `rivendell 4` and nothing ordinarily; `AAAA` is the reverse. Both readings
+  // reach a real spawned Minion through the real TurnLoop, because the failure
+  // that matters is not "the lexicon returns the wrong set" — the unit tests
+  // cover that — but "the engine never asked the lexicon".
+  group('mutable leyline summon abilities', () {
+    final rivendell4 =
+        LeylineConfig.mutable(communitySeed: 'rivendell', formulaLength: 4);
+
+    Future<Minion> summon(
+      List<String> formula, {
+      LeylineConfig leyline = LeylineConfig.ordinaryDefault,
+    }) async {
+      final ctx = _setup(leyline: leyline);
+      await ctx.loop.runTurn(TurnInput(
+        action: SpellCastAction(
+          spell: _summonSpell(formula: formula),
+          targetHex: ctx.local.position,
+        ),
+      ));
+      return ctx.state.minions.single;
+    }
+
+    // Four airs plus two earths: Flying ordinarily, and alive (earth > 0) so it
+    // survives the end-of-turn reap and can be inspected.
+    const ordinaryPattern = ['air', 'air', 'air', 'air', 'earth', 'earth'];
+    // EWWE plus earths for HP: Stealthy under rivendell 4.
+    const mutablePattern = [
+      'earth', 'water', 'water', 'earth', 'earth', 'earth',
+    ];
+
+    test('an ordinary leyline still grants the ordinary ability', () async {
+      final creature = await summon(ordinaryPattern);
+      expect(creature.abilities, contains(SummonAbility.flying));
+    });
+
+    test('a mutable leyline leaves the ordinary pattern inert', () async {
+      final creature = await summon(ordinaryPattern, leyline: rivendell4);
+      expect(creature.abilities, isEmpty,
+          reason: 'AAAA must name nothing under rivendell 4 — the engine read '
+              'the ordinary table instead of the lexicon');
+    });
+
+    test('a mutable leyline grants its own keyed ability', () async {
+      final creature = await summon(mutablePattern, leyline: rivendell4);
+      expect(creature.abilities, {SummonAbility.stealthy});
+      // …and the same sequence names nothing ordinarily, so this is a real
+      // rekeying rather than a coincidence of the fixture.
+      expect((await summon(mutablePattern)).abilities, isEmpty);
+    });
+
+    test('a morphic reform derives under the MATCH\'s lexicon', () async {
+      // The secondary derivation path, and the one a reader is most likely to
+      // miss: `Minion.onDeath` builds a whole new creature from the reduced
+      // sequence, and before Slice F it did so through the ordinary table. In a
+      // mutable match that would have handed the successor abilities the match
+      // does not recognise — a fork the primary `_castSummon` test cannot see.
+      //
+      // `AEAF` names Morphic under rivendell 4 (and nothing ordinarily), so the
+      // creature only reforms at all because the mutable dictionary was
+      // consulted on the way in. The successor then pins the way out.
+      // The fixture's discrimination is ARITHMETIC, not luck. 32 elements
+      // reform to 16, and only three of the originals are not earth, so the
+      // successor holds at least 13 earths split by at most three separators —
+      // i.e. a run of at least four. `EEEE` is Big ordinarily and INERT under
+      // rivendell 4, where Big is named by `WFEA`, which needs a water the
+      // successor cannot contain. So the two readings differ whatever the
+      // reform's seeded draw does.
+      final ctx = _setup(leyline: rivendell4);
+      final spell = _summonSpell(formula: const [
+        'air', 'earth', 'air', 'fire', // AEAF -> morphic under rivendell 4
+        ...['earth', 'earth', 'earth', 'earth', 'earth', 'earth', 'earth'],
+        ...['earth', 'earth', 'earth', 'earth', 'earth', 'earth', 'earth'],
+        ...['earth', 'earth', 'earth', 'earth', 'earth', 'earth', 'earth'],
+        ...['earth', 'earth', 'earth', 'earth', 'earth', 'earth', 'earth'],
+      ]);
+      await ctx.loop.runTurn(TurnInput(
+        action: SpellCastAction(spell: spell, targetHex: ctx.local.position),
+      ));
+      final creature = ctx.state.minions.single;
+      expect(creature.abilities, {SummonAbility.morphic},
+          reason: 'AEAF must name Morphic under rivendell 4 — without this the '
+              'creature never reforms and the rest of this test is vacuous');
+
+      // Kill it directly (isolating the reap/reform path from combat RNG) then
+      // run a turn so TurnLoop's _reapDead sweep processes it.
+      creature.hp = 0;
+      await ctx.loop.runTurn(TurnInput(action: PassAction()));
+
+      final successor = ctx.state.minions.single;
+      expect(successor.id, isNot(creature.id));
+
+      final lexicon = SummonLexicon.of(rivendell4);
+      final mutableReading = lexicon.abilitiesOf(successor.elementSequence);
+      final ordinaryReading =
+          CreatureSpec.fromElements(successor.elementSequence)!.abilities;
+      // Guards the fixture, not the code: if the reform's seeded draw ever
+      // yields a sequence both dictionaries read the same way, this test would
+      // pass while proving nothing, and it must say so instead.
+      expect(mutableReading, isNot(ordinaryReading),
+          reason: 'the reduced sequence ${successor.elementSequence} no longer '
+              'discriminates between the two dictionaries — retune the fixture '
+              'rather than deleting the assertion below');
+      expect(successor.abilities, mutableReading,
+          reason: 'the reform read the ordinary table instead of the match\'s '
+              'SummonLexicon');
+    });
+
+    test('intrinsic stats and affinity do not move with the leyline', () async {
+      final ordinary = await summon(ordinaryPattern);
+      final mutable = await summon(ordinaryPattern, leyline: rivendell4);
+      expect(mutable.affinity, ordinary.affinity);
+      expect(mutable.stats.maxHp, ordinary.stats.maxHp);
+      expect(mutable.stats.damage, ordinary.stats.damage);
+      expect(mutable.stats.moveSpeed, ordinary.stats.moveSpeed);
+      expect(mutable.stats.attackRange, ordinary.stats.attackRange);
+      expect(mutable.hp, ordinary.hp);
+      expect(mutable.elementSequence, ordinary.elementSequence);
     });
   });
 }

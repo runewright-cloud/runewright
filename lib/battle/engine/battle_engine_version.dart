@@ -455,6 +455,64 @@
 // coupling that keeps it off the duel host screen, and R-9, which comes due in
 // the change that moves it.
 //
+// v15 (2026-09-04, Mutable Leylines — Summon and Armor rekeying, audit R-8) —
+// under a Mutable Leyline the two discrete PATTERN languages are rekeyed the
+// way incantations already were: which four-element pattern names which
+// `SummonAbility`, and which four-element run names which `ArmorKeyword`.
+// Ordinary leylines are bit-identical to v14.
+//
+// The gate fires on the usual test. **The same wire transcript** — same action
+// bytes, same proofs, same armor envelopes, same VK, same `MatchConfig` —
+// yields a different canonical `BattleState` on either side of the change for
+// any mutable match in which a summon's certified sequence or an armor's
+// certified dominance sequence contains a four-element window either dictionary
+// keys. `BattleState.toCanonicalBytes` hashes a minion's ability mask and an
+// avatar's armor, so a v14 build's Flying creature is a v15 build's grounded
+// one and every consequence — footprints, terrain immunity, cleave, reflected
+// carapace damage — diverges from there.
+//
+// What moved:
+//
+//   * `SummonLexicon` (models/summon_lexicon.dart) is the one seam that says
+//     which abilities an element sequence spells. `DeterministicResolution`
+//     holds one for the match and `_castSummon` and morphic reform both read
+//     it;
+//   * `ArmorLexicon` (models/armor_lexicon.dart) is its armor counterpart, and
+//     `CertifiedArmor.fromOutputs` takes it. `certifyOwnArmor` /
+//     `certifyPeerArmor` REQUIRE one, and `runDuelSetup` passes the leyline
+//     both devices agreed at step 3 — so one proof plus one accepted config is
+//     one armor on both devices;
+//   * both dictionaries derive from the leyline's TRADITION hash
+//     (`LeylineConfig.leylineTraditionHash`), not its config hash, so
+//     `rivendell 4/5/6` share one summon and one armor dictionary while
+//     speaking three incantation grammars.
+//
+// What did NOT move, and must not:
+//
+//   * **every intrinsic number.** Creature affinity, HP, damage, move speed,
+//     attack range and the resistance wheel; armor T, slot cost, element
+//     counts, melee/move/range/HP ladders. All are arithmetic over the
+//     certified trajectory and are identical under every leyline. Only the
+//     ability set and the keyword set are rekeyed;
+//   * **the recognisers.** Both languages still slide a FOUR-element window,
+//     still allow overlap, still grant each output at most once.
+//     `LeylineConfig.formulaLength` is the incantation grammar's length and is
+//     not a generic window size;
+//   * **the meaningful cardinality.** Eight summon patterns of 256 and seven
+//     armor patterns of 256, exactly as ordinarily. Incantation's ~50% noise
+//     density belongs to a disjointly-chunked language and is not applied here;
+//   * **the wire.** No new field, no derived semantics transmitted, no armor
+//     envelope change. `kBattleProtocolVersion` stays 7;
+//   * **proofs, circuits and VKs.** `kRulesetVersion` stays 3;
+//   * **Wild Magic and Incantation semantics.** Not one byte: no hash, no
+//     table, no codebook vector;
+//   * **persisted identity.** `SpellAsset`, inscription mana cost,
+//     `behaviouralKinKey`, kin stacking and heraldry are inscription-side and
+//     leyline-independent (R-6).
+//
+// See docs/MUTABLE_LEYLINES_IMPLEMENTATION_AUDIT.md §13 Slice E (Summon and
+// Armor rekeying) and R-8.
+//
 // v14 (2026-09-04, Mutable Leylines — partial-formula affinity correction) —
 // a formula's START establishes its affinity; only its COMPLETION establishes
 // its meaning. The trailing INCOMPLETE group of a certified trajectory — the
@@ -531,7 +589,7 @@
 /// [DeviceCapabilities.battleEngineVersion] both default to it rather than
 /// restating a literal, exactly as `MatchConfig.rulesetVersion` derives from
 /// `kRulesetVersion`. See this file's header for what forces a bump.
-const int kBattleEngineVersion = 14;
+const int kBattleEngineVersion = 15;
 
 /// What a peer that predates the engine-version gate implicitly declares: it
 /// omits the field, and an omitted field cannot be read as agreement.

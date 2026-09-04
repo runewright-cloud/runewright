@@ -345,6 +345,63 @@ class LeylineConfig {
     return _toHex(sha256.convert(out.takeBytes()).bytes);
   }
 
+  /// The domain tag of the TRADITION hash. Versions that byte layout, exactly as
+  /// [_domain] versions the configuration hash's; the two move independently.
+  static const String _traditionDomain = 'Runewright/Leyline/v1/Tradition';
+
+  /// The canonical 64-char lowercase hex hash of this leyline's **tradition** —
+  /// who its magic belongs to, with the incantation grammar's own dials left
+  /// out (audit R-8).
+  ///
+  /// ```
+  /// preimage = uint8(len(domain)) ‖ ascii(domain)      // 1 + 31 bytes
+  ///          ‖ uint8(lexiconVersion)                   // 1
+  ///          ‖ uint8(mutableMagic ? 1 : 0)             // 1
+  ///          ‖ uint16be(utf8ByteLength(normalizedSeed))// 2
+  ///          ‖ utf8(normalizedSeed)                    // variable
+  /// leylineTraditionHash = lowercase hex of SHA-256(preimage)
+  /// ```
+  ///
+  /// [leylineConfigHash]'s layout, minus [formulaLength] and
+  /// [noiseDensityPermille] — and the omission is the whole point, not an
+  /// economy. Those two fields are the Incantation grammar's controls: how many
+  /// elements make one spoken formula, and what share of formula tails a
+  /// leyline leaves inert. The Summon and Armor pattern languages are four
+  /// elements wide under every grammar (R-8 keeps them there), so keying their
+  /// dictionaries on the full config would mean a host who moved from
+  /// `rivendell 4` to `rivendell 6` silently rerolled what every creature and
+  /// every armor in the match could do. `Rivendell 4`, `Rivendell 5` and
+  /// `Rivendell 6` are three incantation grammars and ONE tradition of
+  /// creatures and armor.
+  ///
+  /// [mutableMagic] is bound even though only mutable leylines derive a
+  /// dictionary: an ordinary config has no business producing a score stream at
+  /// all, and binding the flag means it could not share one with a mutable
+  /// leyline of the same name even if some future caller tried.
+  ///
+  /// Validates before hashing, for the same reason [leylineConfigHash] does.
+  String get leylineTraditionHash {
+    _checkCanonical();
+
+    final domain = utf8.encode(_traditionDomain);
+    final seed = utf8.encode(normalizedSeed);
+    assert(domain.length <= 0xFF, 'domain tag must fit a uint8 length prefix');
+    if (seed.length > 0xFFFF) {
+      throw LeylineConfigException('normalized seed exceeds 65535 bytes');
+    }
+
+    final out = BytesBuilder(copy: false)
+      ..addByte(domain.length)
+      ..add(domain)
+      ..addByte(lexiconVersion)
+      ..addByte(mutableMagic ? 1 : 0)
+      ..addByte((seed.length >> 8) & 0xFF)
+      ..addByte(seed.length & 0xFF)
+      ..add(seed);
+
+    return _toHex(sha256.convert(out.takeBytes()).bytes);
+  }
+
   static String _toHex(List<int> bytes) {
     final sb = StringBuffer();
     for (final b in bytes) {

@@ -8,6 +8,11 @@
 import 'package:test/test.dart';
 import 'package:rune_duel/battle/models/creature_spec.dart';
 import 'package:rune_duel/battle/models/effect_kind.dart' show SpellAffinity;
+// The display helpers moved to `summon_lexicon.dart` in Slice F: they read a
+// leyline (the ability clause is the rekeyed half) and `CreatureSpec`
+// deliberately cannot.
+import 'package:rune_duel/battle/models/summon_lexicon.dart'
+    show summonSummaryFromFormula, summonSummaryLabel;
 import 'package:rune_duel/engine/border_zone.dart';
 
 List<BorderZone> _seq(String s) => s.split('').map((c) => switch (c) {

@@ -13,12 +13,13 @@ import 'engine/formula.dart';
 import 'engine/hex_grid.dart';
 import 'engine/stepper.dart';
 import 'battle/models/creature_spec.dart'
-    show CreatureSpec, SummonAbility, summonSummaryLabel;
+    show CreatureSpec, SummonAbility;
 import 'battle/models/effect_kind.dart' show formulaTripletKind;
 import 'audio/spell_sound_player.dart' show SpellSoundPlayer;
 import 'audio/spell_sound_settings.dart' show SpellSoundSettings;
 import 'identity/identity.dart';
 import 'battle/models/certified_armor.dart' show CertifiedArmor;
+import 'battle/models/summon_lexicon.dart' show summonSummaryLabel;
 import 'spells/armor_summary.dart' show kArmorKeywordLabel;
 import 'spells/inscribe.dart';
 import 'spells/inscription_mode.dart';

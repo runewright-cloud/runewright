@@ -9,12 +9,24 @@
 // authored fields no proof binds, and showing them would mean advertising an
 // armor the duel would not honour. When the proof cannot be read the widget
 // says so and shows nothing else -- there is deliberately no fallback.
+//
+// ## Leyline (Slice F)
+//
+// The KEYWORD line is read under the leyline currently in force
+// ([activeLeylineConfig] — the same channel the spell card uses: this device's
+// own tradition in the library, the match's for the duration of a duel), so it
+// can never name a keyword the duel would not grant. T, the slot cost and every
+// element bonus are intrinsic and identical under every leyline, so they are
+// not qualified by anything.
 
 import 'package:flutter/material.dart';
 
+// `ArmorLexicon` comes through certified_armor.dart's re-export — the two are
+// one boundary and importing them separately is redundant.
 import '../../battle/models/certified_armor.dart';
 import '../../spells/armor_summary.dart';
 import '../../spells/spell_asset.dart';
+import '../../spells/wild_magic_preview.dart' show activeLeylineConfig;
 import '../manuscript_theme.dart';
 
 /// Proof-derived summary of [spell]. Renders a short refusal if its proof
@@ -30,24 +42,37 @@ class ArmorSummaryView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final armor = localCertifiedArmor(spell);
+    final lexicon = ArmorLexicon.of(activeLeylineConfig);
+    final armor = localCertifiedArmor(spell, lexicon: lexicon);
     if (armor == null) {
       return Text(
         "This armor's proof could not be read, so its properties are unknown.",
         style: manuscriptCaptionStyle(color: kRubricRed),
       );
     }
-    return ArmorSummaryBody(armor: armor, dense: dense);
+    return ArmorSummaryBody(armor: armor, dense: dense, lexicon: lexicon);
   }
 }
 
 /// The rendering half, over an already-derived [CertifiedArmor]. Split out so
 /// a caller that has one in hand does not re-parse the proof to draw it.
 class ArmorSummaryBody extends StatelessWidget {
-  const ArmorSummaryBody({super.key, required this.armor, this.dense = false});
+  const ArmorSummaryBody({
+    super.key,
+    required this.armor,
+    this.dense = false,
+    this.lexicon = ArmorLexicon.ordinary,
+  });
 
   final CertifiedArmor armor;
   final bool dense;
+
+  /// The tradition [armor]'s keywords were read under. Presentation only — it
+  /// names the reading, it does not perform it: [armor] already carries the
+  /// keyword set its own derivation produced, and a caller that passed a
+  /// different lexicon here than it derived with would only mislabel, never
+  /// change, what is shown.
+  final ArmorLexicon lexicon;
 
   @override
   Widget build(BuildContext context) {
@@ -75,8 +100,21 @@ class ArmorSummaryBody extends StatelessWidget {
         if (keywords.isNotEmpty) ...[
           const SizedBox(height: 4),
           Text(
-            keywords.join('  ·  '),
+            lexicon.isMutable
+                ? '${keywords.join('  ·  ')}  '
+                    '(under ${lexicon.leyline.displayName})'
+                : keywords.join('  ·  '),
             style: manuscriptCaptionStyle(color: kIlluminationGold),
+          ),
+        ] else if (lexicon.isMutable && !dense) ...[
+          // Silence would read as "this armor does nothing special", which is
+          // both wrong and demoralising: every bonus above still applies. Say
+          // which half is empty, and under which tradition.
+          const SizedBox(height: 4),
+          Text(
+            'No keyed Armor ability under ${lexicon.leyline.displayName}. '
+            'Its bonuses above are unchanged.',
+            style: manuscriptCaptionStyle(color: kInkMutedColor),
           ),
         ],
       ],

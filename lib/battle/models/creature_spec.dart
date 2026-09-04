@@ -26,6 +26,13 @@
 
 import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/battle/models/effect_kind.dart' show SpellAffinity;
+import 'package:rune_duel/battle/models/summon_ability.dart';
+
+// The ability VOCABULARY moved to `summon_ability.dart` in Slice F so that
+// `SummonLexicon` could name an ability without importing this file (and this
+// file could keep not knowing what a leyline is). Re-exported, so every
+// existing importer — `show SummonAbility` included — sees what it always did.
+export 'package:rune_duel/battle/models/summon_ability.dart';
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
 
@@ -65,35 +72,6 @@ class MinionStats {
   @override
   int get hashCode => Object.hash(maxHp, damage, moveSpeed, attackRange);
 }
-
-// ── Abilities ─────────────────────────────────────────────────────────────────
-
-/// The 8 element-sequence-pattern abilities ("Abilities" table). Pattern
-/// length defaults to 4 ("Defaulting to 4 long for all for initial play
-/// testing"); matches allow element reuse ("An element may be used more than
-/// one time when searching for ability patterns") — plain substring search
-/// over the initials string already gives this for free.
-enum SummonAbility {
-  flying, // AAAA
-  cleave, // FFFF
-  big, // EEEE
-  morphic, // WWWW
-  charger, // FAFA
-  stealthy, // AWAW
-  muddy, // WEWE
-  moltenCarapace, // EFEF
-}
-
-const Map<SummonAbility, String> kSummonAbilityPattern = {
-  SummonAbility.flying: 'AAAA',
-  SummonAbility.cleave: 'FFFF',
-  SummonAbility.big: 'EEEE',
-  SummonAbility.morphic: 'WWWW',
-  SummonAbility.charger: 'FAFA',
-  SummonAbility.stealthy: 'AWAW',
-  SummonAbility.muddy: 'WEWE',
-  SummonAbility.moltenCarapace: 'EFEF',
-};
 
 // ── Creature spec ─────────────────────────────────────────────────────────────
 
@@ -168,21 +146,10 @@ class CreatureSpec {
     );
   }
 
-  static Set<SummonAbility> _abilitiesOf(List<BorderZone> sequence) {
-    final initials = sequence.map(_initial).join();
-    final found = <SummonAbility>{};
-    for (final entry in kSummonAbilityPattern.entries) {
-      if (initials.contains(entry.value)) found.add(entry.key);
-    }
-    return found;
-  }
-
-  static String _initial(BorderZone z) => switch (z) {
-        BorderZone.fire => 'F',
-        BorderZone.air => 'A',
-        BorderZone.water => 'W',
-        BorderZone.earth => 'E',
-      };
+  /// The ORDINARY reading — `ordinarySummonAbilities`, the one implementation,
+  /// so this and `SummonLexicon.ordinary` cannot drift.
+  static Set<SummonAbility> _abilitiesOf(List<BorderZone> sequence) =>
+      ordinarySummonAbilities(sequence);
 
   static SpellAffinity _toAffinity(BorderZone z) => switch (z) {
         BorderZone.fire => SpellAffinity.fire,
@@ -281,83 +248,3 @@ int applyResistance(int amount, SpellAffinity attackType, SpellAffinity defender
     ResistanceTier.normal => amount,
   };
 }
-
-// ── Display (UI-facing; no Flutter dependency, just label maps + strings) ────
-
-/// Friendly ability names for [SummonAbility] (design doc "Abilities" table).
-const Map<SummonAbility, String> kSummonAbilityLabel = {
-  SummonAbility.flying: 'Flying',
-  SummonAbility.cleave: 'Cleave',
-  SummonAbility.big: 'Big',
-  SummonAbility.morphic: 'Morphic',
-  SummonAbility.charger: 'Charger',
-  SummonAbility.stealthy: 'Stealthy',
-  SummonAbility.muddy: 'Muddy',
-  SummonAbility.moltenCarapace: 'Molten Carapace',
-};
-
-/// Ability flavor-text, transcribed from the "Abilities" table in
-/// docs/runewright_design_v3_0.md (§Abilities). Used by the spell card's
-/// rules-text box for summons.
-const Map<SummonAbility, String> kSummonAbilityDescription = {
-  SummonAbility.flying:
-      'May move through other entities as if they were not there, but still '
-          'not end its move in the same tile as another entity. Unaffected by '
-          'modified terrain (though still by clouds).',
-  SummonAbility.cleave:
-      'Attack damage will be applied to a second enemy entity if that second '
-          'entity is adjacent to both the primary target and this creature.',
-  SummonAbility.big:
-      'Occupies 3 adjacent hexes (forming a triangle) and cannot be moved by '
-          'exterior forces. Its range, and the range of things affecting it, '
-          'applies from any of its tiles.',
-  SummonAbility.morphic:
-      'Upon death, reforms into a new creature with half its elements '
-          '(rounded down), selected at random.',
-  SummonAbility.charger:
-      'Adds damage equal to half the distance it moved before attacking, '
-          'rounded up.',
-  SummonAbility.stealthy:
-      'Other summons will treat this creature as if it doesn\'t exist unless '
-          'it\'s within an adjacent tile.',
-  SummonAbility.muddy: 'Attack will reduce move speed of target by 1 for 1 turn.',
-  SummonAbility.moltenCarapace:
-      'Attacks from sources within 1 range of this creature cause 1 fire '
-          'damage to be reflected.',
-};
-
-const Map<SpellAffinity, String> _kCreatureAffinityLabel = {
-  SpellAffinity.fire: 'Fire',
-  SpellAffinity.earth: 'Earth',
-  SpellAffinity.water: 'Water',
-  SpellAffinity.air: 'Air',
-};
-
-/// Formats [spec] for display, e.g. "Fire Creature · HP 4 · DMG 3 · Move 2 ·
-/// Range 1 · Flying, Cleave" (the ability clause is omitted when empty).
-String summonSummaryLabel(CreatureSpec spec) {
-  final base = '${_kCreatureAffinityLabel[spec.affinity]} Creature · '
-      'HP ${spec.stats.maxHp} · DMG ${spec.stats.damage} · '
-      'Move ${spec.stats.moveSpeed} · Range ${spec.stats.attackRange}';
-  if (spec.abilities.isEmpty) return base;
-  final abilityNames = spec.abilities.map((a) => kSummonAbilityLabel[a]).join(', ');
-  return '$base · $abilityNames';
-}
-
-/// [summonSummaryLabel], parsing a stored [SpellAsset.formula] (zone-name
-/// strings) first. Returns null for an empty/void sequence -- callers should
-/// show a "Void Summon" fallback in that case.
-String? summonSummaryFromFormula(List<String> formula) {
-  final sequence = formula.map(_zoneFromName).whereType<BorderZone>().toList();
-  final spec = CreatureSpec.fromElements(sequence);
-  if (spec == null) return null;
-  return summonSummaryLabel(spec);
-}
-
-BorderZone? _zoneFromName(String name) => switch (name.toLowerCase()) {
-      'fire' => BorderZone.fire,
-      'earth' => BorderZone.earth,
-      'water' => BorderZone.water,
-      'air' => BorderZone.air,
-      _ => null,
-    };

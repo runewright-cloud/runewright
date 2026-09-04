@@ -19,6 +19,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:rune_duel/battle/engine/incantation_lexicon.dart';
+import 'package:rune_duel/battle/models/armor_lexicon.dart';
+import 'package:rune_duel/battle/models/certified_armor.dart' show ArmorKeyword;
+import 'package:rune_duel/battle/models/creature_spec.dart';
+import 'package:rune_duel/battle/models/summon_lexicon.dart';
+import 'package:rune_duel/spells/armor_summary.dart';
+import 'package:rune_duel/ui/widgets/armor_summary_view.dart';
 import 'package:rune_duel/battle/models/effect_kind.dart';
 import 'package:rune_duel/battle/models/leyline_config.dart';
 import 'package:rune_duel/battle/models/match_config.dart';
@@ -29,6 +35,7 @@ import 'package:rune_duel/ui/spell_card_painter.dart';
 import 'package:rune_duel/engine/border_zone.dart';
 import 'package:rune_duel/ui/widgets/leyline_picker.dart';
 
+import '../spells/armor_fixture.dart';
 import '../support/wild_magic_fixture.dart';
 
 BorderZone _zone(String name) => switch (name) {
@@ -90,6 +97,32 @@ SpellAsset _noiseSpell() => fixtureSpell(
 /// same. Not "void": see [IncantationReading.isSilent].
 SpellAsset _threeElementSpell() =>
     fixtureSpell(name: 'Fixture', formula: const ['fire', 'fire', 'fire']);
+
+/// A SUMMON whose flat sequence spells `AAAA` — Flying under the ordinary
+/// table, and NOTHING under `rivendell 4`, where every ordinary pattern is
+/// inert (see `leyline_pattern_codebook_test.dart`'s vectors).
+///
+/// This is the Slice F counterpart of [_noiseSpell]: `card says Flying / battle
+/// says grounded` in one fixture.
+SpellAsset _ordinaryPatternSummon() => fixtureSpell(
+      name: 'Fixture',
+      isSummon: true,
+      formula: const ['air', 'air', 'air', 'air'],
+    );
+
+/// A SUMMON whose flat sequence spells `EWWE` — nothing under the ordinary
+/// table, and Stealthy under `rivendell 4`.
+SpellAsset _mutablePatternSummon() => fixtureSpell(
+      name: 'Fixture',
+      isSummon: true,
+      formula: const ['earth', 'water', 'water', 'earth'],
+    );
+
+/// Flips the card to its rules face, which is where both rules bodies live.
+Future<void> _openRules(WidgetTester tester) async {
+  await tester.tap(find.byType(SpellCardWidget));
+  await tester.pumpAndSettle();
+}
 
 Future<void> _pumpCard(WidgetTester tester, SpellAsset spell) async {
   await tester.pumpWidget(
@@ -646,6 +679,193 @@ void main() {
         findsWidgets,
       );
       expect(find.textContaining('No complete formula'), findsNothing);
+    });
+  });
+
+  // ── Slice F: the summon card's ability list ───────────────────────────────
+
+  group('mutable summon abilities on the card', () {
+    testWidgets('an ordinary card still names the ordinary ability',
+        (tester) async {
+      _viewUnder(LeylineConfig.ordinaryDefault);
+      await _pumpCard(tester, _ordinaryPatternSummon());
+      await _openRules(tester);
+      expect(find.textContaining('Flying:', findRichText: true), findsWidgets);
+      expect(find.textContaining('Ability patterns under'), findsNothing);
+      expect(find.textContaining('No keyed ability'), findsNothing);
+    });
+
+    testWidgets('a mutable card names the ability the duel will grant',
+        (tester) async {
+      _viewUnder(_rivendell(4));
+      await _pumpCard(tester, _mutablePatternSummon());
+      await _openRules(tester);
+      expect(find.textContaining('Stealthy:', findRichText: true), findsWidgets);
+      // …and says which tradition it read under, so a player flipping between
+      // the library and a match is never shown two claims with no explanation.
+      expect(find.textContaining('Ability patterns under rivendell 4'),
+          findsOneWidget);
+      // The ordinary reading of EWWE is nothing at all, so this is a real
+      // rekeying and not a coincidence.
+      expect(
+        CreatureSpec.fromElements(const [
+          BorderZone.earth,
+          BorderZone.water,
+          BorderZone.water,
+          BorderZone.earth,
+        ])!.abilities,
+        isEmpty,
+      );
+    });
+
+    testWidgets('a formerly meaningful pattern reads as no keyed ability',
+        (tester) async {
+      // The failure this seam exists to prevent: before Slice F this card
+      // printed "Flying" for a creature the duel would ground.
+      _viewUnder(_rivendell(4));
+      await _pumpCard(tester, _ordinaryPatternSummon());
+      await _openRules(tester);
+      expect(find.textContaining('Flying:', findRichText: true), findsNothing);
+      expect(find.textContaining('No keyed ability under rivendell 4'),
+          findsOneWidget);
+      // Stats are CA-derived and must still be shown — the creature is not
+      // diminished, only unkeyed.
+      expect(find.textContaining('Move'), findsOneWidget);
+    });
+
+    testWidgets('the card agrees with the engine-side derivation',
+        (tester) async {
+      // The review gate, as an assertion: what the card prints and what
+      // `SummonLexicon` (which `DeterministicResolution` holds) derives are one
+      // reading.
+      final lexicon = SummonLexicon.of(_rivendell(4));
+      final abilities = lexicon.abilitiesOf(const [
+        BorderZone.earth,
+        BorderZone.water,
+        BorderZone.water,
+        BorderZone.earth,
+      ]);
+      expect(abilities, {SummonAbility.stealthy});
+
+      _viewUnder(_rivendell(4));
+      await _pumpCard(tester, _mutablePatternSummon());
+      await _openRules(tester);
+      for (final ability in abilities) {
+        expect(
+          find.textContaining('${kSummonAbilityLabel[ability]!}:',
+              findRichText: true),
+          findsWidgets,
+        );
+      }
+    });
+
+    testWidgets('the creature\'s stats are the CA-derived ones', (tester) async {
+      // Whatever the leyline, the same four airs are the same creature: the
+      // card's stat chips must match the leyline-free `CreatureSpec`, which is
+      // what `DeterministicResolution` also uses for stats. Only the ability
+      // list below them is rekeyed.
+      final spec = CreatureSpec.fromElements(const [
+        BorderZone.air,
+        BorderZone.air,
+        BorderZone.air,
+        BorderZone.air,
+      ])!;
+      _viewUnder(_rivendell(4));
+      await _pumpCard(tester, _ordinaryPatternSummon());
+      await _openRules(tester);
+      expect(find.text('HP ${spec.stats.maxHp}'), findsOneWidget);
+      expect(find.text('DMG ${spec.stats.damage}'), findsOneWidget);
+      expect(find.text('Move ${spec.stats.moveSpeed}'), findsOneWidget);
+      expect(find.text('Range ${spec.stats.attackRange}'), findsOneWidget);
+    });
+  });
+
+  // ── Slice F: the armor summary ────────────────────────────────────────────
+
+  group('mutable armor keywords in the summary', () {
+    // 4 fire (Cleave ordinarily, +1 melee) and 4 air (Flying ordinarily, +1
+    // move), then EFWA — an armor word under rivendell 4 and nothing
+    // ordinarily.
+    SpellAsset armor() => armorAsset(elements: [
+          ...runOf(BorderZone.fire, 4),
+          ...runOf(BorderZone.air, 4),
+          BorderZone.earth,
+          BorderZone.fire,
+          BorderZone.water,
+          BorderZone.air,
+        ]);
+
+    Future<void> pump(WidgetTester tester, SpellAsset spell) =>
+        tester.pumpWidget(
+          MaterialApp(home: Scaffold(body: ArmorSummaryView(spell: spell))),
+        );
+
+    testWidgets('an ordinary summary is unchanged', (tester) async {
+      _viewUnder(LeylineConfig.ordinaryDefault);
+      await pump(tester, armor());
+      expect(find.text('Cleave  ·  Flying'), findsOneWidget);
+      expect(find.textContaining('No keyed Armor ability'), findsNothing);
+      expect(find.textContaining('under rivendell'), findsNothing);
+    });
+
+    testWidgets('a mutable summary names the mutable keyword', (tester) async {
+      _viewUnder(_rivendell(4));
+      await pump(tester, armor());
+      expect(find.textContaining('Muddy'), findsOneWidget);
+      expect(find.textContaining('under rivendell 4'), findsOneWidget);
+      expect(find.textContaining('Cleave'), findsNothing);
+      expect(find.textContaining('Flying'), findsNothing);
+    });
+
+    testWidgets('the stat bonuses do not move with the leyline',
+        (tester) async {
+      // The review gate's third named failure: "changing leyline alters Armor
+      // stat bonuses". T, slots and every ladder are identical.
+      for (final leyline in [LeylineConfig.ordinaryDefault, _rivendell(4)]) {
+        _viewUnder(leyline);
+        await pump(tester, armor());
+        expect(find.text('T 12  ·  3 artifact slots'), findsOneWidget);
+        expect(find.text('Fire 5'), findsOneWidget);
+        expect(find.text('Air 5'), findsOneWidget);
+        expect(find.text('+1 melee'), findsOneWidget);
+        expect(find.text('+1 move'), findsOneWidget);
+      }
+    });
+
+    testWidgets('an armor with no keyed keyword says so, and keeps its bonuses',
+        (tester) async {
+      _viewUnder(_rivendell(4));
+      await pump(
+        tester,
+        armorAsset(elements: [
+          ...runOf(BorderZone.fire, 4),
+          ...runOf(BorderZone.air, 4),
+        ]),
+      );
+      expect(
+        find.textContaining('No keyed Armor ability under rivendell 4'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('bonuses above are unchanged'), findsOneWidget);
+      expect(find.text('+1 melee'), findsOneWidget);
+      expect(find.text('+1 move'), findsOneWidget);
+    });
+
+    testWidgets('the summary agrees with the certified derivation',
+        (tester) async {
+      final spell = armor();
+      final certified = localCertifiedArmor(
+        spell,
+        lexicon: ArmorLexicon.of(_rivendell(4)),
+      )!;
+      expect(certified.keywords, {ArmorKeyword.muddy});
+
+      _viewUnder(_rivendell(4));
+      await pump(tester, spell);
+      for (final keyword in certified.keywords) {
+        expect(find.textContaining(kArmorKeywordLabel[keyword]!),
+            findsOneWidget);
+      }
     });
   });
 

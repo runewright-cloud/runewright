@@ -15,9 +15,10 @@ simultaneous resolution batch.
 
 ## Status — as-built, 2026-09-04
 
-**Mutable Incantations are live in the engine.** Slices A–D are committed, the
-player-facing surfaces shipped as "Slice E", and a semantic correction to
-partial-formula affinity followed. **Current versions: engine 14, protocol 7,
+**Mutable Leylines are live across all three player-created magical domains.**
+Slices A–D are committed, the player-facing surfaces shipped as "Slice E", a
+semantic correction to partial-formula affinity followed, and Summon and Armor
+were rekeyed last (R-8 ruled). **Current versions: engine 15, protocol 7,
 ruleset 3, circuits/VK unchanged.**
 
 | Slice | State | Commit |
@@ -27,9 +28,9 @@ ruleset 3, circuits/VK unchanged.**
 | C — noise-capable semantics | ✅ shipped | `09a7f61` |
 | D — live mutable interpretation | ✅ shipped | `3f4f08b` |
 | E — player-facing surfaces | ✅ shipped | `14349b9` |
-| — partial-formula affinity correction | ✅ shipped (engine 13 → 14) | *this change* |
-| — Summon / Armor rekeying | ⛔ blocked on R-8 | — |
-| F — discovery / host activation | 🔜 next | — |
+| — partial-formula affinity correction | ✅ shipped (engine 13 → 14) | `714e54d` |
+| — Summon / Armor rekeying | ✅ shipped (engine 14 → 15), R-8 ruled | *this change* |
+| F — discovery / host activation | 🔜 next, and the change that closes R-9 | — |
 
 ### How to read this document
 
@@ -1394,13 +1395,208 @@ event RNG and Slice 7 coalescing are all as they were (R-7).
 > **remains unbuilt and unruled (R-8)**.
 
 1. **Goal:** rekey the pattern languages, preserving CA-derived stats/affinity.
-2. **Unresolved, and blocking:** §8 says the summon pattern-space mapping *must*
-   be specified against the current implementation before coding. Neither
-   domain chunks; both do overlapping substring search over 4-element patterns
-   in spaces of 4⁴ = 256, with 8 and 7 outcomes respectively. What "noise"
-   even means for a pattern that simply never occurs is undefined.
-3. **Versions:** engine bump when it lands.
-4. **Gate:** a design ruling, before any code.
+2. ~~**Unresolved, and blocking**~~ — **RULED 2026-09-04, see the as-built
+   below.** §8 required the summon pattern-space mapping be specified against
+   the current implementation before coding; it was, and the audit's own
+   description held: neither domain chunks, both slide a four-element window
+   over spaces of 4⁴ = 256 with 8 and 7 outcomes respectively, one pattern per
+   outcome. The open question — *what "noise" means for a pattern that simply
+   never occurs* — is answered by R-8.3: **nothing**. An unmatched window is the
+   ordinary case for a sliding language, so there is no noise value and no
+   sentinel enum member.
+3. **Versions:** engine 14 → 15. Shipped.
+4. **Gate:** a design ruling, before any code. Met — R-8, ruled in five parts
+   below.
+
+#### As-built — 2026-09-04 (engine 14 → 15)
+
+**Versions: engine 14 → 15, protocol 7, ruleset 3, circuits/VK untouched.** The
+bump is required on the usual test: the same wire transcript yields a different
+canonical `BattleState` on either side for any mutable match in which a summon's
+certified sequence or an armor's certified dominance sequence contains a keyed
+four-element window. `BattleState.toCanonicalBytes` hashes a minion's ability
+mask and an avatar's armor. Nothing crosses the wire that did not before, and
+both devices derive the dictionaries locally from the config they already
+agreed, so protocol stays 7.
+
+##### R-8, ruled — the five decisions
+
+**R-8.1 — the recognisers are NOT rekeyed.** A Mutable Leyline rekeys *meaning*,
+never the structural matcher. Both domains keep: a **four-element** window,
+**slid** across their own certified sequence, **overlapping** matches allowed,
+each output granted **at most once**. `LeylineConfig.formulaLength` stays the
+Incantation grammar's length and is never a generic window size — a `rivendell
+6` duel still reads four-element creature abilities. Pinned by test at both
+lexicons (`patternLength` is 4 for every config) and by the posture scan.
+
+**R-8.2 — the meaningful-pattern cardinality is preserved, not the noise
+density.** Eight of 256 summon patterns and seven of 256 armor patterns are
+meaningful — exactly the ordinary counts, one per output. Incantation's ~50%
+noise density is *not* applied: it exists because incantation keys are consumed
+in disjoint chunks, and giving half of all sliding windows a meaning would make
+every creature a menagerie and every armor a keyword salad. The ordinary
+one-pattern-per-output invariant was confirmed from production code before the
+rule was chosen (`kSummonAbilityPattern` 8/8 distinct, `armorKeywordPatterns`
+7/7 distinct, every pattern four elements).
+
+**R-8.3 — there is no noise VALUE, and no sentinel enum member.** An unmatched
+window is the *ordinary case* for a sliding language (248 of 256 for Summon),
+not a decoded meaning, so `LeylinePatternCodebook.codeFor` returns `null` and no
+`SummonAbility.noise` / `ArmorKeyword.noise` exists. This is the opposite of the
+Incantation ruling and deliberately so: there, a completed noise formula is a
+thing that *happened* — it was spoken and paid for — and needs a name.
+
+**R-8.4 — the dictionaries key on the leyline's TRADITION, not its full
+config.** New: `LeylineConfig.leylineTraditionHash`, `leylineConfigHash`'s layout
+minus `formulaLength` and `noiseDensityPermille`:
+
+```
+preimage = uint8(len('Runewright/Leyline/v1/Tradition')) ‖ ascii(domain)
+         ‖ uint8(lexiconVersion) ‖ uint8(mutableMagic ? 1 : 0)
+         ‖ uint16be(utf8len(normalizedSeed)) ‖ utf8(normalizedSeed)
+```
+
+So `Rivendell 4`, `Rivendell 5` and `Rivendell 6` are three incantation grammars
+and **one** tradition of creatures and armor. The plan supports this reading
+directly: §4 lists formula length as an *incantation* codebook input, and §8/§9
+list neither it nor noise density. Nothing previously ratified said otherwise —
+§3.2's "permuted deterministically from (domainTag, lexiconVersion,
+normalizedSeed, formulaLength)" is descriptive prose in a paragraph whose
+**ratified** clause is only that no generic `lookupFormula` is adopted, and R-8
+was explicitly left open there. The projection is pinned by test in both
+directions: the pattern dictionaries do not move with either field, and the
+incantation codebook still does.
+
+**R-8.5 — construction reuses Slice B's ratified machinery, byte-for-byte.**
+Canonical enumeration of all 4⁴ patterns in lexicographic elemental order,
+sort-by-hash on `(score, canonical pattern bytes)` (R-1), a hash-sorted output
+order under a second stream tag (R-4), round-robin allocation (R-3) — which at
+equal cardinality is exactly a bijection. Stream tags `0x11`/`0x12`, distinct
+from Incantation's `0x01`/`0x02` so a dumped preimage says which family it
+belongs to. Output identity is **pinned consensus codes** (`kSummonAbilityCode`,
+`kArmorKeywordCode`), never enum indices; a test asserts today's coincidence so
+whoever reorders either enum is stopped and sent to read the rationale.
+
+##### The seams
+
+| Domain | Boundary | Battle path | Setup path |
+|---|---|---|---|
+| Summon | `SummonLexicon` (`models/summon_lexicon.dart`) | `DeterministicResolution.summonLexicon` → `_castSummon`, and `Minion.onDeath` (morphic reform) | n/a — creatures are cast, not equipped |
+| Armor | `ArmorLexicon` (`models/armor_lexicon.dart`) | — | `CertifiedArmor.fromOutputs(lexicon:)`, **required** by `certifyOwnArmor`/`certifyPeerArmor`, passed `ArmorLexicon.of(effectiveConfig.leyline)` by `runDuelSetup` |
+
+`SummonLexicon.specOf` is the split R-8.1 rests on, in one call: affinity and the
+four stats come from `CreatureSpec` unchanged, only the ability set is rekeyed.
+`CreatureSpec.fromElements` remains the ordinary/reference derivation for
+surfaces with no leyline, and a posture test asserts that every engine call to
+it reads `.affinity` only — a certified price must not move because a dictionary
+did.
+
+Armor certification takes a **required** lexicon rather than a defaulted one.
+That is M4.22's lesson applied: a trust boundary must not be able to fall back
+to a tradition by omission.
+
+##### What was extracted, and what did not move
+
+`leylineStreamScore`, the element alphabet, the element codes, the digest
+comparison and the three domain tags moved from `leyline_codebook.dart` to a new
+`leyline_stream.dart`, verbatim, and are re-exported — so Summon and Armor reach
+the primitive without importing the Incantation codebook, which the posture test
+forbids and rightly. **Every Slice B vector still passes unchanged**, which is
+the proof the move was pure. The vocabularies moved out too
+(`summon_ability.dart`, `armor_keyword.dart`), re-exported by their old homes, so
+that `CreatureSpec` and `armor_keyword.dart` can stay unable to name a
+`LeylineConfig` at all — pinned by test.
+
+##### Player-facing
+
+* **spell card, summon rules body** — reads `_CardFrame.summonLexicon`, derived
+  from the same `activeWildMagicContext` channel the incantation rules box uses
+  (this device's tradition in the library, the match's for the duration of a
+  duel). Under a mutable leyline it captions *"Ability patterns under
+  &lt;leyline&gt;"* and, with no keyed ability, says so explicitly *and* says the
+  elemental stats are unchanged. The creature's stat chips are unqualified,
+  because they do not move;
+* **cast tray** (`battle_screen.dart`) — the selected summon's one-line summary
+  is read under the match's `SummonLexicon`. This is the line a player reads
+  before committing mana;
+* **`ArmorSummaryView`** — keywords read under `ArmorLexicon.of(
+  activeLeylineConfig)`; the no-keyed-keyword state is stated, with *"Its bonuses
+  above are unchanged"*, so an armor is never implied to be worthless. T, slots
+  and every element bonus are printed unqualified;
+* **heraldry is untouched.** Frame gradient, emblem ring and the affinity
+  histogram stay structural and leyline-independent (the Slice E ruling,
+  unchanged);
+* **Rune Craft previews and `RecipesScreen` stay ordinary, deliberately.**
+  Inscription has no leyline (R-6), those screens are unreachable while a match
+  overrides the context, and `_recordNewAbilities` → `RecipeBook` is persisted
+  *discovery* state, which is the same storage decision Slice E left open for
+  incantations. Making inscription previews leyline-following would have split
+  that decision across two domains for no reachable benefit;
+* **the library stays ordinary-reference**, matching `formulaEffectLabels` beside
+  it.
+
+##### Deliberately NOT done
+
+* **No leyline-scoped `RecipeBook`.** Still the inherited Slice F item, now for
+  three domains rather than one.
+* **No host-screen picker, so R-9 stays open.** No mutable config crosses a wire
+  yet; mutable Armor is therefore reachable only in tests today (solo has no
+  armor), which is exactly what made this slice's architecture safe to land
+  ahead of the networking change.
+* **The Armor melee-damage report was not investigated or fixed.** Out of scope
+  by instruction. What this slice observed in passing, for whoever picks it up:
+  `CertifiedArmor.meleeBonus` is correctly derived and correctly carried into
+  `BattleState.toCanonicalBytes`, and it is consumed in exactly one place —
+  `deterministic_resolution.dart:1174`, `var damage = 1 + (actor.armor?.meleeBonus
+  ?? 0)`, the single wizard-melee path. The arithmetic there reads correctly, so
+  the likely candidates are upstream (`actor.armor` null on the path under test,
+  e.g. solo, which seats no armor at all) or the Fire ladder's first rung
+  (`count: 4`) simply not being reached by the armor being tested. Start by
+  asserting `avatar.armor?.meleeBonus` at the call site rather than by reading
+  the ladder.
+* **No mesh/N-player work, no Wild Magic change, no Incantation change, no
+  circuit, VK, proof, envelope or persistence change.**
+
+##### Tests
+
+* `test/battle/models/leyline_pattern_codebook_test.dart` — 28 tests. The
+  complete meaningful set for both domains under two seeds, inert-pattern
+  vectors, the tradition-hash vectors, the config-field projection in both
+  directions, domain separation (including that the six names shared by the two
+  vocabularies share no pattern), and the guard rails. Expected values come from
+  **`scripts/gen_leyline_pattern_vectors.py`**, an independent implementation
+  written from the layout above; it agreed with the Dart on the first run.
+* `test/battle/models/summon_armor_lexicon_test.dart` — 33 tests. Ordinary
+  invariance, mutable rekeying both ways (a formerly meaningful pattern goes
+  inert, a formerly inert one becomes meaningful), overlap and
+  at-most-once preserved, intrinsic creature stats/affinity identical across
+  leylines, armor T/slot cost/element counts/every ladder identical across
+  leylines with only the keyword set moving, and two-device agreement.
+* `test/battle/models/pattern_lexicon_posture_test.dart` — 16 tests. One
+  derivation site per domain, three mutually blind domains, the vocabularies
+  unable to name a `LeylineConfig`, the certification boundary unable to default
+  its lexicon, and the proof/wire layers unable to see a dictionary.
+* `test/battle/engine/summon_cast_test.dart` — four end-to-end cases through the
+  real `TurnLoop`, because the failure that matters is not "the lexicon returns
+  the wrong set" but "the engine never asked the lexicon".
+* `test/battle/engine/armor_certification_test.dart` — local and peer derive
+  identical semantics from one proof and one agreed config; the leyline moves
+  the keywords and nothing else; the slot budget still refuses on certified T.
+* `test/ui/mutable_leyline_surfaces_test.dart` — the card and the armor summary
+  agree with the engine-side derivation, the no-keyed-ability state is
+  distinguishable from an ability, ordinary surfaces are unchanged, and a
+  stat-only armor still shows its bonuses.
+
+**Full suite: 2562 → 2656 green, 0 failing. Analyzer: 39 issues, unchanged from
+baseline, 0 errors.**
+
+##### Replay corpus: zero movement
+
+Every script is an ordinary-leyline match and an ordinary lexicon derives
+nothing, so no golden byte moved. The mutable coverage is in the targeted tests
+above, because the harness still has no mutable script.
+
+---
 
 ### Slice F — UI: mutable picker, leyline-aware previews, leyline-scoped RecipeBook
 
@@ -1694,6 +1890,23 @@ Slice B).
 `wildMagicEffectFor`-is-not-rekeyed ruling. Slices C and D are complete on that
 basis.
 
+**Update 2026-09-04 (Summon / Armor rekeying):** **R-8 is RATIFIED and
+shipped** — see §13's as-built for the five parts and the reasoning behind each.
+The one place the ruling had to be checked against an earlier ratification is
+its config-field projection (R-8.4): §3.2 describes a shared codebook utility
+"permuted deterministically from `(domainTag, lexiconVersion, normalizedSeed,
+formulaLength)`", which reads as including formula length. That sentence is
+descriptive prose, not the ratified clause — §3.2's RATIFIED paragraph settles
+only that no generic `lookupFormula` is adopted, and it explicitly leaves R-8
+open — and the plan itself lists formula length as a §4 *incantation* input
+while §8/§9 list neither it nor noise density. No ratification was superseded.
+
+**R-9 remains open and remains gated on the host picker**, unchanged: no mutable
+config crosses a wire yet. A consequence worth recording is that mutable Armor
+is, today, reachable only from tests — solo practice seats no armor, and the
+duel path is the only one that certifies any — so this slice's architecture
+landed ahead of the surface that will exercise it, deliberately.
+
 **Update 2026-09-04 (Slice E):** neither R-8 nor R-9 was required by Slice E,
 and neither was closed. The earlier "R-8 blocks Slice E" wording assumed a
 Slice E that activated *every* domain; the slice as scoped activates
@@ -1723,7 +1936,7 @@ reason the host screen did not get it.
 | R-5 | Does `effectCount` (and therefore certified base mana cost, and therefore Wild Magic's preimage, and therefore `behaviouralKinKey`) count noise formulas? | ✅ **RATIFIED 2026-09-03 (§7.4)** — **yes**, every syntactically complete chunk counts, noise included. Cost is a function of the certified trajectory and the active `formulaLength` alone, never of the codebook. Shipped in Slice D. |
 | R-6 | What happens to persisted `SpellAsset.manaCost` and kin keys under a mutable leyline | ✅ **RATIFIED 2026-09-03 (§7.4)** — **nothing**. Inscription has no leyline, so persisted cost, `behaviouralKinKey`, kin stacking and heraldry stay inscription-side and leyline-independent. Shipped in Slice D. |
 | R-7 | Is the Wild Magic 3×4 → effect table itself rekeyed, or is the config hash sufficient? (§8) | ✅ **RATIFIED 2026-09-03 (§8)** — the config hash is sufficient; the table is **not** rekeyed. Slice D edited no wild-magic file; only *which formulas are eligible* changed. |
-| R-8 | Summon and Armor pattern-space mapping (§8 of the plan defers this explicitly) | ⛔ **OPEN — and no longer blocking.** Slice E activated Incantation only; Summon and Armor remain ordinary and the posture test forbids them the lexicon entirely. A ruling is still required before any mutable Summon/Armor code. |
+| R-8 | Summon and Armor pattern-space mapping (§8 of the plan defers this explicitly) | ✅ **RATIFIED 2026-09-04 (§13, Summon/Armor as-built)** in five parts. **R-8.1** the recognisers are not rekeyed — four-element sliding window, overlapping, at-most-once, per-domain certified sequence, and `formulaLength` is never a generic window size. **R-8.2** the ordinary meaningful cardinality is preserved (8 of 256 summon, 7 of 256 armor, one per output); Incantation's noise density does not apply to a sliding language. **R-8.3** there is no noise value and no sentinel enum member — an unmatched window is the ordinary case, so the lookup returns null. **R-8.4** the dictionaries key on `LeylineConfig.leylineTraditionHash` — domain, lexicon version, mutability and normalized seed, but NOT `formulaLength` or `noiseDensityPermille` — so `rivendell 4/5/6` are three incantation grammars and one tradition of creatures and armor. **R-8.5** construction reuses Slice B's ratified machinery byte-for-byte (canonical enumeration, sort-by-hash, hash-sorted output order, round-robin) under stream tags `0x11`/`0x12` and pinned output codes. Shipped at engine 15, pinned by independent vectors. |
 | R-9 | Should the legacy flat-`communitySeed` fallback become an error once mutable is live? (§10.3) | ⛔ **OPEN — gated on the HOST picker, not on mutable being live.** Slice E's picker is solo-only, so no mutable config crosses a wire and there is no downgrade to guard: the guest adopts the host config verbatim and holds no leyline opinion of its own. Close this in the same change that puts a picker on `duel_host_settings_screen.dart`. |
 | R-10 | Should a residual group's affinity also establish or break **chain purity** (`pureAffinityOf` → chain discount and advancement)? (§7.5) | ✅ **RATIFIED 2026-09-04 — NO.** Chain purity, the chain discount, certified cost and chain advancement stay on completed *meaningful* formulas. A residual may lend its opening affinity to Wild Magic and must not thereby advance a chain, earn a discount, or make an otherwise-pure completed spell hybrid for chain pricing. No certified price moves. Pinned by the `chain purity is not affected (R-10)` test group so a refactor cannot feed `eligibleAffinitiesOf` into `pureAffinityOf`. |
 | R-11 | Should **ordinary** residuals bear affinity too, for conceptual symmetry? (§7.5) | ✅ **RATIFIED 2026-09-04 — NO.** `IncantationLexicon.ordinary.residualBearsAffinity` stays `false`; ordinary 1–2-element residuals lend nothing. Mutable residual affinity is a Mutable-grammar rule, not a retroactive change to ordinary magic. Pinned by test. |

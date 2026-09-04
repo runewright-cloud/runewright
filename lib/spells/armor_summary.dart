@@ -57,11 +57,21 @@ const Map<ArmorKeyword, String> kArmorKeywordLabel = {
 /// may be equipped (a UI question, answered in chapter_armor.dart), while this
 /// answers what its trajectory means. Any proof can be read this way; only an
 /// armor has reason to.
-CertifiedArmor? localCertifiedArmor(SpellAsset spell) {
+///
+/// [lexicon] rekeys only the keyword set (audit R-8) — T, slot cost and every
+/// stat bonus are identical under every leyline. It defaults to the ordinary
+/// tradition, which is the right reading for a library with no match in
+/// progress; a surface that KNOWS an active leyline passes it, so it cannot
+/// print a keyword the duel would not grant.
+CertifiedArmor? localCertifiedArmor(
+  SpellAsset spell, {
+  ArmorLexicon lexicon = ArmorLexicon.ordinary,
+}) {
   if (spell.proofBytes.isEmpty) return null;
   try {
     return CertifiedArmor.fromOutputs(
       ProofIntake.parseOwn(spell.proofBytes, tierForProof(spell.t, spell.tier)),
+      lexicon: lexicon,
     );
   } on ProofIntakeException {
     return null;

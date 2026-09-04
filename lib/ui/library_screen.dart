@@ -15,7 +15,7 @@ import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import '../apprentice/apprenticeship.dart' show MasterLoanView;
 import '../identity/identity.dart';
 import '../identity/key_packing.dart';
-import '../battle/models/creature_spec.dart' show summonSummaryFromFormula;
+import '../battle/models/summon_lexicon.dart' show summonSummaryFromFormula;
 import '../battle/models/effect_kind.dart' show formulaEffectLabels;
 import '../battle/models/minion.dart' show SummonPersonality, kSummonPersonalityLabel;
 import '../spells/basic_spell_seed.dart' show seedBasicSpells;

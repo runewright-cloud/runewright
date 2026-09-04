@@ -38,7 +38,8 @@ import '../battle/engine/wild_magic_applicator.dart' show WildMagicEvent;
 import '../battle/models/battle_state.dart';
 import '../battle/models/barrier.dart';
 import '../battle/models/casting_enhancements.dart' show CastingEnhancements;
-import '../battle/models/creature_spec.dart' show summonSummaryFromFormula;
+import '../battle/models/summon_lexicon.dart'
+    show SummonLexicon, summonSummaryFromFormula;
 import '../battle/models/effect_kind.dart'
     show
         SpellAffinity,
@@ -875,6 +876,12 @@ class _BattleScreenState extends State<BattleScreen>
   /// could creep in.
   late final IncantationLexicon _lexicon =
       IncantationLexicon.of(widget.state.config.leyline);
+
+  /// The summon counterpart, on the same terms and for the same reason
+  /// (Slice F): the cast tray's summon summary must name the abilities THIS
+  /// match will grant, not the ordinary table's.
+  late final SummonLexicon _summonLexicon =
+      SummonLexicon.of(widget.state.config.leyline);
 
   bool get _vocalOn => widget.state.config.vocalComponents;
   bool get _somaticOn => widget.state.config.somaticComponents;
@@ -3980,6 +3987,7 @@ class _BattleScreenState extends State<BattleScreen>
               phase: _phase,
               selectedSpell: _selectedSpell,
               lexicon: _lexicon,
+              summonLexicon: _summonLexicon,
               // Priced under the enhancement actually chosen, which can differ
               // from the hand strip's best-case figure (Water/Efficiency is −1/3;
               // everything else is full price).
@@ -4498,6 +4506,7 @@ class _ActionBar extends StatelessWidget {
     required this.onDeclineFreeMove,
     required this.onConfirmFreeMove,
     this.lexicon = IncantationLexicon.ordinary,
+    this.summonLexicon = SummonLexicon.ordinary,
   });
 
   final _InputPhase phase;
@@ -4507,6 +4516,10 @@ class _ActionBar extends StatelessWidget {
   /// names what the cast will actually do. Ordinary by default, which is what
   /// every ordinary duel and every existing test gets.
   final IncantationLexicon lexicon;
+
+  /// The match's summon lexicon, so a selected summon's one-line summary names
+  /// the abilities the creature will actually have (Slice F, R-8).
+  final SummonLexicon summonLexicon;
 
   /// Mana [selectedSpell] costs under the currently-chosen enhancement, or
   /// null when nothing is selected / there's no local avatar to price against.
@@ -4837,8 +4850,16 @@ class _ActionBar extends StatelessWidget {
                   const SizedBox(height: 2),
                   Text(
                     selectedSpell!.isSummon
-                        ? (summonSummaryFromFormula(selectedSpell!.formula) ??
-                              'Void Summon')
+                        // Under the MATCH's leyline, not the ordinary table
+                        // (Slice F): this line is what the player reads before
+                        // committing mana, and under a mutable leyline the
+                        // ordinary ability clause would name abilities the
+                        // creature will not have.
+                        ? (summonSummaryFromFormula(
+                              selectedSpell!.formula,
+                              lexicon: summonLexicon,
+                            ) ??
+                            'Void Summon')
                         : _castTraySummary(selectedSpell!),
                     textAlign: TextAlign.center,
                     // Same reasoning as the prompt above, and this one is

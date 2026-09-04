@@ -457,8 +457,22 @@ void main() {
       // other consumer asks the lexicon a question instead of asking the config
       // a boolean, which is what keeps "what does a leyline change" answerable
       // by reading one file.
-      const owners = {'leyline_config.dart', 'leyline_codebook.dart'};
-      const allowed = {'battle/engine/incantation_lexicon.dart'};
+      const owners = {
+        'leyline_config.dart',
+        'leyline_codebook.dart',
+        // Slice F: the pattern codebook reads it only to REFUSE an ordinary
+        // config, exactly as the incantation codebook does.
+        'leyline_pattern_codebook.dart',
+      };
+      const allowed = {
+        'battle/engine/incantation_lexicon.dart',
+        // Slice F: one behavioural reader per DOMAIN, not one for the codebase.
+        // Each lexicon's factory is the single place its own domain decides
+        // whether a dictionary is derived; every consumer asks the lexicon a
+        // question instead of asking the config a boolean.
+        'battle/models/summon_lexicon.dart',
+        'battle/models/armor_lexicon.dart',
+      };
       final readers = {
         for (final file in _dartFiles(lib))
           if (!owners.contains(file.uri.pathSegments.last) &&
@@ -469,9 +483,10 @@ void main() {
     });
 
     test('summon and armor code never touches the incantation lexicon', () {
-      // Neither domain chunks; both do overlapping substring search over fixed
-      // 4-element patterns, and their mapping is an unruled design problem
-      // (audit §14 R-8). Slice E, and not before a ruling.
+      // Neither domain chunks; both slide an overlapping four-element window.
+      // Slice F gives them their own lexicons (R-8) and this guard survives it
+      // unchanged: a summon must not acquire an incantation grammar by the
+      // back door, and the three dictionaries stay independently derived (§9).
       const summonAndArmor = [
         'battle/models/creature_spec.dart',
         'battle/models/certified_armor.dart',
@@ -551,6 +566,11 @@ void main() {
         for (final forbidden in const [
           'leyline_codebook',
           'IncantationCodebook',
+          // Slice F: the same rule for the pattern dictionaries. A widget may
+          // hold a SummonLexicon or an ArmorLexicon and ask it questions; it
+          // may not reach the constructor underneath.
+          'leyline_pattern_codebook',
+          'LeylinePatternCodebook',
           'mutableMagic',
         ]) {
           expect(src.contains(forbidden), isFalse,

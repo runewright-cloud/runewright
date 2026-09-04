@@ -88,6 +88,18 @@ once however often its pattern occurs:
 **Morphic (`WWWW`) is deliberately not implemented** — it is designed but not
 built, so a WWWW armor grants no keyword rather than a placeholder one.
 
+**Under a Mutable Leyline those seven patterns are rekeyed** (engine 15; audit
+R-8). The table above is the ORDINARY tradition and stays the reference reading
+everywhere no leyline is in force. A mutable leyline derives its own bijection
+over the same 256 four-element patterns from its tradition hash, so `AAAA` may
+name nothing and some other run may name Flying. What does NOT change: the
+recogniser (four elements, sliding, overlapping, at-most-once), the count (seven
+of 256 — the density is not rerolled), and **every intrinsic number** — T, slot
+cost, the element counts and all four ladders are identical under every leyline.
+`CertifiedArmor.fromOutputs` takes an `ArmorLexicon`; both duellists pass the
+config they agreed at the handshake, and nothing about a derived keyword crosses
+the wire. See `lib/battle/models/armor_lexicon.dart`.
+
 ### The trajectory reading, and the trap in it
 
 Armor reads `TrajectoryParser.certifiedPerGenerationDominantSequence` — one

@@ -22,6 +22,7 @@ import 'package:rune_duel/battle/models/creature_spec.dart';
 import 'package:rune_duel/battle/models/effect_kind.dart' show SpellAffinity;
 import 'package:rune_duel/battle/models/hex_battlefield.dart' show hexDistance, hexNeighbors;
 import 'package:rune_duel/battle/models/status_effect_ids.dart';
+import 'package:rune_duel/battle/models/summon_lexicon.dart' show SummonLexicon;
 import 'package:rune_duel/battle/models/wizard_avatar.dart' show StatusEffect;
 
 export 'creature_spec.dart' show MinionStats, SummonAbility;
@@ -251,11 +252,20 @@ class Minion {
   ///
   /// The reformed creature spawns on this creature's own tile (or its
   /// footprint's first tile) with a fresh id built from [newId].
-  List<Minion> onDeath(int Function(int max) nextInt, String newId) {
+  /// [lexicon] is the match's summon reading — the reformed creature's
+  /// abilities are derived from the REDUCED sequence under the same leyline the
+  /// original was summoned under (audit R-8). Defaulted to the ordinary lexicon
+  /// so out-of-match callers and fixtures read as they always have; in-match,
+  /// `DeterministicResolution` passes its own.
+  List<Minion> onDeath(
+    int Function(int max) nextInt,
+    String newId, {
+    SummonLexicon lexicon = SummonLexicon.ordinary,
+  }) {
     if (!abilities.contains(SummonAbility.morphic)) return const [];
     final reduced = morphicReducedSequence(elementSequence, nextInt);
     if (reduced == null) return const [];
-    final spec = CreatureSpec.fromElements(reduced);
+    final spec = lexicon.specOf(reduced);
     if (spec == null) return const [];
     return [
       Minion(
